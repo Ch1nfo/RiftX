@@ -505,11 +505,6 @@ def runner_daemon(
     from riftx.runner.daemon import RunnerDaemonConfig, run_runner_daemon
 
     config = _state(context).config
-    if config.audit.source_roots and (state_path is not None or credential_path is not None):
-        raise typer.BadParameter(
-            "Runner storage paths are deployment-owned when Audit source roots are configured",
-            param_hint="--state-path/--credential-path",
-        )
     resolved_node_id = node_id or config.runner.node_id
     logging.basicConfig(level=logging.INFO)
     asyncio.run(
@@ -525,7 +520,6 @@ def runner_daemon(
                 require_containment=config.execution.require_containment,
                 payload_uid=config.execution.payload_uid,
                 payload_gid=config.execution.payload_gid,
-                audit=config.audit,
             )
         )
     )

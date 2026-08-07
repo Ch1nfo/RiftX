@@ -22,11 +22,6 @@ from riftx.browser import (
     BrowserOperation,
     BrowserSessionCommand,
 )
-from riftx.config import (
-    AuditConfig,
-    RiftXConfigError,
-    load_riftx_config,
-)
 from riftx.domain import (
     RUNNER_COMMAND_OWNERSHIP_SCHEMA_VERSION,
     BrowserSessionStatus,
@@ -149,12 +144,6 @@ def _default_capabilities() -> tuple[str, ...]:
     return tuple(capabilities)
 
 
-def _default_audit_config() -> AuditConfig:
-    # Re-validate explicit default values so platform path aliases (for
-    # example macOS /var -> /private/var) match the shared config loader.
-    return AuditConfig.model_validate(AuditConfig().model_dump(mode="python"))
-
-
 @dataclass(frozen=True, slots=True)
 class RunnerDaemonConfig:
     server_url: str
@@ -178,7 +167,6 @@ class RunnerDaemonConfig:
     require_containment: bool = True
     payload_uid: int | None = None
     payload_gid: int | None = None
-    audit: AuditConfig = field(default_factory=_default_audit_config)
 
     def __post_init__(self) -> None:
         validate_runner_registration_credential(self.registration_token)
@@ -190,8 +178,6 @@ class RunnerDaemonConfig:
             raise ValueError("Runner resource stop timeout must be positive")
         if (self.payload_uid is None) != (self.payload_gid is None):
             raise ValueError("payload_uid and payload_gid must be configured together")
-        if self.audit.enabled and self.node_id != "local":
-            raise ValueError("RiftX Code Audit requires the local Runner node")
         for field_name, value in (
             ("payload_uid", self.payload_uid),
             ("payload_gid", self.payload_gid),
@@ -2602,14 +2588,6 @@ async def _run_configured_runner_daemon(
 
 @app.command()
 def serve(
-    config_path: Annotated[
-        Path | None,
-        typer.Option(
-            "--config",
-            envvar="RIFTX_CONFIG",
-            help="Shared RiftX config used to enable Code Audit on this Runner.",
-        ),
-    ] = None,
     server_url: Annotated[
         str, typer.Option(envvar="RIFTX_SERVER_URL", help="RiftX Control Plane URL.")
     ] = "http://127.0.0.1:8787",
@@ -2655,12 +2633,6 @@ def serve(
 ) -> None:
     """Connect to a Control Plane and execute commands on this host."""
 
-    audit = AuditConfig()
-    if config_path is not None:
-        try:
-            audit = load_riftx_config(explicit_path=config_path).audit
-        except RiftXConfigError as exc:
-            raise typer.BadParameter(str(exc), param_hint="--config") from exc
     logging.basicConfig(level=logging.INFO)
     asyncio.run(
         run_runner_daemon(
@@ -2674,7 +2646,6 @@ def serve(
                 require_containment=require_containment,
                 payload_uid=payload_uid,
                 payload_gid=payload_gid,
-                audit=audit,
             )
         )
     )

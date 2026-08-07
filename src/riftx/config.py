@@ -2,22 +2,16 @@
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
-import ipaddress
-import json
 import os
 import re
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Annotated, Any, Final, Literal, Protocol
+from typing import Any, Literal, Protocol
 from urllib.parse import urlsplit
 
 import yaml
 from pydantic import (
     BaseModel,
-    BeforeValidator,
     ConfigDict,
     Field,
     SecretStr,
@@ -25,8 +19,6 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from sqlalchemy.engine import make_url
-from sqlalchemy.exc import ArgumentError
 
 from riftx.domain import ApprovalMode, OperatorCapability, TrustProfile
 from riftx.executors import EnvironmentMode
@@ -83,81 +75,14 @@ class _ConfigModel(BaseModel):
 
 class _AuditConfigModel(_ConfigModel):
     model_config = ConfigDict(
-        extra="forbid",
+        extra="ignore",
         hide_input_in_errors=True,
         frozen=True,
     )
 
 
-AUDIT_CONFIG_DIGEST_VERSION: Final = "riftx.audit-config/v2"
-AUDIT_SOURCE_INGEST_POLICY_VERSION: Final = "riftx.audit-source-ingest-policy/v1"
 _MAX_AUDIT_REPOSITORY_BYTES = 2_147_483_648
 _MAX_AUDIT_FILE_BYTES = 5_242_880
-_MAX_AUDIT_FILES = 200_000
-_MAX_AUDIT_PATH_BYTES = 4_096
-_MAX_AUDIT_DIRECTORY_DEPTH = 256
-_MAX_AUDIT_ARTIFACT_BYTES = 67_108_864
-_MAX_AUDIT_TOTAL_ARTIFACT_BYTES = 268_435_456
-_MAX_AUDIT_WALL_SECONDS = 7_200
-_MAX_AUDIT_MODEL_CALLS = 100
-_MAX_AUDIT_INPUT_TOKENS = 2_000_000
-_MAX_AUDIT_OUTPUT_TOKENS = 200_000
-_MAX_AUDIT_WORKER_JOBS = 64
-_MAX_AUDIT_CANDIDATES = 1_000
-_MAX_AUDIT_MODEL_BYTES_PER_CALL = 131_072
-_MAX_AUDIT_MODEL_BYTES_PER_AUDIT = 16_777_216
-_MAX_AUDIT_VALIDATION_WALL_SECONDS = 900
-_MAX_AUDIT_VALIDATION_MEMORY_MIB = 2_048
-_MAX_AUDIT_VALIDATION_PIDS = 128
-_MAX_AUDIT_PREFLIGHT_WALL_SECONDS = 120
-_MAX_AUDIT_PREFLIGHT_MEMORY_MIB = 512
-_MAX_AUDIT_PREFLIGHT_PIDS = 32
-_MAX_AUDIT_PREFLIGHT_RESULT_BYTES = 262_144
-_MAX_AUDIT_PREFLIGHT_OUTPUT_BYTES = 1_048_576
-_MAX_AUDIT_PREFLIGHT_LEASE_SECONDS = 120
-_MAX_AUDIT_PREFLIGHT_TTL_SECONDS = 3_600
-_DECIMAL_INTEGER_PATTERN = re.compile(r"-?(?:0|[1-9][0-9]*)\Z")
-_DNS_ORIGIN_LABEL_PATTERN = re.compile(
-    r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z"
-)
-
-
-def _parse_audit_boolean(value: object) -> object:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized == "true":
-            return True
-        if normalized == "false":
-            return False
-    raise ValueError("must be the boolean true or false")
-
-
-def _parse_audit_integer(value: object) -> object:
-    if isinstance(value, int) and not isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip()
-        if _DECIMAL_INTEGER_PATTERN.fullmatch(normalized):
-            return int(normalized)
-    raise ValueError("must be a base-10 integer")
-
-
-AuditBoolean = Annotated[bool, BeforeValidator(_parse_audit_boolean)]
-AuditInteger = Annotated[int, BeforeValidator(_parse_audit_integer)]
-
-
-def _canonical_source_root(path: Path) -> Path:
-    if not path.is_absolute():
-        raise ValueError("Audit source roots must be absolute")
-    try:
-        resolved = path.resolve(strict=True)
-    except (OSError, RuntimeError) as exc:
-        raise ValueError("Audit source root cannot be resolved") from exc
-    if not resolved.is_dir():
-        raise ValueError("Audit source root must resolve to a directory")
-    return resolved
 
 
 def _canonical_storage_path(
@@ -203,318 +128,23 @@ def _storage_path_boundary(
         raise ValueError(f"{label} cannot be resolved") from exc
 
 
-def _paths_overlap(left: Path, right: Path) -> bool:
-    return left == right or left in right.parents or right in left.parents
-
-
-def _normalize_https_origin(value: str) -> str:
-    if (
-        not value
-        or value != value.strip()
-        or "*" in value
-        or "\\" in value
-        or any(ord(character) <= 0x20 or ord(character) == 0x7F for character in value)
-    ):
-        raise ValueError("remote model origins must be explicit HTTPS origins")
-    try:
-        parsed = urlsplit(value)
-        port = parsed.port
-    except ValueError as exc:
-        raise ValueError("remote model origin is invalid") from exc
-    if (
-        parsed.scheme.lower() != "https"
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.path not in {"", "/"}
-        or parsed.query
-        or parsed.fragment
-        or (port is not None and not 1 <= port <= 65535)
-    ):
-        raise ValueError("remote model origins must be origin-only HTTPS URLs")
-    raw_host = parsed.hostname.rstrip(".")
-    if not raw_host or "%" in raw_host:
-        raise ValueError("remote model origin hostname is invalid")
-    try:
-        address = ipaddress.ip_address(raw_host)
-    except ValueError:
-        try:
-            host = raw_host.encode("idna").decode("ascii").lower()
-        except UnicodeError as exc:
-            raise ValueError("remote model origin hostname is invalid") from exc
-        labels = host.split(".")
-        if (
-            len(host) > 253
-            or len(labels) < 2
-            or any(_DNS_ORIGIN_LABEL_PATTERN.fullmatch(label) is None for label in labels)
-            or (host.replace(".", "").isdigit())
-        ):
-            raise ValueError("remote model origin hostname is invalid") from None
-    else:
-        host = address.compressed
-        if address.version == 6:
-            host = f"[{host}]"
-    normalized_port = None if port == 443 else port
-    return f"https://{host}{f':{normalized_port}' if normalized_port is not None else ''}"
-
-
-class AuditModelEgressConfig(_AuditConfigModel):
-    default_mode: Literal["local_only", "remote_redacted"] = "local_only"
-    max_bytes_per_call: AuditInteger = Field(
-        default=_MAX_AUDIT_MODEL_BYTES_PER_CALL,
-        ge=1,
-        le=_MAX_AUDIT_MODEL_BYTES_PER_CALL,
-    )
-    max_bytes_per_audit: AuditInteger = Field(
-        default=_MAX_AUDIT_MODEL_BYTES_PER_AUDIT,
-        ge=1,
-        le=_MAX_AUDIT_MODEL_BYTES_PER_AUDIT,
-    )
-    allow_remote_origins: tuple[str, ...] = Field(default_factory=tuple)
-
-    @field_validator("allow_remote_origins")
-    @classmethod
-    def validate_remote_origins(cls, values: tuple[str, ...]) -> tuple[str, ...]:
-        normalized = tuple(sorted(_normalize_https_origin(value) for value in values))
-        if len(normalized) != len(set(normalized)):
-            raise ValueError("remote model origins must be unique")
-        return normalized
-
-    @model_validator(mode="after")
-    def validate_egress_limits(self) -> AuditModelEgressConfig:
-        if self.max_bytes_per_call > self.max_bytes_per_audit:
-            raise ValueError("max_bytes_per_call must not exceed max_bytes_per_audit")
-        if self.default_mode == "remote_redacted" and not self.allow_remote_origins:
-            raise ValueError("remote_redacted requires at least one allowed remote origin")
-        return self
-
-
-class AuditBudgetConfig(_AuditConfigModel):
-    max_wall_seconds: AuditInteger = Field(
-        default=_MAX_AUDIT_WALL_SECONDS,
-        ge=1,
-        le=_MAX_AUDIT_WALL_SECONDS,
-    )
-    max_model_calls: AuditInteger = Field(
-        default=_MAX_AUDIT_MODEL_CALLS,
-        ge=1,
-        le=_MAX_AUDIT_MODEL_CALLS,
-    )
-    max_input_tokens: AuditInteger = Field(
-        default=_MAX_AUDIT_INPUT_TOKENS,
-        ge=1,
-        le=_MAX_AUDIT_INPUT_TOKENS,
-    )
-    max_output_tokens: AuditInteger = Field(
-        default=_MAX_AUDIT_OUTPUT_TOKENS,
-        ge=1,
-        le=_MAX_AUDIT_OUTPUT_TOKENS,
-    )
-    max_worker_jobs: AuditInteger = Field(
-        default=_MAX_AUDIT_WORKER_JOBS,
-        ge=1,
-        le=_MAX_AUDIT_WORKER_JOBS,
-    )
-    max_candidates: AuditInteger = Field(
-        default=_MAX_AUDIT_CANDIDATES,
-        ge=1,
-        le=_MAX_AUDIT_CANDIDATES,
-    )
-
-
-class AuditSandboxConfig(_AuditConfigModel):
-    default_policy: Literal[
-        "static_only",
-        "isolated_build",
-        "isolated_test",
-        "isolated_poc",
-        "isolated_fix_and_retest",
-    ] = "static_only"
-    require_sandbox: AuditBoolean = True
-    default_network: Literal["none"] = "none"
-    max_wall_seconds: AuditInteger = Field(
-        default=_MAX_AUDIT_VALIDATION_WALL_SECONDS,
-        ge=1,
-        le=_MAX_AUDIT_VALIDATION_WALL_SECONDS,
-    )
-    max_memory_mib: AuditInteger = Field(
-        default=_MAX_AUDIT_VALIDATION_MEMORY_MIB,
-        ge=1,
-        le=_MAX_AUDIT_VALIDATION_MEMORY_MIB,
-    )
-    max_pids: AuditInteger = Field(
-        default=_MAX_AUDIT_VALIDATION_PIDS,
-        ge=1,
-        le=_MAX_AUDIT_VALIDATION_PIDS,
-    )
-
-
-AuditValidationConfig = AuditSandboxConfig
-
-
-class AuditSourceIngestConfig(_AuditConfigModel):
-    """Legacy Docker SourceIngest settings retained for config compatibility.
-
-    The v3 local-static audit path does not instantiate this backend.
-    """
-
-    backend_id: Literal["linux_container"] = "linux_container"
-    runtime: Literal["docker"] = "docker"
-    image_digest: str | None = Field(
-        default=None,
-        min_length=64,
-        max_length=64,
-        pattern=r"^[0-9a-f]{64}$",
-    )
-    policy_version: Literal["riftx.audit-source-ingest-policy/v1"] = (
-        AUDIT_SOURCE_INGEST_POLICY_VERSION
-    )
-    max_wall_seconds: AuditInteger = Field(
-        default=_MAX_AUDIT_PREFLIGHT_WALL_SECONDS,
-        ge=1,
-        le=_MAX_AUDIT_PREFLIGHT_WALL_SECONDS,
-    )
-    max_memory_mib: AuditInteger = Field(
-        default=_MAX_AUDIT_PREFLIGHT_MEMORY_MIB,
-        ge=64,
-        le=_MAX_AUDIT_PREFLIGHT_MEMORY_MIB,
-    )
-    max_pids: AuditInteger = Field(
-        default=_MAX_AUDIT_PREFLIGHT_PIDS,
-        ge=1,
-        le=_MAX_AUDIT_PREFLIGHT_PIDS,
-    )
-    max_result_bytes: AuditInteger = Field(
-        default=_MAX_AUDIT_PREFLIGHT_RESULT_BYTES,
-        ge=1_024,
-        le=_MAX_AUDIT_PREFLIGHT_RESULT_BYTES,
-    )
-    max_output_bytes: AuditInteger = Field(
-        default=_MAX_AUDIT_PREFLIGHT_OUTPUT_BYTES,
-        ge=1_024,
-        le=_MAX_AUDIT_PREFLIGHT_OUTPUT_BYTES,
-    )
-    lease_seconds: AuditInteger = Field(
-        default=_MAX_AUDIT_PREFLIGHT_LEASE_SECONDS,
-        ge=5,
-        le=_MAX_AUDIT_PREFLIGHT_LEASE_SECONDS,
-    )
-    job_ttl_seconds: AuditInteger = Field(
-        default=_MAX_AUDIT_PREFLIGHT_TTL_SECONDS,
-        ge=60,
-        le=_MAX_AUDIT_PREFLIGHT_TTL_SECONDS,
-    )
-
-
 class AuditConfig(_AuditConfigModel):
-    enabled: AuditBoolean = False
-    node_mode: Literal["local_same_node"] = "local_same_node"
-    allowed_node_ids: tuple[Literal["local"], ...] = ("local",)
-    preflight_token_key_id: str = Field(
-        default="primary",
-        min_length=1,
-        max_length=64,
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:@+~\-]{0,63}$",
-    )
-    preflight_token_key: SecretStr | None = Field(
-        default=None,
-        exclude=True,
-        repr=False,
-    )
-    source_roots: tuple[Path, ...] = Field(default_factory=tuple, repr=False)
+    """Historical Code Audit snapshot compatibility settings."""
+
+    enabled: bool = False
     snapshot_root: Path = Path("/var/lib/riftx/audit/snapshots")
-    temp_root: Path = Path("/var/lib/riftx/audit/tmp")
-    fix_root: Path = Path("/var/lib/riftx/audit/fixes")
-    default_mode: Literal["standard", "deep", "diff"] = "standard"
-    default_analysis_profile: Literal["deterministic", "hybrid"] = "deterministic"
-    model_egress: AuditModelEgressConfig = Field(
-        default_factory=AuditModelEgressConfig
-    )
-    max_repository_bytes: AuditInteger = Field(
+    max_repository_bytes: int = Field(
         default=_MAX_AUDIT_REPOSITORY_BYTES,
         ge=1,
         le=_MAX_AUDIT_REPOSITORY_BYTES,
     )
-    max_file_bytes: AuditInteger = Field(
+    max_file_bytes: int = Field(
         default=_MAX_AUDIT_FILE_BYTES,
         ge=1,
         le=_MAX_AUDIT_FILE_BYTES,
     )
-    max_files: AuditInteger = Field(
-        default=_MAX_AUDIT_FILES,
-        ge=1,
-        le=_MAX_AUDIT_FILES,
-    )
-    max_path_bytes: AuditInteger = Field(
-        default=_MAX_AUDIT_PATH_BYTES,
-        ge=1,
-        le=_MAX_AUDIT_PATH_BYTES,
-    )
-    max_directory_depth: AuditInteger = Field(
-        default=_MAX_AUDIT_DIRECTORY_DEPTH,
-        ge=1,
-        le=_MAX_AUDIT_DIRECTORY_DEPTH,
-    )
-    max_artifact_bytes: AuditInteger = Field(
-        default=_MAX_AUDIT_ARTIFACT_BYTES,
-        ge=1,
-        le=_MAX_AUDIT_ARTIFACT_BYTES,
-    )
-    max_total_artifact_bytes: AuditInteger = Field(
-        default=_MAX_AUDIT_TOTAL_ARTIFACT_BYTES,
-        ge=1,
-        le=_MAX_AUDIT_TOTAL_ARTIFACT_BYTES,
-    )
-    budget: AuditBudgetConfig = Field(default_factory=AuditBudgetConfig)
-    source_ingest: AuditSourceIngestConfig = Field(
-        default_factory=AuditSourceIngestConfig
-    )
-    validation: AuditSandboxConfig = Field(default_factory=AuditSandboxConfig)
 
-    @field_validator("allowed_node_ids")
-    @classmethod
-    def validate_allowed_node_ids(
-        cls,
-        values: tuple[Literal["local"], ...],
-    ) -> tuple[Literal["local"], ...]:
-        if values != ("local",):
-            raise ValueError("RiftX 3.0 Audit requires allowed_node_ids=[local]")
-        return values
-
-    @field_validator("preflight_token_key", mode="before")
-    @classmethod
-    def validate_preflight_token_key(cls, value: object) -> SecretStr | None:
-        if value is None or value == "":
-            return None
-        raw = value.get_secret_value() if isinstance(value, SecretStr) else value
-        if not isinstance(raw, str) or len(raw) != 43 or not re.fullmatch(
-            r"[A-Za-z0-9_-]{43}", raw
-        ):
-            raise ValueError(
-                "audit preflight token key must be canonical unpadded base64url"
-            )
-        try:
-            decoded = base64.urlsafe_b64decode(raw + "=")
-        except (ValueError, TypeError) as exc:
-            raise ValueError(
-                "audit preflight token key must be canonical unpadded base64url"
-            ) from exc
-        if len(decoded) != 32 or base64.urlsafe_b64encode(decoded).rstrip(b"=").decode(
-            "ascii"
-        ) != raw:
-            raise ValueError("audit preflight token key must decode to exactly 32 bytes")
-        return SecretStr(raw)
-
-    @field_validator("source_roots")
-    @classmethod
-    def validate_source_roots(cls, values: tuple[Path, ...]) -> tuple[Path, ...]:
-        resolved = tuple(sorted((_canonical_source_root(path) for path in values), key=str))
-        for index, root in enumerate(resolved):
-            if any(_paths_overlap(root, other) for other in resolved[index + 1 :]):
-                raise ValueError("Audit source roots must be distinct and non-overlapping")
-        return resolved
-
-    @field_validator("snapshot_root", "temp_root", "fix_root")
+    @field_validator("snapshot_root")
     @classmethod
     def validate_storage_root(cls, value: Path) -> Path:
         return _canonical_storage_path(
@@ -524,62 +154,10 @@ class AuditConfig(_AuditConfigModel):
         )
 
     @model_validator(mode="after")
-    def validate_audit_contract_defaults(self) -> AuditConfig:
-        if self.default_mode == "deep" and self.default_analysis_profile != "hybrid":
-            raise ValueError("Deep Audit mode requires the hybrid analysis profile")
+    def validate_snapshot_limits(self) -> AuditConfig:
         if self.max_file_bytes > self.max_repository_bytes:
             raise ValueError("max_file_bytes must not exceed max_repository_bytes")
-        if self.max_artifact_bytes > self.max_total_artifact_bytes:
-            raise ValueError("max_artifact_bytes must not exceed max_total_artifact_bytes")
-        if self.validation.max_wall_seconds > self.budget.max_wall_seconds:
-            raise ValueError(
-                "validation.max_wall_seconds must not exceed budget.max_wall_seconds"
-            )
-        if self.enabled and not self.validation.require_sandbox:
-            raise ValueError("enabled Audit requires validation.require_sandbox=true")
-        roots = (self.snapshot_root, self.temp_root, self.fix_root)
-        if any(
-            _paths_overlap(root, other)
-            for index, root in enumerate(roots)
-            for other in roots[index + 1 :]
-        ):
-            raise ValueError("Audit storage roots must be distinct and non-overlapping")
         return self
-
-
-def audit_config_digest(config: AuditConfig, *, path_digest_key: bytes) -> str:
-    """Return a versioned digest without embedding sensitive absolute paths."""
-
-    if not isinstance(path_digest_key, bytes) or len(path_digest_key) < 32:
-        raise ValueError("path_digest_key must contain at least 32 bytes")
-
-    def keyed_path(path: str) -> str:
-        return hmac.new(path_digest_key, path.encode(), hashlib.sha256).hexdigest()
-
-    payload = config.model_dump(mode="json")
-    payload["source_roots"] = sorted(keyed_path(path) for path in payload["source_roots"])
-    for field_name in ("snapshot_root", "temp_root", "fix_root"):
-        payload[field_name] = keyed_path(payload[field_name])
-    encoded = json.dumps(
-        {"version": AUDIT_CONFIG_DIGEST_VERSION, "config": payload},
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def audit_source_ingest_policy_digest(config: AuditSourceIngestConfig) -> str:
-    """Digest the non-secret, fixed SourceIngest containment policy."""
-
-    encoded = json.dumps(
-        config.model_dump(mode="json"),
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-    ).encode("ascii")
-    return hashlib.sha256(
-        AUDIT_SOURCE_INGEST_POLICY_VERSION.encode("ascii") + b"\0" + encoded
-    ).hexdigest()
 
 
 class ServerConfig(_ConfigModel):
@@ -912,86 +490,6 @@ class MCPConfig(_ConfigModel):
         return servers
 
 
-def _sqlite_database_storage_path(database_url: str) -> Path | None:
-    try:
-        parsed = make_url(database_url)
-    except ArgumentError as exc:
-        raise ValueError("database URL cannot be checked for Audit path isolation") from exc
-    if parsed.get_backend_name() != "sqlite":
-        return None
-    database = parsed.database
-    if not database or database == ":memory:":
-        return None
-    if database.startswith("file:"):
-        raise ValueError("SQLite URI paths are not supported for Audit path isolation")
-    return Path(database).expanduser()
-
-
-def validate_audit_storage_isolation(
-    *,
-    audit: AuditConfig,
-    workspace_root: Path,
-    runner_state_path: Path,
-    runner_credential_path: Path,
-    models_secrets_path: Path,
-    local_principal_path: Path,
-    database_url: str,
-    temporal_tls_server_root_ca_path: Path | None = None,
-    temporal_tls_client_cert_path: Path | None = None,
-    temporal_tls_client_private_key_path: Path | None = None,
-) -> None:
-    """Revalidate deployment storage against authorized source roots."""
-
-    if not audit.source_roots:
-        return
-
-    current_source_roots = tuple(
-        _canonical_source_root(path) for path in audit.source_roots
-    )
-
-    storage_paths: list[tuple[str, Path, bool]] = [
-        ("audit.snapshot_root", audit.snapshot_root, True),
-        ("audit.temp_root", audit.temp_root, True),
-        ("audit.fix_root", audit.fix_root, True),
-        ("workspace.root", workspace_root.expanduser(), True),
-        ("runner.state_path", runner_state_path.expanduser(), True),
-        ("runner.credential_path", runner_credential_path.expanduser(), False),
-        ("models.secrets_path", models_secrets_path.expanduser(), False),
-        ("security.local_principal_path", local_principal_path.expanduser(), False),
-    ]
-    for label, path in (
-        ("temporal.tls_server_root_ca_path", temporal_tls_server_root_ca_path),
-        ("temporal.tls_client_cert_path", temporal_tls_client_cert_path),
-        (
-            "temporal.tls_client_private_key_path",
-            temporal_tls_client_private_key_path,
-        ),
-    ):
-        if path is not None:
-            storage_paths.append((label, path.expanduser(), False))
-
-    database_path = _sqlite_database_storage_path(database_url)
-    if database_path is not None:
-        storage_paths.append(("database.url", database_path, False))
-
-    canonical_storage = [
-        (
-            label,
-            *_storage_path_boundary(path, label=label, directory=directory),
-        )
-        for label, path, directory in storage_paths
-    ]
-    for source_root in current_source_roots:
-        for label, storage_path, existing_parent in canonical_storage:
-            if _paths_overlap(source_root, storage_path) or _paths_overlap(
-                source_root,
-                existing_parent,
-            ):
-                raise ValueError(
-                    f"Audit source roots must not overlap protected storage ({label})"
-                )
-
-
 class RiftXConfig(_ConfigModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
@@ -1014,191 +512,13 @@ class RiftXConfig(_ConfigModel):
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     audit: AuditConfig = Field(default_factory=AuditConfig)
 
-    @model_validator(mode="after")
-    def validate_audit_path_isolation(self) -> RiftXConfig:
-        validate_audit_storage_isolation(
-            audit=self.audit,
-            workspace_root=self.workspace.root,
-            runner_state_path=self.runner.state_path,
-            runner_credential_path=self.runner.credential_path,
-            models_secrets_path=self.models.secrets_path,
-            local_principal_path=self.security.local_principal_path,
-            database_url=self.database.url,
-            temporal_tls_server_root_ca_path=self.temporal.tls_server_root_ca_path,
-            temporal_tls_client_cert_path=self.temporal.tls_client_cert_path,
-            temporal_tls_client_private_key_path=self.temporal.tls_client_private_key_path,
-        )
-        return self
-
 
 _AUDIT_ENVIRONMENT_PATHS: dict[str, tuple[str, ...]] = {
     "RIFTX_AUDIT_ENABLED": ("audit", "enabled"),
-    "RIFTX_AUDIT_NODE_MODE": ("audit", "node_mode"),
-    "RIFTX_AUDIT_ALLOWED_NODE_IDS": ("audit", "allowed_node_ids"),
-    "RIFTX_AUDIT_PREFLIGHT_TOKEN_KEY_ID": ("audit", "preflight_token_key_id"),
-    "RIFTX_AUDIT_PREFLIGHT_TOKEN_KEY": ("audit", "preflight_token_key"),
-    "RIFTX_AUDIT_SOURCE_ROOTS": ("audit", "source_roots"),
     "RIFTX_AUDIT_SNAPSHOT_ROOT": ("audit", "snapshot_root"),
-    "RIFTX_AUDIT_TEMP_ROOT": ("audit", "temp_root"),
-    "RIFTX_AUDIT_FIX_ROOT": ("audit", "fix_root"),
-    "RIFTX_AUDIT_DEFAULT_MODE": ("audit", "default_mode"),
-    "RIFTX_AUDIT_DEFAULT_ANALYSIS_PROFILE": (
-        "audit",
-        "default_analysis_profile",
-    ),
-    "RIFTX_AUDIT_MODEL_EGRESS_DEFAULT_MODE": (
-        "audit",
-        "model_egress",
-        "default_mode",
-    ),
-    "RIFTX_AUDIT_MODEL_EGRESS_MAX_BYTES_PER_CALL": (
-        "audit",
-        "model_egress",
-        "max_bytes_per_call",
-    ),
-    "RIFTX_AUDIT_MODEL_EGRESS_MAX_BYTES_PER_AUDIT": (
-        "audit",
-        "model_egress",
-        "max_bytes_per_audit",
-    ),
-    "RIFTX_AUDIT_MODEL_EGRESS_ALLOW_REMOTE_ORIGINS": (
-        "audit",
-        "model_egress",
-        "allow_remote_origins",
-    ),
     "RIFTX_AUDIT_MAX_REPOSITORY_BYTES": ("audit", "max_repository_bytes"),
     "RIFTX_AUDIT_MAX_FILE_BYTES": ("audit", "max_file_bytes"),
-    "RIFTX_AUDIT_MAX_FILES": ("audit", "max_files"),
-    "RIFTX_AUDIT_MAX_PATH_BYTES": ("audit", "max_path_bytes"),
-    "RIFTX_AUDIT_MAX_DIRECTORY_DEPTH": ("audit", "max_directory_depth"),
-    "RIFTX_AUDIT_MAX_ARTIFACT_BYTES": ("audit", "max_artifact_bytes"),
-    "RIFTX_AUDIT_MAX_TOTAL_ARTIFACT_BYTES": (
-        "audit",
-        "max_total_artifact_bytes",
-    ),
-    "RIFTX_AUDIT_BUDGET_MAX_WALL_SECONDS": (
-        "audit",
-        "budget",
-        "max_wall_seconds",
-    ),
-    "RIFTX_AUDIT_BUDGET_MAX_MODEL_CALLS": (
-        "audit",
-        "budget",
-        "max_model_calls",
-    ),
-    "RIFTX_AUDIT_BUDGET_MAX_INPUT_TOKENS": (
-        "audit",
-        "budget",
-        "max_input_tokens",
-    ),
-    "RIFTX_AUDIT_BUDGET_MAX_OUTPUT_TOKENS": (
-        "audit",
-        "budget",
-        "max_output_tokens",
-    ),
-    "RIFTX_AUDIT_BUDGET_MAX_WORKER_JOBS": (
-        "audit",
-        "budget",
-        "max_worker_jobs",
-    ),
-    "RIFTX_AUDIT_BUDGET_MAX_CANDIDATES": (
-        "audit",
-        "budget",
-        "max_candidates",
-    ),
-    "RIFTX_AUDIT_SOURCE_INGEST_BACKEND_ID": (
-        "audit",
-        "source_ingest",
-        "backend_id",
-    ),
-    "RIFTX_AUDIT_SOURCE_INGEST_RUNTIME": (
-        "audit",
-        "source_ingest",
-        "runtime",
-    ),
-    "RIFTX_AUDIT_SOURCE_INGEST_IMAGE_DIGEST": (
-        "audit",
-        "source_ingest",
-        "image_digest",
-    ),
-    "RIFTX_AUDIT_SOURCE_INGEST_POLICY_VERSION": (
-        "audit",
-        "source_ingest",
-        "policy_version",
-    ),
-    "RIFTX_AUDIT_SOURCE_INGEST_MAX_WALL_SECONDS": (
-        "audit",
-        "source_ingest",
-        "max_wall_seconds",
-    ),
-    "RIFTX_AUDIT_SOURCE_INGEST_MAX_MEMORY_MIB": (
-        "audit",
-        "source_ingest",
-        "max_memory_mib",
-    ),
-    "RIFTX_AUDIT_SOURCE_INGEST_MAX_PIDS": (
-        "audit",
-        "source_ingest",
-        "max_pids",
-    ),
-    "RIFTX_AUDIT_SOURCE_INGEST_MAX_RESULT_BYTES": (
-        "audit",
-        "source_ingest",
-        "max_result_bytes",
-    ),
-    "RIFTX_AUDIT_SOURCE_INGEST_MAX_OUTPUT_BYTES": (
-        "audit",
-        "source_ingest",
-        "max_output_bytes",
-    ),
-    "RIFTX_AUDIT_SOURCE_INGEST_LEASE_SECONDS": (
-        "audit",
-        "source_ingest",
-        "lease_seconds",
-    ),
-    "RIFTX_AUDIT_SOURCE_INGEST_JOB_TTL_SECONDS": (
-        "audit",
-        "source_ingest",
-        "job_ttl_seconds",
-    ),
-    "RIFTX_AUDIT_VALIDATION_DEFAULT_POLICY": (
-        "audit",
-        "validation",
-        "default_policy",
-    ),
-    "RIFTX_AUDIT_VALIDATION_REQUIRE_SANDBOX": (
-        "audit",
-        "validation",
-        "require_sandbox",
-    ),
-    "RIFTX_AUDIT_VALIDATION_DEFAULT_NETWORK": (
-        "audit",
-        "validation",
-        "default_network",
-    ),
-    "RIFTX_AUDIT_VALIDATION_MAX_WALL_SECONDS": (
-        "audit",
-        "validation",
-        "max_wall_seconds",
-    ),
-    "RIFTX_AUDIT_VALIDATION_MAX_MEMORY_MIB": (
-        "audit",
-        "validation",
-        "max_memory_mib",
-    ),
-    "RIFTX_AUDIT_VALIDATION_MAX_PIDS": (
-        "audit",
-        "validation",
-        "max_pids",
-    ),
 }
-_AUDIT_JSON_LIST_ENVIRONMENT = frozenset(
-    {
-        "RIFTX_AUDIT_ALLOWED_NODE_IDS",
-        "RIFTX_AUDIT_SOURCE_ROOTS",
-        "RIFTX_AUDIT_MODEL_EGRESS_ALLOW_REMOTE_ORIGINS",
-    }
-)
 
 
 _ENVIRONMENT_PATHS: dict[str, tuple[str, ...]] = {
@@ -1358,16 +678,6 @@ def _read_yaml_mapping(path: Path) -> dict[str, Any]:
 
 
 def _environment_layer(environment: Mapping[str, str]) -> dict[str, Any]:
-    unknown_audit_names = sorted(
-        name
-        for name in environment
-        if name.startswith("RIFTX_AUDIT_") and name not in _AUDIT_ENVIRONMENT_PATHS
-    )
-    if unknown_audit_names:
-        raise RiftXConfigError(
-            "unsupported Audit environment variable(s): "
-            + ", ".join(unknown_audit_names)
-        )
     layer: dict[str, Any] = {}
     for name, path in _ENVIRONMENT_PATHS.items():
         raw = environment.get(name)
@@ -1378,26 +688,8 @@ def _environment_layer(environment: Mapping[str, str]) -> dict[str, Any]:
             value = [item.strip() for item in raw.split(",") if item.strip()]
         elif name == "RIFTX_LOCAL_OPERATOR_CAPABILITIES":
             value = [item.strip() for item in raw.split(",") if item.strip()]
-        elif name in _AUDIT_JSON_LIST_ENVIRONMENT:
-            value = _parse_audit_json_array(raw, name=name)
         _set_nested(layer, path, value)
     return layer
-
-
-def _parse_audit_json_array(raw: str, *, name: str) -> list[str]:
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise RiftXConfigError(f"{name} must be a JSON array of strings") from exc
-    if (
-        not isinstance(value, list)
-        or any(
-            not isinstance(item, str) or not item or item != item.strip()
-            for item in value
-        )
-    ):
-        raise RiftXConfigError(f"{name} must be a JSON array of non-empty strings")
-    return value
 
 
 def _set_nested(target: dict[str, Any], path: tuple[str, ...], value: object) -> None:

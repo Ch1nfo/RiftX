@@ -65,51 +65,6 @@ execution_output:
 workspace:
   root: .riftx/workspaces
 
-# RiftX Code Audit remains an admission-disabled, side-effect-free feature during
-# development. Source roots are deployment authorization, not a scan request;
-# an empty list is deny-all and never falls back to the current directory.
-audit:
-  enabled: false
-  # RiftX 3.0 is deliberately same-node only.
-  node_mode: local_same_node
-  allowed_node_ids: [local]
-  # The signing key itself must come from RIFTX_AUDIT_PREFLIGHT_TOKEN_KEY as
-  # canonical unpadded base64url for exactly 32 random bytes; never store it here.
-  preflight_token_key_id: primary
-  source_roots: []
-  # Keep every Audit storage root absolute, persistent, and outside source_roots.
-  snapshot_root: /var/lib/riftx/audit/snapshots
-  temp_root: /var/lib/riftx/audit/tmp
-  fix_root: /var/lib/riftx/audit/fixes
-  default_mode: standard
-  default_analysis_profile: deterministic
-  model_egress:
-    default_mode: local_only
-    max_bytes_per_call: 131072
-    max_bytes_per_audit: 16777216
-    allow_remote_origins: []
-  max_repository_bytes: 2147483648
-  max_file_bytes: 5242880
-  max_files: 200000
-  max_path_bytes: 4096
-  max_directory_depth: 256
-  max_artifact_bytes: 67108864
-  max_total_artifact_bytes: 268435456
-  budget:
-    max_wall_seconds: 7200
-    max_model_calls: 100
-    max_input_tokens: 2000000
-    max_output_tokens: 200000
-    max_worker_jobs: 64
-    max_candidates: 1000
-  validation:
-    default_policy: static_only
-    require_sandbox: true
-    default_network: none
-    max_wall_seconds: 900
-    max_memory_mib: 2048
-    max_pids: 128
-
 approval:
   default_mode: balanced
 

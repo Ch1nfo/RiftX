@@ -80,7 +80,6 @@ DOCTOR_CHECK_IDS = (
     "skills",
     "mcp",
     "lsp",
-    "scanner",
     "storage_permissions",
     "pack_integrity",
     "database_migrations",
@@ -161,17 +160,6 @@ def run_local_doctor(
         _check_skills(config, root, official_packs, pack_error),
         _check_mcp(config, env),
         _check_lsp(config, env),
-        DoctorCheck(
-            id="scanner",
-            status=DoctorStatus.DEGRADED,
-            detail=(
-                "Built-in static audit is available; optional Scanner adapters "
-                "are not configured."
-            ),
-            remediation=(
-                "Use built-in static analysis or install a supported Scanner adapter later."
-            ),
-        ),
         _check_storage(config, root),
         _check_pack_integrity(config, root, catalog, official_packs, pack_error),
         _check_database(config, root),
@@ -227,13 +215,8 @@ def apply_local_doctor_fixes(
     if "storage_permissions" in fixable:
         targets.append(("storage_permissions", _resolve(config.workspace.root, root)))
         if config.audit.enabled:
-            targets.extend(
-                ("storage_permissions", _resolve(path, root))
-                for path in (
-                    config.audit.snapshot_root,
-                    config.audit.temp_root,
-                    config.audit.fix_root,
-                )
+            targets.append(
+                ("storage_permissions", _resolve(config.audit.snapshot_root, root))
             )
 
     try:
@@ -850,14 +833,7 @@ def _check_lsp(config: RiftXConfig, environment: Mapping[str, str]) -> DoctorChe
 def _check_storage(config: RiftXConfig, cwd: Path) -> DoctorCheck:
     paths = [("workspace.root", _resolve(config.workspace.root, cwd))]
     if config.audit.enabled:
-        paths.extend(
-            (label, path)
-            for label, path in (
-                ("audit.snapshot_root", config.audit.snapshot_root),
-                ("audit.temp_root", config.audit.temp_root),
-                ("audit.fix_root", config.audit.fix_root),
-            )
-        )
+        paths.append(("audit.snapshot_root", config.audit.snapshot_root))
     missing: list[str] = []
     invalid: list[str] = []
     for label, path in paths:

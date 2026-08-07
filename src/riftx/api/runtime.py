@@ -46,9 +46,7 @@ from riftx.browser.service import BrowserApplicationService
 from riftx.config import (
     AuditConfig,
     RiftXConfig,
-    RiftXConfigError,
     load_riftx_config,
-    validate_audit_storage_isolation,
 )
 from riftx.connectors.service import ConnectorApplicationService
 from riftx.context import ContextApplicationService
@@ -712,7 +710,6 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         artifact_repository=artifact_repository,
         event_repository=event_repository,
         paths=runner_paths,
-        max_artifact_bytes=settings.audit.max_artifact_bytes,
     )
     browser_service = BrowserApplicationService(
         runs=run_repository,
@@ -913,32 +910,11 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
 
 
 def _prepare_local_paths(settings: APISettings) -> None:
-    _validate_audit_settings_path_isolation(settings)
     settings.workspace_root.mkdir(parents=True, exist_ok=True)
     settings.runner_state_path.mkdir(parents=True, exist_ok=True)
     if settings.audit.enabled:
         settings.audit.snapshot_root.mkdir(parents=True, exist_ok=True)
-        settings.audit.temp_root.mkdir(parents=True, exist_ok=True)
     if settings.database_url.startswith("sqlite+aiosqlite:///"):
         raw_path = settings.database_url.removeprefix("sqlite+aiosqlite:///")
         if raw_path and raw_path != ":memory:":
             Path(raw_path).expanduser().parent.mkdir(parents=True, exist_ok=True)
-    _validate_audit_settings_path_isolation(settings)
-
-
-def _validate_audit_settings_path_isolation(settings: APISettings) -> None:
-    try:
-        validate_audit_storage_isolation(
-            audit=settings.audit,
-            workspace_root=settings.workspace_root,
-            runner_state_path=settings.runner_state_path,
-            runner_credential_path=settings.runner_credential_path,
-            models_secrets_path=settings.model_secrets_path,
-            local_principal_path=settings.local_principal_path,
-            database_url=settings.database_url,
-            temporal_tls_server_root_ca_path=settings.temporal_tls_server_root_ca_path,
-            temporal_tls_client_cert_path=settings.temporal_tls_client_cert_path,
-            temporal_tls_client_private_key_path=(settings.temporal_tls_client_private_key_path),
-        )
-    except ValueError as exc:
-        raise RiftXConfigError(f"invalid Audit path isolation: {exc}") from None

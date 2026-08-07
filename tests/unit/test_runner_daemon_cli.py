@@ -19,6 +19,7 @@ def test_standalone_runner_help_omits_registration_token_option() -> None:
 
     assert result.exit_code == 0, result.output
     assert "--registration-t" not in result.output
+    assert "--config" not in result.output
 
 
 def test_standalone_runner_rejects_registration_token_argv_without_echo(
@@ -74,27 +75,4 @@ def test_standalone_runner_reads_exact_bootstrap_token_from_environment(
     assert result.exit_code == 0, result.output
     assert len(calls) == 1
     assert calls[0].registration_token == bootstrap_token
-    assert calls[0].audit.enabled is False
     assert bootstrap_token not in repr(calls[0])
-
-
-def test_standalone_runner_loads_audit_from_explicit_config(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[daemon_module.RunnerDaemonConfig] = []
-    config_path = tmp_path / "riftx.yaml"
-    config_path.write_text("audit:\n  default_mode: diff\n", encoding="utf-8")
-
-    async def fake_run(config: daemon_module.RunnerDaemonConfig) -> None:
-        calls.append(config)
-
-    monkeypatch.setattr(daemon_module, "run_runner_daemon", fake_run)
-    result = runner.invoke(
-        daemon_module.app,
-        ["serve", "--config", str(config_path)],
-    )
-
-    assert result.exit_code == 0, result.output
-    assert len(calls) == 1
-    assert calls[0].audit.default_mode == "diff"

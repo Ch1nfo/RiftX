@@ -11,7 +11,7 @@ import yaml
 
 import riftx.doctor as doctor_module
 from riftx.application.errors import RepositoryConflictError
-from riftx.config import AuditSourceIngestConfig, RiftXConfig
+from riftx.config import RiftXConfig
 from riftx.database_maintenance import DatabaseRepairResult
 from riftx.doctor import (
     DOCTOR_CHECK_IDS,
@@ -23,6 +23,22 @@ from riftx.doctor import (
     run_local_doctor,
 )
 from riftx.packs import OfficialPackCatalog
+
+
+def _legacy_source_ingest() -> dict[str, object]:
+    return {
+        "backend_id": "linux_container",
+        "runtime": "docker",
+        "image_digest": None,
+        "policy_version": "riftx.audit-source-ingest-policy/v1",
+        "max_wall_seconds": 120,
+        "max_memory_mib": 512,
+        "max_pids": 32,
+        "max_result_bytes": 262_144,
+        "max_output_bytes": 1_048_576,
+        "lease_seconds": 120,
+        "job_ttl_seconds": 3_600,
+    }
 
 
 def _write_runtime_configs(root: Path) -> RiftXConfig:
@@ -92,7 +108,6 @@ def test_doctor_exposes_all_required_checks_and_degrades_optional_components(
         "skills",
         "mcp",
         "lsp",
-        "scanner",
         "storage_permissions",
         "pack_integrity",
         "database_migrations",
@@ -267,7 +282,7 @@ def test_doctor_repairs_exact_legacy_runtime_config_and_rechecks_ready(
             {
                 "server": {"port": 9000},
                 "audit": {
-                    "source_ingest": AuditSourceIngestConfig().model_dump(mode="json"),
+                    "source_ingest": _legacy_source_ingest(),
                     "validation": {"default_policy": "static_only"},
                 },
             },
@@ -310,7 +325,7 @@ def test_doctor_requires_manual_review_for_customized_legacy_config(
     tmp_path: Path,
 ) -> None:
     runtime_config_path = tmp_path / "riftx.yaml"
-    source_ingest = AuditSourceIngestConfig().model_dump(mode="json")
+    source_ingest = _legacy_source_ingest()
     source_ingest["max_pids"] = 16
     runtime_config_path.write_text(
         yaml.safe_dump({"audit": {"source_ingest": source_ingest}}, sort_keys=False),

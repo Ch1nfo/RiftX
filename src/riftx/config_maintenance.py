@@ -13,7 +13,6 @@ from uuid import uuid4
 import yaml
 from yaml.nodes import MappingNode, ScalarNode
 
-from riftx.config import AuditSourceIngestConfig
 from riftx.local_fs import OwnerDirectoryError, ensure_owner_directories
 
 _MAX_CONFIG_BYTES = 1_048_576
@@ -21,6 +20,19 @@ _LEGACY_COMMENTS = (
     "  # Real repository Preflight remains unavailable until an operator supplies\n",
     "  # a reviewed, immutable image digest for the local Linux SourceIngest worker.\n",
 )
+_LEGACY_SOURCE_INGEST_DEFAULTS: dict[str, object] = {
+    "backend_id": "linux_container",
+    "runtime": "docker",
+    "image_digest": None,
+    "policy_version": "riftx.audit-source-ingest-policy/v1",
+    "max_wall_seconds": 120,
+    "max_memory_mib": 512,
+    "max_pids": 32,
+    "max_result_bytes": 262_144,
+    "max_output_bytes": 1_048_576,
+    "lease_seconds": 120,
+    "job_ttl_seconds": 3_600,
+}
 
 
 class RuntimeConfigMigrationStatus(StrEnum):
@@ -94,8 +106,7 @@ def inspect_runtime_config_migration(path: Path) -> RuntimeConfigMigrationState:
             detail="No retired audit.source_ingest configuration is present.",
             fixable=False,
         )
-    expected = AuditSourceIngestConfig().model_dump(mode="python")
-    if audit["source_ingest"] != expected:
+    if audit["source_ingest"] != _LEGACY_SOURCE_INGEST_DEFAULTS:
         return RuntimeConfigMigrationState(
             path=normalized,
             status=RuntimeConfigMigrationStatus.MANUAL,
@@ -191,10 +202,9 @@ def _remove_legacy_source_ingest(original: bytes) -> bytes:
     if not isinstance(payload, dict) or not isinstance(document, MappingNode):
         raise ValueError("runtime configuration root must be a mapping")
     audit_payload = payload.get("audit")
-    expected_source_ingest = AuditSourceIngestConfig().model_dump(mode="python")
     if (
         not isinstance(audit_payload, dict)
-        or audit_payload.get("source_ingest") != expected_source_ingest
+        or audit_payload.get("source_ingest") != _LEGACY_SOURCE_INGEST_DEFAULTS
     ):
         raise ValueError("audit.source_ingest requires manual migration")
     audit_node = _mapping_value(document, "audit")

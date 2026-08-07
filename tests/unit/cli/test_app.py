@@ -2156,66 +2156,6 @@ def test_runner_command_applies_cli_overrides_and_environment_bootstrap_token(
         )
     ]
 
-
-@pytest.mark.parametrize("option", ["--state-path", "--credential-path"])
-def test_runner_path_override_is_rejected_when_audit_sources_are_configured(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    option: str,
-) -> None:
-    calls: list[runner_daemon_module.RunnerDaemonConfig] = []
-
-    async def fake_run(config: runner_daemon_module.RunnerDaemonConfig) -> None:
-        calls.append(config)
-
-    monkeypatch.setattr(runner_daemon_module, "run_runner_daemon", fake_run)
-    source = tmp_path / "source"
-    source.mkdir()
-    state = tmp_path / "state"
-    state.mkdir()
-    config_path = tmp_path / "riftx.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "database": {
-                    "url": f"sqlite+aiosqlite:///{state / 'riftx.db'}",
-                },
-                "workspace": {"root": str(state / "workspaces")},
-                "runner": {
-                    "state_path": str(state / "runner"),
-                    "credential_path": str(state / "runner-credentials.json"),
-                },
-                "models": {"secrets_path": str(state / "models.json")},
-                "security": {"local_principal_path": str(state / "principal.json")},
-                "audit": {
-                    "source_roots": [str(source)],
-                    "snapshot_root": str(state / "snapshots"),
-                    "temp_root": str(state / "tmp"),
-                    "fix_root": str(state / "fixes"),
-                },
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-
-    result = runner.invoke(
-        cli_module.app,
-        [
-            "--config",
-            str(config_path),
-            "runner",
-            option,
-            str(source / "forbidden-storage"),
-        ],
-    )
-
-    assert result.exit_code == 2
-    assert "deployment-owned when Audit source roots are configured" in result.output
-    assert str(source) not in result.output
-    assert calls == []
-
-
 def test_web_command_prints_and_optionally_opens_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
