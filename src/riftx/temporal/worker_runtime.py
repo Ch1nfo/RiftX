@@ -1173,6 +1173,7 @@ async def build_temporal_worker(
             evidence_repository=evidence_ledger_repository,
             reasoning_graph_repository=reasoning_graph_repository,
             task_graph_repository=task_graph_repository,
+            working_memory_repository=working_memory_repository,
             pentest_status_reader=SQLAlchemyPentestStatusReader(
                 database.session_factory
             ),

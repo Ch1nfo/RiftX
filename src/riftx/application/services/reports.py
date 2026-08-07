@@ -31,6 +31,7 @@ from riftx.application.ports import (
     RunEventRepository,
     RunRepository,
 )
+from riftx.context.working_memory import AttemptRecord, WorkingMemoryRepository
 from riftx.domain import (
     ArtifactContentTrust,
     Engagement,
@@ -262,6 +263,15 @@ class ReportReasoningEdge(BaseModel):
     evidence_ids: list[str] = Field(default_factory=list)
 
 
+class ReportAttemptSummary(BaseModel):
+    id: str
+    action_signature: str
+    tool_id: str
+    result_status: str
+    result_summary: str
+    retryable: bool
+
+
 class ReportTaskSummary(BaseModel):
     id: str
     sequence: int
@@ -283,6 +293,7 @@ class ReportPentestSource(BaseModel):
     evidence: list[ReportLedgerEvidence] = Field(default_factory=list)
     reasoning_nodes: list[ReportReasoningNode] = Field(default_factory=list)
     reasoning_edges: list[ReportReasoningEdge] = Field(default_factory=list)
+    attempts: list[ReportAttemptSummary] = Field(default_factory=list)
     tasks: list[ReportTaskSummary] = Field(default_factory=list)
 
 
@@ -366,6 +377,7 @@ class ReportApplicationService:
         evidence_repository: EvidenceLedgerRepository | None = None,
         reasoning_graph_repository: ReasoningGraphRepository | None = None,
         task_graph_repository: TaskGraphRepository | None = None,
+        working_memory_repository: WorkingMemoryRepository | None = None,
         pentest_status_reader: PentestStatusReader | None = None,
         composer: ReportComposer | None = None,
     ) -> None:
@@ -380,6 +392,7 @@ class ReportApplicationService:
         self._evidence_repository = evidence_repository
         self._reasoning_graph_repository = reasoning_graph_repository
         self._task_graph_repository = task_graph_repository
+        self._working_memory_repository = working_memory_repository
         self._pentest_status_reader = pentest_status_reader
         self._composer = composer or DeterministicReportComposer()
 
@@ -579,6 +592,11 @@ class ReportApplicationService:
         evidence = await self._all_evidence(run.id)
         reasoning_graph = await self._reasoning_graph_repository.get(run.id)
         task_graph = await self._task_graph_repository.get(run.id)
+        working_memory = (
+            await self._working_memory_repository.get_for_run(run.id)
+            if self._working_memory_repository is not None
+            else None
+        )
         start = run.started_at or run.created_at
         end = run.finished_at or utc_now()
         usage = snapshot.usage
@@ -653,6 +671,11 @@ class ReportApplicationService:
                     for item in reasoning_graph.edges
                 ]
                 if reasoning_graph is not None
+                else []
+            ),
+            attempts=(
+                [_attempt_for_report(item) for item in working_memory.attempts]
+                if working_memory is not None
                 else []
             ),
             tasks=(
@@ -847,6 +870,17 @@ def _task_for_report(task: Task) -> ReportTaskSummary:
     )
 
 
+def _attempt_for_report(attempt: AttemptRecord) -> ReportAttemptSummary:
+    return ReportAttemptSummary(
+        id=attempt.id,
+        action_signature=_truncate(attempt.action_signature, _MAX_SUMMARY_LENGTH),
+        tool_id=_truncate(attempt.tool_id, _MAX_SUMMARY_LENGTH),
+        result_status=attempt.result_status.value,
+        result_summary=_truncate(attempt.result_summary, _MAX_SUMMARY_LENGTH),
+        retryable=attempt.retryable,
+    )
+
+
 def render_report(report: StructuredReport, report_format: ReportFormat) -> tuple[str, str, str]:
     if report_format is ReportFormat.MARKDOWN:
         return _render_markdown(report), "report.md", "text/markdown"
@@ -938,6 +972,29 @@ def _render_markdown(report: StructuredReport) -> str:
             lines.extend(["#### Impact", "", finding.impact, ""])
         if finding.recommendation:
             lines.extend(["#### Recommendation", "", finding.recommendation, ""])
+
+    if source.pentest is not None:
+        lines.extend(["## Pentest Evidence Chain", "", "### Reasoning", ""])
+        if not source.pentest.reasoning_nodes:
+            lines.extend(["No reasoning nodes were recorded.", ""])
+        else:
+            for node in source.pentest.reasoning_nodes:
+                evidence_refs = ", ".join(f"`{item}`" for item in node.evidence_ids)
+                suffix = f" — evidence: {evidence_refs}" if evidence_refs else ""
+                lines.append(
+                    f"- `{node.kind}/{node.status}` {node.claim}{suffix}"
+                )
+            lines.append("")
+        lines.extend(["### Attempts", ""])
+        if not source.pentest.attempts:
+            lines.extend(["No structured attempts were recorded.", ""])
+        else:
+            for attempt in source.pentest.attempts:
+                lines.append(
+                    f"- `{attempt.result_status}` {attempt.action_signature} "
+                    f"via `{attempt.tool_id}` — {attempt.result_summary}"
+                )
+            lines.append("")
 
     lines.extend(["## Artifact Index", ""])
     if not source.artifacts:

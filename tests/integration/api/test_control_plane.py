@@ -195,6 +195,9 @@ from riftx.persistence.target_http_repositories import (
     SQLAlchemyTrafficMetadataReadRepository,
 )
 from riftx.persistence.workflow_signals import WorkflowSignalIntentRecord
+from riftx.persistence.working_memory_repositories import (
+    SQLAlchemyWorkingMemoryRepository,
+)
 from riftx.runner import (
     ExecutionLaunchRequest,
     ProcessSupervisor,
@@ -998,6 +1001,9 @@ tools:
                     database.session_factory
                 ),
                 task_graph_repository=SQLAlchemyTaskGraphRepository(
+                    database.session_factory
+                ),
+                working_memory_repository=SQLAlchemyWorkingMemoryRepository(
                     database.session_factory
                 ),
                 pentest_status_reader=SQLAlchemyPentestStatusReader(

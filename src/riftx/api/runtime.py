@@ -128,6 +128,9 @@ from riftx.persistence.target_http_repositories import (
 from riftx.persistence.workflow_signals import (
     SQLAlchemyWorkflowSignalIntentRepository,
 )
+from riftx.persistence.working_memory_repositories import (
+    SQLAlchemyWorkingMemoryRepository,
+)
 from riftx.runner import (
     ExecutionRunner,
     NodeBrowserRouter,
@@ -1118,6 +1121,9 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
             evidence_repository=evidence_ledger_repository,
             reasoning_graph_repository=reasoning_graph_repository,
             task_graph_repository=task_graph_repository,
+            working_memory_repository=SQLAlchemyWorkingMemoryRepository(
+                database.session_factory
+            ),
             pentest_status_reader=pentest_status_reader,
             report_repository=report_repository,
             event_repository=event_repository,
