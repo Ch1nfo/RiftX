@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -11,7 +13,10 @@ import yaml
 from rich.console import Console
 from typer.testing import CliRunner
 
+import riftx.capability_management as capability_management_module
 import riftx.cli.app as cli_module
+import riftx.runner.daemon as runner_daemon_module
+import riftx.temporal.worker_runtime as worker_runtime_module
 from riftx.capability_management import (
     CapabilityInventoryItem,
     LocalCapabilityState,
@@ -47,6 +52,27 @@ def test_root_help_prioritizes_the_pentest_workflow() -> None:
         assert command in result.output
     assert "interactive   Enter the interactive RiftX session" not in result.output
     assert "Experimental frozen local code-audit surface" in result.output
+
+
+def test_cli_import_does_not_eagerly_load_service_runtimes() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; import riftx.cli.app; "
+                "blocked=('riftx.api', 'riftx.runner.daemon', "
+                "'riftx.temporal.worker_runtime', 'riftx.demo', "
+                "'riftx.capability_management'); "
+                "assert not [name for name in blocked if name in sys.modules]"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 class FakeAPIClient:
@@ -725,7 +751,7 @@ def test_local_capability_inventory_commands_are_read_only(
         issues=(),
     )
     monkeypatch.setattr(
-        cli_module,
+        capability_management_module,
         "inspect_local_capability_state",
         lambda *_args, **_kwargs: state,
     )
@@ -748,7 +774,7 @@ def test_capability_verify_fails_closed_on_persistence_drift(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        cli_module,
+        capability_management_module,
         "inspect_local_capability_state",
         lambda *_args, **_kwargs: LocalCapabilityState(
             capabilities=(),
@@ -2112,7 +2138,7 @@ def test_worker_command_builds_and_runs_runtime(monkeypatch: pytest.MonkeyPatch)
         calls.append(config)
         return FakeRuntime()
 
-    monkeypatch.setattr(cli_module, "build_temporal_worker", fake_build)
+    monkeypatch.setattr(worker_runtime_module, "build_temporal_worker", fake_build)
 
     result = runner.invoke(cli_module.app, ["worker"])
 
@@ -2135,13 +2161,13 @@ def test_runner_command_help_omits_registration_token_option() -> None:
 def test_runner_command_rejects_registration_token_argv_without_echo(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[cli_module.RunnerDaemonConfig] = []
+    calls: list[runner_daemon_module.RunnerDaemonConfig] = []
     canary = "shared-cli-bootstrap-canary-never-log-0001"
 
-    async def fake_run(config: cli_module.RunnerDaemonConfig) -> None:
+    async def fake_run(config: runner_daemon_module.RunnerDaemonConfig) -> None:
         calls.append(config)
 
-    monkeypatch.setattr(cli_module, "run_runner_daemon", fake_run)
+    monkeypatch.setattr(runner_daemon_module, "run_runner_daemon", fake_run)
     result = runner.invoke(
         cli_module.app,
         ["runner", "--registration-token", canary],
@@ -2157,13 +2183,13 @@ def test_runner_command_applies_cli_overrides_and_environment_bootstrap_token(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[cli_module.RunnerDaemonConfig] = []
+    calls: list[runner_daemon_module.RunnerDaemonConfig] = []
     bootstrap_token = "test-only-runner-bootstrap-token-0004"
 
-    async def fake_run(config: cli_module.RunnerDaemonConfig) -> None:
+    async def fake_run(config: runner_daemon_module.RunnerDaemonConfig) -> None:
         calls.append(config)
 
-    monkeypatch.setattr(cli_module, "run_runner_daemon", fake_run)
+    monkeypatch.setattr(runner_daemon_module, "run_runner_daemon", fake_run)
     state_path = tmp_path / "runner-state"
     credential_path = tmp_path / "secrets" / "runner-credentials.json"
 
@@ -2187,7 +2213,7 @@ def test_runner_command_applies_cli_overrides_and_environment_bootstrap_token(
 
     assert result.exit_code == 0, result.output
     assert calls == [
-        cli_module.RunnerDaemonConfig(
+        runner_daemon_module.RunnerDaemonConfig(
             server_url="http://control.test:8787",
             node_id="node-7",
             name="Runner Seven",
@@ -2204,12 +2230,12 @@ def test_runner_path_override_is_rejected_when_audit_sources_are_configured(
     monkeypatch: pytest.MonkeyPatch,
     option: str,
 ) -> None:
-    calls: list[cli_module.RunnerDaemonConfig] = []
+    calls: list[runner_daemon_module.RunnerDaemonConfig] = []
 
-    async def fake_run(config: cli_module.RunnerDaemonConfig) -> None:
+    async def fake_run(config: runner_daemon_module.RunnerDaemonConfig) -> None:
         calls.append(config)
 
-    monkeypatch.setattr(cli_module, "run_runner_daemon", fake_run)
+    monkeypatch.setattr(runner_daemon_module, "run_runner_daemon", fake_run)
     source = tmp_path / "source"
     source.mkdir()
     state = tmp_path / "state"

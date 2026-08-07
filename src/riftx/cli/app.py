@@ -13,7 +13,7 @@ import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 from uuid import uuid4
 
 import httpx
@@ -24,25 +24,12 @@ from rich.console import Console
 from rich.table import Table
 from typer.core import TyperGroup
 
-from riftx.api import APISettings, create_app
-from riftx.capability_management import (
-    CapabilityManagementError,
-    LocalCapabilityState,
-    activate_operator_skill,
-    disable_operator_skill,
-    inspect_local_capability_state,
-    inspect_operator_skills,
-    register_operator_skill,
-    rollback_operator_skill,
-    validate_operator_skills,
-)
 from riftx.config import (
     RiftXConfig,
     RiftXConfigError,
     default_user_config_path,
     load_riftx_config,
 )
-from riftx.demo import DemoError, run_code_audit_demo, run_pentest_demo
 from riftx.doctor import (
     DoctorFixError,
     DoctorReport,
@@ -66,9 +53,7 @@ from riftx.onboarding import (
     initialize_local_onboarding,
     validate_existing_onboarding,
 )
-from riftx.runner.daemon import RunnerDaemonConfig, run_runner_daemon
 from riftx.security import DeploymentProfileError, is_loopback_host
-from riftx.temporal.worker_runtime import build_temporal_worker
 
 from .client import APIClient, RiftXAPIError
 from .i18n import Language, normalize_language, set_language, tr
@@ -99,6 +84,9 @@ from .render import (
     render_tools,
 )
 from .terminal import attach_terminal
+
+if TYPE_CHECKING:
+    from riftx.capability_management import LocalCapabilityState
 
 console = Console()
 
@@ -481,6 +469,8 @@ def serve(
 ) -> None:
     """Start the shared FastAPI Control Plane."""
 
+    from riftx.api import APISettings, create_app
+
     state = _state(context)
     server = state.config.server.model_copy(
         update={
@@ -543,6 +533,8 @@ def runner_daemon(
 ) -> None:
     """Start the outbound Runner daemon using the shared RiftX configuration."""
 
+    from riftx.runner.daemon import RunnerDaemonConfig, run_runner_daemon
+
     config = _state(context).config
     if config.audit.source_roots and (state_path is not None or credential_path is not None):
         raise typer.BadParameter(
@@ -590,6 +582,8 @@ def web(
 def demo_pentest(context: typer.Context) -> None:
     """Play an offline authorized-pentest transcript without touching a target."""
 
+    from riftx.demo import DemoError, run_pentest_demo
+
     try:
         result = run_pentest_demo(_state(context).config)
     except DemoError as exc:
@@ -616,6 +610,8 @@ def demo_pentest(context: typer.Context) -> None:
 @demo_app.command("code-audit")
 def demo_code_audit() -> None:
     """Run real built-in static detectors over a bundled safe fixture."""
+
+    from riftx.demo import DemoError, run_code_audit_demo
 
     try:
         result = run_code_audit_demo()
@@ -701,9 +697,11 @@ def validate_skills(
 ) -> None:
     """Validate Operator Skill packages without changing persistence."""
 
+    from riftx import capability_management
+
     documents = _operator_skill_action(
         context,
-        lambda config: validate_operator_skills(config, skill_id),
+        lambda config: capability_management.validate_operator_skills(config, skill_id),
     )
     console.print(f"Validated {len(documents)} Operator Skill package(s).")
     for document in documents:
@@ -720,9 +718,11 @@ def register_skill(
 ) -> None:
     """Register the current Operator Skill package as approved."""
 
+    from riftx import capability_management
+
     version = _operator_skill_action(
         context,
-        lambda config: register_operator_skill(config, skill_id),
+        lambda config: capability_management.register_operator_skill(config, skill_id),
     )
     console.print(
         f"Registered {skill_id} {version.manifest.version} as {version.status.value}; "
@@ -739,9 +739,13 @@ def activate_skill(
 ) -> None:
     """Activate a registered Operator Skill for new Pentest Runs."""
 
+    from riftx import capability_management
+
     activated = _operator_skill_action(
         context,
-        lambda config: activate_operator_skill(config, skill_id, version),
+        lambda config: capability_management.activate_operator_skill(
+            config, skill_id, version
+        ),
     )
     console.print(
         f"Activated {skill_id} {activated.manifest.version}; new Pentest Runs may select it."
@@ -759,9 +763,13 @@ def disable_skill(
 ) -> None:
     """Disable an Operator Skill version for new Pentest Runs."""
 
+    from riftx import capability_management
+
     disabled = _operator_skill_action(
         context,
-        lambda config: disable_operator_skill(config, skill_id, version),
+        lambda config: capability_management.disable_operator_skill(
+            config, skill_id, version
+        ),
     )
     console.print(
         f"Disabled {skill_id} {disabled.manifest.version}; existing Run snapshots are unchanged."
@@ -776,9 +784,13 @@ def rollback_skill(
 ) -> None:
     """Activate a restored old Operator Skill version."""
 
+    from riftx import capability_management
+
     rolled_back = _operator_skill_action(
         context,
-        lambda config: rollback_operator_skill(config, skill_id, version),
+        lambda config: capability_management.rollback_operator_skill(
+            config, skill_id, version
+        ),
     )
     console.print(
         f"Rolled back {skill_id} to {rolled_back.manifest.version}; "
@@ -796,9 +808,11 @@ def list_skills(
 ) -> None:
     """List local Operator Skill packages and registered versions."""
 
+    from riftx import capability_management
+
     items = _operator_skill_action(
         context,
-        lambda config: inspect_operator_skills(config, skill_id),
+        lambda config: capability_management.inspect_operator_skills(config, skill_id),
     )
     table = Table(title=f"{len(items)} Operator Skill version(s)", expand=True)
     table.add_column("Skill")
@@ -818,6 +832,11 @@ def list_skills(
 
 
 def _capability_state(context: typer.Context) -> LocalCapabilityState:
+    from riftx.capability_management import (
+        CapabilityManagementError,
+        inspect_local_capability_state,
+    )
+
     try:
         return inspect_local_capability_state(_state(context).config)
     except CapabilityManagementError as exc:
@@ -829,6 +848,8 @@ def _operator_skill_action[T](
     context: typer.Context,
     action: Callable[[RiftXConfig], T],
 ) -> T:
+    from riftx.capability_management import CapabilityManagementError
+
     try:
         return action(_state(context).config)
     except CapabilityManagementError as exc:
@@ -2130,6 +2151,8 @@ def doctor_tools(
 
 
 async def _run_temporal_worker(config: RiftXConfig) -> None:
+    from riftx.temporal.worker_runtime import build_temporal_worker
+
     runtime = await build_temporal_worker(config)
     await runtime.run()
 
