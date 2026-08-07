@@ -2,10 +2,10 @@
 
 # RiftX
 
-### Durable, host-native Agent operations for authorized security work
+### A Pentest-first Agent that gets better with the operator
 
-RiftX turns operator-defined objectives, scope, approvals, execution, evidence, and stop
-decisions into one observable and recoverable control protocol.
+RiftX turns authorized objectives, scope, approvals, execution, evidence, findings,
+reports, and operator-maintained methods into one recoverable Pentest workflow.
 
 <p>
   <img alt="Version 2.0.0 Alpha" src="https://img.shields.io/badge/version-2.0.0--alpha.0-245dc7?style=flat-square">
@@ -37,6 +37,92 @@ decisions into one observable and recoverable control protocol.
 > assets for which you have explicit authorization, and never expose the Control Plane
 > to a LAN or the public Internet.
 
+## Pentest-first quick start
+
+This is the supported path from a clean checkout to the first evidence-backed report.
+The standalone Demo and generic platform commands are optional and are not substitutes
+for a real authorized Pentest.
+
+### 1. Install and onboard
+
+Prerequisites: Python `3.12`, the Conda environment `agent`, and a local Temporal CLI.
+
+```bash
+conda run --no-capture-output -n agent python -m pip install -e .
+export RIFTX_MODEL_API_KEY="<provider key>"
+export RIFTX_ADMIN_TOKEN="$(openssl rand -hex 32)"
+
+conda run --no-capture-output -n agent riftx onboard \
+  --non-interactive \
+  --provider openai \
+  --model gpt-5.6 \
+  --request-mode responses
+
+conda run --no-capture-output -n agent riftx doctor
+```
+
+`onboard` creates the user configuration, model profile, Tool Registry, database, and
+Official Packs without overwriting an existing setup. Missing optional executables are
+reported as degraded capabilities; they do not prevent the basic Pentest path from
+starting.
+
+### 2. Start the local services
+
+Run these in separate terminals with the same `RIFTX_ADMIN_TOKEN` and model credential
+environment:
+
+```bash
+# Terminal 1
+temporal server start-dev --ip 127.0.0.1 --port 7233 --ui-port 8233
+
+# Terminal 2
+conda run --no-capture-output -n agent riftx serve
+
+# Terminal 3
+conda run --no-capture-output -n agent riftx worker
+```
+
+The current release supports one local professional operator and keeps the Control Plane
+on loopback. Deployment, backup, and supervised-service details are in
+[`docs/deployment.md`](docs/deployment.md).
+
+### 3. Start an authorized Pentest
+
+Replace the example target, Scope, and authorization reference with real authorized
+values:
+
+```bash
+conda run --no-capture-output -n agent riftx pentest start \
+  --objective "Assess the authorized staging service" \
+  --authorization "ticket://SEC-1234" \
+  --target "https://staging.example.test" \
+  --scope "https://staging.example.test" \
+  --model primary
+
+conda run --no-capture-output -n agent riftx pentest status RUN_ID
+conda run --no-capture-output -n agent riftx approvals RUN_ID
+conda run --no-capture-output -n agent riftx approve APPROVAL_ID
+```
+
+Scope, approval, budget, Credential Reference, and stop checks remain authoritative; a
+Skill cannot bypass them or add undeclared Tools.
+
+### 4. Generate the report
+
+After the Run reaches `completed`, `failed`, or `cancelled`:
+
+```bash
+conda run --no-capture-output -n agent riftx report generate RUN_ID \
+  --format markdown \
+  --format json
+
+conda run --no-capture-output -n agent riftx report list RUN_ID
+conda run --no-capture-output -n agent riftx report show REPORT_ID
+```
+
+Professional users can add and iterate local methods through `riftx skills`; see
+[`docs/operator-skill-lifecycle.md`](docs/operator-skill-lifecycle.md).
+
 ## Why RiftX
 
 RiftX treats every Run as durable operational state. WebUI and CLI are projections,
@@ -54,9 +140,10 @@ attributable after a client disconnects.
 - **Stop means confirmed** — RiftX fences new effects first and reports a Run stopped
   only after every known owner returns affirmative stop evidence.
 
-## Explore the standalone Demo
+## Advanced: standalone sanitized Demo
 
-The independent [`@riftx/demo`](apps/demo) uses sanitized local state and never contacts
+This is a **simulated/sanitized presentation**, not a Pentest result. The independent
+[`@riftx/demo`](apps/demo) uses sanitized local state and never contacts
 a Control Plane, Temporal, model provider, Runner, browser session, or target.
 
 ```bash
@@ -68,9 +155,11 @@ conda run --no-capture-output -n agent pnpm demo:dev
 Use `?lang=en` or `?lang=zh-CN` to fix the presentation locale. Every screen remains
 visibly marked **DEMO / SANITIZED**.
 
-## Product tour
+## Advanced: product tour
 
-Twelve screens cover the primary operator journey. Click any image for the full-resolution view.
+These screens illustrate implemented surfaces; they are not the default Quickstart. Code Audit
+screens represent a **frozen/experimental** surface that receives only security, compatibility,
+and existing-user fixes. Click any image for the full-resolution view.
 
 <table>
   <tbody>
@@ -137,7 +226,7 @@ Twelve screens cover the primary operator journey. Click any image for the full-
   </tbody>
 </table>
 
-## Platform capability map
+## Advanced: platform capability map
 
 | Area | Implemented capabilities |
 | --- | --- |
@@ -147,7 +236,7 @@ Twelve screens cover the primary operator journey. Click any image for the full-
 | Browser and research | Runner-owned Playwright Chromium, stable element references, sanitized observations, takeover summaries, public source registry, research pipeline, Chrome DevTools connector, and Burp Montoya connector |
 | Operator configuration | Node inventory, searchable Tool Registry, OpenAI/OpenAI-compatible Model Profiles, `chat_completions` and `responses` request modes, write-only credentials, bilingual WebUI/CLI, and persistent dark/light themes |
 
-## Architecture
+## Advanced: architecture
 
 ```mermaid
 flowchart LR
@@ -168,7 +257,7 @@ The outbound Runner protocol exists, but the only selectable trust profile in th
 release keeps the Control Plane on loopback; a true remote Runner deployment is not yet
 available.
 
-## Quick start
+## Contributor and legacy platform setup
 
 ### Prerequisites
 
@@ -222,7 +311,7 @@ Configure a Model Profile in the WebUI before sending a Run's first instruction.
 managed Temporal service, TLS, authentication, backup, upgrade, and supervised-service
 guidance, read [`docs/deployment.md`](docs/deployment.md).
 
-### Create a conversation-first Run
+### Create an advanced generic Run
 
 ```bash
 conda run --no-capture-output -n agent riftx run create \

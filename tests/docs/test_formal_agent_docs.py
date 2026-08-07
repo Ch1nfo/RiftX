@@ -14,6 +14,8 @@ PENTEST_ADR = (
     / "docs/architecture/decisions/0013-riftx-pentest-run-admission-and-attack-surface.md"
 )
 LEDGER = REPOSITORY_ROOT / "docs/implementation/FORMAL_AGENT_PROGRESS.md"
+README = REPOSITORY_ROOT / "README.md"
+README_ZH = REPOSITORY_ROOT / "README_ZH.md"
 AUTHORITATIVE_DOCUMENTS = (PLAN, ADR, PENTEST_ADR, LEDGER)
 
 PLAN_STAGE_ROW = re.compile(
@@ -67,3 +69,40 @@ def test_adr_freezes_all_workload_and_system_boundaries() -> None:
         "Evaluation 定位与基线记录",
     ):
         assert required_text in adr_text
+
+
+def test_readmes_expose_one_pentest_first_quickstart() -> None:
+    contracts = (
+        (
+            README.read_text(encoding="utf-8"),
+            "## Pentest-first quick start",
+            "## Why RiftX",
+            "simulated/sanitized presentation",
+        ),
+        (
+            README_ZH.read_text(encoding="utf-8"),
+            "## Pentest-first 快速开始",
+            "## 为什么选择 RiftX",
+            "模拟/脱敏展示",
+        ),
+    )
+    for text, start_heading, end_heading, demo_label in contracts:
+        assert text.index(start_heading) < text.index(end_heading)
+        quickstart = text.split(start_heading, maxsplit=1)[1].split(
+            end_heading,
+            maxsplit=1,
+        )[0]
+        for command in (
+            "riftx onboard",
+            "riftx doctor",
+            "riftx serve",
+            "riftx worker",
+            "riftx pentest start",
+            "riftx approvals",
+            "riftx report generate",
+            "riftx skills",
+        ):
+            assert command in quickstart
+        assert "riftx run create" not in quickstart
+        assert demo_label in text
+        assert "frozen/experimental" in text

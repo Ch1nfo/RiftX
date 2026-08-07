@@ -2,10 +2,10 @@
 
 # RiftX
 
-### 面向授权安全工作的主机原生持久化 Agent 行动平台
+### 一个会随专业使用者持续变顺手的 Pentest-first Agent
 
-RiftX 将操作员定义的目标、范围、审批、执行、证据与停止决策，
-纳入同一套可观测、可恢复的控制协议。
+RiftX 将授权目标、Scope、审批、执行、证据、Finding、Report 与操作者维护的方法，
+纳入同一条可恢复的渗透测试工作流。
 
 <p>
   <img alt="版本 2.0.0 Alpha" src="https://img.shields.io/badge/version-2.0.0--alpha.0-245dc7?style=flat-square">
@@ -36,6 +36,86 @@ RiftX 将操作员定义的目标、范围、审批、执行、证据与停止�
 > 当前可信配置仅为 loopback 上的 `local_single_operator`。
 > 只能将 RiftX 用于已获得明确授权的资产，切勿把 Control Plane 暴露到局域网或公网。
 
+## Pentest-first 快速开始
+
+这是从干净代码库到第一份证据化 Report 的正式支持路径。独立 Demo 和通用平台命令
+都是可选项，不能代替真实授权 Pentest。
+
+### 1. 安装并 Onboard
+
+前置条件：Python `3.12`、名为 `agent` 的 Conda 环境，以及本地 Temporal CLI。
+
+```bash
+conda run --no-capture-output -n agent python -m pip install -e .
+export RIFTX_MODEL_API_KEY="<provider key>"
+export RIFTX_ADMIN_TOKEN="$(openssl rand -hex 32)"
+
+conda run --no-capture-output -n agent riftx onboard \
+  --non-interactive \
+  --provider openai \
+  --model gpt-5.6 \
+  --request-mode responses
+
+conda run --no-capture-output -n agent riftx doctor
+```
+
+`onboard` 会创建用户配置、Model Profile、Tool Registry、数据库和 Official Packs，
+不会覆盖已有配置。缺少可选工具只会被报告为降级能力，不阻止基础 Pentest 路径启动。
+
+### 2. 启动本地服务
+
+在三个终端中使用相同的 `RIFTX_ADMIN_TOKEN` 与模型凭据环境：
+
+```bash
+# 终端 1
+temporal server start-dev --ip 127.0.0.1 --port 7233 --ui-port 8233
+
+# 终端 2
+conda run --no-capture-output -n agent riftx serve
+
+# 终端 3
+conda run --no-capture-output -n agent riftx worker
+```
+
+当前版本只支持本地单专业操作员，并要求 Control Plane 保持在 loopback。部署、备份和
+服务托管说明见 [`docs/deployment.md`](docs/deployment.md)。
+
+### 3. 启动授权 Pentest
+
+请把示例目标、Scope 和授权引用替换为真实授权值：
+
+```bash
+conda run --no-capture-output -n agent riftx pentest start \
+  --objective "Assess the authorized staging service" \
+  --authorization "ticket://SEC-1234" \
+  --target "https://staging.example.test" \
+  --scope "https://staging.example.test" \
+  --model primary
+
+conda run --no-capture-output -n agent riftx pentest status RUN_ID
+conda run --no-capture-output -n agent riftx approvals RUN_ID
+conda run --no-capture-output -n agent riftx approve APPROVAL_ID
+```
+
+Scope、Approval、预算、Credential Reference 与停止检查始终是权威门禁；Skill 不能
+绕过这些检查，也不能加入未声明 Tool。
+
+### 4. 生成 Report
+
+当 Run 进入 `completed`、`failed` 或 `cancelled` 后：
+
+```bash
+conda run --no-capture-output -n agent riftx report generate RUN_ID \
+  --format markdown \
+  --format json
+
+conda run --no-capture-output -n agent riftx report list RUN_ID
+conda run --no-capture-output -n agent riftx report show REPORT_ID
+```
+
+专业用户可通过 `riftx skills` 添加并迭代本地方法，详见
+[`docs/operator-skill-lifecycle.md`](docs/operator-skill-lifecycle.md)。
+
 ## 为什么选择 RiftX
 
 RiftX 把每个 Run 视为持久化行动状态。WebUI 与 CLI 只是状态投影，
@@ -48,9 +128,9 @@ RiftX 把每个 Run 视为持久化行动状态。WebUI 与 CLI 只是状态投�
 - **证据天然可追溯** —— Artifact、Finding、Report、流量元数据与确定性图谱投影都保留来源。
 - **停止必须被确认** —— RiftX 先围栏新效果，只有所有已知所有者返回明确停止证明后才报告 Run 已停止。
 
-## 体验独立 Demo
+## 高级：独立脱敏 Demo
 
-独立的 [`@riftx/demo`](apps/demo) 使用已脱敏的本地状态，
+这是**模拟/脱敏展示**，不是 Pentest 结果。独立的 [`@riftx/demo`](apps/demo) 使用已脱敏的本地状态，
 不会连接 Control Plane、Temporal、模型服务、Runner、浏览器会话或目标系统。
 
 ```bash
@@ -62,9 +142,10 @@ conda run --no-capture-output -n agent pnpm demo:dev
 使用 `?lang=en` 或 `?lang=zh-CN` 可固定演示语言。
 每个界面都会持续显示 **DEMO / SANITIZED**。
 
-## 产品导览
+## 高级：产品导览
 
-12 个界面覆盖主要操作流程；点击图片可查看完整分辨率。
+这些界面展示已实现能力，不是默认 Quickstart。Code Audit 页面属于 **frozen/experimental**
+能力，只接受安全、兼容和现有用户阻断修复。点击图片可查看完整分辨率。
 
 <table>
   <tbody>
@@ -131,7 +212,7 @@ conda run --no-capture-output -n agent pnpm demo:dev
   </tbody>
 </table>
 
-## 平台能力图谱
+## 高级：平台能力图谱
 
 | 领域 | 已实现能力 |
 | --- | --- |
@@ -141,7 +222,7 @@ conda run --no-capture-output -n agent pnpm demo:dev
 | 浏览器与研究 | Runner 所有的 Playwright Chromium、稳定元素引用、脱敏观察、接管摘要、公开来源注册表、研究管线、Chrome DevTools 连接器与 Burp Montoya 连接器 |
 | 操作员配置 | 节点清单、可搜索 Tool Registry、OpenAI/OpenAI-compatible Model Profile、`chat_completions` 与 `responses` 请求模式、只写凭据、双语 WebUI/CLI 与持久深浅主题 |
 
-## 架构
+## 高级：架构
 
 ```mermaid
 flowchart LR
@@ -161,7 +242,7 @@ Control Plane、Temporal Worker 与 Runner 是彼此独立的职责边界。
 虽然出站 Runner 协议已经实现，但当前版本唯一可选的可信配置要求 Control Plane
 保持在 loopback，因此真正的远程 Runner 部署目前尚不可用。
 
-## 快速开始
+## 贡献者与旧平台入口
 
 ### 前置条件
 
@@ -213,7 +294,7 @@ conda run --no-capture-output -n agent riftx \
 托管 Temporal 的 TLS、认证、备份、升级与进程托管说明见
 [`docs/deployment.md`](docs/deployment.md)。
 
-### 创建会话优先的 Run
+### 创建高级通用 Run
 
 ```bash
 conda run --no-capture-output -n agent riftx run create \

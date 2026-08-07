@@ -30,6 +30,25 @@ from riftx.doctor import (
 runner = CliRunner()
 
 
+def test_root_help_prioritizes_the_pentest_workflow() -> None:
+    result = runner.invoke(cli_module.app, ["--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "Pentest-first Agent for authorized security work." in result.output
+    panels = [
+        result.output.index("Getting started"),
+        result.output.index("Service operation"),
+        result.output.index("Pentest workflow"),
+        result.output.index("Advanced"),
+        result.output.index("Experimental (frozen)"),
+    ]
+    assert panels == sorted(panels)
+    for command in ("onboard", "doctor", "model", "pentest", "report", "skills"):
+        assert command in result.output
+    assert "interactive   Enter the interactive RiftX session" not in result.output
+    assert "Experimental frozen local code-audit surface" in result.output
+
+
 class FakeAPIClient:
     instances: list[FakeAPIClient] = []
     fail = False

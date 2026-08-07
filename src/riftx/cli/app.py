@@ -117,9 +117,16 @@ class _AuditGroup(TyperGroup):
         return super().resolve_command(ctx, args)
 
 
+_GETTING_STARTED_PANEL = "Getting started"
+_PENTEST_PANEL = "Pentest workflow"
+_SERVICE_PANEL = "Service operation"
+_ADVANCED_PANEL = "Advanced"
+_FROZEN_PANEL = "Experimental (frozen)"
+
 app = typer.Typer(
     name="riftx",
-    help="Host-native durable agent execution platform.",
+    help="Pentest-first Agent for authorized security work.",
+    epilog="Start with `riftx onboard`, then verify readiness with `riftx doctor`.",
     no_args_is_help=False,
     invoke_without_command=True,
     rich_markup_mode="rich",
@@ -140,23 +147,23 @@ packs_app = typer.Typer(help="Inspect and manage local Capability Packs.")
 skills_app = typer.Typer(help="Validate and manage local Operator Skills.")
 audit_app = typer.Typer(
     cls=_AuditGroup,
-    help="Audit a local folder with read-only static analysis.",
+    help="Experimental frozen local code-audit surface; security fixes only.",
 )
-app.add_typer(run_app, name="run")
-app.add_typer(pentest_app, name="pentest")
-app.add_typer(execution_app, name="execution")
-app.add_typer(nodes_app, name="node")
-app.add_typer(tools_app, name="tools")
-app.add_typer(terminal_app, name="terminal")
-app.add_typer(artifact_app, name="artifact")
-app.add_typer(report_app, name="report")
-app.add_typer(memory_app, name="memory")
-app.add_typer(model_app, name="model")
-app.add_typer(demo_app, name="demo")
-app.add_typer(capabilities_app, name="capabilities")
-app.add_typer(packs_app, name="packs")
-app.add_typer(skills_app, name="skills")
-app.add_typer(audit_app, name="audit")
+app.add_typer(run_app, name="run", rich_help_panel=_ADVANCED_PANEL)
+app.add_typer(pentest_app, name="pentest", rich_help_panel=_PENTEST_PANEL)
+app.add_typer(execution_app, name="execution", rich_help_panel=_ADVANCED_PANEL)
+app.add_typer(nodes_app, name="node", rich_help_panel=_ADVANCED_PANEL)
+app.add_typer(tools_app, name="tools", rich_help_panel=_ADVANCED_PANEL)
+app.add_typer(terminal_app, name="terminal", rich_help_panel=_ADVANCED_PANEL)
+app.add_typer(artifact_app, name="artifact", rich_help_panel=_ADVANCED_PANEL)
+app.add_typer(report_app, name="report", rich_help_panel=_PENTEST_PANEL)
+app.add_typer(memory_app, name="memory", rich_help_panel=_ADVANCED_PANEL)
+app.add_typer(model_app, name="model", rich_help_panel=_GETTING_STARTED_PANEL)
+app.add_typer(demo_app, name="demo", rich_help_panel=_ADVANCED_PANEL)
+app.add_typer(capabilities_app, name="capabilities", rich_help_panel=_ADVANCED_PANEL)
+app.add_typer(packs_app, name="packs", rich_help_panel=_ADVANCED_PANEL)
+app.add_typer(skills_app, name="skills", rich_help_panel=_PENTEST_PANEL)
+app.add_typer(audit_app, name="audit", rich_help_panel=_FROZEN_PANEL)
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,7 +227,7 @@ def main(
             run_interactive(client, console)
 
 
-@app.command()
+@app.command(hidden=True)
 def interactive(context: typer.Context) -> None:
     """Enter the interactive RiftX session explicitly."""
 
@@ -229,7 +236,7 @@ def interactive(context: typer.Context) -> None:
         run_interactive(client, console)
 
 
-@app.command()
+@app.command(rich_help_panel=_GETTING_STARTED_PANEL)
 def onboard(
     context: typer.Context,
     non_interactive: Annotated[
@@ -390,7 +397,7 @@ def onboard(
     console.print("Next: set RIFTX_ADMIN_TOKEN, then run `riftx doctor`.")
 
 
-@app.command()
+@app.command(rich_help_panel=_GETTING_STARTED_PANEL)
 def doctor(
     context: typer.Context,
     fix: Annotated[
@@ -462,7 +469,7 @@ def _control_plane_reachable(client: APIClient) -> bool:
     return True
 
 
-@app.command()
+@app.command(rich_help_panel=_SERVICE_PANEL)
 def serve(
     context: typer.Context,
     host: Annotated[str | None, typer.Option(help="Listen address override.")] = None,
@@ -499,7 +506,7 @@ def _is_loopback_listen_host(host: str) -> bool:
     return is_loopback_host(host)
 
 
-@app.command()
+@app.command(rich_help_panel=_SERVICE_PANEL)
 def worker(context: typer.Context) -> None:
     """Start the production Temporal Worker."""
 
@@ -507,7 +514,7 @@ def worker(context: typer.Context) -> None:
     asyncio.run(_run_temporal_worker(_state(context).config))
 
 
-@app.command("runner")
+@app.command("runner", rich_help_panel=_SERVICE_PANEL)
 def runner_daemon(
     context: typer.Context,
     server_url: Annotated[
@@ -563,7 +570,7 @@ def runner_daemon(
     )
 
 
-@app.command()
+@app.command(rich_help_panel=_SERVICE_PANEL)
 def web(
     context: typer.Context,
     open_browser: Annotated[
@@ -920,7 +927,7 @@ def cancel_local_audit(
     )
 
 
-@app.command("approvals")
+@app.command("approvals", rich_help_panel=_PENTEST_PANEL)
 def list_approvals(
     context: typer.Context,
     run_id: Annotated[str, typer.Argument(help="Run ID.")],
@@ -936,7 +943,7 @@ def list_approvals(
     )
 
 
-@app.command("approve")
+@app.command("approve", rich_help_panel=_PENTEST_PANEL)
 def approve(
     context: typer.Context,
     approval_id: Annotated[str, typer.Argument(help="Approval ID.")],
@@ -954,7 +961,7 @@ def approve(
     console.print(f"[green]{tr('Approval saved and workflow signaled.')}[/green]")
 
 
-@app.command("reject")
+@app.command("reject", rich_help_panel=_PENTEST_PANEL)
 def reject(
     context: typer.Context,
     approval_id: Annotated[str, typer.Argument(help="Approval ID.")],
@@ -1161,7 +1168,7 @@ def close_terminal(
     )
 
 
-@app.command("attach")
+@app.command("attach", rich_help_panel=_ADVANCED_PANEL)
 def attach(
     context: typer.Context,
     session_id: Annotated[str, typer.Argument(help="Terminal session ID.")],
