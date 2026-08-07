@@ -28,7 +28,6 @@ from .audit_snapshot import (
 )
 from .audit_static_effect import (
     SQLAlchemyAuditStaticEffectAuthorityRepository,
-    SQLAlchemySnapshotMountSourceResolver,
 )
 from .audit_uow import (
     AuditCreationFailpoint,
@@ -94,7 +93,6 @@ __all__ = [
     "SQLAlchemyAuditScopeRepository",
     "SQLAlchemyAuditStartIntentRepository",
     "SQLAlchemyAuditStaticEffectAuthorityRepository",
-    "SQLAlchemySnapshotMountSourceResolver",
     "SQLAlchemyAuditWorkRepository",
     "SQLAlchemyAgentCycleRepository",
     "SQLAlchemyAgentSessionRepository",

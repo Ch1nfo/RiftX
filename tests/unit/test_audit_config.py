@@ -210,9 +210,6 @@ def test_complete_audit_environment_mapping_is_strict_and_reaches_api_settings(
         "RIFTX_AUDIT_MAX_DIRECTORY_DEPTH": "64",
         "RIFTX_AUDIT_MAX_ARTIFACT_BYTES": "1000",
         "RIFTX_AUDIT_MAX_TOTAL_ARTIFACT_BYTES": "2000",
-        "RIFTX_AUDIT_WORKERS_MAX_PARALLEL": "2",
-        "RIFTX_AUDIT_WORKERS_MAX_EPOCHS": "4",
-        "RIFTX_AUDIT_WORKERS_SATURATION_EPOCHS": "1",
         "RIFTX_AUDIT_BUDGET_MAX_WALL_SECONDS": "600",
         "RIFTX_AUDIT_BUDGET_MAX_MODEL_CALLS": "10",
         "RIFTX_AUDIT_BUDGET_MAX_INPUT_TOKENS": "1000",
@@ -249,11 +246,6 @@ def test_complete_audit_environment_mapping_is_strict_and_reaches_api_settings(
     assert audit.max_directory_depth == 64
     assert audit.max_artifact_bytes == 1_000
     assert audit.max_total_artifact_bytes == 2_000
-    assert audit.workers.model_dump() == {
-        "max_parallel": 2,
-        "max_epochs": 4,
-        "saturation_epochs": 1,
-    }
     assert audit.budget.model_dump() == {
         "max_wall_seconds": 600,
         "max_model_calls": 10,
@@ -287,9 +279,6 @@ def test_complete_audit_environment_mapping_is_strict_and_reaches_api_settings(
         (("max_directory_depth",), 256),
         (("max_artifact_bytes",), 67_108_864),
         (("max_total_artifact_bytes",), 268_435_456),
-        (("workers", "max_parallel"), 4),
-        (("workers", "max_epochs"), 8),
-        (("workers", "saturation_epochs"), 2),
         (("budget", "max_wall_seconds"), 7_200),
         (("budget", "max_model_calls"), 100),
         (("budget", "max_input_tokens"), 2_000_000),
@@ -364,8 +353,6 @@ def test_audit_enums_and_unknown_fields_fail_closed(
         },
         {"max_repository_bytes": 99, "max_file_bytes": 100},
         {"max_artifact_bytes": 100, "max_total_artifact_bytes": 99},
-        {"workers": {"max_parallel": 2}, "budget": {"max_worker_jobs": 1}},
-        {"workers": {"max_epochs": 1, "saturation_epochs": 2}},
         {
             "budget": {"max_wall_seconds": 899},
             "validation": {"max_wall_seconds": 900},

@@ -95,10 +95,6 @@ audit:
   max_directory_depth: 256
   max_artifact_bytes: 67108864
   max_total_artifact_bytes: 268435456
-  workers:
-    max_parallel: 4
-    max_epochs: 8
-    saturation_epochs: 2
   budget:
     max_wall_seconds: 7200
     max_model_calls: 100

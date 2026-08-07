@@ -49,8 +49,6 @@ from riftx.application.services.workflow_signals import (
 from riftx.application.workflow_router import RunWorkflowControlRouter
 from riftx.audit import (
     LocalAuditJobService,
-    LocalAuditWorker,
-    LocalAuditWorkerConfig,
 )
 from riftx.browser.service import BrowserApplicationService
 from riftx.config import (
@@ -344,34 +342,10 @@ def _create_audit_service(
 
 
 async def _create_local_audit_job_service(
-    settings: APISettings,
     database: Database,
 ) -> LocalAuditJobService:
     repository = SQLAlchemyLocalAuditJobRepository(database.session_factory)
-    worker = None
-    if settings.audit.enabled and settings.audit.source_roots:
-        worker = LocalAuditWorker(
-            repository,
-            LocalAuditWorkerConfig(
-                allowed_roots=settings.audit.source_roots,
-                protected_paths=(
-                    settings.audit.fix_root,
-                    settings.workspace_root.expanduser().resolve(strict=False),
-                    settings.runner_state_path.expanduser().resolve(strict=False),
-                ),
-                staging_root=settings.audit.temp_root / "local-jobs",
-                snapshot_root=settings.audit.snapshot_root,
-                max_file_bytes=settings.audit.max_file_bytes,
-                max_repository_bytes=settings.audit.max_repository_bytes,
-                max_manifest_entries=settings.audit.max_files,
-                max_text_characters=settings.audit.max_file_bytes,
-            ),
-        )
-    service = LocalAuditJobService(
-        repository,
-        worker,
-        auto_dispatch=True,
-    )
+    service = LocalAuditJobService(repository)
     await service.recover()
     return service
 
@@ -828,7 +802,7 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         else None
     )
     local_audit_job_service = (
-        await _create_local_audit_job_service(settings, database)
+        await _create_local_audit_job_service(database)
         if settings.audit.enabled
         else None
     )

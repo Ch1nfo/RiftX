@@ -1,48 +1,18 @@
-"""Durable single-machine jobs for the simplified local Code Audit workflow."""
+"""Historical local Code Audit job records and read-only compatibility service."""
 
 from __future__ import annotations
 
-import asyncio
-import logging
 import re
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
-from pathlib import Path
-from threading import Lock
 from typing import Protocol
-from uuid import uuid4
 
-from .builtin_detectors import builtin_detector_registry
-from .detectors import (
-    DetectorCancellation,
-    DetectorRegistry,
-    DetectorRunLimits,
-    LocalDetectorRunner,
-)
-from .finding_normalizer import normalize_detector_signals
-from .inventory import FileInventoryError, build_file_inventory
-from .local_materializer import (
-    LocalSourceMaterializationError,
-    LocalSourceMaterializer,
-)
-from .paths import (
-    SourcePathAuthorizationError,
-    open_authorized_local_source,
-    validate_posix_absolute_path,
-    validate_repository_filters,
-)
-from .reporting import build_audit_reports
-from .snapshot import SnapshotCASBinding, SnapshotStoreError
-from .snapshot_store import LocalSnapshotStore
-from .snapshot_view import LocalSnapshotViewError, open_local_snapshot_view
-from .source_manifest import SourceCapturePolicy, publish_source_manifest
+from .paths import validate_posix_absolute_path, validate_repository_filters
 
 LOCAL_AUDIT_JOB_SCHEMA_VERSION = "riftx.local-audit-job/v1"
 _ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@+~\-]{0,127}$")
 _DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
-logger = logging.getLogger(__name__)
 
 
 class LocalAuditJobStatus(StrEnum):
@@ -337,284 +307,18 @@ class LocalAuditJobStore(Protocol):
     async def recover_interrupted(self) -> tuple[int, int]: ...
 
 
-@dataclass(frozen=True, slots=True)
-class LocalAuditWorkerConfig:
-    allowed_roots: tuple[Path, ...]
-    protected_paths: tuple[Path, ...]
-    staging_root: Path
-    snapshot_root: Path
-    max_file_bytes: int = 5 * 1024 * 1024
-    max_repository_bytes: int = 2 * 1024 * 1024 * 1024
-    max_manifest_entries: int = 200_000
-    max_text_characters: int = 5 * 1024 * 1024
-    max_total_matches: int = 50_000
-    max_matches_per_rule_file: int = 1_000
-
-    def __post_init__(self) -> None:
-        if (
-            not isinstance(self.staging_root, Path)
-            or not self.staging_root.is_absolute()
-            or not isinstance(self.snapshot_root, Path)
-            or not self.snapshot_root.is_absolute()
-        ):
-            raise ValueError("local Audit state paths are invalid")
-        for paths in (self.allowed_roots, self.protected_paths):
-            if not isinstance(paths, tuple) or any(
-                not isinstance(path, Path) or not path.is_absolute() for path in paths
-            ):
-                raise ValueError("local Audit path configuration is invalid")
-        if not self.allowed_roots:
-            raise ValueError("local Audit allowed roots are empty")
-        if any(
-            isinstance(value, bool) or not isinstance(value, int) or value < 1
-            for value in (
-                self.max_file_bytes,
-                self.max_repository_bytes,
-                self.max_manifest_entries,
-                self.max_text_characters,
-                self.max_total_matches,
-                self.max_matches_per_rule_file,
-            )
-        ):
-            raise ValueError("local Audit limits are invalid")
-        if self.max_file_bytes > self.max_repository_bytes:
-            raise ValueError("local Audit file limit exceeds repository limit")
-
-
-class LocalAuditWorker:
-    """Claim and execute one durable local Audit without target-code execution."""
-
-    def __init__(
-        self,
-        store: LocalAuditJobStore,
-        config: LocalAuditWorkerConfig,
-        *,
-        registry: DetectorRegistry | None = None,
-    ) -> None:
-        self._jobs = store
-        self._config = config
-        self._registry = registry or builtin_detector_registry()
-        self._tokens: dict[str, DetectorCancellation] = {}
-        self._tokens_lock = Lock()
-
-    async def run(self, audit_id: str) -> LocalAuditJob:
-        claimed, acquired = await self._jobs.claim(audit_id)
-        if not acquired:
-            return claimed
-        token = DetectorCancellation()
-        with self._tokens_lock:
-            self._tokens[audit_id] = token
-        try:
-            result = await asyncio.to_thread(self._execute, claimed, token)
-            return await self._jobs.complete_or_cancel(audit_id, result)
-        except _Cancelled:
-            return await self._jobs.fail_or_cancel(
-                audit_id, LocalAuditFailure.INTERNAL_ERROR
-            )
-        except SourcePathAuthorizationError:
-            return await self._jobs.fail_or_cancel(
-                audit_id, LocalAuditFailure.SOURCE_REJECTED
-            )
-        except (LocalSourceMaterializationError, SnapshotStoreError):
-            return await self._jobs.fail_or_cancel(
-                audit_id, LocalAuditFailure.SNAPSHOT_FAILED
-            )
-        except (LocalSnapshotViewError, FileInventoryError):
-            return await self._jobs.fail_or_cancel(
-                audit_id, LocalAuditFailure.SCAN_FAILED
-            )
-        except Exception:
-            return await self._jobs.fail_or_cancel(
-                audit_id, LocalAuditFailure.INTERNAL_ERROR
-            )
-        finally:
-            with self._tokens_lock:
-                self._tokens.pop(audit_id, None)
-
-    def cancel(self, audit_id: str) -> None:
-        with self._tokens_lock:
-            token = self._tokens.get(audit_id)
-        if token is not None:
-            token.cancel()
-
-    def _execute(
-        self,
-        job: LocalAuditJob,
-        cancellation: DetectorCancellation,
-    ) -> LocalAuditJobResult:
-        config = self._config
-        filters = validate_repository_filters(
-            include_paths=job.include_paths,
-            exclude_paths=job.exclude_paths,
-        )
-        policy = SourceCapturePolicy(
-            include_paths=filters.include_paths,
-            exclude_paths=filters.exclude_paths,
-            max_file_bytes=config.max_file_bytes,
-            max_repository_bytes=config.max_repository_bytes,
-            max_manifest_entries=config.max_manifest_entries,
-        )
-        materializer = LocalSourceMaterializer(config.staging_root)
-        snapshot_store = LocalSnapshotStore(
-            config.snapshot_root,
-            max_blob_bytes=config.max_file_bytes,
-            max_tree_bytes=config.max_repository_bytes,
-        )
-        materialized = None
-        with open_authorized_local_source(
-            job.source_path,
-            allowed_roots=config.allowed_roots,
-            protected_paths=(
-                *config.protected_paths,
-                config.staging_root,
-                config.snapshot_root,
-            ),
-            include_paths=filters.include_paths,
-            exclude_paths=filters.exclude_paths,
-        ) as source:
-            if cancellation.cancelled:
-                raise _Cancelled
-            materialized = materializer.materialize(source, policy=policy)
-            source_identity_digest = source.source_identity_digest
-        try:
-            if cancellation.cancelled:
-                raise _Cancelled
-            published = publish_source_manifest(
-                project_id=job.id,
-                manifest=materialized.manifest,
-                staging_root=materialized.root,
-                snapshot_store=snapshot_store,
-                temporary_root=config.staging_root,
-            )
-            inventory = build_file_inventory(materialized.manifest)
-            binding = SnapshotCASBinding(
-                project_id=job.id,
-                snapshot_digest=published.snapshot_digest,
-                manifest_digest=published.manifest_digest,
-            )
-            descriptor_digest = materialized.manifest.content_descriptor(
-                project_id=job.id
-            ).descriptor_digest
-            limits = DetectorRunLimits(
-                max_file_bytes=config.max_file_bytes,
-                max_text_characters=config.max_text_characters,
-                max_matches_per_rule_file=config.max_matches_per_rule_file,
-                max_total_matches=config.max_total_matches,
-            )
-            with open_local_snapshot_view(
-                snapshot_store,
-                binding=binding,
-                content_storage_key=published.content_storage_key,
-                expected_descriptor_digest=descriptor_digest,
-                max_file_read_bytes=config.max_file_bytes,
-                max_total_read_bytes=config.max_repository_bytes,
-                max_text_characters=config.max_text_characters,
-            ) as view:
-                receipt = LocalDetectorRunner(self._registry, limits).run(
-                    view=view,
-                    inventory=inventory,
-                    cancellation=cancellation,
-                )
-            if receipt.cancelled or cancellation.cancelled:
-                raise _Cancelled
-            findings = normalize_detector_signals(receipt.signals)
-            reports = build_audit_reports(
-                inventory=inventory,
-                detector_receipt=receipt,
-                findings=findings,
-                rules=self._registry.metadata(),
-            )
-            included_files = inventory.statistics.included_files
-            if len(receipt.files) != included_files:
-                raise RuntimeError("local Audit did not process every included file")
-            return LocalAuditJobResult(
-                source_identity_digest=source_identity_digest,
-                snapshot_digest=published.snapshot_digest,
-                manifest_digest=published.manifest_digest,
-                inventory_digest=inventory.inventory_digest,
-                detector_run_digest=receipt.run_digest,
-                report_digest=reports.report_digest,
-                total_files=included_files,
-                scanned_files=len(receipt.files),
-                findings=tuple(
-                    LocalAuditFinding(
-                        id=value.id,
-                        rule_id=value.rule_id,
-                        rule_version=value.rule_version,
-                        title=value.title,
-                        severity=value.severity.value,
-                        confidence=value.confidence,
-                        relative_path=value.relative_path,
-                        blob_digest=value.blob_digest,
-                        line=value.line,
-                        column=value.column,
-                        end_line=value.end_line,
-                        end_column=value.end_column,
-                        evidence_excerpt=value.evidence_excerpt,
-                    )
-                    for value in findings
-                ),
-                json_report=reports.json_text,
-                markdown_report=reports.markdown_text,
-            )
-        finally:
-            if materialized is not None:
-                materializer.discard(materialized)
-
-
 class LocalAuditJobService:
-    """Minimal draft/start/cancel/status application facade."""
+    """Read and cancel historical local Audit jobs."""
 
-    def __init__(
-        self,
-        store: LocalAuditJobStore,
-        worker: LocalAuditWorker | None,
-        *,
-        id_factory: Callable[[], str] | None = None,
-        auto_dispatch: bool = False,
-    ) -> None:
+    def __init__(self, store: LocalAuditJobStore) -> None:
         self._jobs = store
-        self._worker = worker
-        self._id_factory = id_factory or (lambda: f"audit-{uuid4().hex}")
-        self._auto_dispatch = auto_dispatch
-        self._tasks: dict[str, asyncio.Task[LocalAuditJob]] = {}
 
     @property
     def runnable(self) -> bool:
-        return self._worker is not None
-
-    async def create(
-        self,
-        source_path: str,
-        *,
-        include_paths: tuple[str, ...] = (),
-        exclude_paths: tuple[str, ...] = (),
-    ) -> LocalAuditJob:
-        canonical_source = validate_posix_absolute_path(source_path)
-        filters = validate_repository_filters(
-            include_paths=include_paths,
-            exclude_paths=exclude_paths,
-        )
-        return await self._jobs.create(
-            audit_id=self._id_factory(),
-            source_path=canonical_source,
-            include_paths=filters.include_paths,
-            exclude_paths=filters.exclude_paths,
-        )
-
-    async def start(self, audit_id: str) -> LocalAuditJob:
-        if self._worker is None:
-            raise RuntimeError("local Audit Worker is unavailable")
-        job = await self._jobs.enqueue(audit_id)
-        if self._auto_dispatch and job.status is LocalAuditJobStatus.QUEUED:
-            self.dispatch(audit_id)
-        return job
+        return False
 
     async def cancel(self, audit_id: str) -> LocalAuditJob:
-        job = await self._jobs.request_cancel(audit_id)
-        if self._worker is not None:
-            self._worker.cancel(audit_id)
-        return job
+        return await self._jobs.request_cancel(audit_id)
 
     async def status(self, audit_id: str) -> LocalAuditJob | None:
         return await self._jobs.get(audit_id)
@@ -622,59 +326,8 @@ class LocalAuditJobService:
     async def recover(self) -> tuple[int, int]:
         return await self._jobs.recover_interrupted()
 
-    async def run(self, audit_id: str) -> LocalAuditJob:
-        if self._worker is None:
-            raise RuntimeError("local Audit Worker is unavailable")
-        return await self._worker.run(audit_id)
-
-    def dispatch(self, audit_id: str) -> asyncio.Task[LocalAuditJob]:
-        if self._worker is None:
-            raise RuntimeError("local Audit Worker is unavailable")
-        existing = self._tasks.get(audit_id)
-        if existing is not None and not existing.done():
-            return existing
-        task = asyncio.create_task(
-            self.run(audit_id),
-            name=f"riftx-local-audit-{audit_id}",
-        )
-        self._tasks[audit_id] = task
-        task.add_done_callback(lambda value, job_id=audit_id: self._task_done(job_id, value))
-        return task
-
-    async def wait(self, audit_id: str) -> LocalAuditJob | None:
-        task = self._tasks.get(audit_id)
-        if task is not None:
-            await task
-        return await self.status(audit_id)
-
     async def close(self) -> None:
-        active = tuple(
-            (audit_id, task)
-            for audit_id, task in self._tasks.items()
-            if not task.done()
-        )
-        for audit_id, _task in active:
-            await self.cancel(audit_id)
-        if active:
-            await asyncio.gather(*(task for _audit_id, task in active), return_exceptions=True)
-        self._tasks.clear()
-
-    def _task_done(self, audit_id: str, task: asyncio.Task[LocalAuditJob]) -> None:
-        if self._tasks.get(audit_id) is task:
-            self._tasks.pop(audit_id, None)
-        if task.cancelled():
-            return
-        error = task.exception()
-        if error is not None:
-            logger.error(
-                "Local Audit background task failed for %s",
-                audit_id,
-                exc_info=(type(error), error, error.__traceback__),
-            )
-
-
-class _Cancelled(RuntimeError):
-    pass
+        return None
 
 
 __all__ = [
@@ -686,6 +339,4 @@ __all__ = [
     "LocalAuditJobService",
     "LocalAuditJobStatus",
     "LocalAuditJobStore",
-    "LocalAuditWorker",
-    "LocalAuditWorkerConfig",
 ]

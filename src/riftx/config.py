@@ -98,9 +98,6 @@ _MAX_AUDIT_PATH_BYTES = 4_096
 _MAX_AUDIT_DIRECTORY_DEPTH = 256
 _MAX_AUDIT_ARTIFACT_BYTES = 67_108_864
 _MAX_AUDIT_TOTAL_ARTIFACT_BYTES = 268_435_456
-_MAX_AUDIT_PARALLEL_WORKERS = 4
-_MAX_AUDIT_EPOCHS = 8
-_MAX_AUDIT_SATURATION_EPOCHS = 2
 _MAX_AUDIT_WALL_SECONDS = 7_200
 _MAX_AUDIT_MODEL_CALLS = 100
 _MAX_AUDIT_INPUT_TOKENS = 2_000_000
@@ -292,30 +289,6 @@ class AuditModelEgressConfig(_AuditConfigModel):
         return self
 
 
-class AuditWorkersConfig(_AuditConfigModel):
-    max_parallel: AuditInteger = Field(
-        default=_MAX_AUDIT_PARALLEL_WORKERS,
-        ge=1,
-        le=_MAX_AUDIT_PARALLEL_WORKERS,
-    )
-    max_epochs: AuditInteger = Field(
-        default=_MAX_AUDIT_EPOCHS,
-        ge=1,
-        le=_MAX_AUDIT_EPOCHS,
-    )
-    saturation_epochs: AuditInteger = Field(
-        default=_MAX_AUDIT_SATURATION_EPOCHS,
-        ge=1,
-        le=_MAX_AUDIT_SATURATION_EPOCHS,
-    )
-
-    @model_validator(mode="after")
-    def validate_epoch_limits(self) -> AuditWorkersConfig:
-        if self.saturation_epochs > self.max_epochs:
-            raise ValueError("saturation_epochs must not exceed max_epochs")
-        return self
-
-
 class AuditBudgetConfig(_AuditConfigModel):
     max_wall_seconds: AuditInteger = Field(
         default=_MAX_AUDIT_WALL_SECONDS,
@@ -492,7 +465,6 @@ class AuditConfig(_AuditConfigModel):
         ge=1,
         le=_MAX_AUDIT_TOTAL_ARTIFACT_BYTES,
     )
-    workers: AuditWorkersConfig = Field(default_factory=AuditWorkersConfig)
     budget: AuditBudgetConfig = Field(default_factory=AuditBudgetConfig)
     source_ingest: AuditSourceIngestConfig = Field(
         default_factory=AuditSourceIngestConfig
@@ -559,8 +531,6 @@ class AuditConfig(_AuditConfigModel):
             raise ValueError("max_file_bytes must not exceed max_repository_bytes")
         if self.max_artifact_bytes > self.max_total_artifact_bytes:
             raise ValueError("max_artifact_bytes must not exceed max_total_artifact_bytes")
-        if self.workers.max_parallel > self.budget.max_worker_jobs:
-            raise ValueError("workers.max_parallel must not exceed budget.max_worker_jobs")
         if self.validation.max_wall_seconds > self.budget.max_wall_seconds:
             raise ValueError(
                 "validation.max_wall_seconds must not exceed budget.max_wall_seconds"
@@ -1105,13 +1075,6 @@ _AUDIT_ENVIRONMENT_PATHS: dict[str, tuple[str, ...]] = {
     "RIFTX_AUDIT_MAX_TOTAL_ARTIFACT_BYTES": (
         "audit",
         "max_total_artifact_bytes",
-    ),
-    "RIFTX_AUDIT_WORKERS_MAX_PARALLEL": ("audit", "workers", "max_parallel"),
-    "RIFTX_AUDIT_WORKERS_MAX_EPOCHS": ("audit", "workers", "max_epochs"),
-    "RIFTX_AUDIT_WORKERS_SATURATION_EPOCHS": (
-        "audit",
-        "workers",
-        "saturation_epochs",
     ),
     "RIFTX_AUDIT_BUDGET_MAX_WALL_SECONDS": (
         "audit",

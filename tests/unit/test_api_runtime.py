@@ -83,43 +83,15 @@ async def test_audit_service_is_assembled_for_both_feature_flag_states(
             await database.dispose()
 
 
-async def test_local_audit_job_service_is_runnable_only_with_local_source_roots(
-    tmp_path: Path,
-) -> None:
-    source_root = tmp_path / "sources"
-    source_root.mkdir()
-    project = source_root / "project"
-    project.mkdir()
-    (project / "app.py").write_text("result = eval(input())\n", encoding="utf-8")
-    (tmp_path / "snapshots").mkdir()
-    (tmp_path / "audit-temp").mkdir()
+async def test_local_audit_job_service_is_historical_read_only() -> None:
     database = Database("sqlite+aiosqlite:///:memory:")
     await database.create_schema()
-    disabled = await _create_local_audit_job_service(APISettings(), database)
-    enabled = await _create_local_audit_job_service(
-        APISettings(
-            audit=AuditConfig(
-                enabled=True,
-                source_roots=(source_root,),
-                snapshot_root=tmp_path / "snapshots",
-                temp_root=tmp_path / "audit-temp",
-                fix_root=tmp_path / "fixes",
-            )
-        ),
-        database,
-    )
+    service = await _create_local_audit_job_service(database)
     try:
-        assert disabled.runnable is False
-        assert enabled.runnable is True
-        created = await enabled.create(str(project))
-        await enabled.start(created.id)
-        completed = await enabled.wait(created.id)
-        assert completed is not None
-        assert completed.status.value == "completed", completed.failure_code
-        assert len(completed.findings) == 1
+        assert service.runnable is False
+        assert await service.status("missing-local-audit") is None
     finally:
-        await disabled.close()
-        await enabled.close()
+        await service.close()
         await database.dispose()
 
 
