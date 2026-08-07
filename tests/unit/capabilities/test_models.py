@@ -4,16 +4,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from riftx.api.schemas.capabilities import (
-    CapabilityCandidateResponse,
-    CapabilityVersionResponse,
-    CreateCapabilityCandidateRequest,
-    CreateCapabilityEvaluationResultRequest,
-    CreateCapabilityVersionRequest,
-)
-from riftx.capabilities import (
+from riftx.capabilities.models import (
     CAPABILITY_SCHEMA_VERSION,
-    CapabilityCandidateStatus,
     CapabilityDependency,
     CapabilityDependencyKind,
     CapabilityEffectClass,
@@ -26,11 +18,9 @@ from riftx.capabilities import (
     CapabilitySource,
     CapabilityTrustTier,
     ConfirmationPolicy,
-    EvaluationResultStatus,
     EvidenceContract,
     capability_manifest_digest,
     capability_pack_digest,
-    evaluation_report_digest,
 )
 from riftx.domain.enums import ApprovalLevel
 
@@ -135,30 +125,3 @@ def test_pack_digest_locks_exact_member_versions() -> None:
         pack.model_copy(update={"members": (member, member)}, deep=True).model_validate(
             {**pack.model_dump(), "members": [member, member]}
         )
-
-
-def test_api_commands_create_separate_version_candidate_and_evaluation_models() -> None:
-    capability, version = CreateCapabilityVersionRequest(manifest=manifest()).to_domain()
-    candidate = CreateCapabilityCandidateRequest(
-        proposed_manifest=manifest(version="1.1.0"),
-        proposed_by="operator-1",
-        source_run_id="run-1",
-    ).to_domain()
-    report = {"passed": True, "cases": ["eval.web.request-analysis"]}
-    evaluation = CreateCapabilityEvaluationResultRequest(
-        promotion_id="promotion-1",
-        evaluator="security-eval/v1",
-        status=EvaluationResultStatus.PASSED,
-        scenario_ids=("eval.web.request-analysis",),
-        report=report,
-    ).to_domain()
-
-    assert capability.capability_id == version.manifest.capability_id
-    assert version.manifest_digest == capability_manifest_digest(version.manifest)
-    assert candidate.status is CapabilityCandidateStatus.DRAFT
-    assert candidate.candidate_digest == capability_manifest_digest(
-        candidate.proposed_manifest
-    )
-    assert evaluation.report_digest == evaluation_report_digest(report)
-    assert CapabilityVersionResponse.from_domain(version).manifest == version.manifest
-    assert CapabilityCandidateResponse.from_domain(candidate).candidate_id == candidate.candidate_id

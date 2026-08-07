@@ -972,8 +972,8 @@ Codex 每完成一个 Slice 更新本表，并链接实现提交和验证结果�
 | Phase | Slice | 状态 | 实现提交 | 关键验证 | 备注 |
 | --- | --- | --- | --- | --- | --- |
 | 0 | 清理基线与备份 | completed | `703065b3` | Pentest 基线 `9 passed`；Alembic/Backup/Restore ready；wheel 与 CLI 启动通过 | 删除前置门已满足 |
-| 1 | Security Agent Harness | completed | 本提交 | Evaluation/Docs/E2E、Ruff、Phase Gate 通过 | 删除 10 个 Harness/Fixture 文件，净删约 1,300 行 |
-| 1 | Capability API Schema | pending | — | — | A2 |
+| 1 | Security Agent Harness | completed | `dc182854` | Evaluation/Docs/E2E、Ruff、Phase Gate 通过 | 删除 10 个 Harness/Fixture 文件，净删约 1,300 行 |
+| 1 | Capability API Schema | completed | 本提交 | API/OpenAPI、CLI、Capability、Pentest 回归通过 | 删除 248 行未接线 Schema 及自验证测试 |
 | 1 | Fact Promotion 写入栈 | pending | — | — | A3 |
 | 2 | Capability 公共写契约 | pending | — | — | C1 |
 | 2 | Capability 持久化写路径 | pending | — | — | C1 |
