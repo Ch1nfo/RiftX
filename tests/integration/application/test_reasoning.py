@@ -2,16 +2,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from riftx.application.errors import ApplicationConflictError
 from riftx.application.services import (
+    EvidenceApplicationService,
     QueryReasoningGraph,
     ReasoningGraphApplicationService,
+    RegisterArtifactSpanEvidence,
     TransitionReasoningNode,
 )
-from riftx.domain import Engagement, Objective, Run, RunKind
+from riftx.domain import Artifact, Engagement, Objective, Run, RunKind
 from riftx.evidence import (
     Evidence,
     EvidenceCreatorType,
@@ -26,6 +29,7 @@ from riftx.evidence import (
 from riftx.persistence import (
     Database,
     SQLAlchemyAgentSessionRepository,
+    SQLAlchemyArtifactRepository,
     SQLAlchemyEngagementRepository,
     SQLAlchemyEvidenceLedgerRepository,
     SQLAlchemyReasoningGraphRepository,
@@ -49,6 +53,41 @@ class Harness:
     database: Database
     service: ReasoningGraphApplicationService
     graphs: SQLAlchemyReasoningGraphRepository
+    runs: SQLAlchemyRunRepository
+    sessions: SQLAlchemyAgentSessionRepository
+    tasks: SQLAlchemyTaskGraphRepository
+    evidence: SQLAlchemyEvidenceLedgerRepository
+
+
+class _ArtifactSource:
+    data = b"tcp/80 open http"
+    artifact = SimpleNamespace(
+        id="artifact-tool-output",
+        run_id="run-1",
+        audit_id=None,
+        sha256="d" * 64,
+    )
+
+    async def read_content_slice(
+        self,
+        artifact_id: str,
+        *,
+        expected_run_id: str,
+        offset: int,
+        max_bytes: int,
+    ) -> SimpleNamespace:
+        assert artifact_id == self.artifact.id
+        assert expected_run_id == self.artifact.run_id
+        data = self.data[offset : offset + max_bytes]
+        return SimpleNamespace(
+            artifact=self.artifact,
+            data=data,
+            offset=offset,
+            next_offset=offset + len(data),
+        )
+
+    async def read_audit_content_slice(self, *_: object, **__: object) -> SimpleNamespace:
+        raise AssertionError("Public tool output must not use the Audit Artifact path")
 
 
 def evidence(
@@ -136,6 +175,17 @@ async def create_harness(tmp_path: Path) -> Harness:
                 workspace_path=str(tmp_path / run_id),
             )
         )
+    await SQLAlchemyArtifactRepository(database.session_factory).create(
+        Artifact(
+            id=_ArtifactSource.artifact.id,
+            run_id="run-1",
+            name="stdout.log",
+            path=str(tmp_path / "stdout.log"),
+            mime_type="application/octet-stream",
+            sha256=_ArtifactSource.artifact.sha256,
+            size=len(_ArtifactSource.data),
+        )
+    )
     sessions = SQLAlchemyAgentSessionRepository(database.session_factory)
     await sessions.create(
         AgentSession(id="session-1", run_id="run-1", model_profile="test")
@@ -185,7 +235,65 @@ async def create_harness(tmp_path: Path) -> Harness:
             graphs=graphs,
         ),
         graphs=graphs,
+        runs=runs,
+        sessions=sessions,
+        tasks=tasks,
+        evidence=ledger,
     )
+
+
+async def test_artifact_evidence_is_persisted_and_consumed_by_observation(
+    tmp_path: Path,
+) -> None:
+    harness = await create_harness(tmp_path)
+    source = _ArtifactSource()
+    evidence_service = EvidenceApplicationService(
+        runs=harness.runs,
+        sessions=harness.sessions,
+        tasks=harness.tasks,
+        artifacts=source,  # type: ignore[arg-type]
+        code=object(),  # type: ignore[arg-type]
+        ledger=harness.evidence,
+    )
+    try:
+        registered = await evidence_service.register_artifact_span(
+            RegisterArtifactSpanEvidence(
+                evidence_id="artifact-evidence",
+                run_id="run-1",
+                session_id="session-1",
+                task_id="task-1",
+                artifact_id=source.artifact.id,
+                start_offset=0,
+                end_offset=len(source.data),
+                creator_type=EvidenceCreatorType.AGENT,
+                created_by="primary",
+                trust_class=EvidenceTrustClass.UNTRUSTED_TOOL_OUTPUT,
+                redaction_status=EvidenceRedactionStatus.METADATA_ONLY,
+            )
+        )
+        graph = await harness.service.create_node(
+            node(
+                "artifact-observation",
+                ReasoningNodeKind.OBSERVATION,
+                ReasoningNodeStatus.RECORDED,
+                evidence_ids=(registered.id,),
+                session_id="session-1",
+                task_id="task-1",
+            ),
+            expected_graph_version=0,
+        )
+
+        restarted_ledger = SQLAlchemyEvidenceLedgerRepository(
+            harness.database.session_factory
+        )
+        restarted_graphs = SQLAlchemyReasoningGraphRepository(
+            harness.database.session_factory
+        )
+        assert await restarted_ledger.get(registered.id) == registered
+        assert await restarted_graphs.get("run-1") == graph
+        assert graph.nodes[0].evidence_ids == (registered.id,)
+    finally:
+        await harness.database.dispose()
 
 
 async def test_create_core_reasoning_nodes_and_keep_empty_hypothesis_unverified(

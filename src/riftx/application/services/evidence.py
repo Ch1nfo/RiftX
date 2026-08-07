@@ -9,9 +9,14 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from riftx.application.errors import ApplicationConflictError, EntityNotFoundError
+from riftx.application.errors import (
+    ApplicationConflictError,
+    EntityNotFoundError,
+    RepositoryConflictError,
+)
 from riftx.application.ports import RunRepository
 from riftx.code import CodeLocationContent
+from riftx.domain.base import new_id
 from riftx.evidence import (
     ArtifactSpanLocator,
     CodeLocationLocator,
@@ -89,6 +94,7 @@ class _Registration(BaseModel):
 
 
 class RegisterArtifactSpanEvidence(_Registration):
+    evidence_id: str | None = Field(default=None, min_length=1, max_length=64)
     artifact_id: str = Field(min_length=1, max_length=64)
     start_offset: int = Field(ge=0)
     end_offset: int = Field(ge=1)
@@ -176,37 +182,39 @@ class EvidenceApplicationService:
             artifact_sha256=content.artifact.sha256,
         )
         digest = hashlib.sha256(content.data).hexdigest()
-        return await self._ledger.create(
-            Evidence(
-                kind=EvidenceKind.ARTIFACT_SPAN,
-                source_uri=locator.source_uri,
-                digest=digest,
-                run_id=command.run_id,
-                session_id=command.session_id,
-                task_id=command.task_id,
-                creator_type=command.creator_type,
-                created_by=command.created_by,
-                trust_class=command.trust_class,
-                scope=scope,
-                redaction_status=command.redaction_status,
-                redaction_policy_ref=command.redaction_policy_ref,
-                replay=EvidenceReplayMetadata(
-                    strategy=EvidenceReplayStrategy.ARTIFACT_SLICE,
-                    replayable=True,
-                    expected_digest=digest,
-                    source_digest=content.artifact.sha256,
-                    parameters_digest=_parameters_digest(
-                        {
-                            "artifact_id": command.artifact_id,
-                            "end_offset": command.end_offset,
-                            "start_offset": command.start_offset,
-                        }
-                    ),
+        evidence = Evidence(
+            id=command.evidence_id or new_id(),
+            kind=EvidenceKind.ARTIFACT_SPAN,
+            source_uri=locator.source_uri,
+            digest=digest,
+            run_id=command.run_id,
+            session_id=command.session_id,
+            task_id=command.task_id,
+            creator_type=command.creator_type,
+            created_by=command.created_by,
+            trust_class=command.trust_class,
+            scope=scope,
+            redaction_status=command.redaction_status,
+            redaction_policy_ref=command.redaction_policy_ref,
+            replay=EvidenceReplayMetadata(
+                strategy=EvidenceReplayStrategy.ARTIFACT_SLICE,
+                replayable=True,
+                expected_digest=digest,
+                source_digest=content.artifact.sha256,
+                parameters_digest=_parameters_digest(
+                    {
+                        "artifact_id": command.artifact_id,
+                        "end_offset": command.end_offset,
+                        "start_offset": command.start_offset,
+                    }
                 ),
-                locator=locator,
-                artifact_id=command.artifact_id,
-            )
+            ),
+            locator=locator,
+            artifact_id=command.artifact_id,
         )
+        if command.evidence_id is None:
+            return await self._ledger.create(evidence)
+        return await self._create_idempotent(evidence)
 
     async def register_code_location(
         self,
@@ -326,6 +334,21 @@ class EvidenceApplicationService:
             target_refs=command.target_refs,
         )
 
+    async def _create_idempotent(self, evidence: Evidence) -> Evidence:
+        existing = await self._ledger.get(evidence.id)
+        if existing is not None:
+            return _same_evidence_or_conflict(existing, evidence)
+        try:
+            return await self._ledger.create(evidence)
+        except RepositoryConflictError as exc:
+            existing = await self._ledger.get(evidence.id)
+            if existing is None:
+                raise _conflict(
+                    "evidence_write_conflict",
+                    "Evidence changed before the registration committed",
+                ) from exc
+            return _same_evidence_or_conflict(existing, evidence)
+
 
 def _parameters_digest(parameters: dict[str, object]) -> str:
     canonical = json.dumps(
@@ -339,3 +362,16 @@ def _parameters_digest(parameters: dict[str, object]) -> str:
 
 def _conflict(code: str, message: str) -> ApplicationConflictError:
     return ApplicationConflictError(code, message)
+
+
+def _same_evidence_or_conflict(existing: Evidence, requested: Evidence) -> Evidence:
+    excluded = {"created_at", "ledger_digest"}
+    if existing.model_dump(mode="json", exclude=excluded) != requested.model_dump(
+        mode="json",
+        exclude=excluded,
+    ):
+        raise _conflict(
+            "evidence_idempotency_conflict",
+            "Evidence idempotency key was reused with different registration data",
+        )
+    return existing

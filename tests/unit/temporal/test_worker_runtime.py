@@ -222,6 +222,7 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
         captured["task_planner"] = kwargs["task_planner"]
         captured["working_memory_proposals"] = kwargs["working_memory_proposals"]
         captured["reasoning_proposals"] = kwargs["reasoning_proposals"]
+        captured["evidence_service"] = kwargs["evidence"]
         captured["task_worker_id"] = kwargs["worker_id"]
         captured["code_workspace"] = kwargs["code"]
         control_tools = real_control_tools(*args, **kwargs)  # type: ignore[arg-type]
@@ -298,6 +299,10 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
     assert isinstance(
         captured["reasoning_proposals"],
         worker_runtime.ReasoningGraphApplicationService,
+    )
+    assert isinstance(
+        captured["evidence_service"],
+        worker_runtime.EvidenceApplicationService,
     )
     assert captured["task_worker_id"] == "worker-local"
     assert captured["code_workspace"]._controlled_lsp is controlled_lsp

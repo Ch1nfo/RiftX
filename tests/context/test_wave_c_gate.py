@@ -150,6 +150,19 @@ def _processed_result(index: int, raw_marker: str) -> ProcessedToolResult:
     )
 
 
+def test_processed_tool_result_exposes_opaque_artifact_ids() -> None:
+    result = _processed_result(1, "bounded")
+    reference = result.raw_artifacts[0].model_copy(update={"artifact_id": "artifact-1"})
+
+    item = processed_tool_result_context_item(
+        result.model_copy(update={"raw_artifacts": [reference]})
+    )
+
+    assert isinstance(item.content, dict)
+    assert item.content["artifact_ids"] == {reference.uri: "artifact-1"}
+    assert item.content["artifact_refs"] == [reference.uri]
+
+
 async def test_wave_c_thirty_tool_call_context_gate(tmp_path: Path) -> None:
     config = tmp_path / "config"
     engagement = tmp_path / "engagement"

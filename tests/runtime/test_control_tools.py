@@ -15,6 +15,7 @@ from riftx.application.errors import ApplicationConflictError, PentestBudgetExce
 from riftx.application.services import (
     QueryReasoningGraph,
     ReasoningGraphQueryResult,
+    RegisterArtifactSpanEvidence,
 )
 from riftx.application.services.artifacts import ArtifactContentSlice
 from riftx.application.traffic import TrafficStatusClass
@@ -258,6 +259,28 @@ class FakeReasoningProposals:
             offset=command.offset,
             nodes=tuple(graph.nodes) if graph is not None else (),
             edges=tuple(graph.edges) if graph is not None else (),
+        )
+
+
+class FakeEvidenceRegistration:
+    def __init__(self) -> None:
+        self.calls: list[RegisterArtifactSpanEvidence] = []
+
+    async def register_artifact_span(
+        self,
+        command: RegisterArtifactSpanEvidence,
+    ) -> SimpleNamespace:
+        self.calls.append(command)
+        return SimpleNamespace(
+            id=command.evidence_id,
+            artifact_id=command.artifact_id,
+            source_uri=(
+                f"artifact://{command.artifact_id}"
+                f"#bytes={command.start_offset}-{command.end_offset}"
+            ),
+            digest="a" * 64,
+            ledger_digest="b" * 64,
+            replay=SimpleNamespace(replayable=True),
         )
 
 
@@ -1068,6 +1091,7 @@ def service(
     task_planner: FakeTaskPlanner | None = None,
     working_memory_proposals: FakeWorkingMemoryProposals | None = None,
     reasoning_proposals: FakeReasoningProposals | None = None,
+    evidence: FakeEvidenceRegistration | None = None,
     budget_exhaustion_handler: object | None = None,
     worker_id: str = "runtime",
 ) -> tuple[RuntimeControlToolService, FakeEvents, FakeTranscript, FakeExecutions]:
@@ -1078,6 +1102,7 @@ def service(
         tools=tools or object(),  # type: ignore[arg-type]
         executions=execution_service,  # type: ignore[arg-type]
         artifacts=artifacts or FakeArtifacts(),  # type: ignore[arg-type]
+        evidence=evidence,  # type: ignore[arg-type]
         events=events,
         transcript=transcript,  # type: ignore[arg-type]
         skills=skills,
@@ -1276,6 +1301,87 @@ async def test_primary_cognitive_tools_inject_scope_and_fixed_candidate_states()
     assert all(node.run_id == "run-1" for node in reasoning.graph.nodes)
     assert all(node.session_id == "session-1" for node in reasoning.graph.nodes)
     assert all(node.created_by == "primary" for node in reasoning.graph.nodes)
+
+
+async def test_primary_registers_artifact_evidence_for_reasoning() -> None:
+    evidence = FakeEvidenceRegistration()
+    reasoning = FakeReasoningProposals()
+    control, _, transcript, _ = service(
+        evidence=evidence,
+        reasoning_proposals=reasoning,
+        runs=FakeRuns(),
+    )
+
+    registered = await control(
+        SCOPE,
+        "register_artifact_evidence",
+        {
+            "artifact_id": "artifact-1",
+            "start_offset": 4,
+            "end_offset": 12,
+            "task_id": "task-1",
+        },
+        "evidence-call",
+    )
+    observation = await control(
+        SCOPE,
+        "record_observation",
+        {
+            "expected_graph_version": 0,
+            "node_id": "observation-1",
+            "task_id": "task-1",
+            "claim": "The registered output contains the observed service marker",
+            "evidence_ids": [registered["evidence_id"]],
+        },
+        "observation-call",
+    )
+
+    command = evidence.calls[0]
+    assert command.run_id == "run-1"
+    assert command.session_id == "session-1"
+    assert command.task_id == "task-1"
+    assert command.artifact_id == "artifact-1"
+    assert command.created_by == "primary"
+    assert command.creator_type.value == "agent"
+    assert command.trust_class.value == "untrusted_tool_output"
+    assert command.redaction_status.value == "metadata_only"
+    assert registered == {
+        "artifact_id": "artifact-1",
+        "digest": "a" * 64,
+        "evidence_id": command.evidence_id,
+        "ledger_digest": "b" * 64,
+        "replayable": True,
+        "source_uri": "artifact://artifact-1#bytes=4-12",
+    }
+    assert observation["node"]["evidence_ids"] == [command.evidence_id]
+    evidence_draft = transcript.rows[0][1]
+    assert evidence_draft.artifact_ids == ["artifact-1"]
+    assert evidence_draft.structured_content["source_refs"] == [
+        f"evidence://{command.evidence_id}",
+        "artifact://artifact-1",
+    ]
+
+
+async def test_subagent_cannot_register_artifact_evidence() -> None:
+    evidence = FakeEvidenceRegistration()
+    control, _, _, _ = service(evidence=evidence, runs=FakeRuns())
+    subagent_scope = RuntimeToolScope(
+        run_id="run-1",
+        session_id="session-subagent",
+        agent_id="subagent",
+        model_profile="test-profile",
+    )
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await control(
+            subagent_scope,
+            "register_artifact_evidence",
+            {"artifact_id": "artifact-1", "start_offset": 0, "end_offset": 1},
+            "evidence-call",
+        )
+
+    assert captured.value.code == "cognitive_tools_primary_required"
+    assert evidence.calls == []
 
 
 async def test_cognitive_tools_reject_model_owned_status_and_subagents() -> None:

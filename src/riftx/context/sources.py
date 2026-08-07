@@ -344,6 +344,11 @@ def processed_tool_result_context_item(
     """Expose only the bounded summary and logical Artifact refs to the model."""
 
     artifact_refs = [reference.uri for reference in result.raw_artifacts]
+    artifact_ids = {
+        reference.uri: reference.artifact_id
+        for reference in result.raw_artifacts
+        if reference.artifact_id is not None
+    }
     return ContextItem(
         id=f"tool-result:{result.execution_id}",
         layer=ContextLayer.RELEVANT_TOOL_RESULTS,
@@ -357,6 +362,7 @@ def processed_tool_result_context_item(
                 "exit_code": result.exit_code,
                 "context_summary": result.context_summary,
                 "artifact_refs": artifact_refs,
+                "artifact_ids": artifact_ids,
             },
         ),
         priority=75,

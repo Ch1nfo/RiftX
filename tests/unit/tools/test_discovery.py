@@ -192,6 +192,7 @@ async def test_task_planner_resident_schemas_are_strict_and_role_scoped(
     }.isdisjoint(SUBAGENT_RESIDENT_TOOL_IDS)
     cognitive_tools = {
         "propose_plan_update",
+        "register_artifact_evidence",
         "record_observation",
         "propose_fact",
         "propose_hypothesis",
@@ -207,6 +208,11 @@ async def test_task_planner_resident_schemas_are_strict_and_role_scoped(
     assert schemas["record_observation"]["parameters"]["properties"]["evidence_ids"][
         "minItems"
     ] == 1
+    assert schemas["register_artifact_evidence"]["parameters"]["required"] == [
+        "artifact_id",
+        "start_offset",
+        "end_offset",
+    ]
     assert "status" not in schemas["propose_finding"]["parameters"]["properties"]
 
 

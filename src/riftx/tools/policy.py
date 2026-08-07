@@ -314,6 +314,10 @@ AGENT_TOOL_POLICIES = MappingProxyType(
             AgentToolEffect.DURABLE_WRITE,
             AgentToolAuthorization.RUN_CONTEXT,
         ),
+        "register_artifact_evidence": AgentToolPolicy(
+            AgentToolEffect.DURABLE_WRITE,
+            AgentToolAuthorization.RUN_CONTEXT,
+        ),
         "record_observation": AgentToolPolicy(
             AgentToolEffect.DURABLE_WRITE,
             AgentToolAuthorization.RUN_CONTEXT,

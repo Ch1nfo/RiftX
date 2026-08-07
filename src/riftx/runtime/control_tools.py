@@ -7,6 +7,7 @@ import hashlib
 import json
 from collections.abc import Awaitable, Callable, Collection
 from typing import Literal, Protocol
+from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
@@ -19,8 +20,10 @@ from riftx.application.errors import (
 )
 from riftx.application.services import (
     ArtifactApplicationService,
+    EvidenceApplicationService,
     QueryReasoningGraph,
     ReasoningGraphQueryResult,
+    RegisterArtifactSpanEvidence,
     TrafficMetadataApplicationService,
 )
 from riftx.application.services.runs import require_interactive_run_operation
@@ -49,6 +52,11 @@ from riftx.domain import (
     TranscriptMessageDraft,
 )
 from riftx.domain.base import new_id
+from riftx.evidence import (
+    EvidenceCreatorType,
+    EvidenceRedactionStatus,
+    EvidenceTrustClass,
+)
 from riftx.execution import ExecutionService, build_execution_key
 from riftx.mcp import MCPApplicationService
 from riftx.reasoning import (
@@ -292,6 +300,13 @@ class _ReadArtifactArguments(_Arguments):
     artifact_id: str = Field(min_length=1)
     offset: int = Field(default=0, ge=0)
     max_bytes: int = Field(default=64 * 1024, ge=1, le=64 * 1024)
+
+
+class _RegisterArtifactEvidenceArguments(_Arguments):
+    artifact_id: str = Field(min_length=1, max_length=64)
+    start_offset: int = Field(ge=0)
+    end_offset: int = Field(ge=1)
+    task_id: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class _CompleteRunArguments(_Arguments):
@@ -649,6 +664,7 @@ class RuntimeControlToolService:
         artifacts: ArtifactApplicationService,
         events: RunEventWriter,
         transcript: TranscriptWriter,
+        evidence: EvidenceApplicationService | None = None,
         skills: ProgressiveSkillContextManager | None = None,
         techniques: TechniqueContextManager | None = None,
         code: CodeWorkspaceService | None = None,
@@ -670,6 +686,7 @@ class RuntimeControlToolService:
         self._tools = tools
         self._executions = executions
         self._artifacts = artifacts
+        self._evidence = evidence
         self._events = events
         self._transcript = transcript
         self._skills = skills
@@ -1495,6 +1512,36 @@ class RuntimeControlToolService:
                 "encoding": encoding,
                 "content": content,
             }
+        if tool_name == "register_artifact_evidence":
+            self._require_primary_cognition(scope)
+            await self._interactive_run(scope.run_id)
+            evidence_service = self._require_evidence()
+            evidence_arguments = _RegisterArtifactEvidenceArguments.model_validate(
+                raw_arguments
+            )
+            evidence = await evidence_service.register_artifact_span(
+                RegisterArtifactSpanEvidence(
+                    evidence_id=_artifact_evidence_id(scope, call_id),
+                    run_id=scope.run_id,
+                    session_id=scope.session_id,
+                    task_id=evidence_arguments.task_id,
+                    artifact_id=evidence_arguments.artifact_id,
+                    start_offset=evidence_arguments.start_offset,
+                    end_offset=evidence_arguments.end_offset,
+                    creator_type=EvidenceCreatorType.AGENT,
+                    created_by=scope.agent_id,
+                    trust_class=EvidenceTrustClass.UNTRUSTED_TOOL_OUTPUT,
+                    redaction_status=EvidenceRedactionStatus.METADATA_ONLY,
+                )
+            )
+            return {
+                "evidence_id": evidence.id,
+                "artifact_id": evidence.artifact_id,
+                "source_uri": evidence.source_uri,
+                "digest": evidence.digest,
+                "ledger_digest": evidence.ledger_digest,
+                "replayable": evidence.replay.replayable,
+            }
         if tool_name == "list_ready_tasks":
             planner = self._require_task_planner()
             list_ready_arguments = _ListReadyTasksArguments.model_validate(raw_arguments)
@@ -1806,6 +1853,11 @@ class RuntimeControlToolService:
             raise RuntimeError("Reasoning Proposal service is not configured")
         return self._reasoning_proposals
 
+    def _require_evidence(self) -> EvidenceApplicationService:
+        if self._evidence is None:
+            raise RuntimeError("Evidence registration service is not configured")
+        return self._evidence
+
     @staticmethod
     def _require_primary_planner(scope: RuntimeToolScope) -> None:
         if scope.agent_id != "primary":
@@ -1922,6 +1974,15 @@ def _reasoning_mutation_payload(graph: ReasoningGraph, node_id: str) -> dict[str
             if edge.source_node_id == node_id or edge.target_node_id == node_id
         ],
     }
+
+
+def _artifact_evidence_id(scope: RuntimeToolScope, call_id: str) -> str:
+    return str(
+        uuid5(
+            NAMESPACE_URL,
+            f"riftx:{scope.run_id}:{scope.session_id}:artifact-evidence:{call_id}",
+        )
+    )
 
 
 def _execution_payload(execution: Execution) -> dict[str, object]:
@@ -2301,6 +2362,14 @@ def _source_refs(
     *,
     result: object | None = None,
 ) -> list[str]:
+    if tool_name == "register_artifact_evidence" and isinstance(result, dict):
+        evidence_refs: list[str] = []
+        if evidence_id := _string_argument(result, "evidence_id"):
+            evidence_refs.append(f"evidence://{evidence_id}")
+        if artifact_id := _string_argument(result, "artifact_id"):
+            evidence_refs.append(f"artifact://{artifact_id}")
+        if evidence_refs:
+            return evidence_refs
     if tool_name == "call_mcp_tool" and isinstance(result, dict):
         mcp_refs: list[str] = []
         if tool_id := _string_argument(result, "tool_id"):

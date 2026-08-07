@@ -85,6 +85,7 @@ RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "reopen_task",
     "cancel_task",
     "propose_plan_update",
+    "register_artifact_evidence",
     "record_observation",
     "propose_fact",
     "propose_hypothesis",
@@ -1071,6 +1072,9 @@ def _resident_schema(
         "propose_plan_update": (
             "Propose a Reducer-validated Working Memory focus or legacy plan update."
         ),
+        "register_artifact_evidence": (
+            "Register one exact immutable Artifact byte span as replayable Evidence."
+        ),
         "record_observation": "Record an Evidence-backed Observation in the Reasoning Graph.",
         "propose_fact": "Propose an Evidence-backed Fact Candidate for later promotion.",
         "propose_hypothesis": "Propose an unverified Hypothesis for structured investigation.",
@@ -1880,6 +1884,18 @@ def _resident_schema(
             "result_status",
             "result_summary",
         ]
+    elif tool_id == "register_artifact_evidence":
+        properties = {
+            "artifact_id": {"type": "string", "minLength": 1, "maxLength": 64},
+            "start_offset": {"type": "integer", "minimum": 0},
+            "end_offset": {"type": "integer", "minimum": 1},
+            "task_id": {
+                "type": ["string", "null"],
+                "minLength": 1,
+                "maxLength": 64,
+            },
+        }
+        required = ["artifact_id", "start_offset", "end_offset"]
     elif tool_id in {
         "record_observation",
         "propose_fact",

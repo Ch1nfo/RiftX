@@ -31,8 +31,11 @@ class _Runs:
 
 
 class _Sessions:
+    def __init__(self, run_id: str = "run-1") -> None:
+        self.run_id = run_id
+
     async def get(self, session_id: str) -> SimpleNamespace | None:
-        return SimpleNamespace(id=session_id, run_id="run-1")
+        return SimpleNamespace(id=session_id, run_id=self.run_id)
 
 
 class _Tasks:
@@ -43,11 +46,11 @@ class _Tasks:
 
 
 class _Artifacts:
-    def __init__(self) -> None:
+    def __init__(self, run_id: str = "run-1") -> None:
         self.data = b"selected"
         self.artifact = SimpleNamespace(
             id="artifact-1",
-            run_id="run-1",
+            run_id=run_id,
             audit_id=None,
             sha256="a" * 64,
         )
@@ -92,6 +95,9 @@ class _Ledger:
         self.items.append(evidence)
         return evidence
 
+    async def get(self, evidence_id: str) -> Evidence | None:
+        return next((item for item in self.items if item.id == evidence_id), None)
+
 
 def _run() -> Run:
     return Run(
@@ -104,14 +110,18 @@ def _run() -> Run:
     )
 
 
-def _service() -> tuple[EvidenceApplicationService, _Artifacts, _Code, _Ledger]:
-    artifacts = _Artifacts()
+def _service(
+    *,
+    artifact_run_id: str = "run-1",
+    session_run_id: str = "run-1",
+) -> tuple[EvidenceApplicationService, _Artifacts, _Code, _Ledger]:
+    artifacts = _Artifacts(artifact_run_id)
     code = _Code()
     ledger = _Ledger()
     return (
         EvidenceApplicationService(
             runs=_Runs(_run()),  # type: ignore[arg-type]
-            sessions=_Sessions(),  # type: ignore[arg-type]
+            sessions=_Sessions(session_run_id),  # type: ignore[arg-type]
             tasks=_Tasks(),  # type: ignore[arg-type]
             artifacts=artifacts,  # type: ignore[arg-type]
             code=code,
@@ -144,6 +154,113 @@ async def test_register_artifact_span_hashes_verified_bytes_and_server_scope() -
     assert evidence.scope.engagement_id == "engagement-1"
     assert evidence.locator.artifact_sha256 == "a" * 64  # type: ignore[union-attr]
     assert evidence.replay.source_digest == "a" * 64
+
+
+async def test_register_artifact_span_reuses_matching_deterministic_evidence() -> None:
+    service, artifacts, _, ledger = _service()
+    command = RegisterArtifactSpanEvidence(
+        evidence_id="stable-evidence",
+        run_id="run-1",
+        session_id="session-1",
+        task_id="task-1",
+        artifact_id="artifact-1",
+        start_offset=10,
+        end_offset=10 + len(artifacts.data),
+        creator_type=EvidenceCreatorType.AGENT,
+        created_by="primary",
+        trust_class=EvidenceTrustClass.UNTRUSTED_TOOL_OUTPUT,
+        redaction_status=EvidenceRedactionStatus.METADATA_ONLY,
+    )
+
+    first = await service.register_artifact_span(command)
+    replayed = await service.register_artifact_span(command)
+
+    assert replayed == first
+    assert ledger.items == [first]
+
+
+async def test_register_artifact_span_rejects_changed_idempotent_request() -> None:
+    service, artifacts, _, _ = _service()
+    command = RegisterArtifactSpanEvidence(
+        evidence_id="stable-evidence",
+        run_id="run-1",
+        artifact_id="artifact-1",
+        start_offset=10,
+        end_offset=10 + len(artifacts.data),
+        creator_type=EvidenceCreatorType.AGENT,
+        created_by="primary",
+        trust_class=EvidenceTrustClass.UNTRUSTED_TOOL_OUTPUT,
+        redaction_status=EvidenceRedactionStatus.METADATA_ONLY,
+    )
+    await service.register_artifact_span(command)
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await service.register_artifact_span(
+            command.model_copy(update={"created_by": "different-agent"})
+        )
+
+    assert captured.value.code == "evidence_idempotency_conflict"
+
+
+@pytest.mark.parametrize(
+    ("updates", "expected_code"),
+    [
+        ({"task_id": "missing-task"}, "evidence_task_owner_mismatch"),
+        ({"end_offset": 17}, "evidence_artifact_span_invalid"),
+    ],
+)
+async def test_register_artifact_span_rejects_invalid_owner_or_span(
+    updates: dict[str, object],
+    expected_code: str,
+) -> None:
+    service, artifacts, _, _ = _service()
+    command = RegisterArtifactSpanEvidence(
+        run_id="run-1",
+        artifact_id="artifact-1",
+        start_offset=10,
+        end_offset=10 + len(artifacts.data),
+        creator_type=EvidenceCreatorType.AGENT,
+        created_by="primary",
+        trust_class=EvidenceTrustClass.UNTRUSTED_TOOL_OUTPUT,
+        redaction_status=EvidenceRedactionStatus.METADATA_ONLY,
+    ).model_copy(update=updates)
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await service.register_artifact_span(command)
+
+    assert captured.value.code == expected_code
+
+
+@pytest.mark.parametrize(
+    ("service_kwargs", "session_id", "expected_code"),
+    [
+        ({"artifact_run_id": "run-2"}, None, "evidence_artifact_span_invalid"),
+        ({"session_run_id": "run-2"}, "session-1", "evidence_session_owner_mismatch"),
+    ],
+)
+async def test_register_artifact_span_rejects_cross_run_sources(
+    service_kwargs: dict[str, str],
+    session_id: str | None,
+    expected_code: str,
+) -> None:
+    service, artifacts, _, _ = _service(**service_kwargs)
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await service.register_artifact_span(
+            RegisterArtifactSpanEvidence(
+                run_id="run-1",
+                session_id=session_id,
+                artifact_id="artifact-1",
+                start_offset=10,
+                end_offset=10 + len(artifacts.data),
+                creator_type=EvidenceCreatorType.AGENT,
+                created_by="primary",
+                trust_class=EvidenceTrustClass.UNTRUSTED_TOOL_OUTPUT,
+                redaction_status=EvidenceRedactionStatus.METADATA_ONLY,
+            )
+        )
+
+    assert captured.value.code == expected_code
 
 
 async def test_register_code_location_binds_file_digest_session_and_task() -> None:

@@ -25,6 +25,7 @@ from riftx.application.services import (
     AuditControlApplicationService,
     AuditRunStateProjector,
     ClosureVerifierApplicationService,
+    EvidenceApplicationService,
     FindingApplicationService,
     NodeApplicationService,
     NodeHeartbeat,
@@ -1218,6 +1219,14 @@ async def build_temporal_worker(
             artifacts=ArtifactCodePublisher(artifact_service),
             controlled_lsp=controlled_lsp,
         )
+        evidence_service = EvidenceApplicationService(
+            runs=run_repository,
+            sessions=agent_session_repository,
+            tasks=task_graph_repository,
+            artifacts=artifact_service,
+            code=code_workspace,
+            ledger=evidence_ledger_repository,
+        )
         git_workspace = GitWorkspaceService(run_repository)
         model_registry = ModelProfileRegistry(
             config.models.path.expanduser(),
@@ -1311,6 +1320,7 @@ async def build_temporal_worker(
             tools=tool_context,
             executions=execution_service,
             artifacts=artifact_service,
+            evidence=evidence_service,
             events=event_repository,
             transcript=transcript_repository,
             skills=skill_context,
