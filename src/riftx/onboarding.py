@@ -146,8 +146,12 @@ def resolve_onboard_tool_template(explicit_path: Path | None = None) -> Path:
         (explicit_path,)
         if explicit_path is not None
         else (
-            Path(__file__).resolve().parents[2] / "configs" / "tools.yaml",
-            Path(sysconfig.get_path("data")) / "share" / "riftx" / "templates" / "tools.yaml",
+            Path(__file__).resolve().parents[2] / "configs" / "tools.example.yaml",
+            Path(sysconfig.get_path("data"))
+            / "share"
+            / "riftx"
+            / "templates"
+            / "tools.example.yaml",
         )
     )
     for candidate in candidates:

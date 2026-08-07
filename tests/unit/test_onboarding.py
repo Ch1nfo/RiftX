@@ -221,10 +221,10 @@ def test_onboarding_removes_a_new_file_when_directory_fsync_fails(
 
 def test_onboarding_tool_template_is_packaged_from_the_authoritative_config() -> None:
     template = resolve_onboard_tool_template()
-    assert template.name == "tools.yaml"
+    assert template.name == "tools.example.yaml"
     assert load_tool_config(template).tools
 
     project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     assert project["tool"]["setuptools"]["data-files"]["share/riftx/templates"] == [
-        "configs/tools.yaml"
+        "configs/tools.example.yaml"
     ]
