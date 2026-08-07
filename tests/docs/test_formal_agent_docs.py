@@ -43,15 +43,18 @@ def test_plan_and_ledger_share_the_current_delivery_route() -> None:
     assert [status.strip() for _stage_id, _name, status, _result in stages] == [
         "completed",
         "completed",
-        "in progress；C3 当前施工",
-        "pending",
+        "completed",
+        "in progress；D1 当前施工",
         "pending",
     ]
-    assert "### 8.3 C3：结论、Closure 与 Report（当前唯一实现切片）" in plan_text
-    assert "- Stage：`Pentest-first V1 — Stage C 状态化 Web 与报告`" in ledger_text
-    assert "- Current task：`C3 — 结论、Closure 与 Report`" in ledger_text
-    assert "85decf8d" in plan_text
-    assert "85decf8d" in ledger_text
+    assert (
+        "### 9.0 D1：Operator Skill 生命周期门禁（当前唯一实现切片）"
+        in plan_text
+    )
+    assert "- Stage：`Pentest-first V1 — Stage D 用户驱动能力成长`" in ledger_text
+    assert "- Current task：`D1 — Operator Skill 生命周期门禁`" in ledger_text
+    assert "a8b29a4c" in plan_text
+    assert "a8b29a4c" in ledger_text
 
 
 def test_adr_freezes_all_workload_and_system_boundaries() -> None:

@@ -32,8 +32,8 @@
 
 ## 2. Current wave
 
-- Stage：`Pentest-first V1 — Stage C 状态化 Web 与报告`
-- Current task：`C3 — 结论、Closure 与 Report`
+- Stage：`Pentest-first V1 — Stage D 用户驱动能力成长`
+- Current task：`D1 — Operator Skill 生命周期门禁`
 - Status：`in_progress`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
@@ -55,13 +55,15 @@
 - Completed predecessor：Stage B 网络服务专业闭环，implementation commits `54c2489b`、`c7709790`、`5018f071`、`b2193139`。
 - Completed predecessor：Stage C/C1 最小身份/对象授权靶场，implementation commit `d73a0c86`。
 - Completed predecessor：Stage C/C2 身份、状态与最小验证，implementation commit `85decf8d`。
+- Completed predecessor：Stage C/C3 结论、Closure 与 Report，implementation commit `a8b29a4c`。
 - Product behavior：PACK-302 已交付可重复运行且零覆盖的 `riftx onboard`、顶级 `riftx doctor`、live overlay、本地操作员只读 `/api/v1/system/diagnostics`、有真实修复语义的 `riftx doctor --fix`、Onboard 后可直接运行的两个安全 Demo，以及本地只读 Capability/Pack 检查命令；Onboard 复用现有 Runtime/Model/Tool/Pack 生产路径初始化用户级配置、完整 Alembic schema、22 个 Official Pack 与 66 个 active lock；Pack 持久化写入具备 SQLite 一致性备份、双端 inode identity、恢复后完整性复检和失败自动回滚；Doctor `backup_restore` 已改为只读真实 readiness，只在已到 Alembic head 的 file-backed SQLite、当前用户所有的普通数据库文件和安全的 owner-only 备份目录前置条件全部成立时返回 `ready`，不为诊断创建备份或替换数据库。
 - Completed PEN-500 implementation commits：ADR `315039fc`；Domain/持久化 `86aaecdf`；Workflow/Runner Identity `e2314e9b`；Effect Policy/Interactive Guard `8b9ef440`；专用 Admission/Application/API 创建入口 `8f1b2554`；Capability Selection 原子绑定 `33c863ea`；Pentest status/API `70f6f4a0`；Pentest CLI `2271bc8e`；Attack Surface `9a4714fc`；隔离生命周期 `ca12ad9b`；目标交互预算 `ad91c3f4`、`2c0f8004`；运行中用量 `73288673`；Model/Token/Duration 门禁 `b6b5f739`；Tool/Duration 门禁 `53812397`；统一预算停止 `1c379dcc`。
 - Verification：阶段 A 完整 Control Plane `67 passed`；Runtime/Execution/Target HTTP/Temporal Worker `467 passed`；预算处理聚焦回归 `215 passed`；全仓 Ruff passed；6 个变更核心源文件 scoped mypy passed；Alembic 单 head `7b3d1e5f9a24`；`git diff --check` passed。
 - Stage B verification：B4 受影响 Report/Closure/Worker 回归 `78 passed`；完整 Control Plane `68 passed`；最终聚焦回归 `19 passed`；全仓 Ruff passed；3 个变更生产文件 scoped mypy passed；`git diff --check` passed。
 - Stage C/C1 verification：聚焦 E2E `1 passed`；Target HTTP 受影响回归 `47 passed`；完整 Control Plane 加 C1 `69 passed`；全仓 Ruff passed；2 个新测试文件 scoped mypy passed；`git diff --check` passed。
 - Stage C/C2 verification：状态化 Web E2E `2 passed`；Target HTTP `63 passed`；Runtime Control Tools `52 passed`；完整 Control Plane `68 passed`；Worker `13 passed`；Tool discovery `11 passed`；全仓 Ruff passed；6 个变更生产文件与 3 个新增/变更测试文件 scoped mypy passed；`git diff --check` passed。`runtime/control_tools.py` 单文件仍仅命中既有 62 个变量复用类型错误。
-- Next delivery slice：复用 C2 的 Evidence、Reasoning 与 Attempt 创建一个幂等 Draft Finding，完成 Closure 和 JSON/Markdown Report；验证链仅由现有持久事实投影，不新增 Attack Chain Domain、表、Graph、Browser 或 Scanner。
+- Stage C/C3 verification：状态化 Web E2E `2 passed`；Report Application `2 passed`；Temporal Activities `23 passed`；Target HTTP `63 passed`；Runtime Control Tools `52 passed`；Worker Runtime `13 passed`；完整 Control Plane `68 passed`；文档合同 `3 passed`；全仓 Ruff passed；`reports.py`、`api/runtime.py`、`temporal/worker_runtime.py` 与状态化 Web 测试 scoped mypy passed；`git diff --check` passed。`test_control_plane.py` 单文件 mypy 仍仅命中既有 5177–5179 行 3 个 `object` 索引错误。
+- Next delivery slice：复用 Progressive Skill、Capability Version/Status 和 Pentest Selection，让 Operator Skill 经静态验证、注册、显式启用后才能进入新 Pentest，并关闭禁用、回滚和旧 Run 快照语义；不新增表、Marketplace、Promotion 工作流或 UI。
 
 ## 3. 研究与实现基线
 
@@ -1101,7 +1103,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 
 ### Stage C：状态化 Web 与报告
 
-- Status：in_progress
+- Status：completed
 - Started：2026-08-07
 - C1 resettable target slice：`d73a0c86` 新增仓库内状态化 localhost HTTP 靶场，每次绑定随机端口并在测试后关闭；只包含 Alice/Bob、两个对象、登录、各自所有权基线和一个确定性跨对象授权分支。
 - C1 production boundary E2E：复用现有 Pentest Admission、Target HTTP、Traffic、Scope、Approval 和 Target Interaction Budget；未批准与越界请求零网络副作用，Alice/Bob 登录和各自对象访问成功，Alice 访问 Bob 对象的分支可重复，第六次目标交互在网络前耗尽预算并暂停 Run。
@@ -1118,7 +1120,23 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 - C2 verification：状态化 Web E2E `2 passed`；Target HTTP `63 passed`；Runtime Control Tools `52 passed`；完整 Control Plane `68 passed`；Worker `13 passed`；Tool discovery `11 passed`；全仓 Ruff passed；6 个变更生产文件与 3 个新增/变更测试文件 scoped mypy passed；`git diff --check` passed。
 - C2 non-goals upheld：未新增表、migration、Pack、Browser 场景、Crawler、Fuzzer、Scanner、Planner、Graph、Worker 或 UI，未创建 Finding、Report 或独立 Attack Chain。
 - C2 implementation commit：`85decf8d`。
-- Completion：C2 已完成；当前唯一施工切片是 C3 结论、Closure 与 Report，不建设新的 Attack Chain 系统。
+- Completion：C2 已完成；后续 C3 已关闭专业结果与报告。
+- C3 professional result：`a8b29a4c` 将跨对象 Observation 投影为 `VULNERABILITY_CANDIDATE` 和幂等 Draft Finding；Finding 引用受保护跨对象 Artifact/Evidence，并明确 Alice 前置、只改变对象 ID 的复现动作、影响、修复和未测试范围；不自动 Confirmed。
+- C3 failure semantics：未授权 Credential Reference 作为失败 Attempt 持久，明确其在网络前阻断且不是目标安全结论；成功跨对象 Attempt 与 Reasoning 由现有 Report Source 投影。
+- C3 reports：现有 `ReportApplicationService` 生成 JSON/Markdown，Markdown 增加 Pentest Evidence Chain 和 Attempt 摘要；Closure、Finding、Reasoning、Attempt 和两种 Report 经 Control Plane 重建可恢复，`reuse_existing` 不重复生成。
+- C3 safety：Secret、Credential 真实值、受保护 HTTP 原始体和本地路径不进入 Report；受保护 Finding Evidence 仅提供安全元数据且 `content_url` 为空。
+- C3 verification：状态化 Web E2E `2 passed`；Report Application `2 passed`；Temporal Activities `23 passed`；Target HTTP `63 passed`；Runtime Control Tools `52 passed`；Worker Runtime `13 passed`；完整 Control Plane `68 passed`；全仓 Ruff passed；3 个生产文件与状态化 Web 测试 scoped mypy passed；`git diff --check` passed。
+- C3 non-goals upheld：未新增表、migration、Pack、Attack Chain Domain、Browser、Crawler、Fuzzer、Scanner、Planner、Graph、Worker 或 UI。
+- C3 implementation commit：`a8b29a4c`。
+- Completion：Stage C 已完成；当前唯一施工切片是 D1 Operator Skill 生命周期门禁。
+
+### Stage D：用户驱动能力成长
+
+- Status：in_progress
+- Started：2026-08-07
+- D1 gap：Operator Skill 已能被 Progressive Skill Registry 校验、按 Session 固定快照并在重启后恢复，但显式 Skill ID 目前仍可绕过 Capability Version Status 直接进入 Pentest。
+- D1 target：本地 Operator Skill 经静态验证后幂等注册为 `approved` Skill Capability Version，必须经显式启用才可被新 Pentest 选择；禁用和回滚只影响新 Run，旧 Run 保留固定快照。
+- D1 non-goals：不新增表、Marketplace、Registry Service、Capability Candidate/Promotion 工作流、自动批准、复盘 UI 或自动改写 Skill。
 
 ## 9. Known pre-existing worktree state
 

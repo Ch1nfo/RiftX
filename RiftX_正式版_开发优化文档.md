@@ -8,9 +8,9 @@
 >
 > 当前分支：`ch1nfo/riftx-3-code-audit`
 >
-> 已提交基线：`85decf8d`；C1 实现基线：`d73a0c86`
+> 已提交基线：`a8b29a4c`；C1 实现基线：`d73a0c86`
 >
-> 当前施工：C3 状态化 Web 结论、Closure 与 Report；C2 已完成并独立提交
+> 当前施工：D1 Operator Skill 注册、批准、启用与 Pentest Selection 门禁；阶段 C 已完成
 >
 > 实施事实与测试账本：[`docs/implementation/FORMAL_AGENT_PROGRESS.md`](docs/implementation/FORMAL_AGENT_PROGRESS.md)
 >
@@ -31,12 +31,11 @@ RiftX 当前已经存在过度平台化，但还没有证据支持大规模删�
 - “越用越好用”的能力添加闭环尚未兑现；
 - 默认产品面仍更像通用 Agent 平台，而不是专注的渗透测试 Agent。
 
-因此，后续只做四件事：
+因此，后续只做三件事：
 
-1. 完成状态化 Web 专业闭环；
-2. 完成一次用户 Skill 添加、选择、复盘、禁用和回滚；
-3. 收缩默认入口、初始化和文档，不先重写架构；
-4. 只删除已证明无生产消费者、无兼容价值且不承担安全责任的代码。
+1. 完成一次用户 Skill 添加、选择、复盘、禁用和回滚；
+2. 收缩默认入口、初始化和文档，不先重写架构；
+3. 只删除已证明无生产消费者、无兼容价值且不承担安全责任的代码。
 
 当前禁止继续建设新的通用平台能力。任何新工作都必须直接改善下列至少一项：
 
@@ -124,6 +123,7 @@ RiftX 的唯一正式版目标是：
 | 网络服务闭环 | 枚举、Artifact、Evidence、Hypothesis、最小验证、Draft Finding、Negative Result、Closure、JSON Report 已完成 | 阶段 B completed |
 | 状态化 Web 靶场 | Alice/Bob、两个对象、登录、所有权基线、跨对象分支和预算暂停已完成 | 阶段 C1 completed |
 | 状态化 Web 身份证据 | Credential Reference、两身份基线、跨对象 Attempt、Evidence、Reasoning 和重启重建已完成 | 阶段 C2 completed |
+| 状态化 Web 专业结果 | Draft Finding、Closure、JSON/Markdown Report、Attempt 投影和重放幂等已完成 | 阶段 C3 completed |
 | 能力底座 | Capability、Version、Digest、Provenance、Selection、Pack、Progressive Skill 已存在 | 缺少用户闭环 |
 
 已完成主线提交：
@@ -136,6 +136,7 @@ b2193139  feat(pentest): close network service reporting
 d73a0c86  feat(pentest): establish stateful web target
 9c0fe158  docs(plan): advance stateful web verification
 85decf8d  feat(pentest): authorize stateful web credentials
+a8b29a4c  feat(pentest): report stateful web findings
 ```
 
 ### 2.3 C2 已完成事实
@@ -154,14 +155,23 @@ C2 已完成：
 - 未创建 Finding、Report、新表、migration、Browser、Scanner、Worker 或 UI；
 - 实现提交：`85decf8d`。
 
-### 2.4 当前真正缺口
+### 2.4 C3 已完成事实
 
-1. 状态化 Web 尚未形成最终专业结论和报告；
-2. 用户添加方法后，尚无一次完整的试用、复盘、启用、禁用和回滚；
-3. `Configured model not found` 等错误仍可能只暴露内部状态，没有直接修复路径；
-4. README、CLI 和启动路径仍展示大量通用平台能力；
-5. 非默认模块是否造成启动、依赖和维护负担尚未测量；
-6. 代码审计功能目前冻结，但未经过消费者审计，不应现在删除。
+- 跨对象 Observation 投影为 `VULNERABILITY_CANDIDATE` 和幂等 Draft Finding，不自动 Confirmed；
+- Finding 引用受保护跨对象 Artifact/Evidence，并明确 Alice 前置、单变量步骤、影响、修复与未测试范围；
+- 未授权 Credential Reference 记为网络前执行失败，不被误写为目标无漏洞；
+- Working Memory Attempt 与 Reasoning 通过现有 Report Source 进入 JSON/Markdown 报告；
+- Closure、Finding 和两种 Report 在 Control Plane 重建后保持一致，重放不重复创建；
+- Secret、认证值、受保护 HTTP 原始体和本地路径不进入报告；
+- 未新增表、migration、Attack Chain、Browser、Scanner、Worker 或 UI；
+- 实现提交：`a8b29a4c`。
+
+### 2.5 当前真正缺口
+
+1. 用户添加方法后，尚无一次完整的试用、复盘、启用、禁用和回滚；
+2. README、CLI 和启动路径仍展示大量通用平台能力；
+3. 非默认模块是否造成启动、依赖和维护负担尚未测量；
+4. 代码审计功能目前冻结，但未经过消费者审计，不应现在删除。
 
 ---
 
@@ -284,8 +294,8 @@ CLI/API
 | --- | --- | --- |
 | A. 剩余 Pentest 预算收口 | completed | 所有 Admission 预算具有明确执行语义和硬停止 |
 | B. 网络服务专业闭环 | completed | 一个真实服务从枚举走到证据化结论、Closure 和 Report |
-| C. 状态化 Web 与报告 | in progress；C3 当前施工 | 一个身份/授权场景走到证据化结论、Closure 和 Report |
-| D. 用户驱动能力成长 | pending | 一项专业方法可添加、选择、复盘、禁用和回滚 |
+| C. 状态化 Web 与报告 | completed | 一个身份/授权场景走到证据化结论、Closure 和 Report |
+| D. 用户驱动能力成长 | in progress；D1 当前施工 | 一项专业方法可添加、选择、复盘、禁用和回滚 |
 | E. 默认产品面收缩与发布 | pending | Pentest-first 产品可安装、可理解、可回归、可发布 |
 
 除安全修复、数据兼容和当前用户阻断外，不得跳过阶段。
@@ -388,7 +398,7 @@ RuntimeControlToolService
 9. 未选中、损坏、不存在或未授权引用在网络副作用前拒绝；
 10. 不创建 Finding、最终验证链或 Report，不新增表、migration、Browser、Crawler、Fuzzer、Scanner、Worker 或 UI。
 
-### 8.3 C3：结论、Closure 与 Report（当前唯一实现切片）
+### 8.3 C3：结论、Closure 与 Report（completed）
 
 C3 的目标不是增加一个 Attack Chain Domain，而是关闭现有事实链：
 
@@ -418,6 +428,21 @@ C3 完成门：
 ---
 
 ## 9. 阶段 D：兑现“越用越好用”
+
+### 9.0 D1：Operator Skill 生命周期门禁（当前唯一实现切片）
+
+D1 先关闭“本地 Skill 可以绕过 Capability 状态直接进入 Pentest”的真实缺口，不同时建设复盘 UI 或自动学习。
+
+生产合同：
+
+- Operator Skill 包继续由 `ProgressiveSkillRegistry` 做静态解析和 Digest；
+- 导入时只生成一个 `CapabilityKind.SKILL` Version，保存 Version、Digest、Operator Provenance、Permission 和完整 Skill 快照；
+- 新导入版本从 `approved` 开始，必须经显式启用才可被新 Pentest 选择；
+- Pentest Admission 选择 Operator Skill 时，必须找到同 ID、Version、Digest、Source 的 active Capability Version；
+- 文件漂移、Version/Digest 不匹配、未批准、已禁用或已删除源包均失败关闭；
+- 禁用只影响新 Run，旧 Run 继续从持久 Selection 快照解释当时版本；
+- 回滚复用现有 Version 状态转移：禁用当前版本并重新启用旧版本，不覆盖、不改写旧 Version；
+- 不新增表、Marketplace、Registry Service、Candidate/Promotion 工作流、自动批准或 UI。
 
 ### 9.1 最小成长闭环
 
@@ -622,27 +647,26 @@ Ledger commit:
 
 ## 14. 当前唯一施工指令
 
-从实现提交 `85decf8d` 继续，只关闭 C3 状态化 Web 专业结果：
+从实现提交 `a8b29a4c` 继续，只关闭 D1 Operator Skill 生命周期门禁：
 
-1. 复用 C2 同一生产 E2E、受保护 Evidence、Reasoning Graph、Working Memory、Finding、Closure 和 Report Service；
-2. 从跨对象 Observation 创建一个 `VULNERABILITY_CANDIDATE`，再通过现有 `create_finding` 幂等投影为 Draft Finding；不得自动 Confirmed；
-3. Finding 必须引用跨对象响应 Artifact/Evidence，并明确 Alice 身份前置、只改变对象 ID 的复现动作、影响与修复建议；
-4. 未授权引用、Approval/Scope 阻断、预算耗尽和工具错误继续保持失败语义，不得写成漏洞不存在；
-5. 使用现有 Closure Verifier 完成 Run，并由现有 ReportApplicationService 生成 JSON 与 Markdown Report；
-6. 报告必须从持久事实重建身份基线、Hypothesis、Attempt、差异 Evidence、Draft Finding、失败分支、未测试范围和 Stop/Closure 状态；
-7. 所谓“验证链/攻击链”只允许是现有 Reasoning Node/Edge、Evidence、Attempt 和 Finding 的确定性报告投影；不新增表、Repository、Planner、Graph 或 Attack Chain Domain；
-8. 重放不得重复创建 Finding 或 Report；Control Plane 重建后结果保持一致；
-9. Secret、原始授权引用值、本地路径和受保护 HTTP 原始体不得进入 Event、Transcript、通用 Artifact 读取面或 Report；
-10. 协议级闭环已足够，C3 不启用 Browser，不新增 Crawler、Fuzzer、Scanner、Pack、migration、Worker 或 UI；
-11. 运行状态化 Web、Finding/Closure/Report、Target HTTP、完整 Control Plane、全仓 Ruff、scoped mypy 和 `git diff --check`；
-12. 形成 C3 独立实现提交，再单独更新实施账本；C3 完成前不进入 D 或 E。
+1. 用一个本地 Operator Skill fixture 代表“基于服务特征选择最小验证步骤”，只复用现有 Tool；
+2. 复用 `ProgressiveSkillRegistry.validate()` 与 Doctor 校验 Skill 结构，不新建 Parser 或 Skill SDK；
+3. 增加最薄 Operator Skill 管理服务/命令，将验证后包幂等注册为 `approved` Capability Version，再经用户命令显式启用；
+4. 注册快照必须包含 Skill ID、Version、Digest、Operator Provenance、Permission 与完整 Document/Reference，不保存 Secret；
+5. Pentest Capability Resolver 对显式 Operator Skill 只接受同 ID/Version/Digest/Source 的 active Capability Version；未注册、未启用、已禁用或漂移全部失败关闭；
+6. Skill 的 Approval 只能等于或高于它声明的最小值，不得改写 Tool 自身 Approval；Skill 不得把 Tool 加入 Run allowlist；
+7. 实现显式 disable 与 rollback；rollback 只切换已存版本状态，不重写旧版本；
+8. 验证禁用后新 Run 无法选择，回滚后新 Run 固定旧版本，已存 Run 仍从 Selection 快照解释原版本；
+9. 删除本地 Skill 源目录后，旧 Run 快照仍可读，但新 Run 不得从已删除源包建立选择；
+10. 运行 Progressive Skill、Capability Repository、Pentest Admission、CLI/Doctor 聚焦回归、全仓 Ruff、scoped mypy 和 `git diff --check`；
+11. 形成 D1 独立实现提交，再单独更新实施账本；D1 完成前不开始复盘导出、Marketplace、自动改写 Skill 或阶段 E。
 
 建议验证命令：
 
 ```bash
-conda run --no-capture-output -n agent pytest -q tests/target_http
-conda run --no-capture-output -n agent pytest -q tests/integration/api/test_pentest_stateful_web.py
-conda run --no-capture-output -n agent pytest -q tests/integration/api/test_control_plane.py
+conda run --no-capture-output -n agent pytest -q tests/unit/skills/test_progressive.py
+conda run --no-capture-output -n agent pytest -q tests/integration/persistence/test_skill_selection_repository.py
+conda run --no-capture-output -n agent pytest -q tests/integration/persistence/test_capability_repository.py
 conda run --no-capture-output -n agent ruff check .
 git diff --check
 ```
@@ -654,9 +678,9 @@ git diff --check
 ```text
 [已完成] A：预算与停止语义
 → [已完成] B：网络服务专业闭环
-→ [已完成] C2：安全身份引用与状态化 Web Evidence
-→ [当前] C3：状态化 Web 结论、Closure 与 Report
-→ [下一步] D：一项 Operator Skill 的成长闭环
+→ [已完成] C：状态化 Web 结论、Closure 与 Report
+→ [当前] D1：Operator Skill 注册、启用、禁用与回滚门禁
+→ [下一步] D2：脱敏复盘导出与用户决定
 → [最后] E：默认产品面收缩、消费者审计与发布
 ```
 
