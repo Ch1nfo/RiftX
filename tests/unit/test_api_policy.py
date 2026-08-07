@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import tomllib
+from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 
 import pytest
@@ -27,6 +29,11 @@ from riftx.domain import LocalPrincipal, OperatorCapability, TrustProfile
 from riftx.security import LocalOperatorSecurity
 
 _TEST_OPERATOR_TOKEN = "test-only-local-operator-token-0001"
+
+
+def test_supported_fastapi_range_preserves_eager_route_inventory() -> None:
+    project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    assert "fastapi>=0.136,<0.137" in project["project"]["dependencies"]
 
 
 def test_control_plane_route_policy_inventory_is_complete_and_in_openapi(tmp_path) -> None:
