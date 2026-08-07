@@ -86,6 +86,7 @@ def initialize_local_onboarding(
             "secrets_path": str(secrets_root / "models.json"),
         },
         "security": {
+            "trust_profile": "local_single_operator",
             "local_principal_path": str(secrets_root / "local-principal.json"),
         },
         "audit": {
