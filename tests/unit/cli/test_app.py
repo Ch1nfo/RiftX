@@ -35,6 +35,29 @@ from riftx.doctor import (
 runner = CliRunner()
 
 
+class FakeLocalProcess:
+    def __init__(self, *, command: list[str], environment: dict[str, str]) -> None:
+        self.command = command
+        self.environment = environment
+        self.returncode: int | None = None
+        self.terminated = False
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.returncode = 0
+
+    def wait(self, *, timeout: float) -> int:
+        del timeout
+        self.returncode = 0
+        return 0
+
+    def kill(self) -> None:
+        self.returncode = -9
+
+
 def test_root_help_prioritizes_the_pentest_workflow() -> None:
     result = runner.invoke(cli_module.app, ["--help"])
     retired_interactive = runner.invoke(cli_module.app, ["interactive"])
@@ -48,7 +71,7 @@ def test_root_help_prioritizes_the_pentest_workflow() -> None:
         result.output.index("Advanced"),
     ]
     assert panels == sorted(panels)
-    for command in ("onboard", "doctor", "model", "pentest", "report", "skills"):
+    for command in ("onboard", "start", "doctor", "model", "pentest", "report", "skills"):
         assert command in result.output
     assert "interactive   Enter the interactive RiftX session" not in result.output
     assert retired_interactive.exit_code == 2
@@ -1960,6 +1983,102 @@ def test_serve_applies_cli_overrides_after_config(
     assert result.exit_code == 0, result.output
     assert calls[0]["host"] == "127.0.0.1"
     assert calls[0]["port"] == 9001
+
+
+def test_start_runs_the_local_stack_with_separated_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "riftx.yaml"
+    config_path.write_text(
+        "workspace:\n"
+        f"  root: {tmp_path / 'workspaces'}\n"
+        "security:\n"
+        "  trust_profile: local_single_operator\n"
+        f"  local_principal_path: {tmp_path / 'local-principal.json'}\n",
+        encoding="utf-8",
+    )
+    processes: list[FakeLocalProcess] = []
+    opened: list[str] = []
+    monkeypatch.setattr(
+        cli_module,
+        "run_local_doctor",
+        lambda *_args, **_kwargs: DoctorReport(
+            checks=(
+                DoctorCheck(id="database", status=DoctorStatus.READY, detail="ready"),
+            )
+        ),
+    )
+    monkeypatch.setattr(cli_module, "_port_is_open", lambda *_args: False)
+    monkeypatch.setattr(cli_module, "_wait_for_port", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli_module.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        cli_module.subprocess,
+        "Popen",
+        lambda command, **kwargs: processes.append(
+            FakeLocalProcess(command=list(command), environment=dict(kwargs["env"]))
+        )
+        or processes[-1],
+    )
+    monkeypatch.setattr(cli_module, "_monitor_local_services", lambda services: 0)
+    monkeypatch.setattr(cli_module.webbrowser, "open", opened.append)
+
+    result = runner.invoke(
+        cli_module.app,
+        ["--config", str(config_path), "start", "--no-open"],
+        env={"OPENAI_API_KEY": "model-key-canary"},
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(processes) == 3
+    temporal, control_plane, worker = processes
+    assert temporal.command[:3] == ["/usr/bin/temporal", "server", "start-dev"]
+    assert "RIFTX_ADMIN_TOKEN" not in temporal.environment
+    assert "OPENAI_API_KEY" not in temporal.environment
+    assert control_plane.command[-1] == "serve"
+    assert len(control_plane.environment["RIFTX_ADMIN_TOKEN"]) == 64
+    assert control_plane.environment["RIFTX_CONFIG"] == str(config_path)
+    assert worker.command[-1] == "worker"
+    assert "RIFTX_ADMIN_TOKEN" not in worker.environment
+    assert worker.environment["OPENAI_API_KEY"] == "model-key-canary"
+    assert worker.environment["RIFTX_CONFIG"] == str(config_path)
+    assert "Generated session-only local admin token" in result.output
+    assert "RiftX is ready" in result.output
+    assert opened == []
+    assert all(process.terminated for process in processes)
+
+
+def test_start_fails_cleanly_when_local_temporal_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "riftx.yaml"
+    config_path.write_text(
+        "security:\n"
+        "  trust_profile: local_single_operator\n"
+        f"  local_principal_path: {tmp_path / 'local-principal.json'}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "run_local_doctor",
+        lambda *_args, **_kwargs: DoctorReport(
+            checks=(
+                DoctorCheck(id="database", status=DoctorStatus.READY, detail="ready"),
+            )
+        ),
+    )
+    monkeypatch.setattr(cli_module, "_port_is_open", lambda *_args: False)
+    monkeypatch.setattr(cli_module.shutil, "which", lambda _name: None)
+
+    result = runner.invoke(
+        cli_module.app,
+        ["--config", str(config_path), "start", "--no-open"],
+    )
+
+    assert result.exit_code == 1
+    assert "Temporal is not running" in result.output
+    assert "temporal` CLI was not found" in result.output
 
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.0.2.10", "control.test"])

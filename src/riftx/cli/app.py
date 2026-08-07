@@ -8,7 +8,12 @@ import logging
 import math
 import os
 import platform
+import secrets
+import shutil
+import socket
+import subprocess
 import sys
+import time
 import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -51,7 +56,11 @@ from riftx.onboarding import (
     initialize_local_onboarding,
     validate_existing_onboarding,
 )
-from riftx.security import DeploymentProfileError, is_loopback_host
+from riftx.security import (
+    DeploymentProfileError,
+    is_loopback_host,
+    validate_local_operator_credential,
+)
 
 from .client import APIClient, RiftXAPIError
 from .i18n import Language, normalize_language, set_language, tr
@@ -97,7 +106,7 @@ _ADVANCED_PANEL = "Advanced"
 app = typer.Typer(
     name="riftx",
     help="Pentest-first Agent for authorized security work.",
-    epilog="Start with `riftx onboard`, then verify readiness with `riftx doctor`.",
+    epilog="Start with `riftx onboard`, then run the local stack with `riftx start`.",
     no_args_is_help=False,
     invoke_without_command=True,
     rich_markup_mode="rich",
@@ -351,7 +360,208 @@ def onboard(
     console.print("[green]Onboarding complete.[/green]")
     if target != default_user_config_path():
         console.print(f"Use this setup with RIFTX_CONFIG={target}")
-    console.print("Next: set RIFTX_ADMIN_TOKEN, then run `riftx doctor`.")
+    console.print("Next: run `riftx start`.")
+
+
+class _LocalStartError(RuntimeError):
+    pass
+
+
+@app.command("start", rich_help_panel=_GETTING_STARTED_PANEL)
+def start_local(
+    context: typer.Context,
+    open_browser: Annotated[
+        bool,
+        typer.Option("--open/--no-open", help="Open the RiftX WebUI when ready."),
+    ] = True,
+) -> None:
+    """Start the complete local RiftX stack in one foreground command."""
+
+    state = _state(context)
+    report = run_local_doctor(
+        state.config,
+        runtime_config_path=_doctor_runtime_config_path(state),
+    )
+    if report.failed:
+        render_doctor_report(console, report)
+        console.print("[red]Start failed:[/red] run `riftx doctor --fix` first.")
+        raise typer.Exit(1)
+    try:
+        status = _run_local_stack(state, open_browser=open_browser)
+    except _LocalStartError as exc:
+        console.print(f"[red]Start failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    if status:
+        raise typer.Exit(status)
+
+
+def _run_local_stack(state: CLIState, *, open_browser: bool) -> int:
+    config = state.config
+    if not is_loopback_host(config.server.host):
+        raise _LocalStartError("the local stack requires a loopback Control Plane host")
+
+    base_environment = os.environ.copy()
+    control_environment = base_environment.copy()
+    worker_environment = base_environment.copy()
+    worker_environment.pop("RIFTX_ADMIN_TOKEN", None)
+    worker_environment.pop("RIFTX_RUNNER_REGISTRATION_TOKEN", None)
+    if state.config_path is not None:
+        config_path = str(state.config_path.expanduser())
+        control_environment["RIFTX_CONFIG"] = config_path
+        worker_environment["RIFTX_CONFIG"] = config_path
+
+    generated_token = "RIFTX_ADMIN_TOKEN" not in control_environment
+    operator_token = control_environment.get("RIFTX_ADMIN_TOKEN") or secrets.token_hex(32)
+    try:
+        validate_local_operator_credential(operator_token)
+    except DeploymentProfileError as exc:
+        raise _LocalStartError(str(exc)) from exc
+    control_environment["RIFTX_ADMIN_TOKEN"] = operator_token
+
+    temporal_host, temporal_port = _split_host_port(config.temporal.target)
+    services: list[tuple[str, subprocess.Popen[bytes]]] = []
+    try:
+        if not _port_is_open(temporal_host, temporal_port):
+            if config.temporal.tls_enabled or not is_loopback_host(temporal_host):
+                raise _LocalStartError(
+                    f"Temporal is not reachable at {config.temporal.target}"
+                )
+            temporal_executable = shutil.which("temporal")
+            if temporal_executable is None:
+                raise _LocalStartError(
+                    "Temporal is not running and the `temporal` CLI was not found on PATH"
+                )
+            temporal_db = config.workspace.root.expanduser().parent / "temporal.db"
+            temporal_db.parent.mkdir(parents=True, exist_ok=True)
+            from riftx.executors.environment import merge_environment
+
+            temporal_environment = merge_environment(host_environment=base_environment)
+            temporal_process = subprocess.Popen(
+                [
+                    temporal_executable,
+                    "server",
+                    "start-dev",
+                    "--ip",
+                    temporal_host,
+                    "--port",
+                    str(temporal_port),
+                    "--ui-port",
+                    "8233",
+                    "--db-filename",
+                    str(temporal_db),
+                ],
+                env=temporal_environment,
+            )
+            services.append(("Temporal", temporal_process))
+            _wait_for_port(
+                temporal_host,
+                temporal_port,
+                process=temporal_process,
+                label="Temporal",
+            )
+
+        if _port_is_open(config.server.host, config.server.port):
+            raise _LocalStartError(
+                f"Control Plane port {config.server.host}:{config.server.port} is already in use"
+            )
+        cli_command = [sys.executable, "-m", "riftx.cli.app"]
+        control_process = subprocess.Popen(
+            [*cli_command, "serve"],
+            env=control_environment,
+        )
+        services.append(("Control Plane", control_process))
+        _wait_for_port(
+            config.server.host,
+            config.server.port,
+            process=control_process,
+            label="Control Plane",
+        )
+
+        worker_process = subprocess.Popen(
+            [*cli_command, "worker"],
+            env=worker_environment,
+        )
+        services.append(("Worker", worker_process))
+        if generated_token:
+            console.print("[yellow]Generated session-only local admin token:[/yellow]")
+            console.print(operator_token, markup=False)
+        web_url = f"http://{config.server.host}:{config.server.port}/"
+        console.print(f"[green]RiftX is ready:[/green] {web_url}")
+        console.print("Press Ctrl+C to stop the local stack.")
+        if open_browser:
+            webbrowser.open(web_url)
+        return _monitor_local_services(services)
+    finally:
+        _stop_local_services(services)
+
+
+def _split_host_port(target: str) -> tuple[str, int]:
+    host, separator, raw_port = target.rpartition(":")
+    normalized_host = host.strip().strip("[]")
+    if not separator or not normalized_host:
+        raise _LocalStartError(f"Temporal target must use HOST:PORT: {target!r}")
+    try:
+        port = int(raw_port)
+    except ValueError as exc:
+        raise _LocalStartError(f"Temporal target has an invalid port: {target!r}") from exc
+    if not 1 <= port <= 65535:
+        raise _LocalStartError(f"Temporal target has an invalid port: {target!r}")
+    return normalized_host, port
+
+
+def _port_is_open(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=0.25):
+            return True
+    except OSError:
+        return False
+
+
+def _wait_for_port(
+    host: str,
+    port: int,
+    *,
+    process: subprocess.Popen[bytes],
+    label: str,
+    timeout_seconds: float = 20.0,
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        return_code = process.poll()
+        if return_code is not None:
+            raise _LocalStartError(f"{label} exited during startup with code {return_code}")
+        if _port_is_open(host, port):
+            return
+        time.sleep(0.1)
+    raise _LocalStartError(f"{label} did not become ready within {timeout_seconds:g} seconds")
+
+
+def _monitor_local_services(services: list[tuple[str, subprocess.Popen[bytes]]]) -> int:
+    try:
+        while True:
+            for label, process in services:
+                return_code = process.poll()
+                if return_code is not None:
+                    console.print(f"[red]{label} exited with code {return_code}.[/red]")
+                    return return_code or 1
+            time.sleep(0.25)
+    except KeyboardInterrupt:
+        console.print("\nStopping RiftX...")
+        return 0
+
+
+def _stop_local_services(services: list[tuple[str, subprocess.Popen[bytes]]]) -> None:
+    for _label, process in reversed(services):
+        if process.poll() is None:
+            process.terminate()
+    for _label, process in reversed(services):
+        if process.poll() is not None:
+            continue
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
 
 
 @app.command(rich_help_panel=_GETTING_STARTED_PANEL)
