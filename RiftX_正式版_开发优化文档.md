@@ -8,9 +8,9 @@
 >
 > 当前分支：`ch1nfo/riftx-3-code-audit`
 >
-> 当前代码基线：`fdfa06e5`；本次重写输入计划基线：`d63e6f84`
+> 当前代码基线：`8ea90890`；本次重写输入计划基线：`d63e6f84`
 >
-> 当前施工：E2 干净 XDG Onboard 与可选工具降级；E1 已完成
+> 当前施工：E3 消费者与启动成本审计；E2 已完成
 >
 > 实施与测试事实：[`docs/implementation/FORMAL_AGENT_PROGRESS.md`](docs/implementation/FORMAL_AGENT_PROGRESS.md)
 >
@@ -280,7 +280,7 @@ CLI/API
 | B. 网络服务专业闭环 | completed | 真实服务从枚举走到证据化结论、Closure 和 Report |
 | C. 状态化 Web 与报告 | completed | 身份/授权场景走到证据化结论、Closure 和 Report |
 | D. 用户驱动能力成长 | completed | Operator Skill 可验证、启用、使用、复盘、禁用和回滚 |
-| E. 默认产品面收缩与发布 | in progress；E2 当前施工 | Pentest-first 产品可安装、可理解、可回归、可发布 |
+| E. 默认产品面收缩与发布 | in progress；E3 当前施工 | Pentest-first 产品可安装、可理解、可回归、可发布 |
 
 阶段 A、B、C、D 只保留回归合同，不再扩建。除安全修复、数据兼容和真实用户阻断外，不得跳过阶段。
 
@@ -477,6 +477,8 @@ E1 已由实现提交 `fdfa06e5` 完成：README 中英版把 Onboard、Doctor�
 - 离线 Demo 明确标记 simulated/transcript，不冒充真实 Pentest；
 - Quickstart 从安装到第一份报告只有一条路径。
 
+E2 已由实现提交 `8ea90890` 完成：新增隔离 XDG、空可选工具 PATH 的纵向 E2E，真实运行 Onboard、Doctor、生产 Control Plane 装配和 Pentest Admission，并验证重复 Onboard 不覆盖配置。审计同时发现并修复 Onboard 未写入必需 `security.trust_profile` 的真实启动阻断；当前生成配置固定为唯一支持的 `local_single_operator`。缺少 Nmap、Nuclei、Browser、MCP、LSP 和 Scanner 时 Doctor 明确 degraded 而不失败；Temporal 缺失仍返回显式 `temporal_unavailable`，已持久 Admission 可按原请求重试。
+
 ### 8.3 消费者与成本审计
 
 每个候选模块只做一次表格化审计：
@@ -630,24 +632,23 @@ conda run --no-capture-output -n agent ...
 
 ## 12. 当前唯一施工指令
 
-从实现提交 `fdfa06e5` 继续，只完成 E2 干净 XDG Onboard 与可选工具降级：
+从实现提交 `8ea90890` 继续，只完成 E3 消费者与启动成本审计：
 
-1. 在隔离的 `XDG_CONFIG_HOME`、`XDG_STATE_HOME`、`XDG_DATA_HOME` 和空 PATH 工具目录中运行真实 `riftx onboard --non-interactive`，不得复用开发者现有配置；
-2. 证明 Onboard 生成的配置、模型、Tool Registry、数据库、Workspace 和 Skill 路径可由现有加载器直接读取，并且重复运行不覆盖用户文件；
-3. 在缺少 Nmap、Nuclei、Browser、MCP 和 Connector 的条件下运行 `riftx doctor`，基础 Pentest 所需检查必须 ready，可选能力必须明确 degraded 而不是伪装 ready 或阻断启动；
-4. 使用 Onboard 产物启动最小 Control Plane，并通过现有 Pentest 创建路径证明基础 Admission 不依赖可选工具；不要求在本切片启动真实模型回合或目标交互；
-5. 若现有错误已足够清晰，只补 E2E/文档证据；只有真实阻断时才修改 Onboard、Doctor 或配置装配；
-6. 不拆依赖、不做 lazy-load 框架、不删除 Browser/MCP/Connector/Code Audit，也不新增第二套安装器；
-7. 运行 Onboard/Doctor、配置加载、Pentest 创建、Backup/Restore、CLI、文档合同、全仓 Ruff、必要 scoped mypy 和 `git diff --check`；
-8. 形成 E2 独立实现提交，再单独更新实施账本；E2 完成前不开始消费者删除或 R2 Operator Tool。
+1. 为 8.3 表格中的六类候选模块逐项记录真实生产消费者、默认入口、导入/启动/依赖成本、持久数据和安全价值；所有结论必须引用代码入口、命令或可重复测量；
+2. 测量当前 Onboard 后 `riftx --help`、配置加载、Control Plane 装配的墙钟时间和导入模块，记录环境、命令和中位结果；不建设长期 Benchmark 平台；
+3. 使用 `rg`、入口装配和现有测试证明模块是否有 Pentest R1 消费者；migration 或旧数据读取存在时只能标记冻结兼容，不能直接删除；
+4. 输出一个简短消费者审计文档，处置只能是保留、Advanced、按需初始化、冻结兼容或删除候选；“删除候选”本切片不执行删除；
+5. 只有发现可复现的默认启动失败或明显成本时，才允许在同一切片做一个最小 lazy-init 修复；否则 E3 只提交审计事实和防回退检查；
+6. 不修改 migration 历史、不删除 Code Audit/Browser/MCP/Connector/Memory/Terminal，不拆包、不新增性能框架；
+7. 运行入口 smoke、Onboard/Doctor、Pentest Admission、文档合同、全仓 Ruff、必要 scoped mypy 和 `git diff --check`；
+8. 形成 E3 独立提交，再单独更新实施账本；实际删除必须作为后续独立任务并满足消费者为零、无兼容责任和测量收益三个条件。
 
 建议起始验证命令：
 
 ```bash
-conda run --no-capture-output -n agent pytest -q tests/unit/test_onboarding.py
-conda run --no-capture-output -n agent pytest -q tests/unit/test_doctor.py
+conda run --no-capture-output -n agent python -X importtime -m riftx.cli.app --help
+conda run --no-capture-output -n agent pytest -q tests/integration/api/test_onboarded_pentest.py
 conda run --no-capture-output -n agent pytest -q tests/unit/cli/test_app.py
-conda run --no-capture-output -n agent pytest -q tests/integration/api/test_control_plane.py -k pentest_create
 conda run --no-capture-output -n agent pytest -q tests/docs/test_formal_agent_docs.py
 conda run --no-capture-output -n agent ruff check .
 git diff --check
@@ -664,8 +665,9 @@ git diff --check
 → [已完成] D1：Operator Skill 生命周期与 Admission 门禁
 → [已完成] D2：复用现有 Report 完成人工复盘和版本迭代
 → [已完成] E1：默认产品入口与 Quickstart 单路径
-→ [当前] E2：干净 XDG Onboard 与可选工具降级
-→ [最后] E3-E4：消费者成本审计和 R1 发布门
+→ [已完成] E2：干净 XDG Onboard 与可选工具降级
+→ [当前] E3：消费者与启动成本审计
+→ [最后] E4：Pentest R1 发布门
 → [按需] R2+：Operator Tool、Technique 与团队共享
 ```
 

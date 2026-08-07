@@ -33,7 +33,7 @@
 ## 2. Current wave
 
 - Stage：`Pentest-first R1 — Stage E 默认产品面收缩与发布`
-- Current task：`E2 — 干净 XDG Onboard 与可选工具降级`
+- Current task：`E3 — 消费者与启动成本审计`
 - Status：`in_progress`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
@@ -59,6 +59,7 @@
 - Completed predecessor：Stage D/D1 Operator Skill 生命周期门禁，implementation commit `6f59e278`。
 - Completed predecessor：Stage D/D2 Operator Skill 人工复盘与版本迭代，implementation commit `a929fdb4`。
 - Completed predecessor：Stage E/E1 默认产品入口与 Quickstart 单路径，implementation commit `fdfa06e5`。
+- Completed predecessor：Stage E/E2 干净 XDG Onboard 与可选工具降级，implementation commit `8ea90890`。
 - Product behavior：PACK-302 已交付可重复运行且零覆盖的 `riftx onboard`、顶级 `riftx doctor`、live overlay、本地操作员只读 `/api/v1/system/diagnostics`、有真实修复语义的 `riftx doctor --fix`、Onboard 后可直接运行的两个安全 Demo，以及本地只读 Capability/Pack 检查命令；Onboard 复用现有 Runtime/Model/Tool/Pack 生产路径初始化用户级配置、完整 Alembic schema、22 个 Official Pack 与 66 个 active lock；Pack 持久化写入具备 SQLite 一致性备份、双端 inode identity、恢复后完整性复检和失败自动回滚；Doctor `backup_restore` 已改为只读真实 readiness，只在已到 Alembic head 的 file-backed SQLite、当前用户所有的普通数据库文件和安全的 owner-only 备份目录前置条件全部成立时返回 `ready`，不为诊断创建备份或替换数据库。
 - Completed PEN-500 implementation commits：ADR `315039fc`；Domain/持久化 `86aaecdf`；Workflow/Runner Identity `e2314e9b`；Effect Policy/Interactive Guard `8b9ef440`；专用 Admission/Application/API 创建入口 `8f1b2554`；Capability Selection 原子绑定 `33c863ea`；Pentest status/API `70f6f4a0`；Pentest CLI `2271bc8e`；Attack Surface `9a4714fc`；隔离生命周期 `ca12ad9b`；目标交互预算 `ad91c3f4`、`2c0f8004`；运行中用量 `73288673`；Model/Token/Duration 门禁 `b6b5f739`；Tool/Duration 门禁 `53812397`；统一预算停止 `1c379dcc`。
 - Verification：阶段 A 完整 Control Plane `67 passed`；Runtime/Execution/Target HTTP/Temporal Worker `467 passed`；预算处理聚焦回归 `215 passed`；全仓 Ruff passed；6 个变更核心源文件 scoped mypy passed；Alembic 单 head `7b3d1e5f9a24`；`git diff --check` passed。
@@ -69,7 +70,8 @@
 - Stage D/D1 verification：Operator Skill lifecycle/CLI `3 passed`；Capability Management、Doctor、CLI 与 Skill unit `111 passed`；Capability/Skill/Pentest persistence `10 passed`；状态化 Web `2 passed`；完整 Control Plane `68 passed`；文档合同 `3 passed`；全仓 Ruff passed；5 个变更源/测试文件 scoped mypy passed；`git diff --check` passed。
 - Stage D/D2 verification：Report、状态化 Web、Operator Skill lifecycle 与 v1→v2 纵向 E2E `8 passed`；全仓 Ruff passed；`reports.py` scoped mypy passed；`git diff --check` passed。
 - Stage E/E1 verification：Onboard、Doctor、CLI、Operator Skill Report 与文档合同 `100 passed`；全仓 Ruff passed；`cli/app.py` scoped mypy 在禁用既有 Typer/Click `override`、`arg-type`、`return-value` 兼容错误后 passed；`git diff --check` passed。
-- Next delivery slice：只证明干净 XDG Onboard、Doctor 可选工具降级和基础 Pentest Admission；没有真实阻断时只补 E2E/发布证据，不拆依赖或删除模块。
+- Stage E/E2 verification：Onboard、Doctor、CLI、隔离 XDG 生产装配/Pentest Admission 与文档合同 `100 passed`；全仓 Ruff passed；`onboarding.py` scoped mypy passed；`git diff --check` passed。
+- Next delivery slice：只测量并记录候选模块的生产消费者和默认启动成本；没有可复现收益时不做 lazy-init、拆包或删除。
 
 ## 3. 研究与实现基线
 
@@ -1168,8 +1170,16 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 - E1 non-goals upheld：未删除命令、修改 API、重做 WebUI、新增导航框架、拆依赖或开发 Code Audit。
 - E1 implementation commit：`fdfa06e5`。
 - E1 completion：completed。
-- E2 current target：在隔离 XDG 与缺少可选外部工具的条件下，证明 Onboard、Doctor、配置加载和基础 Pentest Admission 可工作。
-- E2 completion gate：全新用户目录无需 Nmap、Nuclei、Browser、MCP 或 Connector 即可完成 Onboard、得到可执行修复提示、启动最小 Control Plane 并创建 Pentest Run；重复 Onboard 不覆盖用户文件。
+- E2 clean environment：`8ea90890` 在隔离 XDG、空工具 PATH 和无外部目标交互条件下真实运行 Onboard 两次，验证配置/模型/Tool Registry/数据库/Workspace/Skill 路径可加载且不覆盖用户文件。
+- E2 startup fix：Onboard 原先未写入生产装配必需的 `security.trust_profile`；最小修复固定当前唯一支持的 `local_single_operator`，使生成配置可通过 `APISettings.from_config()` 并启动 Control Plane。
+- E2 degradation：Nmap、Nuclei、Masscan、Metasploit 等模板工具全部禁用后，Doctor 保持 degraded 而非 failed，并为 Temporal、Runner、Browser、Tool、Skill、MCP、LSP 和 Scanner 输出修复动作。
+- E2 admission：使用 Onboard 产物装配生产 Control Plane 并持久化 Pentest Admission/Selection；未启动 Temporal 时返回明确 `temporal_unavailable`，Run 保留为 `waiting_user` 以供同请求重试。
+- E2 verification：Onboard、Doctor、CLI、隔离 XDG 生产装配/Pentest Admission 与文档合同 `100 passed`；全仓 Ruff passed；`onboarding.py` scoped mypy passed；`git diff --check` passed。
+- E2 non-goals upheld：未拆依赖、删除可选模块、新增安装器、启动真实模型回合或执行目标交互。
+- E2 implementation commit：`8ea90890`。
+- E2 completion：completed。
+- E3 current target：测量 Code Audit、Browser/MCP/Connector、Candidate/Promotion/Evaluation、General Agent/Memory/Terminal、Demo/前端非主线和重复旧入口的真实消费者与默认成本。
+- E3 completion gate：形成带代码证据和可重复命令的处置表；没有消费者为零、无兼容责任和测量收益的共同证据，不删除代码。
 
 ## 9. Known pre-existing worktree state
 
