@@ -33,7 +33,7 @@
 ## 2. Current wave
 
 - Stage：`Pentest-first R1 — Stage E 默认产品面收缩与发布`
-- Current task：`E3 — 消费者与启动成本审计`
+- Current task：`E4 — Pentest R1 发布门`
 - Status：`in_progress`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
@@ -60,6 +60,7 @@
 - Completed predecessor：Stage D/D2 Operator Skill 人工复盘与版本迭代，implementation commit `a929fdb4`。
 - Completed predecessor：Stage E/E1 默认产品入口与 Quickstart 单路径，implementation commit `fdfa06e5`。
 - Completed predecessor：Stage E/E2 干净 XDG Onboard 与可选工具降级，implementation commit `8ea90890`。
+- Completed predecessor：Stage E/E3 消费者、启动成本审计与局部惰性导入，implementation commit `2975e818`。
 - Product behavior：PACK-302 已交付可重复运行且零覆盖的 `riftx onboard`、顶级 `riftx doctor`、live overlay、本地操作员只读 `/api/v1/system/diagnostics`、有真实修复语义的 `riftx doctor --fix`、Onboard 后可直接运行的两个安全 Demo，以及本地只读 Capability/Pack 检查命令；Onboard 复用现有 Runtime/Model/Tool/Pack 生产路径初始化用户级配置、完整 Alembic schema、22 个 Official Pack 与 66 个 active lock；Pack 持久化写入具备 SQLite 一致性备份、双端 inode identity、恢复后完整性复检和失败自动回滚；Doctor `backup_restore` 已改为只读真实 readiness，只在已到 Alembic head 的 file-backed SQLite、当前用户所有的普通数据库文件和安全的 owner-only 备份目录前置条件全部成立时返回 `ready`，不为诊断创建备份或替换数据库。
 - Completed PEN-500 implementation commits：ADR `315039fc`；Domain/持久化 `86aaecdf`；Workflow/Runner Identity `e2314e9b`；Effect Policy/Interactive Guard `8b9ef440`；专用 Admission/Application/API 创建入口 `8f1b2554`；Capability Selection 原子绑定 `33c863ea`；Pentest status/API `70f6f4a0`；Pentest CLI `2271bc8e`；Attack Surface `9a4714fc`；隔离生命周期 `ca12ad9b`；目标交互预算 `ad91c3f4`、`2c0f8004`；运行中用量 `73288673`；Model/Token/Duration 门禁 `b6b5f739`；Tool/Duration 门禁 `53812397`；统一预算停止 `1c379dcc`。
 - Verification：阶段 A 完整 Control Plane `67 passed`；Runtime/Execution/Target HTTP/Temporal Worker `467 passed`；预算处理聚焦回归 `215 passed`；全仓 Ruff passed；6 个变更核心源文件 scoped mypy passed；Alembic 单 head `7b3d1e5f9a24`；`git diff --check` passed。
@@ -71,7 +72,8 @@
 - Stage D/D2 verification：Report、状态化 Web、Operator Skill lifecycle 与 v1→v2 纵向 E2E `8 passed`；全仓 Ruff passed；`reports.py` scoped mypy passed；`git diff --check` passed。
 - Stage E/E1 verification：Onboard、Doctor、CLI、Operator Skill Report 与文档合同 `100 passed`；全仓 Ruff passed；`cli/app.py` scoped mypy 在禁用既有 Typer/Click `override`、`arg-type`、`return-value` 兼容错误后 passed；`git diff --check` passed。
 - Stage E/E2 verification：Onboard、Doctor、CLI、隔离 XDG 生产装配/Pentest Admission 与文档合同 `100 passed`；全仓 Ruff passed；`onboarding.py` scoped mypy passed；`git diff --check` passed。
-- Next delivery slice：只测量并记录候选模块的生产消费者和默认启动成本；没有可复现收益时不做 lazy-init、拆包或删除。
+- Stage E/E3 verification：CLI、Demo、隔离 XDG Onboard/Pentest Admission 与文档合同 `81 passed`；全仓 Ruff passed；`cli/app.py` scoped mypy passed；`git diff --check` passed。7 次冷启动 `riftx --help` 中位数从本轮修改前 2.3360 s 降至 1.7278 s；CLI 导入不再提前加载 API、Runner、Temporal Worker、Demo 和 Capability Management。
+- Next delivery slice：只执行同一候选提交上的分发、三条纵向用户闭环、安全/恢复、migration、全仓 Python 和 Web 发布门；只修可复现的 R1 阻断。
 
 ## 3. 研究与实现基线
 
@@ -1178,8 +1180,14 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 - E2 non-goals upheld：未拆依赖、删除可选模块、新增安装器、启动真实模型回合或执行目标交互。
 - E2 implementation commit：`8ea90890`。
 - E2 completion：completed。
-- E3 current target：测量 Code Audit、Browser/MCP/Connector、Candidate/Promotion/Evaluation、General Agent/Memory/Terminal、Demo/前端非主线和重复旧入口的真实消费者与默认成本。
-- E3 completion gate：形成带代码证据和可重复命令的处置表；没有消费者为零、无兼容责任和测量收益的共同证据，不删除代码。
+- E3 consumer audit：`2975e818` 记录 Code Audit、Browser/MCP/Connector、Candidate/Promotion/Evaluation、General Agent/Memory/Terminal、Demo/前端非主线和重复旧入口的真实消费者、持久化责任、安全价值和冷启动量级；完整事实见 `docs/pentest-r1-consumer-audit.md`。
+- E3 startup optimization：API、Runner、Temporal Worker、Demo 和 Capability Management 改为实际 CLI 命令内导入；未新增 lazy-import 框架、依赖、表或 migration。
+- E3 disposition：Code Audit 与 Candidate/Promotion/Evaluation 冻结兼容；Browser/MCP/Connector 与 Demo/前端按需初始化；General Agent/Memory/Terminal 保持 Advanced；重复入口保留兼容。没有模块同时满足零消费者、无兼容责任和测量收益，因此没有删除候选。
+- E3 verification：CLI、Demo、隔离 XDG Onboard/Pentest Admission 与文档合同 `81 passed`；全仓 Ruff passed；`cli/app.py` scoped mypy passed；`git diff --check` passed；`riftx --help` 7 次冷启动中位数从 2.3360 s 降至 1.7278 s。
+- E3 implementation commit：`2975e818`。
+- E3 completion：completed。
+- E4 current target：在同一候选提交上完成分发与干净启动、网络服务、状态化 Web、Operator Skill、安全失败关闭、恢复、migration、Backup/Restore、全仓 Python、Web build 和发布记录。
+- E4 completion gate：所有 R1 Gate 通过或存在明确、非阻断的已知限制；每个真实阻断有独立根因修复提交；Stage E 随发布记录完成而结束。
 
 ## 9. Known pre-existing worktree state
 

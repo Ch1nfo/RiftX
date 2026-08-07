@@ -8,11 +8,13 @@
 >
 > 当前分支：`ch1nfo/riftx-3-code-audit`
 >
-> 当前代码基线：`8ea90890`；本次重写输入计划基线：`d63e6f84`
+> 当前代码基线：`2975e818`；本次优化计划起点：`d63e6f84`
 >
-> 当前施工：E3 消费者与启动成本审计；E2 已完成
+> 当前施工：E4 Pentest R1 发布门；E3 已完成
 >
 > 实施与测试事实：[`docs/implementation/FORMAL_AGENT_PROGRESS.md`](docs/implementation/FORMAL_AGENT_PROGRESS.md)
+>
+> 消费者与成本事实：[`docs/pentest-r1-consumer-audit.md`](docs/pentest-r1-consumer-audit.md)
 >
 > 平台边界：[`ADR-0012`](docs/architecture/decisions/0012-riftx-formal-security-agent-platform-boundaries.md)
 >
@@ -30,7 +32,7 @@ RiftX 已经有足够厚的 Agent、Runtime、安全、持久化和专业事实�
 - Capability、Code Audit、Evaluation、Web、Browser、MCP、Connector 等横向能力同时存在；
 - CLI 默认展示通用 Run、Memory、Terminal、Node、Audit 等大量平台概念；
 - 历史账本保留了 Candidate、Promotion、Replay、Marketplace 等远期任务，容易被误当成当前待办；
-- 专业用户添加一项方法后，仍缺少最小的注册、启用、使用、禁用和回滚闭环。
+- 能力成长曾被 Candidate、Promotion、Evaluation 等远期设想包围，最小 Operator Skill 闭环直到阶段 D 才完成。
 
 但现在不应进行大规模删库或重写。安全边界、migration、恢复路径和旧数据兼容都使“先删再说”风险很高，而且删代码本身不会让 Pentest 更好用。
 
@@ -38,9 +40,9 @@ RiftX 已经有足够厚的 Agent、Runtime、安全、持久化和专业事实�
 
 1. Operator Skill 的最小生命周期和新 Pentest 门禁（已完成）；
 2. 复用现有 Report 完成一次人工复盘与版本迭代（已完成）；
-3. 收缩默认产品面，完成干净环境安装、两条真实场景和发布回归。
+3. 收缩默认产品面、验证干净环境和启动成本，并完成最终发布回归（只剩发布回归）。
 
-正式版完成前停止新增通用平台能力。剩余工作只有阶段 E 的产品收口与发布门，不再扩建能力成长平台。
+正式版完成前停止新增通用平台能力。默认入口、干净环境和消费者审计均已完成；剩余工作只有 E4 发布门，不再扩建能力成长平台，也不安排大规模删代码。
 
 ---
 
@@ -131,11 +133,11 @@ RiftX 的目标是：
 
 ### 2.3 当前真正缺口
 
-只剩下以下产品缺口：
+只剩下以下发布缺口：
 
-1. 默认 README、CLI help 和入口仍像通用 Agent 平台，而不是 Pentest 产品；
-2. 干净环境 Onboard、基础工具缺失降级和 Quickstart 单路径尚未形成最终发布证据；
-3. 可选模块是否真实拖慢安装、启动或维护尚未测量，不能凭体感删除。
+1. 用当前代码基线执行一次完整 R1 回归矩阵，而不是继续依赖各阶段分散的历史通过记录；
+2. 验证可分发构建、migration、Backup/Restore、两个 Pentest 场景、Operator Skill 生命周期和安全失败关闭能在同一候选版本连续通过；
+3. 形成一份简短发布记录，明确通过命令、失败修复、环境要求和已知限制。
 
 ### 2.4 对“过度开发”的准确判断
 
@@ -143,15 +145,15 @@ RiftX 的目标是：
 
 **尚不能直接判定为应删除的部分**：Runtime、安全边界、Code Audit 持久化、Capability 表、Browser、MCP、Connector 和前端页面。它们可能有迁移、兼容、安全或高级用户消费者。
 
-因此优化顺序必须是：
+因此优化顺序固定为：
 
 ```text
-冻结新增
-→ 收缩默认入口
-→ 测量真实成本
-→ 审计消费者
-→ 隔离可选模块
-→ 删除被证明无用的代码
+[已完成] 冻结新增
+→ [已完成] 收缩默认入口
+→ [已完成] 测量真实成本与审计消费者
+→ [已完成] 对非当前命令运行时做局部惰性导入
+→ [当前] 执行 R1 发布门
+→ [未来按证据] 删除同时满足三项准入条件的代码
 ```
 
 ---
@@ -280,7 +282,7 @@ CLI/API
 | B. 网络服务专业闭环 | completed | 真实服务从枚举走到证据化结论、Closure 和 Report |
 | C. 状态化 Web 与报告 | completed | 身份/授权场景走到证据化结论、Closure 和 Report |
 | D. 用户驱动能力成长 | completed | Operator Skill 可验证、启用、使用、复盘、禁用和回滚 |
-| E. 默认产品面收缩与发布 | in progress；E3 当前施工 | Pentest-first 产品可安装、可理解、可回归、可发布 |
+| E. 默认产品面收缩与发布 | in progress；E4 当前施工 | Pentest-first 产品可安装、可理解、可回归、可发布 |
 
 阶段 A、B、C、D 只保留回归合同，不再扩建。除安全修复、数据兼容和真实用户阻断外，不得跳过阶段。
 
@@ -481,22 +483,58 @@ E2 已由实现提交 `8ea90890` 完成：新增隔离 XDG、空可选工具 PAT
 
 ### 8.3 消费者与成本审计
 
-每个候选模块只做一次表格化审计：
+E3 已由实现提交 `2975e818` 完成，完整证据见 [`docs/pentest-r1-consumer-audit.md`](docs/pentest-r1-consumer-audit.md)。
 
-| 模块 | 生产消费者 | 默认入口 | 启动/依赖成本 | 数据兼容 | 安全价值 | 处置 |
-| --- | --- | --- | --- | --- | --- | --- |
-| Code Audit runtime / snapshot / materializer | 实测 | frozen | 实测 | 有 | 部分 | 保留/按需 |
-| Browser / MCP / Connector | 实测 | 可选 | 实测 | 低 | 场景相关 | 按需初始化 |
-| Candidate / Promotion / Evaluation | 无 R1 用户入口 | 无 | 实测 | migration 有 | R1 无 | 冻结兼容 |
-| General Agent / Memory / Terminal | Advanced 用户 | Advanced | 实测 | 有 | 可选 | 保留 |
-| Demo / 前端非主线路由 | 实测 | 非默认 | 实测 | 低 | 低 | 隔离/删除候选 |
-| 重复 wrapper / 旧入口 | 引用审计 | 无 | 实测 | 无 | 无 | 优先删除 |
+| 模块 | 事实结论 | R1 处置 |
+| --- | --- | --- |
+| Code Audit runtime / snapshot / materializer | API、Worker、Snapshot、migration 和旧数据消费者存在 | 冻结兼容 |
+| Browser / MCP / Connector | 状态化 Web、Worker Tool、API、停止与持久化消费者存在 | 按需初始化 |
+| Candidate / Promotion / Evaluation | 无 R1 在线入口，但有 Repository、Schema、migration 和回归消费者 | 冻结兼容 |
+| General Agent / Memory / Terminal | Agent Runtime 或 Advanced 用户与恢复路径直接使用 | Advanced |
+| Demo / 前端非主线路由 | 非主路径；Demo 可离线演示，前端条件挂载 | 按需初始化 |
+| 重复 wrapper / 旧入口 | 均存在部署或 CLI/API 兼容责任 | 保留 |
 
-只有测到安装体积、导入时间、启动耗时、内存或维护问题，才允许做 lazy-load、拆可选依赖或删除。没有数据时不做通用“优化框架”。
+本轮测得 `riftx --help` 7 次冷启动中位数为 2.3360 秒。把 API、Runner、Temporal Worker、Demo 和 Capability Management 从 CLI 顶层移到实际命令后，中位数降至 1.7278 秒，约降低 26%；防回退测试验证导入 CLI 时这些运行时不在 `sys.modules`。
+
+E3 没有发现满足“零消费者、无兼容责任、有测量收益”的删除候选，因此没有删除模块、表或 migration，也没有建设通用 lazy-import 框架。Control Plane 首次装配中位数约 0.4821 秒，当前不足以支持重写装配器或拆包。
 
 ### 8.4 R1 发布门
 
-发布前至少证明：
+E4 是 R1 前最后阶段，只做现有能力的同版本发布证明。不得借发布门新增产品能力。
+
+#### E4.1 分发与干净启动
+
+- 从当前提交构建 wheel，不依赖工作树源码隐式可见；
+- 在临时目录安装并运行 `riftx --help`、`riftx onboard` 和 `riftx doctor`；
+- 验证重复 Onboard 不覆盖用户文件，缺少可选 Tool 时保持 degraded；
+- 启动 Control Plane 后检查 `/healthz`，并证明 Temporal 缺失错误仍可恢复。
+
+#### E4.2 三条纵向用户闭环
+
+必须在同一候选提交上连续通过：
+
+1. 网络服务：Admission → Scope/Approval/Budget → Execution → Artifact/Evidence → Draft Finding/Negative Result → Closure → Report；
+2. 状态化 Web：Alice/Bob 基线 → Credential Reference → 跨对象验证 → Evidence → Draft Finding → Report → 重建读取；
+3. Operator Skill：validate → register → activate → Pentest Selection → Report 复盘 → v2 → disable → 恢复源码 → rollback。
+
+只复用现有 E2E。除非回归暴露真实缺口，不新增第三个靶场、Browser 场景、Scanner、评分器或学习流水线。
+
+#### E4.3 安全、恢复与数据门
+
+- Scope、Approval、Credential、Redaction、Effect Policy 和预算在副作用前失败关闭；
+- 暂停、恢复、取消、超时、重启和 Stop Proof 可解释；
+- migration 从受支持旧版本升级成功，受保护 downgrade 行为符合现有合同；
+- Backup/Restore 后 Run、Selection、Evidence、Finding、Report 和停止事实仍可读取；
+- Secret、Credential 值、受保护 HTTP 原始体和本地敏感路径不进入 Event、Report 或失败输出。
+
+#### E4.4 工程质量与发布记录
+
+- 全仓 Python 测试、Ruff 和必要 scoped mypy 通过；
+- Web test/build 通过；Demo 和 Browser Extension 只在其当前发布范围要求时验证，不因非 R1 表面阻塞 Pentest；
+- 文档链接、README Quickstart、CLI help 和 `git diff --check` 通过；
+- 新增 `docs/pentest-r1-release-check.md`，只记录环境、提交、命令、结果、修复提交和已知限制，不建设发布平台。
+
+发布前最终结果必须同时满足：
 
 - 全新环境 Onboard、Doctor 和模型配置成功；
 - 网络服务场景从 Admission 到 Report；
@@ -507,6 +545,8 @@ E2 已由实现提交 `8ea90890` 完成：新增隔离 XDG、空可选工具 PAT
 - migration upgrade、受保护 downgrade 和 Backup/Restore 通过；
 - 默认 CLI/API、可选工具降级和已知限制已记录；
 - 全仓 Python 测试、Ruff、必要 mypy、相关前端 build、文档链接和 `git diff --check` 通过。
+
+某一项失败时，只修复该失败的共享根因并重跑受影响回归。外部 Provider、Codex 或编辑器无法在 RiftX 内复现的错误，记录为环境限制，不扩建 RiftX。
 
 评测只用于 RiftX 自身回归、复现、发布和能力演进，不承担量化证明超过通用 Agent 的义务。
 
@@ -632,25 +672,31 @@ conda run --no-capture-output -n agent ...
 
 ## 12. 当前唯一施工指令
 
-从实现提交 `8ea90890` 继续，只完成 E3 消费者与启动成本审计：
+从实现提交 `2975e818` 继续，只完成 E4 Pentest R1 发布门：
 
-1. 为 8.3 表格中的六类候选模块逐项记录真实生产消费者、默认入口、导入/启动/依赖成本、持久数据和安全价值；所有结论必须引用代码入口、命令或可重复测量；
-2. 测量当前 Onboard 后 `riftx --help`、配置加载、Control Plane 装配的墙钟时间和导入模块，记录环境、命令和中位结果；不建设长期 Benchmark 平台；
-3. 使用 `rg`、入口装配和现有测试证明模块是否有 Pentest R1 消费者；migration 或旧数据读取存在时只能标记冻结兼容，不能直接删除；
-4. 输出一个简短消费者审计文档，处置只能是保留、Advanced、按需初始化、冻结兼容或删除候选；“删除候选”本切片不执行删除；
-5. 只有发现可复现的默认启动失败或明显成本时，才允许在同一切片做一个最小 lazy-init 修复；否则 E3 只提交审计事实和防回退检查；
-6. 不修改 migration 历史、不删除 Code Audit/Browser/MCP/Connector/Memory/Terminal，不拆包、不新增性能框架；
-7. 运行入口 smoke、Onboard/Doctor、Pentest Admission、文档合同、全仓 Ruff、必要 scoped mypy 和 `git diff --check`；
-8. 形成 E3 独立提交，再单独更新实施账本；实际删除必须作为后续独立任务并满足消费者为零、无兼容责任和测量收益三个条件。
+1. 先创建 `docs/pentest-r1-release-check.md` 的最小记录骨架，写入候选提交、环境和待执行 Gate；不得新建 Release Domain、数据库表或自动化平台；
+2. 使用当前 wheel/安装方式验证干净 CLI、Onboard、Doctor、Control Plane health 和可选工具降级；如果构建链本身失败，只修包元数据或真实导入错误；
+3. 运行网络服务、状态化 Web、Operator Skill 三条既有纵向 E2E，不增加新场景；
+4. 运行 Scope/Approval/Credential/Redaction/Budget、暂停/恢复/取消/重启/Stop Proof 的现有失败关闭与恢复回归；
+5. 运行 migration、Database Maintenance、Backup/Restore 和旧 Run/Report 读取回归；不得重写或删除 migration 历史；
+6. 运行全仓 Python、Ruff、必要 scoped mypy、Web test/build、文档合同和 `git diff --check`；
+7. 每个失败单独判断是否为 R1 阻断。只修共享根因，形成小型实现提交并重跑受影响 Gate；非阻断问题写入已知限制；
+8. 所有 Gate 通过后，更新发布记录和实施账本，形成独立文档提交，并把 Stage E 标记 completed；
+9. E4 禁止新增 Capability 类型、Pack、Scanner、Browser 场景、Agent 角色、Planner、Graph、Memory、市场、评测平台或删除任务。
 
-建议起始验证命令：
+建议起始验证命令（按风险从小到大执行）：
 
 ```bash
-conda run --no-capture-output -n agent python -X importtime -m riftx.cli.app --help
 conda run --no-capture-output -n agent pytest -q tests/integration/api/test_onboarded_pentest.py
-conda run --no-capture-output -n agent pytest -q tests/unit/cli/test_app.py
+conda run --no-capture-output -n agent pytest -q tests/integration/api/test_control_plane.py::test_service_enumeration_reaches_finding_and_precise_negative_result
+conda run --no-capture-output -n agent pytest -q tests/integration/api/test_pentest_stateful_web.py
+conda run --no-capture-output -n agent pytest -q tests/integration/api/test_operator_skill_reports.py
+conda run --no-capture-output -n agent pytest -q tests/integration/persistence/test_migrations.py tests/integration/persistence/test_database_maintenance.py
 conda run --no-capture-output -n agent pytest -q tests/docs/test_formal_agent_docs.py
+conda run --no-capture-output -n agent pytest -q
 conda run --no-capture-output -n agent ruff check .
+pnpm web:test
+pnpm web:build
 git diff --check
 ```
 
@@ -666,9 +712,9 @@ git diff --check
 → [已完成] D2：复用现有 Report 完成人工复盘和版本迭代
 → [已完成] E1：默认产品入口与 Quickstart 单路径
 → [已完成] E2：干净 XDG Onboard 与可选工具降级
-→ [当前] E3：消费者与启动成本审计
-→ [最后] E4：Pentest R1 发布门
+→ [已完成] E3：消费者、启动成本审计与局部惰性导入
+→ [当前且最后] E4：Pentest R1 发布门
 → [按需] R2+：Operator Tool、Technique 与团队共享
 ```
 
-RiftX 当前不需要更多架构，也不应立刻大规模删代码。能力成长闭环已经完成，最短路径是收缩默认入口、验证干净环境和真实场景，然后发布。高上限来自专业用户持续沉淀方法，不来自一次性把所有平台设想全部开发完。
+RiftX 当前不需要更多架构，也不应立刻大规模删代码。默认入口、干净环境、能力成长和成本审计已经完成；最短路径是执行一次同版本发布矩阵，修复真实阻断，然后发布。高上限来自专业用户持续沉淀方法，不来自一次性把所有平台设想全部开发完。
