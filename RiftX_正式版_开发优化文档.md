@@ -16,6 +16,8 @@
 >
 > 消费者与成本事实：[`docs/pentest-r1-consumer-audit.md`](docs/pentest-r1-consumer-audit.md)
 >
+> 过度开发清理执行：[`RiftX_过度开发清理计划.md`](RiftX_过度开发清理计划.md)
+>
 > R1 发布事实：[`docs/pentest-r1-release-check.md`](docs/pentest-r1-release-check.md)
 >
 > 平台边界：[`ADR-0012`](docs/architecture/decisions/0012-riftx-formal-security-agent-platform-boundaries.md)
