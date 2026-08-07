@@ -124,11 +124,19 @@ class ExecutionService:
 
         self._require_execution_allowed(run)
         try:
-            claim = await self._tool_calls.claim_execution(
-                intent.id,
-                execution_key=admission.execution_key,
-                attempt_group=admission.attempt_group,
-            )
+            if intent.target_summary and intent.tool_id:
+                claim = await self._tool_calls.claim_execution(
+                    intent.id,
+                    execution_key=admission.execution_key,
+                    attempt_group=admission.attempt_group,
+                    target_interaction_tool_ids=(intent.tool_id,),
+                )
+            else:
+                claim = await self._tool_calls.claim_execution(
+                    intent.id,
+                    execution_key=admission.execution_key,
+                    attempt_group=admission.attempt_group,
+                )
         except PentestBudgetExceededError as exc:
             details = pentest_budget_exhaustion_details(admission.run_id, exc)
             await self._append_event(

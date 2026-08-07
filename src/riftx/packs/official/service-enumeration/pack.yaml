@@ -1,6 +1,6 @@
 schema_version: riftx.official-pack-source/v1
 pack_id: service-enumeration
-version: 1.0.0
+version: 1.1.0
 title: Service Enumeration
 description: Approval-gated network service discovery with raw artifacts and endpoint-level conclusions.
 authored_by: RiftX Security Team
@@ -9,7 +9,10 @@ tool_requirements:
   - port_scan
   - run_registered_tool
   - read_artifact
+  - register_artifact_evidence
+  - query_reasoning_graph
   - record_observation
+  - propose_hypothesis
   - record_negative_result
 evidence_contract: &pack_evidence
   required_refs: [scope, endpoint, raw_artifact, service_observation]
@@ -27,7 +30,10 @@ capabilities:
       - {kind: tool, reference: port_scan}
       - {kind: tool, reference: run_registered_tool}
       - {kind: tool, reference: read_artifact}
+      - {kind: tool, reference: register_artifact_evidence}
+      - {kind: tool, reference: query_reasoning_graph}
       - {kind: tool, reference: record_observation}
+      - {kind: tool, reference: propose_hypothesis}
       - {kind: tool, reference: record_negative_result}
     permission:
       effect_class: target_interaction
@@ -58,7 +64,10 @@ capabilities:
       - {kind: tool, reference: port_scan}
       - {kind: tool, reference: run_registered_tool}
       - {kind: tool, reference: read_artifact}
+      - {kind: tool, reference: register_artifact_evidence}
+      - {kind: tool, reference: query_reasoning_graph}
       - {kind: tool, reference: record_observation}
+      - {kind: tool, reference: propose_hypothesis}
       - {kind: tool, reference: record_negative_result}
     permission:
       effect_class: target_interaction

@@ -10,7 +10,7 @@ from collections.abc import Collection
 from pathlib import Path
 from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from riftx.application.errors import (
     ApplicationConflictError,
@@ -23,11 +23,12 @@ from riftx.application.ports import (
     ToolCallIntentExecutionClaim,
     ToolCallIntentRepository,
 )
-from riftx.domain import ApprovalLevel, Execution, ExecutorType, Run
+from riftx.domain import ApprovalLevel, Execution, ExecutorType, Run, RunKind
 from riftx.executors import EnvironmentMode, ShellKind
 from riftx.runner import TerminalLaunchRequest
 from riftx.runtime.engine import AgentEngineEvent
 from riftx.runtime.types import AgentCycle, AgentSession, AgentStep, ToolCallIntent, ToolCallStatus
+from riftx.scope import ScopeGuard
 from riftx.tools import (
     ExecutionPolicy,
     PinnedToolSnapshot,
@@ -60,6 +61,20 @@ class DeferredExecutionSpec(BaseModel):
     env: dict[str, str | None] = Field(default_factory=dict)
     timeout_seconds: float | None = Field(default=None, gt=0)
     attempt_group: str = Field(default="initial", min_length=1, max_length=64)
+    target_summary: str | None = Field(default=None, min_length=1, max_length=8192)
+
+
+class _PortScanArguments(BaseModel):
+    """Structured port-scan arguments; raw argv is forbidden for Pentest targets."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tool_id: str | None = Field(default=None, min_length=1, max_length=256)
+    target: str = Field(min_length=1, max_length=8192)
+    ports: str | None = Field(default=None, min_length=1, max_length=2048)
+    service_detection: bool = False
+    timeout_seconds: float | None = Field(default=None, gt=0)
+    reason: str | None = Field(default=None, max_length=2000)
 
 
 class DeferredExecutionResolver(Protocol):
@@ -152,9 +167,29 @@ class RegistryDeferredExecutionResolver:
             state = self._registry.snapshot.states[tool_id]
             resolved_command = state.resolved_command or definition.command[0]
             tool_version = state.version
-        args = arguments.get("args")
-        argv = [str(item) for item in args] if isinstance(args, list) else []
-        timeout = _timeout(arguments) or definition.timeout_seconds
+        target_summary: str | None = None
+        if run.kind is RunKind.PENTEST and "port_scan" in definition.capabilities:
+            try:
+                scan = _PortScanArguments.model_validate(arguments)
+            except ValidationError as exc:
+                raise ApplicationConflictError(
+                    "invalid_tool_arguments",
+                    "Pentest port scans require structured target, ports, and "
+                    "service_detection arguments",
+                ) from exc
+            ScopeGuard(run.scope).require(scan.target)
+            argv = _port_scan_arguments(
+                definition.id,
+                target=scan.target,
+                ports=scan.ports,
+                service_detection=scan.service_detection,
+            )
+            timeout = scan.timeout_seconds or definition.timeout_seconds
+            target_summary = scan.target
+        else:
+            args = arguments.get("args")
+            argv = [str(item) for item in args] if isinstance(args, list) else []
+            timeout = _timeout(arguments) or definition.timeout_seconds
         return DeferredExecutionSpec(
             node_id=run.node_id,
             executor_type=definition.executor,
@@ -164,6 +199,7 @@ class RegistryDeferredExecutionResolver:
             environment_mode=EnvironmentMode.INHERIT,
             env={**definition.environment, **_environment(arguments)},
             timeout_seconds=timeout,
+            target_summary=target_summary,
         )
 
 
@@ -752,7 +788,11 @@ class DeferredExecutionDispatcher:
                 else tool_id
             ),
             reason=str(event.data.get("reason") or ""),
-            target_summary=_optional_string(event.data.get("target_summary")),
+            target_summary=(
+                spec.target_summary
+                if spec is not None and spec.target_summary is not None
+                else _optional_string(event.data.get("target_summary"))
+            ),
             approval_level=ApprovalLevel(
                 str(event.data.get("approval_level") or ApprovalLevel.SENSITIVE.value)
             ),
@@ -874,6 +914,34 @@ def _environment(arguments: dict[str, object]) -> dict[str, str | None]:
 def _timeout(arguments: dict[str, object]) -> float | None:
     value = arguments.get("timeout_seconds")
     return float(value) if isinstance(value, int | float) and value > 0 else None
+
+
+def _port_scan_arguments(
+    tool_id: str,
+    *,
+    target: str,
+    ports: str | None,
+    service_detection: bool,
+) -> list[str]:
+    normalized = tool_id.lower()
+    if normalized == "nmap":
+        arguments = ["-oX", "-"]
+        if service_detection:
+            arguments.append("-sV")
+        if ports:
+            arguments.extend(["-p", ports])
+        arguments.append(target)
+        return arguments
+    if normalized == "masscan":
+        arguments = [target, "-oJ", "-"]
+        if ports:
+            arguments.extend(["-p", ports])
+        return arguments
+    arguments = []
+    if ports:
+        arguments.extend(["--ports", ports])
+    arguments.append(target)
+    return arguments
 
 
 def _default_shell_path(registry: ToolRegistry) -> str:

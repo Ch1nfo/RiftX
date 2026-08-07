@@ -1603,6 +1603,16 @@ def _resident_schema(
         properties = {
             "tool_id": {"type": "string"},
             "args": {"type": "array", "items": {"type": "string"}},
+            "target": {
+                "type": ["string", "null"],
+                "minLength": 1,
+                "maxLength": 8192,
+                "description": (
+                    "Required instead of raw args for Pentest tools with port_scan capability."
+                ),
+            },
+            "ports": {"type": ["string", "null"], "minLength": 1, "maxLength": 2048},
+            "service_detection": {"type": "boolean", "default": False},
             "cwd": {"type": ["string", "null"]},
             "environment": {
                 "type": "object",

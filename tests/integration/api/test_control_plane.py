@@ -54,6 +54,7 @@ from riftx.application.services import (
     AuditPreflightApplicationService,
     ClosureVerifierApplicationService,
     EventApplicationService,
+    EvidenceApplicationService,
     ExecutionApplicationService,
     FindingApplicationService,
     ModelProfileApplicationService,
@@ -61,6 +62,7 @@ from riftx.application.services import (
     NodeRegistration,
     PentestApplicationService,
     PentestCapabilityResolver,
+    ReasoningGraphApplicationService,
     ReportApplicationService,
     ResourceStopDisposition,
     RunApplicationService,
@@ -77,7 +79,14 @@ from riftx.application.traffic import TrafficExchangeDetail, TrafficExchangePage
 from riftx.application.workflow_router import RunWorkflowControlRouter
 from riftx.browser.service import BrowserApplicationService
 from riftx.capabilities import CapabilityKind, PackLockOwnerKind
-from riftx.context import ContextApplicationService, ContextCompilation, ContextManifest
+from riftx.context import (
+    ContextApplicationService,
+    ContextCompilation,
+    ContextManifest,
+    ExecutionArtifactStore,
+    ToolResultProcessor,
+    processed_tool_result_context_item,
+)
 from riftx.domain import (
     RUNNER_COMMAND_OWNERSHIP_CAPABILITY,
     RUNNER_STOP_ACK_EXECUTION_SCHEMA,
@@ -119,7 +128,12 @@ from riftx.evidence import (
     EvidenceTrustClass,
     SourceLocator,
 )
-from riftx.execution import build_execution_key
+from riftx.execution import (
+    DeferredExecutionDispatcher,
+    ExecutionService,
+    RegistryDeferredExecutionResolver,
+    build_execution_key,
+)
 from riftx.executors import LinuxCgroupV2Manager
 from riftx.memory import MemoryService, MemoryWriter
 from riftx.models import ModelProfile, ModelProfileRegistry, ModelsConfig
@@ -155,6 +169,7 @@ from riftx.persistence import (
     SQLAlchemyTaskGraphRepository,
     SQLAlchemyTerminalRepository,
     SQLAlchemyToolCallIntentRepository,
+    SQLAlchemyTranscriptRepository,
     SQLAlchemyWorkflowSignalIntentRepository,
 )
 from riftx.persistence.capability_records import CapabilityPackLockRecord
@@ -200,6 +215,9 @@ from riftx.runtime import (
     ToolCallStatus,
     YieldReason,
 )
+from riftx.runtime.control_tools import RuntimeControlToolService
+from riftx.runtime.engine import AgentEngineEvent, AgentEngineEventType
+from riftx.runtime.engine.agent_factory import RuntimeToolScope
 from riftx.scope import ScopeViolationError
 from riftx.security import DeploymentProfileError, LocalObjectAuthorizer
 from riftx.skills import create_default_skill_registry
@@ -213,7 +231,7 @@ from riftx.temporal import RiftXRunWorkflow, WorkflowPhase
 from riftx.temporal.activities import RiftXActivities
 from riftx.temporal.runtime import TemporalRunClient, TemporalRuntimeConfig
 from riftx.temporal.workflow_signal_transport import RoutedWorkflowSignalTransport
-from riftx.tools import ToolRegistry
+from riftx.tools import ToolContextManager, ToolRegistry
 
 FAKE_TOOL_FIXTURE = Path(__file__).parents[2] / "tools" / "fixtures" / "fake_tool.py"
 PROCESS_TREE_FIXTURE = Path(__file__).parents[2] / "runner" / "fixtures" / "fake_process.py"
@@ -233,6 +251,16 @@ WEB_REQUEST_ANALYSIS_TOOLS = (
     "read_http_exchange",
     "record_attempt",
     "record_observation",
+    "record_negative_result",
+)
+SERVICE_ENUMERATION_TOOLS = (
+    "port_scan",
+    "run_registered_tool",
+    "read_artifact",
+    "register_artifact_evidence",
+    "query_reasoning_graph",
+    "record_observation",
+    "propose_hypothesis",
     "record_negative_result",
 )
 
@@ -1704,6 +1732,379 @@ async def test_isolated_authorized_pentest_lifecycle_e2e(tmp_path: Path) -> None
                 "workflow_synced": True,
                 "failed_resource_types": [],
             }
+    finally:
+        await restarted.control_plane.close()
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_service_enumeration_reaches_evidence_observation_and_hypothesis(
+    tmp_path: Path,
+) -> None:
+    requests: list[str] = []
+
+    async def handle_target(
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        try:
+            headers = await reader.readuntil(b"\r\n\r\n")
+            requests.append(headers.split(b"\r\n", maxsplit=1)[0].decode("ascii"))
+            writer.write(
+                b"HTTP/1.1 200 OK\r\n"
+                b"Server: RiftXFixture/1.0\r\n"
+                b"Content-Length: 0\r\n"
+                b"Connection: close\r\n\r\n"
+            )
+            await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    server = await asyncio.start_server(handle_target, "127.0.0.1", 0)
+    port = int(server.sockets[0].getsockname()[1])
+    scanner = Path(__file__).parents[2] / "tools" / "fixtures" / "fake_nmap.py"
+    tools_path = tmp_path / "tools.yaml"
+    tools_path.write_text(
+        yaml.safe_dump(
+            {
+                "version": 1,
+                "execution_policy": "registered_only",
+                "tools": {
+                    "nmap": {
+                        "command": [sys.executable, str(scanner), "--fixture-probe"],
+                        "capabilities": ["port_scan", "service_detection"],
+                        "input_schema": {
+                            "type": "object",
+                            "required": ["target"],
+                            "properties": {
+                                "target": {"type": "string"},
+                                "ports": {"type": ["string", "null"]},
+                                "service_detection": {"type": "boolean"},
+                                "timeout_seconds": {"type": ["number", "null"]},
+                            },
+                            "additionalProperties": False,
+                        },
+                        "approval": "sensitive",
+                        "timeout": 5,
+                        "output": {"preferred": "xml"},
+                    }
+                },
+            },
+            sort_keys=False,
+        )
+    )
+    database_path = tmp_path / "service-enumeration.db"
+    run_id = str(uuid4())
+    session_id = f"{run_id}:primary"
+    runtime = await _build_runtime(tmp_path, database_path=database_path)
+    stdout_artifact_id = ""
+    evidence_id = ""
+    execution_id = ""
+    try:
+        registry = ToolRegistry(tools_path, node_id="local")
+        await registry.refresh()
+        session_repository = SQLAlchemyAgentSessionRepository(
+            runtime.control_plane.database.session_factory
+        )
+        intent_repository = SQLAlchemyToolCallIntentRepository(
+            runtime.control_plane.database.session_factory
+        )
+        cycle_repository = SQLAlchemyAgentCycleRepository(
+            runtime.control_plane.database.session_factory
+        )
+        step_repository = SQLAlchemyAgentStepRepository(
+            runtime.control_plane.database.session_factory
+        )
+        selection_store = SQLAlchemyCapabilitySelectionStore(
+            runtime.control_plane.database.session_factory
+        )
+
+        async for client in _client(runtime.control_plane):
+            request = _pentest_request(
+                run_id,
+                target=f"http://127.0.0.1:{port}",
+            )
+            admission = request["admission"]
+            assert isinstance(admission, dict)
+            budget = admission["budget"]
+            assert isinstance(budget, dict)
+            budget["max_target_interactions"] = 1
+            budget["max_concurrent_target_interactions"] = 1
+            request["capabilities"] = {
+                "pack_ids": ["pentest-foundation", "service-enumeration"],
+                "tool_ids": ["nmap"],
+            }
+            created = await client.post("/api/v1/pentests", json=request)
+            assert created.status_code == 201, created.text
+            await runtime.run_repository.update_status(run_id, RunStatus.RUNNING)
+
+            status = await client.get(f"/api/v1/pentests/{run_id}/status")
+            assert status.status_code == 200, status.text
+            assert status.json()["capabilities"]["allowlists"]["tool"] == list(
+                dict.fromkeys(
+                    (*PENTEST_FOUNDATION_TOOLS, *SERVICE_ENUMERATION_TOOLS, "nmap")
+                )
+            )
+
+            session = await session_repository.get(session_id)
+            assert session is not None
+            tools = ToolContextManager(registry, store=selection_store)
+            execution_service = ExecutionService(
+                execution_repository=runtime.execution_repository,
+                session_repository=session_repository,
+                tool_call_repository=intent_repository,
+                runner=runtime.control_plane.process_supervisor,
+                event_repository=runtime.event_repository,
+                run_repository=runtime.run_repository,
+                budget_exhaustion_handler=runtime.control_plane.run_service.pause,
+            )
+            dispatcher = DeferredExecutionDispatcher(
+                tool_call_repository=intent_repository,
+                execution_service=execution_service,
+                resolver=RegistryDeferredExecutionResolver(
+                    runs=runtime.run_repository,
+                    registry=registry,
+                    tool_context=tools,
+                ),
+            )
+
+            async def prepare_scan(
+                *,
+                index: int,
+                target: str,
+                dispatcher: DeferredExecutionDispatcher = dispatcher,
+                session: AgentSession = session,
+            ) -> ToolCallIntent:
+                cycle = RuntimeAgentCycle(
+                    id=f"service-enumeration-cycle-{index}",
+                    run_id=run_id,
+                    session_id=session_id,
+                    sequence=index,
+                )
+                await cycle_repository.create(cycle)
+                step = AgentStep(
+                    id=f"service-enumeration-step-{index}",
+                    cycle_id=cycle.id,
+                    sequence=1,
+                    step_type=AgentStepType.TOOL_PROPOSAL,
+                )
+                await step_repository.create(step)
+                return await dispatcher.prepare(
+                    session=session,
+                    cycle=cycle,
+                    step=step,
+                    event=AgentEngineEvent(
+                        sequence=1,
+                        event_type=AgentEngineEventType.TOOL_CALL_READY,
+                        data={
+                            "call_id": f"service-enumeration-call-{index}",
+                            "tool_id": "run_registered_tool",
+                            "arguments": {
+                                "tool_id": "nmap",
+                                "target": target,
+                                "ports": str(port),
+                                "service_detection": True,
+                            },
+                            "approval_level": "sensitive",
+                            "approval_required": True,
+                        },
+                    ),
+                    status=ToolCallStatus.WAITING_APPROVAL,
+                )
+
+            with pytest.raises(ScopeViolationError, match="outside authorized scope"):
+                await prepare_scan(index=1, target="127.0.0.2")
+            assert requests == []
+            assert await runtime.execution_repository.list(run_id) == []
+
+            intent = await prepare_scan(index=2, target="127.0.0.1")
+            assert intent.status is ToolCallStatus.WAITING_APPROVAL
+            assert intent.target_summary == "127.0.0.1"
+            assert intent.execution_spec is not None
+            assert intent.execution_spec["argv"][-6:] == [
+                "-oX",
+                "-",
+                "-sV",
+                "-p",
+                str(port),
+                "127.0.0.1",
+            ]
+            assert requests == []
+
+            execution = await dispatcher.execute_approved_intent(intent.id)
+            completed = (await execution_service.wait(execution.id)).execution
+            execution_id = completed.id
+            assert completed.status is ExecutionStatus.COMPLETED
+            assert completed.exit_code == 0
+            assert requests == ["HEAD / HTTP/1.0"]
+
+            processed = await ToolResultProcessor(
+                ExecutionArtifactStore(runtime.control_plane.artifact_service)
+            ).process(completed, registry.snapshot.definitions["nmap"])
+            assert processed.parser == "nmap_xml"
+            assert processed.parser_error is None
+            assert processed.structured_result["open_port_count"] == 1
+            hosts = processed.structured_result["hosts"]
+            assert isinstance(hosts, list)
+            first_host = hosts[0]
+            assert isinstance(first_host, dict)
+            ports = first_host["ports"]
+            assert isinstance(ports, list)
+            assert ports[0] == {
+                "protocol": "tcp",
+                "port": port,
+                "state": "open",
+                "service": "http",
+                "product": "RiftX Fixture",
+                "version": "1.0",
+            }
+            stdout_artifact = next(
+                item for item in processed.raw_artifacts if item.stream.value == "stdout"
+            )
+            assert stdout_artifact.artifact_id is not None
+            stdout_artifact_id = stdout_artifact.artifact_id
+            context_item = processed_tool_result_context_item(processed)
+            assert context_item.content["artifact_ids"][stdout_artifact.uri] == (
+                stdout_artifact_id
+            )
+
+            evidence_ledger = SQLAlchemyEvidenceLedgerRepository(
+                runtime.control_plane.database.session_factory
+            )
+            reasoning_repository = SQLAlchemyReasoningGraphRepository(
+                runtime.control_plane.database.session_factory
+            )
+            evidence_service = EvidenceApplicationService(
+                runs=runtime.run_repository,
+                sessions=session_repository,
+                tasks=SQLAlchemyTaskGraphRepository(
+                    runtime.control_plane.database.session_factory
+                ),
+                artifacts=runtime.control_plane.artifact_service,
+                code=object(),  # type: ignore[arg-type]
+                ledger=evidence_ledger,
+            )
+            reasoning_service = ReasoningGraphApplicationService(
+                runs=runtime.run_repository,
+                sessions=session_repository,
+                tasks=SQLAlchemyTaskGraphRepository(
+                    runtime.control_plane.database.session_factory
+                ),
+                evidence=evidence_ledger,
+                graphs=reasoning_repository,
+            )
+            control_tools = RuntimeControlToolService(
+                tools=tools,
+                executions=execution_service,
+                artifacts=runtime.control_plane.artifact_service,
+                evidence=evidence_service,
+                events=runtime.event_repository,
+                transcript=SQLAlchemyTranscriptRepository(
+                    runtime.control_plane.database.session_factory
+                ),
+                runs=runtime.run_repository,
+                reasoning_proposals=reasoning_service,
+            )
+            scope = RuntimeToolScope(
+                run_id=run_id,
+                session_id=session_id,
+                agent_id="primary",
+                model_profile="fast",
+            )
+            registered = await control_tools(
+                scope,
+                "register_artifact_evidence",
+                {
+                    "artifact_id": stdout_artifact_id,
+                    "start_offset": 0,
+                    "end_offset": stdout_artifact.size,
+                },
+                "service-enumeration-evidence",
+            )
+            assert isinstance(registered, dict)
+            evidence_id = str(registered["evidence_id"])
+            observation = await control_tools(
+                scope,
+                "record_observation",
+                {
+                    "expected_graph_version": 0,
+                    "node_id": "service-endpoint-observation",
+                    "claim": f"127.0.0.1:{port}/tcp is reachable and reported as HTTP",
+                    "structured_data": {
+                        "target": "127.0.0.1",
+                        "port": port,
+                        "transport": "tcp",
+                        "state": "open",
+                        "service": "http",
+                        "product": "RiftX Fixture",
+                        "version": "1.0",
+                        "confidence": "scanner_reported",
+                    },
+                    "evidence_ids": [evidence_id],
+                },
+                "service-enumeration-observation",
+            )
+            assert isinstance(observation, dict)
+            hypothesis = await control_tools(
+                scope,
+                "propose_hypothesis",
+                {
+                    "expected_graph_version": observation["graph_version"],
+                    "node_id": "service-http-hypothesis",
+                    "claim": (
+                        f"The reachable service on 127.0.0.1:{port} likely speaks HTTP "
+                        "and requires a minimal protocol verification"
+                    ),
+                    "structured_data": {
+                        "verification": "minimal_http_request",
+                        "status": "not_yet_verified",
+                    },
+                    "evidence_ids": [evidence_id],
+                },
+                "service-enumeration-hypothesis",
+            )
+            assert isinstance(hypothesis, dict)
+            assert hypothesis["node"]["kind"] == "hypothesis"
+            assert hypothesis["node"]["status"] == "unverified"
+
+            live_status = await client.get(f"/api/v1/pentests/{run_id}/status")
+            assert live_status.status_code == 200, live_status.text
+            assert live_status.json()["budget"]["observed_target_interactions"] == 1
+
+            exhausted = await prepare_scan(index=3, target="127.0.0.1")
+            with pytest.raises(ApplicationConflictError) as captured:
+                await dispatcher.execute_approved_intent(exhausted.id)
+            assert captured.value.code == "pentest_budget_exhausted"
+            assert requests == ["HEAD / HTTP/1.0"]
+            paused = await client.get(f"/api/v1/pentests/{run_id}/status")
+            assert paused.json()["run"]["status"] == "paused"
+            assert paused.json()["budget"]["observed_target_interactions"] == 1
+            assert (await client.post(f"/api/v1/runs/{run_id}/resume")).status_code == 202
+    finally:
+        await runtime.control_plane.close()
+
+    restarted = await _build_runtime(tmp_path, database_path=database_path)
+    try:
+        assert await restarted.execution_repository.get(execution_id) is not None
+        artifact = await restarted.artifact_repository.get(stdout_artifact_id)
+        assert artifact is not None
+        evidence = await SQLAlchemyEvidenceLedgerRepository(
+            restarted.control_plane.database.session_factory
+        ).get(evidence_id)
+        assert evidence is not None
+        assert evidence.artifact_id == stdout_artifact_id
+        graph = await SQLAlchemyReasoningGraphRepository(
+            restarted.control_plane.database.session_factory
+        ).get(run_id)
+        assert graph is not None
+        assert [(node.id, node.kind.value, node.status.value) for node in graph.nodes] == [
+            ("service-endpoint-observation", "observation", "recorded"),
+            ("service-http-hypothesis", "hypothesis", "unverified"),
+        ]
+        assert all(node.evidence_ids == (evidence_id,) for node in graph.nodes)
+        assert await restarted.finding_repository.list(run_id) == []
     finally:
         await restarted.control_plane.close()
         server.close()
