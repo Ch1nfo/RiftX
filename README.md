@@ -66,6 +66,13 @@ Official Packs without overwriting an existing setup. Missing optional executabl
 reported as degraded capabilities; they do not prevent the basic Pentest path from
 starting.
 
+Stateful browser Pentests are optional. Install them only on a Runner that needs them:
+
+```bash
+conda run --no-capture-output -n agent python -m pip install -e ".[browser]"
+conda run --no-capture-output -n agent playwright install chromium
+```
+
 ### 2. Start the local services
 
 Run these in separate terminals with the same `RIFTX_ADMIN_TOKEN` and model credential

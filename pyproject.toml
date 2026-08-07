@@ -24,7 +24,6 @@ dependencies = [
   "rich>=14,<15",
   "openai>=2.50,<3",
   "openai-agents>=0.19,<1",
-  "playwright>=1.52,<2",
   "sqlalchemy[asyncio]>=2.0.36,<3",
   "temporalio>=1.30,<2",
   "typer>=0.26,<1",
@@ -38,6 +37,9 @@ riftx = "riftx.cli.app:app"
 riftx-runner = "riftx.runner.daemon:app"
 
 [project.optional-dependencies]
+browser = [
+  "playwright>=1.52,<2",
+]
 dev = [
   "pytest>=8.3,<9",
   "pytest-asyncio>=0.25,<1",

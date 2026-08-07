@@ -105,6 +105,22 @@ def test_doctor_exposes_all_required_checks_and_degrades_optional_components(
     )
 
 
+def test_doctor_reports_missing_browser_extra_as_optional_degraded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(doctor_module.importlib.util, "find_spec", lambda name: None)
+
+    browser = run_local_doctor(
+        _write_runtime_configs(tmp_path), environment={}, cwd=tmp_path
+    ).by_id("browser")
+
+    assert browser.status is DoctorStatus.DEGRADED
+    assert "optional Playwright" in browser.detail
+    assert "riftx[browser]" in browser.remediation
+    assert "playwright install chromium" in browser.remediation
+
+
 def test_doctor_fails_when_enabled_lsp_socket_or_credential_is_missing(
     tmp_path: Path,
 ) -> None:

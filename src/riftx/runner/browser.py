@@ -624,7 +624,7 @@ class PlaywrightBrowserEngine:
             from playwright.async_api import async_playwright
         except ImportError as exc:  # pragma: no cover - depends on optional runtime install
             raise RuntimeError(
-                "Playwright is not installed; install RiftX dependencies and run "
+                "Playwright is not installed; install `riftx[browser]`, then run "
                 "`playwright install chromium` on the Runner"
             ) from exc
         playwright = await async_playwright().start()

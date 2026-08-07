@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 from pathlib import Path
 
 import pytest
@@ -23,7 +24,7 @@ from riftx.domain import (
     Scope,
 )
 from riftx.runner import RunnerPaths
-from riftx.runner.browser import RunnerBrowserManager
+from riftx.runner.browser import PlaywrightBrowserEngine, RunnerBrowserManager
 
 
 class FakeEngineSession:
@@ -122,6 +123,23 @@ def open_command() -> BrowserOpenCommand:
         url="https://example.com/start",
         scope=Scope(domains=["example.com"]),
     )
+
+
+async def test_playwright_engine_reports_optional_install_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_import = builtins.__import__
+
+    def import_without_playwright(name: str, *args: object, **kwargs: object) -> object:
+        if name.startswith("playwright"):
+            raise ImportError("optional dependency unavailable")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_playwright)
+
+    with pytest.raises(RuntimeError, match=r"riftx\[browser\]"):
+        await PlaywrightBrowserEngine(RunnerPaths(tmp_path)).open(open_command())
 
 
 async def test_manager_produces_bounded_observation_and_checks_versions(

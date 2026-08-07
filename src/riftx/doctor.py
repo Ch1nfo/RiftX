@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -155,12 +156,7 @@ def run_local_doctor(
         _check_model_provider(config, env, root),
         _check_temporal(config, root),
         _check_runner(config, root),
-        DoctorCheck(
-            id="browser",
-            status=DoctorStatus.DEGRADED,
-            detail="Browser readiness requires a live Runner probe.",
-            remediation="Start the Control Plane and Runner before using browser workflows.",
-        ),
+        _check_browser(),
         _check_tools(config, root),
         _check_skills(config, root, official_packs, pack_error),
         _check_mcp(config, env),
@@ -182,6 +178,25 @@ def run_local_doctor(
         _check_backup_restore(config, root),
     )
     return DoctorReport(checks=checks)
+
+
+def _check_browser() -> DoctorCheck:
+    if importlib.util.find_spec("playwright") is None:
+        return DoctorCheck(
+            id="browser",
+            status=DoctorStatus.DEGRADED,
+            detail="The optional Playwright browser dependency is not installed.",
+            remediation=(
+                "Install `riftx[browser]`, then run `playwright install chromium` "
+                "on the Runner before using browser workflows."
+            ),
+        )
+    return DoctorCheck(
+        id="browser",
+        status=DoctorStatus.DEGRADED,
+        detail="Browser readiness requires a live Runner probe.",
+        remediation="Start the Control Plane and Runner before using browser workflows.",
+    )
 
 
 def apply_local_doctor_fixes(
