@@ -6,6 +6,11 @@ backup, upgrade, and stop-path verification. The commands assume a Python enviro
 installed at `/opt/riftx/venv` and a built checkout at `/opt/riftx/app`; adapt paths to
 the target host.
 
+For local single-operator use, `riftx start` is the supported convenience command: it
+starts or reuses local Temporal and supervises the Control Plane and Worker in one
+foreground session. The separate-process instructions below remain authoritative for
+production service supervision.
+
 The current release deliberately supports only the explicit
 `local_single_operator` trust profile. The Control Plane and browser origins must stay
 on loopback. `remote_multiuser`, non-loopback listeners, proxy/remote identity, and a

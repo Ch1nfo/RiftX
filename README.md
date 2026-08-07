@@ -51,37 +51,29 @@ Pentest.
 
 ### 1. Install and onboard
 
-Prerequisites: Python `3.12`, the Conda environment `agent`, and a local Temporal CLI.
-Docker is not an installation or core Pentest runtime prerequisite. Onboard, Doctor,
-Control Plane, Worker, Runner, and the WebUI all support host-native operation.
+The only prerequisites are Python `3.12` and a local Temporal CLI. Use any standard
+Python virtual environment; regular users do not need Conda or Docker. Onboard, Control
+Plane, Worker, Runner, and the WebUI bundled in the Python package all run host-native.
 The `core_path_excludes_docker` release gate checks distribution dependencies and
 deployment assets, then verifies Onboard, Doctor, Control Plane, and Pentest admission
 with an empty executable `PATH`.
 
 ```bash
-conda run --no-capture-output -n agent python -m pip install -e .
-export RIFTX_MODEL_API_KEY="<provider key>"
-export RIFTX_ADMIN_TOKEN="$(openssl rand -hex 32)"
-
-conda run --no-capture-output -n agent riftx onboard \
-  --non-interactive \
-  --provider openai \
-  --model gpt-5.6 \
-  --request-mode responses
-
-conda run --no-capture-output -n agent riftx doctor
+python -m pip install .
+riftx onboard
 ```
 
-`onboard` creates the user configuration, model profile, Tool Registry, database, and
-Official Packs without overwriting an existing setup. Missing optional executables are
-reported as degraded capabilities; they do not prevent the basic Pentest path from
-starting.
+`onboard` interactively creates the user configuration, Model Profile, Tool Registry,
+database, and Official Packs without overwriting an existing setup. Configure model
+credentials through the selected `RIFTX_MODEL_*` environment variable or the WebUI after
+startup. Missing optional executables are reported as degraded capabilities and do not
+block the basic Pentest path; run `riftx doctor` when troubleshooting.
 
 Stateful browser Pentests are optional. Install them only on a Runner that needs them:
 
 ```bash
-conda run --no-capture-output -n agent python -m pip install -e ".[browser]"
-conda run --no-capture-output -n agent playwright install chromium
+python -m pip install ".[browser]"
+playwright install chromium
 ```
 
 Browser, MCP, and Connector integrations are optional extensions. Missing or disabled
@@ -89,40 +81,41 @@ integrations degrade only their own capabilities and do not block the basic Pent
 
 ### 2. Start the local services
 
-Run these in separate terminals with the same `RIFTX_ADMIN_TOKEN` and model credential
-environment:
+Start the complete local stack with one foreground command:
 
 ```bash
-# Terminal 1
-temporal server start-dev --ip 127.0.0.1 --port 7233 --ui-port 8233
-
-# Terminal 2
-conda run --no-capture-output -n agent riftx serve
-
-# Terminal 3
-conda run --no-capture-output -n agent riftx worker
+riftx start
 ```
 
+`start` reuses the configured Temporal service. When the default local endpoint is not
+running, it starts the Temporal CLI automatically, then launches the Control Plane and
+Worker and opens the WebUI. If `RIFTX_ADMIN_TOKEN` is not already set, it generates a
+session-only token. Press `Ctrl+C` to stop the processes owned by this command; pass
+`--no-open` to keep the browser closed.
+
 The current release supports one local professional operator and keeps the Control Plane
-on loopback. Deployment, backup, and supervised-service details are in
-[`docs/deployment.md`](docs/deployment.md).
+on loopback. Production deployments should continue to supervise separate processes;
+deployment, backup, and upgrade details are in [`docs/deployment.md`](docs/deployment.md).
 
 ### 3. Start an authorized Pentest
 
 Replace the example target, Scope, and authorization reference with real authorized
 values:
 
+When using the CLI from another terminal, inject the same `RIFTX_ADMIN_TOKEN` printed by
+`riftx start` into that terminal's environment.
+
 ```bash
-conda run --no-capture-output -n agent riftx pentest start \
+riftx pentest start \
   --objective "Assess the authorized staging service" \
   --authorization "ticket://SEC-1234" \
   --target "https://staging.example.test" \
   --scope "https://staging.example.test" \
   --model primary
 
-conda run --no-capture-output -n agent riftx pentest status RUN_ID
-conda run --no-capture-output -n agent riftx approvals RUN_ID
-conda run --no-capture-output -n agent riftx approve APPROVAL_ID
+riftx pentest status RUN_ID
+riftx approvals RUN_ID
+riftx approve APPROVAL_ID
 ```
 
 Scope, approval, budget, Credential Reference, and stop checks remain authoritative; a
@@ -133,12 +126,12 @@ Skill cannot bypass them or add undeclared Tools.
 After the Run reaches `completed`, `failed`, or `cancelled`:
 
 ```bash
-conda run --no-capture-output -n agent riftx report generate RUN_ID \
+riftx report generate RUN_ID \
   --format markdown \
   --format json
 
-conda run --no-capture-output -n agent riftx report list RUN_ID
-conda run --no-capture-output -n agent riftx report show REPORT_ID
+riftx report list RUN_ID
+riftx report show REPORT_ID
 ```
 
 Professional users can add and iterate local methods through `riftx skills`; see

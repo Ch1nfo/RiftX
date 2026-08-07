@@ -99,9 +99,8 @@ def test_readmes_expose_one_pentest_first_quickstart() -> None:
         )[0]
         for command in (
             "riftx onboard",
+            "riftx start",
             "riftx doctor",
-            "riftx serve",
-            "riftx worker",
             "riftx pentest start",
             "riftx approvals",
             "riftx report generate",
@@ -109,6 +108,8 @@ def test_readmes_expose_one_pentest_first_quickstart() -> None:
         ):
             assert command in quickstart
         assert "riftx run create" not in quickstart
+        assert "riftx serve" not in quickstart
+        assert "riftx worker" not in quickstart
         assert retirement_label in text
         assert "apps/demo" not in text
         assert "frozen/experimental" not in text
