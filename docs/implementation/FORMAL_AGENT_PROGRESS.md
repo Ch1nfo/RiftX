@@ -32,8 +32,8 @@
 
 ## 2. Current wave
 
-- Stage：`Pentest-first V1 — Stage C 状态化 Web 与 Attack Chain`
-- Current task：`C2 — 身份、状态与最小验证`
+- Stage：`Pentest-first V1 — Stage C 状态化 Web 与报告`
+- Current task：`C3 — 结论、Closure 与 Report`
 - Status：`in_progress`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
@@ -54,12 +54,14 @@
 - Completed predecessor：PEN-500，implementation commits `315039fc`、`86aaecdf`、`e2314e9b`、`8b9ef440`、`8f1b2554`、`33c863ea`、`70f6f4a0`、`2271bc8e`、`9a4714fc`、`ca12ad9b`、`ad91c3f4`、`2c0f8004`、`73288673`、`b6b5f739`、`53812397`、`1c379dcc`。
 - Completed predecessor：Stage B 网络服务专业闭环，implementation commits `54c2489b`、`c7709790`、`5018f071`、`b2193139`。
 - Completed predecessor：Stage C/C1 最小身份/对象授权靶场，implementation commit `d73a0c86`。
+- Completed predecessor：Stage C/C2 身份、状态与最小验证，implementation commit `85decf8d`。
 - Product behavior：PACK-302 已交付可重复运行且零覆盖的 `riftx onboard`、顶级 `riftx doctor`、live overlay、本地操作员只读 `/api/v1/system/diagnostics`、有真实修复语义的 `riftx doctor --fix`、Onboard 后可直接运行的两个安全 Demo，以及本地只读 Capability/Pack 检查命令；Onboard 复用现有 Runtime/Model/Tool/Pack 生产路径初始化用户级配置、完整 Alembic schema、22 个 Official Pack 与 66 个 active lock；Pack 持久化写入具备 SQLite 一致性备份、双端 inode identity、恢复后完整性复检和失败自动回滚；Doctor `backup_restore` 已改为只读真实 readiness，只在已到 Alembic head 的 file-backed SQLite、当前用户所有的普通数据库文件和安全的 owner-only 备份目录前置条件全部成立时返回 `ready`，不为诊断创建备份或替换数据库。
 - Completed PEN-500 implementation commits：ADR `315039fc`；Domain/持久化 `86aaecdf`；Workflow/Runner Identity `e2314e9b`；Effect Policy/Interactive Guard `8b9ef440`；专用 Admission/Application/API 创建入口 `8f1b2554`；Capability Selection 原子绑定 `33c863ea`；Pentest status/API `70f6f4a0`；Pentest CLI `2271bc8e`；Attack Surface `9a4714fc`；隔离生命周期 `ca12ad9b`；目标交互预算 `ad91c3f4`、`2c0f8004`；运行中用量 `73288673`；Model/Token/Duration 门禁 `b6b5f739`；Tool/Duration 门禁 `53812397`；统一预算停止 `1c379dcc`。
 - Verification：阶段 A 完整 Control Plane `67 passed`；Runtime/Execution/Target HTTP/Temporal Worker `467 passed`；预算处理聚焦回归 `215 passed`；全仓 Ruff passed；6 个变更核心源文件 scoped mypy passed；Alembic 单 head `7b3d1e5f9a24`；`git diff --check` passed。
 - Stage B verification：B4 受影响 Report/Closure/Worker 回归 `78 passed`；完整 Control Plane `68 passed`；最终聚焦回归 `19 passed`；全仓 Ruff passed；3 个变更生产文件 scoped mypy passed；`git diff --check` passed。
 - Stage C/C1 verification：聚焦 E2E `1 passed`；Target HTTP 受影响回归 `47 passed`；完整 Control Plane 加 C1 `69 passed`；全仓 Ruff passed；2 个新测试文件 scoped mypy passed；`git diff --check` passed。
-- Next delivery slice：只让生产 Runtime 通过安全 Credential/Session Reference 复现 C1 的两身份基线与单次跨对象差异，形成精确 HTTP Evidence、Observation、Hypothesis 和 Attempt；不启动 Browser、Crawler、Fuzzer、新身份系统、Finding 或 Attack Chain。
+- Stage C/C2 verification：状态化 Web E2E `2 passed`；Target HTTP `63 passed`；Runtime Control Tools `52 passed`；完整 Control Plane `68 passed`；Worker `13 passed`；Tool discovery `11 passed`；全仓 Ruff passed；6 个变更生产文件与 3 个新增/变更测试文件 scoped mypy passed；`git diff --check` passed。`runtime/control_tools.py` 单文件仍仅命中既有 62 个变量复用类型错误。
+- Next delivery slice：复用 C2 的 Evidence、Reasoning 与 Attempt 创建一个幂等 Draft Finding，完成 Closure 和 JSON/Markdown Report；验证链仅由现有持久事实投影，不新增 Attack Chain Domain、表、Graph、Browser 或 Scanner。
 
 ## 3. 研究与实现基线
 
@@ -1097,7 +1099,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 - Implementation commits：`54c2489b`、`c7709790`、`5018f071`、`b2193139`。
 - Completion：Stage B 已完成；下一施工切片是 C1 最小身份/对象授权靶场，不提前开始 Browser、Attack Chain、能力学习或默认产品面删减。
 
-### Stage C：状态化 Web 与 Attack Chain
+### Stage C：状态化 Web 与报告
 
 - Status：in_progress
 - Started：2026-08-07
@@ -1107,7 +1109,16 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 - Verification：`tests/integration/api/test_pentest_stateful_web.py` `1 passed`；Target HTTP 回归 `47 passed`；完整 Control Plane 加 C1 `69 passed`；`conda run --no-capture-output -n agent ruff check .` passed；C1 两文件 scoped mypy passed；`git diff --check` passed。
 - Non-goals upheld：C1 未修改生产 schema/service，未新增表、migration、Pack、Browser 场景、Scanner、Planner、Graph、Worker 或 UI，未创建 Finding、Report 或 Attack Chain。
 - Implementation commit：`d73a0c86`。
-- Completion：C1 已完成；当前唯一施工切片是 C2 身份、状态与最小验证，不提前创建 Finding、Attack Chain、Report 或启动 Browser。
+- Completion：C1 已完成；后续 C2 已使用同一靶场接通安全身份引用与专业事实。
+- C2 credential boundary：`85decf8d` 为 Target HTTP 增加 Header/Body/Cookie Credential Reference；引用只能由当前 Session 已固定且 active 的 Technique Permission 授权，未选择、未激活、损坏、越权或缺失引用在网络副作用前失败关闭。
+- C2 Runner resolution：真实值只在 Runner 发送前按 Environment → Keyring 解析；ToolCallIntent、fingerprint、持久请求快照、Event、Traffic、Transcript 与 Artifact 标题只保留引用或安全元数据。
+- C2 production E2E：通过 `RuntimeControlToolService → DeferredExecutionDispatcher → TargetHttpApplicationService → RunnerTargetHttpClient` 完成 Alice/Bob 登录、各自对象基线和一次 Alice 跨对象单变量验证；正常与跨对象响应分别登记受保护 Evidence，并形成 Observation、带前置条件和正负判据的 Hypothesis、结构化 Attempt。
+- C2 persistence：Control Plane 重建后 Capability Selection、Traffic、两份 Evidence、Reasoning Graph 和 Working Memory Attempt 可重建；Finding 与 Report 均为空。
+- C2 budget/traffic semantics：一次已批准但未授权的引用请求计入 Target Interaction 尝试但保持零网络副作用；随后 5 次真实请求形成 5 条 Traffic 交换，预算状态明确区分已批准尝试与真实流量。
+- C2 verification：状态化 Web E2E `2 passed`；Target HTTP `63 passed`；Runtime Control Tools `52 passed`；完整 Control Plane `68 passed`；Worker `13 passed`；Tool discovery `11 passed`；全仓 Ruff passed；6 个变更生产文件与 3 个新增/变更测试文件 scoped mypy passed；`git diff --check` passed。
+- C2 non-goals upheld：未新增表、migration、Pack、Browser 场景、Crawler、Fuzzer、Scanner、Planner、Graph、Worker 或 UI，未创建 Finding、Report 或独立 Attack Chain。
+- C2 implementation commit：`85decf8d`。
+- Completion：C2 已完成；当前唯一施工切片是 C3 结论、Closure 与 Report，不建设新的 Attack Chain 系统。
 
 ## 9. Known pre-existing worktree state
 

@@ -8,9 +8,9 @@
 >
 > 当前分支：`ch1nfo/riftx-3-code-audit`
 >
-> 已提交基线：`9c0fe158`；C1 实现基线：`d73a0c86`
+> 已提交基线：`85decf8d`；C1 实现基线：`d73a0c86`
 >
-> 当前工作树：C2 Credential Reference 已有未提交实现，尚未完成生产 E2E，不得视为 completed
+> 当前施工：C3 状态化 Web 结论、Closure 与 Report；C2 已完成并独立提交
 >
 > 实施事实与测试账本：[`docs/implementation/FORMAL_AGENT_PROGRESS.md`](docs/implementation/FORMAL_AGENT_PROGRESS.md)
 >
@@ -123,6 +123,7 @@ RiftX 的唯一正式版目标是：
 | 专业事实 | Task、Evidence、Reasoning、Negative Result、Finding、Closure、Report 已存在 | 继续复用 |
 | 网络服务闭环 | 枚举、Artifact、Evidence、Hypothesis、最小验证、Draft Finding、Negative Result、Closure、JSON Report 已完成 | 阶段 B completed |
 | 状态化 Web 靶场 | Alice/Bob、两个对象、登录、所有权基线、跨对象分支和预算暂停已完成 | 阶段 C1 completed |
+| 状态化 Web 身份证据 | Credential Reference、两身份基线、跨对象 Attempt、Evidence、Reasoning 和重启重建已完成 | 阶段 C2 completed |
 | 能力底座 | Capability、Version、Digest、Provenance、Selection、Pack、Progressive Skill 已存在 | 缺少用户闭环 |
 
 已完成主线提交：
@@ -134,27 +135,24 @@ c7709790  feat(pentest): close service enumeration loop
 b2193139  feat(pentest): close network service reporting
 d73a0c86  feat(pentest): establish stateful web target
 9c0fe158  docs(plan): advance stateful web verification
+85decf8d  feat(pentest): authorize stateful web credentials
 ```
 
-### 2.3 当前 C2 工作树事实
+### 2.3 C2 已完成事实
 
-C2 已有未提交实现：
+C2 已完成：
 
 - Target HTTP 支持 `header_secret_refs`、`body_secret_ref` 和 `cookie_secret_refs`；
 - Credential Reference 由当前 Session 已固定 Technique 的 Permission 授权；
 - 引用在 Runner 发送前才按 Environment → Keyring 解析；
 - 明文值不进入 ToolCallIntent、请求 fingerprint、Artifact 快照或 Control Plane；
-- 未配置、越权或损坏的 Selection 在网络副作用前失败关闭；
-- 当前聚焦测试为 `104 passed`，相关生产文件 Ruff 和 `git diff --check` 已通过。
-
-但 C2 仍未完成，因为还缺少：
-
-- 从 Runtime Control Tool 到 Runner 的完整生产 E2E；
-- Alice/Bob 登录、所有权基线和跨对象单变量验证；
-- 正常与跨对象响应的受保护 HTTP Evidence；
-- Observation、带前置条件的 Hypothesis 和结构化 Attempt；
-- Control Plane 重建后的 Selection、Traffic、Evidence 和 Reasoning 重建验证；
-- C2 独立实现提交。
+- 未选择、未激活、越权、缺失或损坏的引用/Selection 在网络副作用前失败关闭；
+- 完整生产链完成 Alice/Bob 登录、各自基线和一次 Alice 跨对象验证；
+- 正常与跨对象响应分别登记受保护 Evidence，并形成 Observation、Hypothesis 和 Attempt；
+- Control Plane 重建后可恢复 Selection、Traffic、Evidence、Reasoning 和 Working Memory；
+- 6 次已批准尝试中只有 5 次形成真实 HTTP 交换，未授权引用保持零网络副作用；
+- 未创建 Finding、Report、新表、migration、Browser、Scanner、Worker 或 UI；
+- 实现提交：`85decf8d`。
 
 ### 2.4 当前真正缺口
 
@@ -286,7 +284,7 @@ CLI/API
 | --- | --- | --- |
 | A. 剩余 Pentest 预算收口 | completed | 所有 Admission 预算具有明确执行语义和硬停止 |
 | B. 网络服务专业闭环 | completed | 一个真实服务从枚举走到证据化结论、Closure 和 Report |
-| C. 状态化 Web 与报告 | in progress；C2 当前施工 | 一个身份/授权场景走到证据化结论、Closure 和 Report |
+| C. 状态化 Web 与报告 | in progress；C3 当前施工 | 一个身份/授权场景走到证据化结论、Closure 和 Report |
 | D. 用户驱动能力成长 | pending | 一项专业方法可添加、选择、复盘、禁用和回滚 |
 | E. 默认产品面收缩与发布 | pending | Pentest-first 产品可安装、可理解、可回归、可发布 |
 
@@ -354,7 +352,7 @@ C1 已完成：
 
 实现提交：`d73a0c86`。
 
-### 8.2 C2：身份、状态与最小验证（当前唯一实现切片）
+### 8.2 C2：身份、状态与最小验证（completed）
 
 C2 只允许 Agent 持久化 Credential Reference，真实 Header、Body 和 Cookie 值只在 Runner 发送前解析。
 
@@ -366,7 +364,7 @@ C2 只允许 Agent 持久化 Credential Reference，真实 Header、Body 和 Coo
 - 不建设动态 Cookie Vault、身份服务或会话数据库；
 - 真实服务若必须处理动态浏览器会话，等当前协议级闭环证明不足后再准入。
 
-#### C2 完成门
+#### C2 已满足的完成门
 
 C2 必须通过完整生产链：
 
@@ -377,7 +375,7 @@ RuntimeControlToolService
 → RunnerTargetHttpClient
 ```
 
-验收必须同时满足：
+已验收：
 
 1. 注册一个仅用于测试的 Technique，并声明 Alice/Bob 登录和 Session 引用；
 2. Pentest 显式选择 `web-request-analysis` Pack 和该 Technique；
@@ -390,7 +388,7 @@ RuntimeControlToolService
 9. 未选中、损坏、不存在或未授权引用在网络副作用前拒绝；
 10. 不创建 Finding、最终验证链或 Report，不新增表、migration、Browser、Crawler、Fuzzer、Scanner、Worker 或 UI。
 
-### 8.3 C3：结论与报告，不建设新的 Attack Chain 系统
+### 8.3 C3：结论、Closure 与 Report（当前唯一实现切片）
 
 C3 的目标不是增加一个 Attack Chain Domain，而是关闭现有事实链：
 
@@ -624,32 +622,30 @@ Ledger commit:
 
 ## 14. 当前唯一施工指令
 
-从当前未提交 C2 工作树继续，只完成生产 E2E，不扩展设计：
+从实现提交 `85decf8d` 继续，只关闭 C3 状态化 Web 专业结果：
 
-1. 在 Capability Repository 注册带四个 fixture 引用权限的测试 Technique；
-2. 创建 Pentest 时固定 `web-request-analysis` Pack 和该 Technique；
-3. 环境变量保存完整登录 Body 与 Alice/Bob Session 值；
-4. 通过完整 Runtime 链完成两身份基线和一次跨对象验证；
-5. 登记正常与跨对象响应 Evidence，并创建 Observation、Hypothesis 和 Attempt；
-6. 验证 Approval、Scope、预算、引用权限和 Runner 解析都在网络副作用前失败关闭；
-7. 验证 ToolCallIntent、Event、Traffic、Artifact 标题和错误不含 Secret；
-8. 重建 Control Plane 后验证 Selection、Traffic、Evidence 和 Reasoning；
-9. 不创建 Finding、最终验证链、Report、Browser、Crawler、Fuzzer、Scanner、表、migration、Worker 或 UI；
-10. 运行 C2 聚焦回归、Target HTTP、Runtime Control Tools、完整 Control Plane、全仓 Ruff、可行的 scoped mypy 和 `git diff --check`；
-11. 形成 C2 独立实现提交，再单独更新实施账本；
-12. C2 完成前不进入 C3、D 或 E。
+1. 复用 C2 同一生产 E2E、受保护 Evidence、Reasoning Graph、Working Memory、Finding、Closure 和 Report Service；
+2. 从跨对象 Observation 创建一个 `VULNERABILITY_CANDIDATE`，再通过现有 `create_finding` 幂等投影为 Draft Finding；不得自动 Confirmed；
+3. Finding 必须引用跨对象响应 Artifact/Evidence，并明确 Alice 身份前置、只改变对象 ID 的复现动作、影响与修复建议；
+4. 未授权引用、Approval/Scope 阻断、预算耗尽和工具错误继续保持失败语义，不得写成漏洞不存在；
+5. 使用现有 Closure Verifier 完成 Run，并由现有 ReportApplicationService 生成 JSON 与 Markdown Report；
+6. 报告必须从持久事实重建身份基线、Hypothesis、Attempt、差异 Evidence、Draft Finding、失败分支、未测试范围和 Stop/Closure 状态；
+7. 所谓“验证链/攻击链”只允许是现有 Reasoning Node/Edge、Evidence、Attempt 和 Finding 的确定性报告投影；不新增表、Repository、Planner、Graph 或 Attack Chain Domain；
+8. 重放不得重复创建 Finding 或 Report；Control Plane 重建后结果保持一致；
+9. Secret、原始授权引用值、本地路径和受保护 HTTP 原始体不得进入 Event、Transcript、通用 Artifact 读取面或 Report；
+10. 协议级闭环已足够，C3 不启用 Browser，不新增 Crawler、Fuzzer、Scanner、Pack、migration、Worker 或 UI；
+11. 运行状态化 Web、Finding/Closure/Report、Target HTTP、完整 Control Plane、全仓 Ruff、scoped mypy 和 `git diff --check`；
+12. 形成 C3 独立实现提交，再单独更新实施账本；C3 完成前不进入 D 或 E。
 
 建议验证命令：
 
 ```bash
 conda run --no-capture-output -n agent pytest -q tests/target_http
-conda run --no-capture-output -n agent pytest -q tests/runtime/test_control_tools.py
+conda run --no-capture-output -n agent pytest -q tests/integration/api/test_pentest_stateful_web.py
 conda run --no-capture-output -n agent pytest -q tests/integration/api/test_control_plane.py
 conda run --no-capture-output -n agent ruff check .
 git diff --check
 ```
-
-`runtime/control_tools.py` 存在既有 scoped mypy 变量复用错误时，不得把它误报为本次 Credential 实现错误；应分别验证其他变更文件，并记录准确的既有基线。
 
 ---
 
@@ -658,8 +654,8 @@ git diff --check
 ```text
 [已完成] A：预算与停止语义
 → [已完成] B：网络服务专业闭环
-→ [当前] C2：安全身份引用与状态化 Web Evidence
-→ [下一步] C3：状态化 Web 结论、Closure 与 Report
+→ [已完成] C2：安全身份引用与状态化 Web Evidence
+→ [当前] C3：状态化 Web 结论、Closure 与 Report
 → [下一步] D：一项 Operator Skill 的成长闭环
 → [最后] E：默认产品面收缩、消费者审计与发布
 ```
