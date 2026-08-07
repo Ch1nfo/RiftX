@@ -8,7 +8,7 @@
 >
 > 当前分支：`ch1nfo/riftx-3-code-audit`
 >
-> 当前实现基线：`54c2489b`（阶段 A 与 B1 已完成）
+> 当前实现基线：`c7709790`（阶段 A 与 B1-B2 已完成）
 >
 > 实施事实与测试账本：[`docs/implementation/FORMAL_AGENT_PROGRESS.md`](docs/implementation/FORMAL_AGENT_PROGRESS.md)
 >
@@ -37,7 +37,7 @@ RiftX 当前不是“底座没做完”，而是“底座已经很重，专业�
 - Capability、Version、Selection、Pack Lock、Progressive Skill 等成长底座已经存在，但“专业人士添加方法并在下一次运行中安全生效”的用户闭环尚未完成；
 - Code Audit、Marketplace、多租户、远程集群、更多 Agent 角色和更多 Pack 继续冻结。
 
-**当前不应重写架构，也不应先删除大块代码。阶段 A 与 B1 已完成；下一步只复用现有 `service-enumeration`、fake Nmap、Nmap XML parser 和刚接通的 Artifact → Evidence 入口，走通一个本地网络服务的 Execution → Artifact → Evidence → Observation → Hypothesis。此前不开始新框架、新 Scanner、状态化 Web 或大规模删除。**
+**当前不应重写架构，也不应先删除大块代码。阶段 A 与 B1-B2 已完成；下一步只在现有 localhost 服务、Target HTTP、Artifact、Evidence 和 Reasoning 链上，对 B2 的 Hypothesis 做一次最小协议验证，形成一个可审查 Finding Candidate/Draft 和一个有证据的 Negative Result。此前不开始新框架、新 Scanner、状态化 Web 或大规模删除。**
 
 ---
 
@@ -111,6 +111,7 @@ b6b5f739  enforce model token duration budgets
 
 ```text
 54c2489b  register artifact evidence
+c7709790  close service enumeration loop
 ```
 
 最近已验证的相关回归包括：
@@ -120,6 +121,9 @@ Full Control Plane: 67 passed
 Runtime/Execution/Target HTTP/Worker: 467 passed
 Budget handling focused regression: 215 passed
 B1 Artifact → Evidence focused regression: 151 passed
+B2 relevant regression: 235 passed
+Full Control Plane after B2: 68 passed
+B2 Pack/upgrade regression: 14 passed
 Full Ruff: passed
 Changed production files scoped mypy: passed
 ```
@@ -159,7 +163,7 @@ Execution
 - Finding 当前可引用同 Run 的 Artifact/Execution，Report 已能读取 Finding、Artifact、Event 和 Closure；
 - 现有测试已有 Nmap golden fixture、`fake_nmap.py` 和可复用的本地异步 HTTP 目标生命周期。
 
-因此，下一个提交应该是“可复位 localhost 服务与枚举 E2E”，而不是新增扫描框架或自动生成 Finding。
+因此，下一个提交应该是“对已有服务 Hypothesis 做最小 HTTP 验证并记录正负结论”，而不是新增扫描框架、更多靶场或自动确认 Finding。
 
 ### 2.3 对“是否过度开发”的最终判断
 
@@ -332,7 +336,7 @@ Migration 历史不得删除或重写。优先删除重复入口、不可达分�
 | 阶段 | 状态 | 用户结果 |
 | --- | --- | --- |
 | A. 剩余 Pentest 预算收口 | completed | 所有 Admission 预算具有明确执行语义和硬停止 |
-| B. 网络服务专业闭环 | in progress；B0-B1 completed，B2 当前施工 | 一个真实服务从枚举走到证据化结论 |
+| B. 网络服务专业闭环 | in progress；B0-B2 completed，B3 当前施工 | 一个真实服务从枚举走到证据化结论 |
 | C. 状态化 Web 与报告 | pending | 一个身份/授权场景走到 Attack Chain、Closure 和 Report |
 | D. 用户驱动能力成长 | pending | 一项专业方法可添加、选择、复盘、禁用和回滚 |
 | E. 默认产品面收缩与发布 | pending | Pentest-first 产品可安装、可理解、可回归、可发布 |
@@ -434,7 +438,7 @@ B1 已满足的回归合同：
 - 目标测试、受影响回归、Ruff、scoped mypy 和 `git diff --check` 通过；
 - 单独实现提交，不同时加入靶场或报告改造。
 
-### 8.3 B2：可复位本地服务与枚举 E2E（当前唯一实现切片）
+### 8.3 B2：可复位本地服务与枚举 E2E（completed）
 
 用户结果：一个 Pentest Run 在明确 localhost Scope 和预算内，能够发现本地服务并形成证据化 Observation 与 Hypothesis。
 
@@ -455,7 +459,7 @@ B1 已满足的回归合同：
 - 超时、拒绝、解析失败和工具缺失分别记录，不混写为“目标安全”；
 - Scope、Approval、Tool/Target Interaction/Duration 预算在真实副作用前继续生效。
 
-B2 验收：
+B2 已满足的回归合同：
 
 - 从 `riftx pentest start` 或等价生产 API 创建 Pentest；
 - 获得真实 Execution、stdout Artifact、Evidence ID 和 Observation；
@@ -464,7 +468,22 @@ B2 验收：
 - Control Plane/Worker 重建后仍可读取 Run、Execution、Artifact、Evidence、Reasoning 状态；
 - 单独提交靶场与 E2E，不在该提交创建 Confirmed Finding。
 
-### 8.4 B3：最小验证、Finding 与 Negative Result
+已完成实现：
+
+- Pentest `port_scan` 能力工具只接受结构化目标，服务端在生成可信 Nmap/Masscan argv 前执行 Scope 校验；
+- 服务端生成的目标摘要进入现有 Target Interaction 预算，耗尽后在 Runner 副作用前暂停；
+- `service-enumeration` 1.1.0 增加 Artifact Evidence、Reasoning Query 和 Hypothesis 工具；
+- fake Nmap 对随机 localhost 端口执行真实 TCP/HTTP 探测并输出 Nmap XML；
+- E2E 覆盖 Admission、Pack/Tool 固定、批准前零副作用、Execution、Artifact、Evidence、Observation、Hypothesis、预算暂停、恢复与跨重启读取；
+- 未创建 Finding、Negative Result、新表、新 Scanner、Planner、Graph、Worker 或 UI。
+
+提交：
+
+```text
+c7709790  feat(pentest): close service enumeration loop
+```
+
+### 8.4 B3：最小验证、Finding 与 Negative Result（当前唯一实现切片）
 
 用户结果：Agent 对 B2 的一个 Hypothesis 执行最小协议验证，并产生一种可审查结论。
 
@@ -791,18 +810,18 @@ Ledger commit:
 
 ## 15. 当前唯一施工指令
 
-从实现基线 `54c2489b` 继续，只做 B2“可复位本地服务与枚举 E2E”：
+从实现基线 `c7709790` 继续，只做 B3“最小验证、Finding 与 Negative Result”：
 
-1. 复用仓库现有异步 localhost TCP/HTTP 测试服务，提供随机端口、确定性 banner/headers 和可复位关闭；
-2. 复用 `service-enumeration` Official Pack、`tests/tools/fixtures/fake_nmap.py`、Nmap golden XML、注册工具 Runner、`ExecutionArtifactStore` 和 `ToolResultProcessor`；
-3. 通过 Pentest Admission 或等价生产 API 创建一个具有 localhost Scope 和明确预算的真实 Pentest Run；
-4. 让一次枚举真实产生 Execution、stdout Artifact、Nmap 结构化结果、Evidence、Observation 和一个待验证 Hypothesis；
-5. Observation 只声明端点可达和带来源的服务特征；不得把默认端口、banner 或 scanner guess 直接写成漏洞；
-6. 覆盖正常端口、确定性失败、工具错误、Scope/预算前置门禁、暂停恢复和跨重启读取；
-7. B2 不创建 Confirmed Finding、Negative Result 自动结论、第二套扫描框架、事实表、Pack、Planner、Graph、Worker 或 UI；
-8. 默认 CI 只使用 fake Nmap；真实 Nmap 仅作为系统已安装时的非阻塞人工 Smoke；
-9. 所有 Agent 测试和运行使用 `conda run --no-capture-output -n agent ...`；
-10. 通过目标测试、受影响回归、全仓 Ruff、scoped mypy 和 `git diff --check` 后，形成一个独立实现提交；B2 完成前不进入 B3、状态化 Web、Code Audit、学习平台或默认产品面。
+1. 复用 B2 的随机 localhost HTTP 服务，只增加一个只读诊断路径和一个确定性 404 路径；测试数据不得包含真实 Secret、Credential 或公网依赖；
+2. 复用 `target_http_request`、Traffic Ledger、Request/Response Artifact、`register_artifact_evidence`、Reasoning 和现有 Finding Service；
+3. 对 B2 的 HTTP Hypothesis 只执行一个最小 GET 验证，批准、Scope、Tool/Target Interaction/Duration 预算必须在请求副作用前继续生效；
+4. 将诊断路径响应的精确 Artifact span 登记为 Evidence，创建一个低风险信息披露 Vulnerability Candidate，并投影为可审查 Draft Finding；
+5. 对确定性 404 路径记录独立 Evidence 和 Negative Result，只否定该精确猜测，不得扩大为“目标不存在漏洞”或“目标安全”；
+6. 正负结论必须引用各自的 HTTP/Artifact Evidence；工具错误、Scope 拒绝、Approval 拒绝和预算耗尽不得伪装成 Negative Result；
+7. 相同 Tool Call/Evidence/Reasoning 写入保持幂等，不因模型循环重复目标请求或结论；
+8. 若 Reasoning Finding 与现有 Finding Service 需要接通，只增加一个确定性薄投影，不新建第三套 Finding 状态；
+9. B3 不生成最终 Report、不增加第二个靶场、Scanner Framework、表、migration、Pack、Planner、Graph、Worker 或 UI；
+10. 所有 Agent 测试和运行使用 `conda run --no-capture-output -n agent ...`；通过目标测试、受影响回归、全仓 Ruff、scoped mypy 和 `git diff --check` 后形成独立实现提交，B3 完成前不进入 B4 或阶段 C-E。
 
 ---
 
