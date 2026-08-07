@@ -794,6 +794,8 @@ async def build_temporal_worker(
     browser_manager: RunnerBrowserManager | None = None
     controlled_lsp: ControlledLSPBackend | None = None
     mcp_registry: MCPServerRegistry | None = None
+    mcp_snapshot: MCPRegistrySnapshot | None = None
+    mcp_health_snapshot: MCPHealthSnapshot | None = None
     try:
         await database.create_schema()
         capability_repository = SQLAlchemyCapabilityRepository(database.session_factory)
@@ -801,9 +803,10 @@ async def build_temporal_worker(
         await bootstrap_official_packs(capability_repository, official_pack_catalog)
         registry = ToolRegistry(config.tools.path.expanduser(), node_id=config.runner.node_id)
         tool_snapshot = await registry.refresh()
-        mcp_registry = MCPServerRegistry(config.mcp)
-        mcp_snapshot = await mcp_registry.refresh()
-        mcp_health_snapshot = await mcp_registry.health_snapshot()
+        if any(server.enabled for server in config.mcp.servers.values()):
+            mcp_registry = MCPServerRegistry(config.mcp)
+            mcp_snapshot = await mcp_registry.refresh()
+            mcp_health_snapshot = await mcp_registry.health_snapshot()
         worker_config = TemporalRuntimeConfig(
             task_queue=config.temporal.task_queue,
             workflow_id_prefix=config.temporal.workflow_id_prefix,
@@ -914,11 +917,15 @@ async def build_temporal_worker(
             "shell": os.environ.get("SHELL") or os.environ.get("COMSPEC", "unknown"),
             "working_directory": str(Path.cwd()),
             "tool_count": str(len(tool_snapshot.definitions)),
-            **_mcp_runtime_labels(
-                mcp_snapshot,
-                mcp_health_snapshot,
-                refresh_available=True,
-                refresh_failures=0,
+            **(
+                _mcp_runtime_labels(
+                    mcp_snapshot,
+                    mcp_health_snapshot,
+                    refresh_available=True,
+                    refresh_failures=0,
+                )
+                if mcp_registry is not None and mcp_snapshot is not None
+                else _mcp_unconfigured_labels()
             ),
         }
         await node_service.register(
@@ -1030,12 +1037,15 @@ async def build_temporal_worker(
             runs=run_repository,
             audits=audit_aggregate_repository,
         )
-        assert mcp_registry is not None
-        mcp_service = MCPApplicationService(
-            registry=mcp_registry,
-            runs=run_repository,
-            tool_calls=tool_call_intent_repository,
-            artifacts=web_artifact_store,
+        mcp_service = (
+            MCPApplicationService(
+                registry=mcp_registry,
+                runs=run_repository,
+                tool_calls=tool_call_intent_repository,
+                artifacts=web_artifact_store,
+            )
+            if mcp_registry is not None
+            else None
         )
         web_research_repository = SQLAlchemyWebResearchRepository(database.session_factory)
         web_fetcher = PublicWebFetcher(
@@ -1545,6 +1555,19 @@ def _mcp_runtime_labels(
                 for server in health_servers
             )
         ),
+    }
+
+
+def _mcp_unconfigured_labels() -> dict[str, str]:
+    return {
+        "mcp_registry_generation": "0",
+        "mcp_refresh_status": "not_configured",
+        "mcp_refresh_failures": "0",
+        "mcp_server_count": "0",
+        "mcp_unavailable_server_count": "0",
+        "mcp_tool_count": "0",
+        "mcp_active_call_count": "0",
+        "mcp_open_circuit_count": "0",
     }
 
 

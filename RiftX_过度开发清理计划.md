@@ -978,8 +978,8 @@ Codex 每完成一个 Slice 更新本表，并链接实现提交和验证结果�
 | 2 | Capability 公共写契约 | completed | `dba9f3e2` | Capability Protocol、公开 import、持久化兼容回归通过 | 删除 Candidate/Promotion/Evaluation 写契约与公开导出 |
 | 2 | Capability 持久化写路径 | completed | `095217ec` | Version/Pack/Install/Lock、migration、Pentest 回归通过 | 删除 SQLAlchemy 写方法、mapper 和专用测试；保留历史 Record |
 | 2 | Capability Domain 收缩 | completed | `5e5f6dcd` | Capability、Pack、Selection、Operator Skill、migration 回归通过 | 删除零消费者 Model/Enum/digest；保留历史 ORM 字符串约束 |
-| 3 | Playwright 可选依赖 | completed | 本提交 | core/browser wheel metadata、Doctor、Browser、Onboard、Pentest 回归通过 | Playwright 移至 `browser` extra；缺失时明确 degraded 与安装命令 |
-| 3 | MCP 按配置初始化 | pending | — | — | B1 |
+| 3 | Playwright 可选依赖 | completed | `bb51cc60` | core/browser wheel metadata、Doctor、Browser、Onboard、Pentest 回归通过 | Playwright 移至 `browser` extra；缺失时明确 degraded 与安装命令 |
+| 3 | MCP 按配置初始化 | completed | 本提交 | 空配置构造、MCP 治理、Worker、Runtime、Pentest 回归通过 | 空配置不创建 Registry/Service/refresh task；标签明确 `not_configured` |
 | 3 | Web Research 按需 Provider | pending | — | — | B3 |
 | 3 | Connector opt-in | pending | — | — | B4 |
 | 3 | Browser Engine 惰性创建 | pending | — | — | B2 |

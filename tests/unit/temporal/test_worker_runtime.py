@@ -238,6 +238,11 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
     )
     monkeypatch.setattr(worker_runtime, "ContextCompiler", capture_context_compiler)
     monkeypatch.setattr(worker_runtime, "RuntimeControlToolService", capture_control_tools)
+    monkeypatch.setattr(
+        worker_runtime,
+        "MCPServerRegistry",
+        lambda *_args, **_kwargs: pytest.fail("empty MCP config constructed a registry"),
+    )
     controlled_lsp = RecordingControlledLSP()
     monkeypatch.setattr(
         worker_runtime,
@@ -324,9 +329,8 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
     )
     assert working_memory_source._task_graphs is not None
     assert working_memory_source._reasoning_graphs is not None
-    assert runtime.mcp_registry is not None
-    assert runtime.mcp_registry.snapshot.servers == []
-    assert runtime.mcp_registry.snapshot.tools == []
+    assert runtime.mcp_registry is None
+    assert captured["control_tools"]._mcp is None
     assert runtime.safety_stopper is not None
     assert runtime.runner_control_service is not None
     process_executor = runtime.process_supervisor._process_executor
@@ -398,8 +402,8 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
     assert node.labels["tool_count"] == "0"
     assert node.labels["mcp_server_count"] == "0"
     assert node.labels["mcp_tool_count"] == "0"
-    assert node.labels["mcp_registry_generation"] == "1"
-    assert node.labels["mcp_refresh_status"] == "ready"
+    assert node.labels["mcp_registry_generation"] == "0"
+    assert node.labels["mcp_refresh_status"] == "not_configured"
     assert node.labels["mcp_refresh_failures"] == "0"
     assert node.labels["mcp_unavailable_server_count"] == "0"
     assert node.labels["mcp_active_call_count"] == "0"
