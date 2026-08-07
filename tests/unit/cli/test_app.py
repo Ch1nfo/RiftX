@@ -37,6 +37,7 @@ runner = CliRunner()
 
 def test_root_help_prioritizes_the_pentest_workflow() -> None:
     result = runner.invoke(cli_module.app, ["--help"])
+    retired_interactive = runner.invoke(cli_module.app, ["interactive"])
 
     assert result.exit_code == 0, result.output
     assert "Pentest-first Agent for authorized security work." in result.output
@@ -50,6 +51,8 @@ def test_root_help_prioritizes_the_pentest_workflow() -> None:
     for command in ("onboard", "doctor", "model", "pentest", "report", "skills"):
         assert command in result.output
     assert "interactive   Enter the interactive RiftX session" not in result.output
+    assert retired_interactive.exit_code == 2
+    assert "No such command 'interactive'" in retired_interactive.output
     assert "Retired code-audit history and cleanup controls" not in result.output
 
 

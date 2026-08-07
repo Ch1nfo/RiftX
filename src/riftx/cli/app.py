@@ -193,15 +193,6 @@ def main(
             run_interactive(client, console)
 
 
-@app.command(hidden=True)
-def interactive(context: typer.Context) -> None:
-    """Enter the interactive RiftX session explicitly."""
-
-    state = _state(context)
-    with APIClient(state.api_url) as client:
-        run_interactive(client, console)
-
-
 @app.command(rich_help_panel=_GETTING_STARTED_PANEL)
 def onboard(
     context: typer.Context,
