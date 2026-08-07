@@ -5,9 +5,6 @@ policy validation compares :class:`OperationEffect` values with
 ``api.policy.RouteEffect`` values, while application services, workers and
 reconcilers can consume the same catalog without introducing an application
 to API dependency.
-
-``audit_alternative`` is documentation and routing metadata only.  A denied
-generic request is never rewritten to the named Audit operation.
 """
 
 from __future__ import annotations
@@ -500,44 +497,6 @@ class RunEffectOperation(StrEnum):
     RUNNER_COMMAND_STOP_ACK = "runner_command.stop_ack"
     RUNNER_COMMAND_LEGACY_STOP_ACK = "runner_command.legacy_stop_ack"
 
-    # Dedicated or future Audit product alternatives.  Merely naming these
-    # operations never authorizes or rewrites a generic request.
-    AUDIT_APPROVAL_DECISION = "audit.approval.decision"
-    AUDIT_EXECUTION_CONTROL = "audit.execution.control"
-    AUDIT_ARTIFACT_INGEST = "audit.artifact.ingest"
-    CODE_FINDING_TRIAGE = "audit.code_finding.triage"
-    AUDIT_REPORT_REBUILD = "audit.report.rebuild"
-    AUDIT_WORKFLOW_CALLBACK = "audit.workflow.callback"
-
-
-class AuditAlternativeDisposition(StrEnum):
-    """What the product offers for an equivalent Code Audit intent."""
-
-    SAME_OPERATION = "same_operation"
-    SAFE_PROJECTION = "safe_projection"
-    DEDICATED_OPERATION = "dedicated_operation"
-    OWNERSHIP_ROUTED = "ownership_routed"
-    UNSUPPORTED = "unsupported"
-    NOT_RUN_SCOPED = "not_run_scoped"
-
-
-@dataclass(frozen=True, slots=True)
-class AuditAlternative:
-    """Non-executable pointer to the Code Audit product surface."""
-
-    disposition: AuditAlternativeDisposition
-    operation: RunEffectOperation | None = None
-
-    def __post_init__(self) -> None:
-        has_operation = self.operation is not None
-        requires_operation = self.disposition in {
-            AuditAlternativeDisposition.DEDICATED_OPERATION,
-            AuditAlternativeDisposition.OWNERSHIP_ROUTED,
-        }
-        if has_operation is not requires_operation:
-            raise ValueError("Audit alternative operation pointer is inconsistent")
-
-
 @dataclass(frozen=True, slots=True)
 class RunKindEffectPolicy:
     """One exact operation/origin admission rule."""
@@ -551,7 +510,6 @@ class RunKindEffectPolicy:
     ownership_resolver: OwnershipResolverKind
     required_claims: frozenset[OwnershipClaim]
     effect_mode: EffectMode
-    audit_alternative: AuditAlternative
 
     def __post_init__(self) -> None:
         if not isinstance(self.owner_kind, EffectOwnerKind):
@@ -799,20 +757,6 @@ _RESOLVER_REQUIRED_CLAIMS: Mapping[OwnershipResolverKind, frozenset[OwnershipCla
     )
 )
 
-_SAME = AuditAlternative(AuditAlternativeDisposition.SAME_OPERATION)
-_SAFE_PROJECTION = AuditAlternative(AuditAlternativeDisposition.SAFE_PROJECTION)
-_UNSUPPORTED = AuditAlternative(AuditAlternativeDisposition.UNSUPPORTED)
-_NOT_RUN_SCOPED = AuditAlternative(AuditAlternativeDisposition.NOT_RUN_SCOPED)
-
-
-def _dedicated(operation: RunEffectOperation) -> AuditAlternative:
-    return AuditAlternative(AuditAlternativeDisposition.DEDICATED_OPERATION, operation)
-
-
-def _ownership_routed(operation: RunEffectOperation) -> AuditAlternative:
-    return AuditAlternative(AuditAlternativeDisposition.OWNERSHIP_ROUTED, operation)
-
-
 def _rule(
     operation: RunEffectOperation,
     origin: EffectOrigin,
@@ -821,7 +765,6 @@ def _rule(
     effect: OperationEffect,
     resolver: OwnershipResolverKind,
     mode: EffectMode,
-    alternative: AuditAlternative,
     *,
     owner_kind: EffectOwnerKind = EffectOwnerKind.RUN,
     required_claims: frozenset[OwnershipClaim] | None = None,
@@ -841,7 +784,6 @@ def _rule(
         ownership_resolver=resolver,
         required_claims=frozenset(claims),
         effect_mode=mode,
-        audit_alternative=alternative,
     )
 
 
@@ -853,7 +795,6 @@ def _rules(
     effect: OperationEffect,
     resolver: OwnershipResolverKind,
     mode: EffectMode,
-    alternative: AuditAlternative,
     *,
     owner_kind: EffectOwnerKind = EffectOwnerKind.RUN,
     required_claims: frozenset[OwnershipClaim] | None = None,
@@ -867,7 +808,6 @@ def _rules(
             effect,
             resolver,
             mode,
-            alternative,
             owner_kind=owner_kind,
             required_claims=required_claims,
         )
@@ -895,7 +835,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.NONE,
         EffectMode.GLOBAL,
-        _NOT_RUN_SCOPED,
         owner_kind=EffectOwnerKind.GLOBAL,
     ),
     _rule(
@@ -906,7 +845,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.RUN_QUERY,
         EffectMode.GLOBAL,
-        _UNSUPPORTED,
         owner_kind=EffectOwnerKind.GLOBAL,
     ),
     _rule(
@@ -917,7 +855,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.RUN_ID,
         EffectMode.READ_ONLY,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.GET_PENTEST_STATUS,
@@ -927,7 +864,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.RUN_ID,
         EffectMode.READ_ONLY,
-        _SAFE_PROJECTION,
     ),
     *_rules(
         (RunEffectOperation.LIST_EVENTS, RunEffectOperation.STREAM_EVENTS),
@@ -937,7 +873,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.RUN_ID,
         EffectMode.READ_ONLY,
-        _UNSUPPORTED,
     ),
     *_rules(
         (
@@ -951,7 +886,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.EXECUTION_ID,
         EffectMode.READ_ONLY,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.LIST_RUN_EXECUTIONS,
@@ -961,7 +895,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.RUN_ID,
         EffectMode.READ_ONLY,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.LIST_ARTIFACTS,
@@ -971,7 +904,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.RUN_ID,
         EffectMode.READ_ONLY,
-        _UNSUPPORTED,
     ),
     *_rules(
         (RunEffectOperation.GET_ARTIFACT, RunEffectOperation.DOWNLOAD_ARTIFACT),
@@ -981,7 +913,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.ARTIFACT_ID,
         EffectMode.READ_ONLY,
-        _UNSUPPORTED,
     ),
     *_rules(
         (RunEffectOperation.LIST_RUN_ACTIONS,),
@@ -991,7 +922,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.RUN_ID,
         EffectMode.READ_ONLY,
-        _dedicated(RunEffectOperation.AUDIT_WORKFLOW_CALLBACK),
     ),
     _rule(
         RunEffectOperation.GET_RUN_ACTION,
@@ -1001,7 +931,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.CHILD_RUN_BINDING,
         EffectMode.READ_ONLY,
-        _dedicated(RunEffectOperation.AUDIT_WORKFLOW_CALLBACK),
     ),
     *_rules(
         (
@@ -1014,7 +943,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.RUN_ID,
         EffectMode.READ_ONLY,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.GET_RUN_METRICS,
@@ -1024,7 +952,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.RUN_ID,
         EffectMode.READ_ONLY,
-        _UNSUPPORTED,
     ),
     *_rules(
         (RunEffectOperation.LIST_TARGET_HTTP_EXCHANGES,),
@@ -1034,7 +961,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.RUN_ID,
         EffectMode.READ_ONLY,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.GET_TARGET_HTTP_EXCHANGE,
@@ -1044,7 +970,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.TARGET_HTTP_ID,
         EffectMode.READ_ONLY,
-        _UNSUPPORTED,
     ),
     *_rules(
         (RunEffectOperation.LIST_FINDINGS,),
@@ -1054,7 +979,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.RUN_ID,
         EffectMode.READ_ONLY,
-        _dedicated(RunEffectOperation.CODE_FINDING_TRIAGE),
     ),
     _rule(
         RunEffectOperation.GET_FINDING,
@@ -1064,7 +988,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.FINDING_ID,
         EffectMode.READ_ONLY,
-        _dedicated(RunEffectOperation.CODE_FINDING_TRIAGE),
     ),
     *_rules(
         (RunEffectOperation.LIST_REPORTS,),
@@ -1074,7 +997,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.RUN_ID,
         EffectMode.READ_ONLY,
-        _dedicated(RunEffectOperation.AUDIT_REPORT_REBUILD),
     ),
     _rule(
         RunEffectOperation.GET_REPORT,
@@ -1084,7 +1006,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.REPORT_ID,
         EffectMode.READ_ONLY,
-        _dedicated(RunEffectOperation.AUDIT_REPORT_REBUILD),
     ),
     _rule(
         RunEffectOperation.LIST_APPROVALS,
@@ -1094,7 +1015,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.RUN_ID,
         EffectMode.READ_ONLY,
-        _dedicated(RunEffectOperation.AUDIT_APPROVAL_DECISION),
     ),
     *_rules(
         (
@@ -1107,7 +1027,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.MEMORY_SCOPE,
         EffectMode.READ_ONLY,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.GET_MEMORY,
@@ -1117,7 +1036,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.MEMORY_SCOPE,
         EffectMode.READ_ONLY,
-        _UNSUPPORTED,
     ),
     *_rules(
         (
@@ -1130,7 +1048,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.CONTEXT_ID,
         EffectMode.READ_ONLY,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.GET_RUN_CONTEXT,
@@ -1140,7 +1057,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.RUN_ID,
         EffectMode.READ_ONLY,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.GET_TERMINAL,
@@ -1150,7 +1066,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.TERMINAL_SESSION_ID,
         EffectMode.READ_ONLY,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.GET_BROWSER,
@@ -1160,7 +1075,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.RUN_ID,
         EffectMode.READ_ONLY,
-        _UNSUPPORTED,
     ),
     *_rules(
         (
@@ -1174,7 +1088,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.RUN_ID,
         EffectMode.READ_ONLY,
-        _UNSUPPORTED,
     ),
     # Local API mutations and controls.
     _rule(
@@ -1185,7 +1098,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.NONE,
         EffectMode.GLOBAL,
-        _UNSUPPORTED,
         owner_kind=EffectOwnerKind.GLOBAL,
     ),
     _rule(
@@ -1196,7 +1108,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.NONE,
         EffectMode.GLOBAL,
-        _UNSUPPORTED,
         owner_kind=EffectOwnerKind.GLOBAL,
     ),
     _rule(
@@ -1207,7 +1118,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.WORKFLOW_CONTROL,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.RESUME_RUN,
@@ -1217,7 +1127,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.WORKFLOW_CONTROL,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.CANCEL_RUN,
@@ -1227,7 +1136,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.WORKFLOW_CONTROL,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     *_rules(
         (
@@ -1241,7 +1149,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.WORKFLOW_CONTROL,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.CANCEL_CURRENT_EXECUTION,
@@ -1251,7 +1158,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.WORKFLOW_CONTROL,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _dedicated(RunEffectOperation.AUDIT_EXECUTION_CONTROL),
     ),
     _rule(
         RunEffectOperation.CANCEL_EXECUTION,
@@ -1261,7 +1167,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.WORKFLOW_CONTROL,
         OwnershipResolverKind.EXECUTION_ID,
         EffectMode.NORMAL,
-        _dedicated(RunEffectOperation.AUDIT_EXECUTION_CONTROL),
     ),
     *_rules(
         (RunEffectOperation.APPROVE, RunEffectOperation.REJECT),
@@ -1271,7 +1176,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.WORKFLOW_CONTROL,
         OwnershipResolverKind.APPROVAL_ID,
         EffectMode.NORMAL,
-        _dedicated(RunEffectOperation.AUDIT_APPROVAL_DECISION),
     ),
     _rule(
         RunEffectOperation.CANCEL_CONNECTOR_RUN,
@@ -1281,7 +1185,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.WORKFLOW_CONTROL,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.CREATE_FINDING,
@@ -1291,7 +1194,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _dedicated(RunEffectOperation.CODE_FINDING_TRIAGE),
     ),
     _rule(
         RunEffectOperation.UPDATE_FINDING,
@@ -1301,7 +1203,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.FINDING_ID,
         EffectMode.NORMAL,
-        _dedicated(RunEffectOperation.CODE_FINDING_TRIAGE),
     ),
     *_rules(
         (
@@ -1316,7 +1217,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.MEMORY_SCOPE,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.GENERATE_REPORTS,
@@ -1326,7 +1226,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _dedicated(RunEffectOperation.AUDIT_REPORT_REBUILD),
     ),
     _rule(
         RunEffectOperation.REGISTER_ARTIFACT,
@@ -1336,7 +1235,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _dedicated(RunEffectOperation.AUDIT_ARTIFACT_INGEST),
     ),
     _rule(
         RunEffectOperation.SUBMIT_HTTP_CAPTURE,
@@ -1346,7 +1244,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.CREATE_TERMINAL,
@@ -1356,7 +1253,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_EXECUTION,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.OPEN_BROWSER,
@@ -1366,7 +1262,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_EXECUTION,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.CLOSE_TERMINAL,
@@ -1376,7 +1271,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_CONTROL,
         OwnershipResolverKind.TERMINAL_SESSION_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     *_rules(
         (
@@ -1392,7 +1286,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_CONTROL,
         OwnershipResolverKind.BROWSER_SESSION_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.TERMINAL_WEBSOCKET,
@@ -1402,7 +1295,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_CONTROL,
         OwnershipResolverKind.TERMINAL_SESSION_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.STREAM_BROWSER,
@@ -1412,7 +1304,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_CONTROL,
         OwnershipResolverKind.BROWSER_SESSION_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     *_rules(
         (
@@ -1426,7 +1317,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.NONE,
         EffectMode.GLOBAL,
-        _NOT_RUN_SCOPED,
         owner_kind=EffectOwnerKind.GLOBAL,
     ),
     *_rules(
@@ -1443,7 +1333,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.NONE,
         EffectMode.GLOBAL,
-        _NOT_RUN_SCOPED,
         owner_kind=EffectOwnerKind.GLOBAL,
     ),
     _rule(
@@ -1454,7 +1343,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.WORKFLOW_CONTROL,
         OwnershipResolverKind.NODE_PRINCIPAL,
         EffectMode.GLOBAL,
-        _NOT_RUN_SCOPED,
         owner_kind=EffectOwnerKind.GLOBAL,
     ),
     *_rules(
@@ -1465,7 +1353,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.RUNNER_CALLBACK,
         OwnershipResolverKind.NODE_PRINCIPAL,
         EffectMode.GLOBAL,
-        _NOT_RUN_SCOPED,
         owner_kind=EffectOwnerKind.GLOBAL,
     ),
     *_rules(
@@ -1481,7 +1368,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.RUNNER_CALLBACK,
         OwnershipResolverKind.RUNNER_COMMAND_ENVELOPE,
         EffectMode.OWNERSHIP_CALLBACK,
-        _ownership_routed(RunEffectOperation.AUDIT_WORKFLOW_CALLBACK),
     ),
     _rule(
         RunEffectOperation.FINISH_LEGACY_RUNNER_COMMAND,
@@ -1491,7 +1377,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.RUNNER_CALLBACK,
         OwnershipResolverKind.LEGACY_RUNNER_STOP_LEASE,
         EffectMode.STOP_PROOF,
-        _NOT_RUN_SCOPED,
         owner_kind=EffectOwnerKind.LEGACY_RUNNER_COMMAND,
     ),
     *_rules(
@@ -1505,7 +1390,6 @@ _API_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.RUNNER_CALLBACK,
         OwnershipResolverKind.EXECUTION_OWNERSHIP_ENVELOPE,
         EffectMode.OWNERSHIP_CALLBACK,
-        _ownership_routed(RunEffectOperation.AUDIT_WORKFLOW_CALLBACK),
     ),
 )
 
@@ -1519,7 +1403,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.NONE,
         EffectMode.GLOBAL,
-        _UNSUPPORTED,
         owner_kind=EffectOwnerKind.GLOBAL,
     ),
     _rule(
@@ -1530,7 +1413,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.NONE,
         EffectMode.GLOBAL,
-        _UNSUPPORTED,
         owner_kind=EffectOwnerKind.GLOBAL,
     ),
     _rule(
@@ -1541,7 +1423,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.WORKFLOW_CONTROL,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.SERVICE_RUN_RESUME,
@@ -1551,7 +1432,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.WORKFLOW_CONTROL,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.SERVICE_RUN_CANCEL,
@@ -1561,7 +1441,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.WORKFLOW_CONTROL,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     *_rules(
         (
@@ -1575,7 +1454,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.WORKFLOW_CONTROL,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.SERVICE_RUN_CANCEL_CURRENT_EXECUTION,
@@ -1585,7 +1463,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.WORKFLOW_CONTROL,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _dedicated(RunEffectOperation.AUDIT_EXECUTION_CONTROL),
     ),
     _rule(
         RunEffectOperation.SERVICE_RUN_CLEANUP,
@@ -1595,7 +1472,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_CONTROL,
         OwnershipResolverKind.RUN_ID,
         EffectMode.SAFETY_REDUCE_ONLY,
-        _dedicated(RunEffectOperation.SERVICE_AUDIT_RECONCILE),
     ),
     _rule(
         RunEffectOperation.SERVICE_AUDIT_RECONCILE,
@@ -1605,7 +1481,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_CONTROL,
         OwnershipResolverKind.AUDIT_ID,
         EffectMode.RECONCILE,
-        _SAME,
     ),
     _rule(
         RunEffectOperation.PERSIST_AUDIT_CONTROL_TRANSITION,
@@ -1615,7 +1490,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.AUDIT_ID,
         EffectMode.NORMAL,
-        _SAME,
     ),
     _rule(
         RunEffectOperation.PERSIST_AUDIT_CLEANUP_CONVERGENCE,
@@ -1625,7 +1499,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.AUDIT_ID,
         EffectMode.RECONCILE,
-        _SAME,
     ),
     *_rules(
         (
@@ -1638,7 +1511,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _dedicated(RunEffectOperation.AUDIT_APPROVAL_DECISION),
     ),
     *_rules(
         (
@@ -1651,7 +1523,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.WORKFLOW_CONTROL,
         OwnershipResolverKind.APPROVAL_ID,
         EffectMode.NORMAL,
-        _dedicated(RunEffectOperation.AUDIT_APPROVAL_DECISION),
     ),
     _rule(
         RunEffectOperation.SERVICE_EXECUTION_CANCEL,
@@ -1661,7 +1532,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.WORKFLOW_CONTROL,
         OwnershipResolverKind.EXECUTION_ID,
         EffectMode.NORMAL,
-        _dedicated(RunEffectOperation.AUDIT_EXECUTION_CONTROL),
     ),
     _rule(
         RunEffectOperation.SERVICE_EXECUTION_SUBMIT,
@@ -1671,7 +1541,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_EXECUTION,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _dedicated(RunEffectOperation.AUDIT_EXECUTION_CONTROL),
     ),
     _rule(
         RunEffectOperation.SERVICE_EXECUTION_MUTATION,
@@ -1681,7 +1550,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.EXECUTION_ID,
         EffectMode.NORMAL,
-        _dedicated(RunEffectOperation.AUDIT_EXECUTION_CONTROL),
     ),
     _rule(
         RunEffectOperation.SERVICE_DEFERRED_EXECUTION_PREPARE,
@@ -1691,7 +1559,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.SERVICE_DEFERRED_EXECUTION_DISPATCH,
@@ -1701,7 +1568,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_EXECUTION,
         OwnershipResolverKind.TOOL_CALL_INTENT_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.SERVICE_DEFERRED_EXECUTION_MUTATION,
@@ -1711,7 +1577,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.TOOL_CALL_INTENT_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.SERVICE_DEFERRED_EXECUTION_APPROVE,
@@ -1721,7 +1586,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.WORKFLOW_CONTROL,
         OwnershipResolverKind.TOOL_CALL_INTENT_ID,
         EffectMode.NORMAL,
-        _dedicated(RunEffectOperation.AUDIT_APPROVAL_DECISION),
     ),
     _rule(
         RunEffectOperation.SERVICE_DEFERRED_EXECUTION_REJECT,
@@ -1731,7 +1595,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.WORKFLOW_CONTROL,
         OwnershipResolverKind.TOOL_CALL_INTENT_ID,
         EffectMode.NORMAL,
-        _dedicated(RunEffectOperation.AUDIT_APPROVAL_DECISION),
     ),
     *_rules(
         (
@@ -1744,7 +1607,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _dedicated(RunEffectOperation.AUDIT_ARTIFACT_INGEST),
     ),
     _rule(
         RunEffectOperation.SERVICE_FINDING_CREATE,
@@ -1754,7 +1616,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _dedicated(RunEffectOperation.CODE_FINDING_TRIAGE),
     ),
     _rule(
         RunEffectOperation.SERVICE_FINDING_UPDATE,
@@ -1764,7 +1625,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.FINDING_ID,
         EffectMode.NORMAL,
-        _dedicated(RunEffectOperation.CODE_FINDING_TRIAGE),
     ),
     _rule(
         RunEffectOperation.SERVICE_REPORT_GENERATE,
@@ -1774,7 +1634,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _dedicated(RunEffectOperation.AUDIT_REPORT_REBUILD),
     ),
     *_rules(
         (
@@ -1789,7 +1648,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.MEMORY_SCOPE,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.SERVICE_TERMINAL_CREATE,
@@ -1799,7 +1657,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_EXECUTION,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     *_rules(
         (
@@ -1816,7 +1673,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_CONTROL,
         OwnershipResolverKind.TERMINAL_SESSION_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.SERVICE_BROWSER_OPEN,
@@ -1826,7 +1682,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_EXECUTION,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     *_rules(
         (
@@ -1842,7 +1697,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_CONTROL,
         OwnershipResolverKind.BROWSER_SESSION_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.SERVICE_BROWSER_STOP_RUN,
@@ -1852,7 +1706,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_CONTROL,
         OwnershipResolverKind.RUN_ID,
         EffectMode.SAFETY_REDUCE_ONLY,
-        _SAME,
     ),
     _rule(
         RunEffectOperation.SERVICE_WEB_FETCH,
@@ -1862,7 +1715,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_EXECUTION,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     *_rules(
         (
@@ -1875,7 +1727,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_EXECUTION,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.SERVICE_TARGET_HTTP_EXECUTE,
@@ -1885,7 +1736,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_EXECUTION,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.SERVICE_TARGET_HTTP_STOP_RUN,
@@ -1895,7 +1745,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_CONTROL,
         OwnershipResolverKind.RUN_ID,
         EffectMode.SAFETY_REDUCE_ONLY,
-        _SAME,
     ),
     _rule(
         RunEffectOperation.SERVICE_MCP_INVOKE,
@@ -1905,7 +1754,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_EXECUTION,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.SERVICE_CONNECTOR_INGEST,
@@ -1915,7 +1763,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     *_rules(
         (
@@ -1928,7 +1775,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.CONTEXT_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.RUNTIME_AGENT_CYCLE,
@@ -1938,7 +1784,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_EXECUTION,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     *_rules(
         (
@@ -1958,7 +1803,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.NONE,
         EffectMode.GLOBAL,
-        _NOT_RUN_SCOPED,
         owner_kind=EffectOwnerKind.GLOBAL,
     ),
     *_rules(
@@ -1972,7 +1816,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.RUNNER_CALLBACK,
         OwnershipResolverKind.NODE_PRINCIPAL,
         EffectMode.GLOBAL,
-        _NOT_RUN_SCOPED,
         owner_kind=EffectOwnerKind.GLOBAL,
     ),
     _rule(
@@ -1983,7 +1826,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_EXECUTION,
         OwnershipResolverKind.RUNNER_COMMAND_ENVELOPE,
         EffectMode.NORMAL,
-        _ownership_routed(RunEffectOperation.AUDIT_WORKFLOW_CALLBACK),
     ),
     *_rules(
         (
@@ -1998,7 +1840,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.RUNNER_CALLBACK,
         OwnershipResolverKind.RUNNER_COMMAND_ENVELOPE,
         EffectMode.OWNERSHIP_CALLBACK,
-        _ownership_routed(RunEffectOperation.AUDIT_WORKFLOW_CALLBACK),
     ),
     *_rules(
         (
@@ -2011,7 +1852,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.RUNNER_CALLBACK,
         OwnershipResolverKind.EXECUTION_OWNERSHIP_ENVELOPE,
         EffectMode.OWNERSHIP_CALLBACK,
-        _ownership_routed(RunEffectOperation.AUDIT_WORKFLOW_CALLBACK),
     ),
     _rule(
         RunEffectOperation.SERVICE_RUNNER_STOP_ACK,
@@ -2021,7 +1861,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.RUNNER_CALLBACK,
         OwnershipResolverKind.RUNNER_COMMAND_ENVELOPE,
         EffectMode.STOP_PROOF,
-        _ownership_routed(RunEffectOperation.AUDIT_WORKFLOW_CALLBACK),
     ),
     _rule(
         RunEffectOperation.SERVICE_RUNNER_LEGACY_STOP_ACK,
@@ -2031,7 +1870,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.RUNNER_CALLBACK,
         OwnershipResolverKind.LEGACY_RUNNER_STOP_LEASE,
         EffectMode.STOP_PROOF,
-        _NOT_RUN_SCOPED,
         owner_kind=EffectOwnerKind.LEGACY_RUNNER_COMMAND,
     ),
     *_rules(
@@ -2045,7 +1883,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.RUNNER_COMMAND_ENVELOPE,
         EffectMode.SAFETY_REDUCE_ONLY,
-        _SAME,
     ),
     _rule(
         RunEffectOperation.SERVICE_WORKFLOW_SIGNAL_CREATE,
@@ -2055,7 +1892,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _SAME,
     ),
 )
 
@@ -2069,7 +1905,6 @@ _INTERNAL_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_EXECUTION,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.WORKFLOW_EXECUTION_COMPLETION,
@@ -2079,7 +1914,6 @@ _INTERNAL_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.WORKFLOW_CONTROL,
         OwnershipResolverKind.EXECUTION_ID,
         EffectMode.NORMAL,
-        _ownership_routed(RunEffectOperation.AUDIT_WORKFLOW_CALLBACK),
     ),
     _rule(
         RunEffectOperation.TEMPORAL_EXECUTION_COMPLETION,
@@ -2089,7 +1923,6 @@ _INTERNAL_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.WORKFLOW_CONTROL,
         OwnershipResolverKind.EXECUTION_OWNERSHIP_ENVELOPE,
         EffectMode.OWNERSHIP_CALLBACK,
-        _ownership_routed(RunEffectOperation.AUDIT_WORKFLOW_CALLBACK),
     ),
     _rule(
         RunEffectOperation.TEMPORAL_APPROVAL_DECISION,
@@ -2099,7 +1932,6 @@ _INTERNAL_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.WORKFLOW_CONTROL,
         OwnershipResolverKind.AUDIT_OWNERSHIP_ENVELOPE,
         EffectMode.OWNERSHIP_CALLBACK,
-        _ownership_routed(RunEffectOperation.AUDIT_WORKFLOW_CALLBACK),
     ),
     *_rules(
         (
@@ -2112,7 +1944,6 @@ _INTERNAL_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.ACTIVITY_AGENT_CYCLE,
@@ -2122,7 +1953,6 @@ _INTERNAL_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_EXECUTION,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.ACTIVITY_COMPACT_CONTEXT,
@@ -2132,7 +1962,6 @@ _INTERNAL_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.ACTIVITY_SWITCH_MODEL,
@@ -2142,7 +1971,6 @@ _INTERNAL_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.WORKFLOW_CONTROL,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.ACTIVITY_GENERATE_REPORT,
@@ -2152,7 +1980,6 @@ _INTERNAL_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
-        _dedicated(RunEffectOperation.AUDIT_REPORT_REBUILD),
     ),
     *_rules(
         (
@@ -2165,7 +1992,6 @@ _INTERNAL_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_CONTROL,
         OwnershipResolverKind.RUN_ID,
         EffectMode.RECONCILE,
-        _UNSUPPORTED,
     ),
     _rule(
         RunEffectOperation.EXECUTION_RECONCILE,
@@ -2175,7 +2001,6 @@ _INTERNAL_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_CONTROL,
         OwnershipResolverKind.EXECUTION_ID,
         EffectMode.RECONCILE,
-        _SAME,
     ),
     _rule(
         RunEffectOperation.CONTROL_PLANE_CLEANUP_RECONCILE,
@@ -2185,7 +2010,6 @@ _INTERNAL_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_CONTROL,
         OwnershipResolverKind.RUN_ID,
         EffectMode.RECONCILE,
-        _SAME,
     ),
     _rule(
         RunEffectOperation.WORKER_CLEANUP_RECONCILE,
@@ -2195,7 +2019,6 @@ _INTERNAL_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_CONTROL,
         OwnershipResolverKind.RUN_ID,
         EffectMode.RECONCILE,
-        _SAME,
     ),
     _rule(
         RunEffectOperation.CONTROL_PLANE_RUNNER_RECONCILE,
@@ -2205,7 +2028,6 @@ _INTERNAL_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.RUNNER_COMMAND_ENVELOPE,
         EffectMode.SAFETY_REDUCE_ONLY,
-        _SAME,
     ),
     _rule(
         RunEffectOperation.WORKER_RUNNER_RECONCILE,
@@ -2215,7 +2037,6 @@ _INTERNAL_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.RUNNER_COMMAND_ENVELOPE,
         EffectMode.SAFETY_REDUCE_ONLY,
-        _SAME,
     ),
     _rule(
         RunEffectOperation.WORKFLOW_SIGNAL_DISPATCH,
@@ -2225,7 +2046,6 @@ _INTERNAL_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.WORKFLOW_CONTROL,
         OwnershipResolverKind.RUN_ID,
         EffectMode.RECONCILE,
-        _SAME,
     ),
     _rule(
         RunEffectOperation.WORKFLOW_SIGNAL_RECONCILE,
@@ -2235,7 +2055,6 @@ _INTERNAL_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.DURABLE_WRITE,
         OwnershipResolverKind.RUN_ID,
         EffectMode.RECONCILE,
-        _SAME,
     ),
     _rule(
         RunEffectOperation.WORKFLOW_SIGNAL_TRANSPORT_SEND,
@@ -2245,7 +2064,6 @@ _INTERNAL_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.WORKFLOW_CONTROL,
         OwnershipResolverKind.RUN_ID,
         EffectMode.RECONCILE,
-        _SAME,
     ),
     _rule(
         RunEffectOperation.WORKFLOW_SIGNAL_OUTCOME_PROBE,
@@ -2255,7 +2073,6 @@ _INTERNAL_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.READ_ONLY,
         OwnershipResolverKind.RUN_ID,
         EffectMode.READ_ONLY,
-        _SAME,
     ),
     _rule(
         RunEffectOperation.CONTROL_PLANE_WORKFLOW_SIGNAL_RECONCILE,
@@ -2265,7 +2082,6 @@ _INTERNAL_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.WORKFLOW_CONTROL,
         OwnershipResolverKind.RUN_ID,
         EffectMode.RECONCILE,
-        _SAME,
     ),
     _rule(
         RunEffectOperation.WORKER_WORKFLOW_SIGNAL_RECONCILE,
@@ -2275,7 +2091,6 @@ _INTERNAL_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.WORKFLOW_CONTROL,
         OwnershipResolverKind.RUN_ID,
         EffectMode.RECONCILE,
-        _SAME,
     ),
     _rule(
         RunEffectOperation.SAFETY_STOP_RUN,
@@ -2285,7 +2100,6 @@ _INTERNAL_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_CONTROL,
         OwnershipResolverKind.RUN_ID,
         EffectMode.SAFETY_REDUCE_ONLY,
-        _SAME,
     ),
     *_rules(
         (
@@ -2298,7 +2112,6 @@ _INTERNAL_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.HOST_EXECUTION,
         OwnershipResolverKind.RUNNER_COMMAND_ENVELOPE,
         EffectMode.NORMAL,
-        _ownership_routed(RunEffectOperation.AUDIT_WORKFLOW_CALLBACK),
     ),
     *_rules(
         (
@@ -2313,7 +2126,6 @@ _INTERNAL_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.RUNNER_CALLBACK,
         OwnershipResolverKind.RUNNER_COMMAND_ENVELOPE,
         EffectMode.OWNERSHIP_CALLBACK,
-        _ownership_routed(RunEffectOperation.AUDIT_WORKFLOW_CALLBACK),
     ),
     _rule(
         RunEffectOperation.RUNNER_COMMAND_STOP_ACK,
@@ -2323,7 +2135,6 @@ _INTERNAL_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.RUNNER_CALLBACK,
         OwnershipResolverKind.RUNNER_COMMAND_ENVELOPE,
         EffectMode.STOP_PROOF,
-        _ownership_routed(RunEffectOperation.AUDIT_WORKFLOW_CALLBACK),
     ),
     _rule(
         RunEffectOperation.RUNNER_COMMAND_LEGACY_STOP_ACK,
@@ -2333,7 +2144,6 @@ _INTERNAL_RULES: tuple[RunKindEffectPolicy, ...] = (
         OperationEffect.RUNNER_CALLBACK,
         OwnershipResolverKind.LEGACY_RUNNER_STOP_LEASE,
         EffectMode.STOP_PROOF,
-        _NOT_RUN_SCOPED,
         owner_kind=EffectOwnerKind.LEGACY_RUNNER_COMMAND,
     ),
 )

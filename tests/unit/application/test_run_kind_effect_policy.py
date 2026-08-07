@@ -13,7 +13,6 @@ from riftx.application.run_kind_effects import (
     MANAGED_EFFECT_ENTRYPOINTS,
     MANAGED_EFFECT_TYPES,
     RUN_KIND_EFFECT_POLICIES,
-    AuditAlternativeDisposition,
     EffectEntrypointSurface,
     EffectMode,
     EffectOrigin,
@@ -127,7 +126,6 @@ def test_api_route_inventory_has_an_exact_run_kind_policy_for_every_route() -> N
         binding = API_ROUTE_EFFECT_BINDINGS[route_name]
         policy = RUN_KIND_EFFECT_POLICIES[(binding.operation, binding.origin)]
         assert policy.required_effect.value == route_policy.effect.value
-        assert policy.audit_alternative.disposition in AuditAlternativeDisposition
 
 
 def test_pentest_inventory_has_no_unreviewed_general_only_effect_holes() -> None:
@@ -458,7 +456,6 @@ def test_generic_cancel_has_no_retired_audit_api_fallback() -> None:
     assert generic.allowed_run_kinds == frozenset(
         {RunKind.GENERAL, RunKind.PENTEST}
     )
-    assert generic.audit_alternative.disposition is AuditAlternativeDisposition.UNSUPPORTED
 
     with pytest.raises(RunKindEffectPolicyDenied) as captured:
         require_run_kind_effect_policy(
@@ -613,7 +610,6 @@ def test_generic_cleanup_cannot_dispatch_code_audit_workflow_finalization() -> N
     assert generic.allowed_run_kinds == frozenset(
         {RunKind.GENERAL, RunKind.PENTEST}
     )
-    assert generic.audit_alternative.operation is RunEffectOperation.SERVICE_AUDIT_RECONCILE
 
     with pytest.raises(RunKindEffectPolicyDenied) as captured:
         require_run_kind_effect_policy(
@@ -789,7 +785,6 @@ def test_global_operations_reject_fabricated_run_kind_context() -> None:
         mode=EffectMode.GLOBAL,
     )
     assert not policy.allowed_run_kinds
-    assert policy.audit_alternative.disposition is AuditAlternativeDisposition.NOT_RUN_SCOPED
 
     with pytest.raises(RunKindEffectPolicyDenied) as captured:
         require_run_kind_effect_policy(
@@ -1024,7 +1019,7 @@ def test_workflow_signal_outbox_inventory_covers_every_managed_boundary() -> Non
 def test_managed_inventory_rejects_an_unregistered_entrypoint() -> None:
     unregistered = ManagedEffectEntrypoint(
         qualified_name="riftx.example:Canary.mutate",
-        operation=RunEffectOperation.AUDIT_ARTIFACT_INGEST,
+        operation=RunEffectOperation.GET_RUN,
         origin=EffectOrigin.APPLICATION_SERVICE,
     )
 

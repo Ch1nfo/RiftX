@@ -990,8 +990,8 @@ Codex 每完成一个 Slice 更新本表，并链接实现提交和验证结果�
 | 4 | 删除 Audit Domain/Persistence 上层 | completed | `6d0ae34e` | 聚焦 `96 + 80 passed`；migration/schema `83 passed`；跨组件 `281 passed`；Backup/Pentest `34 passed`；全仓收集 `4464 tests`；Ruff、Phase Gate `340 passed` | 删除 Preflight/Plan/Static Effect Domain、上层 Repository/UoW/Mapper 和本地 Audit Job，净删 21,954 行；保留 migration、ORM metadata、历史读取、Snapshot 与 Safety Stop |
 | 4 | 删除 Audit Pack/Demo/Web | completed | `39bad620` | Python 聚焦 `88 passed`；Web `258 passed` 且生产构建通过；全仓收集 `4379 tests`；Ruff、Phase Gate `340 passed`；干净 wheel 含 10 个 Official Pack 且无 Audit Detector/Code Audit Pack 资产 | 删除 Audit Detector、12 个 Code Audit Official Pack、Demo 与 Web 产品面，净删 10,318 行；保留 Pentest/共享 Pack、Snapshot 兼容读取与未引用的历史截图 |
 | 4 | Replay/Enum 兼容收尾 | completed | `4231d457` | 聚焦 `179 passed`；装配 `56 passed`；Artifact/API `94 passed`；migration/Signal `64 passed`；全仓收集 `4370 tests`；Ruff、`compileall`、Release Gate ready | 删除 Audit Artifact 新写入、Web/MCP Code Audit 副作用、Signal factory 和退役 effect 操作，净删 425 行；保留历史 Enum、ORM、migration、Signal、Snapshot 解析与 Safety Stop |
-| 5 | 遗留入口清理 | completed | 本提交 | CLI `72 passed`；Ruff | 删除无消费者的隐藏 `riftx interactive` 别名；保留无子命令交互模式和独立部署入口 `riftx-runner` |
-| 5 | 空壳抽象清理 | pending | — | — | 入口清理后执行 |
+| 5 | 遗留入口清理 | completed | `f1497052` | CLI `72 passed`；Ruff | 删除无消费者的隐藏 `riftx interactive` 别名；保留无子命令交互模式和独立部署入口 `riftx-runner` |
+| 5 | 空壳抽象清理 | completed | 本提交 | 策略聚焦 `52 passed`；跨边界 `247 passed`；全仓收集 `4370 tests`；Ruff、`compileall`、Release Gate ready | 删除零生产消费者的 Audit alternative 元数据、6 个 future-only operation 和对应测试，净删 196 行；保留实际 effect admission、历史读取与 Safety Stop 抽象 |
 | 6 | 文档、配置和依赖收尾 | pending | — | — | — |
 | 7 | 最终发布 Gate | pending | — | — | — |
 
