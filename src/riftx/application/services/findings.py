@@ -25,6 +25,7 @@ from riftx.domain import (
     FindingStatus,
     Run,
 )
+from riftx.domain.base import new_id
 
 from .runs import require_interactive_run_operation
 
@@ -44,6 +45,7 @@ class CreateFinding:
     impact: str = ""
     recommendation: str = ""
     agent_step_id: str | None = None
+    finding_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +88,11 @@ class FindingApplicationService:
     async def create_finding(self, run_id: str, command: CreateFinding) -> Finding:
         require_interactive_run_operation(await self._require_run(run_id))
         finding = Finding(
+            id=(
+                _required_text(command.finding_id, "finding_id")
+                if command.finding_id is not None
+                else new_id()
+            ),
             run_id=run_id,
             title=_required_text(command.title, "title"),
             severity=command.severity,
@@ -98,7 +105,17 @@ class FindingApplicationService:
             recommendation=command.recommendation.strip(),
         )
         await self._validate_evidence(run_id, finding.evidence)
-        finding = await self._finding_repository.create(finding)
+        try:
+            finding = await self._finding_repository.create(finding)
+        except RepositoryConflictError as exc:
+            existing = await self._finding_repository.get(finding.id)
+            if existing is not None and _finding_payload(existing) == _finding_payload(finding):
+                return existing
+            raise ApplicationConflictError(
+                "finding_idempotency_conflict",
+                "Finding identity was already used with different content",
+                details={"finding_id": finding.id},
+            ) from exc
         event_payload: dict[str, object] = {
             "finding_id": finding.id,
             "title": finding.title,
@@ -284,6 +301,11 @@ class FindingApplicationService:
                     )
                 artifact = await self._artifact_repository.get(evidence.artifact_id)
                 if artifact is None:
+                    artifact = await self._artifact_repository.get_target_http_for_evidence(
+                        evidence.artifact_id,
+                        run_id,
+                    )
+                if artifact is None:
                     raise EntityNotFoundError("Artifact", evidence.artifact_id)
                 if artifact.run_id != run_id:
                     raise ApplicationConflictError(
@@ -349,3 +371,7 @@ def _normalize_list(values: list[str]) -> list[str]:
             normalized.append(item)
             seen.add(item)
     return normalized
+
+
+def _finding_payload(finding: Finding) -> dict[str, object]:
+    return finding.model_dump(exclude={"created_at", "updated_at"})

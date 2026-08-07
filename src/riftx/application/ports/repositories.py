@@ -635,6 +635,14 @@ class ArtifactRepository(Protocol):
         """
         ...
 
+    async def get_target_http_for_evidence(
+        self,
+        artifact_id: str,
+        run_id: str,
+    ) -> Artifact | None:
+        """Load one Target HTTP Artifact only through its same-Run exchange binding."""
+        ...
+
     async def resolve_owner(self, artifact_id: str) -> ArtifactOwnerBinding | None:
         """Load only bounded owner/access columns for explicit authorization."""
         ...

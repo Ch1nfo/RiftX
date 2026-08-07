@@ -263,6 +263,16 @@ SERVICE_ENUMERATION_TOOLS = (
     "propose_hypothesis",
     "record_negative_result",
 )
+VULNERABILITY_VERIFICATION_TOOLS = (
+    "target_http_request",
+    "act_browser",
+    "observe_browser",
+    "read_http_exchange",
+    "record_attempt",
+    "propose_finding",
+    "create_finding",
+    "record_negative_result",
+)
 
 
 async def _create_pentest_target_intent(
@@ -1739,7 +1749,7 @@ async def test_isolated_authorized_pentest_lifecycle_e2e(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
-async def test_service_enumeration_reaches_evidence_observation_and_hypothesis(
+async def test_service_enumeration_reaches_finding_and_precise_negative_result(
     tmp_path: Path,
 ) -> None:
     requests: list[str] = []
@@ -1750,12 +1760,23 @@ async def test_service_enumeration_reaches_evidence_observation_and_hypothesis(
     ) -> None:
         try:
             headers = await reader.readuntil(b"\r\n\r\n")
-            requests.append(headers.split(b"\r\n", maxsplit=1)[0].decode("ascii"))
+            request_line = headers.split(b"\r\n", maxsplit=1)[0].decode("ascii")
+            requests.append(request_line)
+            method, path, _ = request_line.split(" ", maxsplit=2)
+            status = b"200 OK"
+            body = b""
+            if method == "GET" and path == "/diagnostics":
+                body = b'{"build":"fixture-1","environment":"test"}'
+            elif method == "GET" and path == "/missing":
+                status = b"404 Not Found"
+                body = b'{"error":"not_found"}'
             writer.write(
-                b"HTTP/1.1 200 OK\r\n"
-                b"Server: RiftXFixture/1.0\r\n"
-                b"Content-Length: 0\r\n"
-                b"Connection: close\r\n\r\n"
+                b"HTTP/1.1 "
+                + status
+                + b"\r\nServer: RiftXFixture/1.0\r\nContent-Type: application/json\r\n"
+                + f"Content-Length: {len(body)}\r\n".encode()
+                + b"Connection: close\r\n\r\n"
+                + (body if method != "HEAD" else b"")
             )
             await writer.drain()
         finally:
@@ -1802,6 +1823,11 @@ async def test_service_enumeration_reaches_evidence_observation_and_hypothesis(
     stdout_artifact_id = ""
     evidence_id = ""
     execution_id = ""
+    diagnostics_artifact_id = ""
+    diagnostics_evidence_id = ""
+    missing_artifact_id = ""
+    missing_evidence_id = ""
+    finding_id = ""
     try:
         registry = ToolRegistry(tools_path, node_id="local")
         await registry.refresh()
@@ -1830,10 +1856,14 @@ async def test_service_enumeration_reaches_evidence_observation_and_hypothesis(
             assert isinstance(admission, dict)
             budget = admission["budget"]
             assert isinstance(budget, dict)
-            budget["max_target_interactions"] = 1
+            budget["max_target_interactions"] = 3
             budget["max_concurrent_target_interactions"] = 1
             request["capabilities"] = {
-                "pack_ids": ["pentest-foundation", "service-enumeration"],
+                "pack_ids": [
+                    "pentest-foundation",
+                    "service-enumeration",
+                    "vulnerability-verification",
+                ],
                 "tool_ids": ["nmap"],
             }
             created = await client.post("/api/v1/pentests", json=request)
@@ -1844,7 +1874,12 @@ async def test_service_enumeration_reaches_evidence_observation_and_hypothesis(
             assert status.status_code == 200, status.text
             assert status.json()["capabilities"]["allowlists"]["tool"] == list(
                 dict.fromkeys(
-                    (*PENTEST_FOUNDATION_TOOLS, *SERVICE_ENUMERATION_TOOLS, "nmap")
+                    (
+                        *PENTEST_FOUNDATION_TOOLS,
+                        *SERVICE_ENUMERATION_TOOLS,
+                        *VULNERABILITY_VERIFICATION_TOOLS,
+                        "nmap",
+                    )
                 )
             )
 
@@ -1912,6 +1947,46 @@ async def test_service_enumeration_reaches_evidence_observation_and_hypothesis(
                         },
                     ),
                     status=ToolCallStatus.WAITING_APPROVAL,
+                )
+
+            async def prepare_http(
+                *,
+                index: int,
+                call_id: str,
+                arguments: dict[str, object],
+                dispatcher: DeferredExecutionDispatcher = dispatcher,
+                session: AgentSession = session,
+            ) -> ToolCallIntent:
+                cycle = RuntimeAgentCycle(
+                    id=f"service-verification-cycle-{index}",
+                    run_id=run_id,
+                    session_id=session_id,
+                    sequence=index,
+                )
+                await cycle_repository.create(cycle)
+                step = AgentStep(
+                    id=f"service-verification-step-{index}",
+                    cycle_id=cycle.id,
+                    sequence=1,
+                    step_type=AgentStepType.TOOL_PROPOSAL,
+                )
+                await step_repository.create(step)
+                return await dispatcher.prepare_control(
+                    session=session,
+                    cycle=cycle,
+                    step=step,
+                    event=AgentEngineEvent(
+                        sequence=1,
+                        event_type=AgentEngineEventType.TOOL_CALL_READY,
+                        data={
+                            "call_id": call_id,
+                            "tool_id": "target_http_request",
+                            "arguments": arguments,
+                            "approval_level": "always",
+                            "approval_policy": "explicit",
+                            "approval_required": True,
+                        },
+                    ),
                 )
 
             with pytest.raises(ScopeViolationError, match="outside authorized scope"):
@@ -2005,7 +2080,10 @@ async def test_service_enumeration_reaches_evidence_observation_and_hypothesis(
                     runtime.control_plane.database.session_factory
                 ),
                 runs=runtime.run_repository,
+                target_http=runtime.control_plane.target_http_service,
+                control_intents=dispatcher,
                 reasoning_proposals=reasoning_service,
+                findings=runtime.control_plane.finding_service,
             )
             scope = RuntimeToolScope(
                 run_id=run_id,
@@ -2069,18 +2147,218 @@ async def test_service_enumeration_reaches_evidence_observation_and_hypothesis(
             assert hypothesis["node"]["kind"] == "hypothesis"
             assert hypothesis["node"]["status"] == "unverified"
 
+            diagnostics_arguments: dict[str, object] = {
+                "method": "GET",
+                "url": f"http://127.0.0.1:{port}/diagnostics",
+            }
+            diagnostics_intent = await prepare_http(
+                index=3,
+                call_id="diagnostics-http-call",
+                arguments=diagnostics_arguments,
+            )
+            assert diagnostics_intent.status is ToolCallStatus.WAITING_APPROVAL
+            assert requests == ["HEAD / HTTP/1.0"]
+            await dispatcher.approve_intent(diagnostics_intent.id)
+            assert requests == ["HEAD / HTTP/1.0"]
+            diagnostics_result = await control_tools(
+                scope,
+                "target_http_request",
+                diagnostics_arguments,
+                "diagnostics-http-call",
+            )
+            assert isinstance(diagnostics_result, dict)
+            assert diagnostics_result["status_code"] == 200
+            assert diagnostics_result["response_excerpt"] == (
+                '{"build":"fixture-1","environment":"test"}'
+            )
+            diagnostics_artifact_id = str(diagnostics_result["response_artifact_id"])
+            assert await runtime.artifact_repository.get(diagnostics_artifact_id) is None
+            diagnostics_artifact = (
+                await runtime.control_plane.artifact_service.get_target_http_for_evidence(
+                    diagnostics_artifact_id,
+                    expected_run_id=run_id,
+                )
+            )
+            diagnostics_registered = await control_tools(
+                scope,
+                "register_artifact_evidence",
+                {
+                    "artifact_id": diagnostics_artifact_id,
+                    "start_offset": 0,
+                    "end_offset": diagnostics_artifact.size,
+                },
+                "diagnostics-evidence-call",
+            )
+            assert isinstance(diagnostics_registered, dict)
+            diagnostics_evidence_id = str(diagnostics_registered["evidence_id"])
+            diagnostics_observation = await control_tools(
+                scope,
+                "record_observation",
+                {
+                    "expected_graph_version": hypothesis["graph_version"],
+                    "node_id": "diagnostics-disclosure-observation",
+                    "claim": ("GET /diagnostics returned deployment metadata without credentials"),
+                    "structured_data": {
+                        "path": "/diagnostics",
+                        "status_code": 200,
+                        "authentication": "not_required",
+                    },
+                    "evidence_ids": [diagnostics_evidence_id],
+                },
+                "diagnostics-observation-call",
+            )
+            assert isinstance(diagnostics_observation, dict)
+            candidate = await control_tools(
+                scope,
+                "propose_finding",
+                {
+                    "expected_graph_version": diagnostics_observation["graph_version"],
+                    "node_id": "diagnostics-disclosure-candidate",
+                    "claim": "Anonymous diagnostics disclose deployment metadata",
+                    "structured_data": {
+                        "path": "/diagnostics",
+                        "severity": "low",
+                    },
+                    "evidence_ids": [diagnostics_evidence_id],
+                },
+                "diagnostics-candidate-call",
+            )
+            assert isinstance(candidate, dict)
+            finding_arguments = {
+                "reasoning_node_id": "diagnostics-disclosure-candidate",
+                "title": "Anonymous diagnostics disclosure",
+                "severity": "low",
+                "affected_assets": [f"http://127.0.0.1:{port}/diagnostics"],
+                "description": (
+                    "The diagnostics endpoint returns deterministic deployment metadata "
+                    "without authentication."
+                ),
+                "evidence": [
+                    {
+                        "artifact_id": diagnostics_artifact_id,
+                        "description": "HTTP 200 diagnostics response",
+                        "location": f"http://127.0.0.1:{port}/diagnostics",
+                    }
+                ],
+                "reproduction_steps": [
+                    f"Send GET http://127.0.0.1:{port}/diagnostics without credentials"
+                ],
+                "impact": "An unauthenticated client can learn deployment metadata.",
+                "recommendation": "Remove the endpoint or require authentication.",
+            }
+            draft = await control_tools(
+                scope,
+                "create_finding",
+                finding_arguments,
+                "diagnostics-finding-call",
+            )
+            replayed_draft = await control_tools(
+                scope,
+                "create_finding",
+                finding_arguments,
+                "diagnostics-finding-call",
+            )
+            assert isinstance(draft, dict)
+            assert replayed_draft == draft
+            finding_id = str(draft["id"])
+            assert draft["status"] == "draft"
+            assert len(await runtime.finding_repository.list(run_id)) == 1
+
+            missing_hypothesis = await control_tools(
+                scope,
+                "propose_hypothesis",
+                {
+                    "expected_graph_version": candidate["graph_version"],
+                    "node_id": "missing-path-hypothesis",
+                    "claim": "The exact path /missing may expose another diagnostic response",
+                    "structured_data": {
+                        "path": "/missing",
+                        "expected_status": 200,
+                    },
+                    "evidence_ids": [evidence_id],
+                },
+                "missing-hypothesis-call",
+            )
+            assert isinstance(missing_hypothesis, dict)
+            missing_arguments: dict[str, object] = {
+                "method": "GET",
+                "url": f"http://127.0.0.1:{port}/missing",
+            }
+            missing_intent = await prepare_http(
+                index=4,
+                call_id="missing-http-call",
+                arguments=missing_arguments,
+            )
+            assert requests == [
+                "HEAD / HTTP/1.0",
+                "GET /diagnostics HTTP/1.1",
+            ]
+            await dispatcher.approve_intent(missing_intent.id)
+            missing_result = await control_tools(
+                scope,
+                "target_http_request",
+                missing_arguments,
+                "missing-http-call",
+            )
+            assert isinstance(missing_result, dict)
+            assert missing_result["status_code"] == 404
+            assert missing_result["response_excerpt"] == '{"error":"not_found"}'
+            missing_artifact_id = str(missing_result["response_artifact_id"])
+            assert await runtime.artifact_repository.get(missing_artifact_id) is None
+            missing_artifact = (
+                await runtime.control_plane.artifact_service.get_target_http_for_evidence(
+                    missing_artifact_id,
+                    expected_run_id=run_id,
+                )
+            )
+            missing_registered = await control_tools(
+                scope,
+                "register_artifact_evidence",
+                {
+                    "artifact_id": missing_artifact_id,
+                    "start_offset": 0,
+                    "end_offset": missing_artifact.size,
+                },
+                "missing-evidence-call",
+            )
+            assert isinstance(missing_registered, dict)
+            missing_evidence_id = str(missing_registered["evidence_id"])
+            negative = await control_tools(
+                scope,
+                "record_negative_result",
+                {
+                    "expected_graph_version": missing_hypothesis["graph_version"],
+                    "node_id": "missing-path-negative-result",
+                    "claim": "GET /missing returned 404 and disproved only that exact path guess",
+                    "structured_data": {
+                        "path": "/missing",
+                        "status_code": 404,
+                        "scope_of_conclusion": "exact_path_only",
+                    },
+                    "evidence_ids": [missing_evidence_id],
+                    "invalidated_node_id": "missing-path-hypothesis",
+                },
+                "missing-negative-call",
+            )
+            assert isinstance(negative, dict)
+            assert negative["node"]["kind"] == "negative_result"
+
             live_status = await client.get(f"/api/v1/pentests/{run_id}/status")
             assert live_status.status_code == 200, live_status.text
-            assert live_status.json()["budget"]["observed_target_interactions"] == 1
+            assert live_status.json()["budget"]["observed_target_interactions"] == 3
 
-            exhausted = await prepare_scan(index=3, target="127.0.0.1")
+            exhausted = await prepare_scan(index=5, target="127.0.0.1")
             with pytest.raises(ApplicationConflictError) as captured:
                 await dispatcher.execute_approved_intent(exhausted.id)
             assert captured.value.code == "pentest_budget_exhausted"
-            assert requests == ["HEAD / HTTP/1.0"]
+            assert requests == [
+                "HEAD / HTTP/1.0",
+                "GET /diagnostics HTTP/1.1",
+                "GET /missing HTTP/1.1",
+            ]
             paused = await client.get(f"/api/v1/pentests/{run_id}/status")
             assert paused.json()["run"]["status"] == "paused"
-            assert paused.json()["budget"]["observed_target_interactions"] == 1
+            assert paused.json()["budget"]["observed_target_interactions"] == 3
             assert (await client.post(f"/api/v1/runs/{run_id}/resume")).status_code == 202
     finally:
         await runtime.control_plane.close()
@@ -2095,6 +2373,29 @@ async def test_service_enumeration_reaches_evidence_observation_and_hypothesis(
         ).get(evidence_id)
         assert evidence is not None
         assert evidence.artifact_id == stdout_artifact_id
+        evidence_ledger = SQLAlchemyEvidenceLedgerRepository(
+            restarted.control_plane.database.session_factory
+        )
+        diagnostics_evidence = await evidence_ledger.get(diagnostics_evidence_id)
+        missing_evidence = await evidence_ledger.get(missing_evidence_id)
+        assert diagnostics_evidence is not None
+        assert diagnostics_evidence.artifact_id == diagnostics_artifact_id
+        assert missing_evidence is not None
+        assert missing_evidence.artifact_id == missing_artifact_id
+        assert await restarted.artifact_repository.get(diagnostics_artifact_id) is None
+        assert await restarted.artifact_repository.get(missing_artifact_id) is None
+        assert (
+            await restarted.control_plane.artifact_service.get_target_http_for_evidence(
+                diagnostics_artifact_id,
+                expected_run_id=run_id,
+            )
+        ).id == diagnostics_artifact_id
+        assert (
+            await restarted.control_plane.artifact_service.get_target_http_for_evidence(
+                missing_artifact_id,
+                expected_run_id=run_id,
+            )
+        ).id == missing_artifact_id
         graph = await SQLAlchemyReasoningGraphRepository(
             restarted.control_plane.database.session_factory
         ).get(run_id)
@@ -2102,9 +2403,44 @@ async def test_service_enumeration_reaches_evidence_observation_and_hypothesis(
         assert [(node.id, node.kind.value, node.status.value) for node in graph.nodes] == [
             ("service-endpoint-observation", "observation", "recorded"),
             ("service-http-hypothesis", "hypothesis", "unverified"),
+            ("diagnostics-disclosure-observation", "observation", "recorded"),
+            (
+                "diagnostics-disclosure-candidate",
+                "vulnerability_candidate",
+                "candidate",
+            ),
+            ("missing-path-hypothesis", "hypothesis", "unverified"),
+            ("missing-path-negative-result", "negative_result", "recorded"),
         ]
-        assert all(node.evidence_ids == (evidence_id,) for node in graph.nodes)
-        assert await restarted.finding_repository.list(run_id) == []
+        assert graph.nodes[0].evidence_ids == graph.nodes[1].evidence_ids == (evidence_id,)
+        assert (
+            graph.nodes[2].evidence_ids == graph.nodes[3].evidence_ids == (diagnostics_evidence_id,)
+        )
+        assert graph.nodes[4].evidence_ids == (evidence_id,)
+        assert graph.nodes[5].evidence_ids == (missing_evidence_id,)
+        assert [
+            (
+                edge.source_node_id,
+                edge.target_node_id,
+                edge.relation_type.value,
+            )
+            for edge in graph.edges
+        ] == [
+            (
+                "missing-path-negative-result",
+                "missing-path-hypothesis",
+                "invalidates",
+            )
+        ]
+        findings = await restarted.finding_repository.list(run_id)
+        assert len(findings) == 1
+        assert findings[0].id == finding_id
+        assert findings[0].status.value == "draft"
+        assert [item.artifact_id for item in findings[0].evidence] == [
+            diagnostics_artifact_id,
+            None,
+        ]
+        assert findings[0].evidence[-1].location == ("reasoning://diagnostics-disclosure-candidate")
     finally:
         await restarted.control_plane.close()
         server.close()

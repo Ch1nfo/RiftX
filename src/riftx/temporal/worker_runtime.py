@@ -1321,6 +1321,7 @@ async def build_temporal_worker(
             executions=execution_service,
             artifacts=artifact_service,
             evidence=evidence_service,
+            findings=finding_service,
             events=event_repository,
             transcript=transcript_repository,
             skills=skill_context,

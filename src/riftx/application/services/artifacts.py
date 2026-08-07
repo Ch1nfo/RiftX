@@ -271,6 +271,29 @@ class ArtifactApplicationService:
             raise EntityNotFoundError("Artifact", artifact_id)
         return artifact
 
+    async def get_target_http_for_evidence(
+        self,
+        artifact_id: str,
+        *,
+        expected_run_id: str,
+    ) -> Artifact:
+        try:
+            artifact = await self._artifact_repository.get_target_http_for_evidence(
+                artifact_id,
+                expected_run_id,
+            )
+        except (RepositoryIntegrityError, RepositoryUnavailableError):
+            raise _artifact_persistence_unavailable() from None
+        if artifact is None:
+            raise EntityNotFoundError("Artifact", artifact_id)
+        _require_exact_owner(
+            artifact,
+            artifact_id=artifact_id,
+            run_id=expected_run_id,
+            audit_id=None,
+        )
+        return artifact
+
     async def resolve_run_id(self, artifact_id: str) -> str:
         try:
             run_id = await self._artifact_repository.get_run_id(artifact_id)
@@ -414,6 +437,29 @@ class ArtifactApplicationService:
         return await self._read_open_content_slice(
             artifact,
             lease,
+            offset=offset,
+            max_bytes=max_bytes,
+        )
+
+    async def read_target_http_content_slice(
+        self,
+        artifact_id: str,
+        *,
+        expected_run_id: str,
+        offset: int = 0,
+        max_bytes: int = 64 * 1024,
+    ) -> ArtifactContentSlice:
+        if offset < 0:
+            raise ValueError("Artifact offset must not be negative")
+        if max_bytes < 1 or max_bytes > self._content_store.max_artifact_bytes:
+            raise ValueError("Artifact read size is outside the configured bounds")
+        artifact = await self.get_target_http_for_evidence(
+            artifact_id,
+            expected_run_id=expected_run_id,
+        )
+        return await self._read_open_content_slice(
+            artifact,
+            await self._open_verified(artifact),
             offset=offset,
             max_bytes=max_bytes,
         )

@@ -20,7 +20,9 @@ from riftx.application.errors import (
 )
 from riftx.application.services import (
     ArtifactApplicationService,
+    CreateFinding,
     EvidenceApplicationService,
+    FindingApplicationService,
     QueryReasoningGraph,
     ReasoningGraphQueryResult,
     RegisterArtifactSpanEvidence,
@@ -45,6 +47,8 @@ from riftx.domain import (
     ArtifactAccessClass,
     BrowserActionType,
     Execution,
+    FindingEvidence,
+    FindingSeverity,
     MessageRole,
     MessageType,
     MessageVisibility,
@@ -429,6 +433,31 @@ class _QueryReasoningGraphArguments(_Arguments):
     edge_limit: int = Field(default=100, ge=0, le=200)
 
 
+class _FindingEvidenceArguments(_Arguments):
+    artifact_id: str | None = Field(default=None, min_length=1, max_length=64)
+    execution_id: str | None = Field(default=None, min_length=1, max_length=64)
+    description: str = Field(default="", max_length=20_000)
+    location: str | None = Field(default=None, min_length=1, max_length=8_192)
+
+    @model_validator(mode="after")
+    def validate_reference(self) -> _FindingEvidenceArguments:
+        if self.artifact_id is None and self.execution_id is None:
+            raise ValueError("Finding evidence must reference an Artifact or Execution")
+        return self
+
+
+class _CreateFindingArguments(_Arguments):
+    reasoning_node_id: str = Field(min_length=1, max_length=64)
+    title: str = Field(min_length=1, max_length=500)
+    severity: FindingSeverity
+    affected_assets: list[str] = Field(default_factory=list, max_length=100)
+    description: str = Field(default="", max_length=20_000)
+    evidence: list[_FindingEvidenceArguments] = Field(min_length=1, max_length=100)
+    reproduction_steps: list[str] = Field(default_factory=list, max_length=100)
+    impact: str = Field(default="", max_length=20_000)
+    recommendation: str = Field(default="", max_length=20_000)
+
+
 class _ListFilesArguments(_Arguments):
     path: str = ""
     recursive: bool = False
@@ -665,6 +694,7 @@ class RuntimeControlToolService:
         events: RunEventWriter,
         transcript: TranscriptWriter,
         evidence: EvidenceApplicationService | None = None,
+        findings: FindingApplicationService | None = None,
         skills: ProgressiveSkillContextManager | None = None,
         techniques: TechniqueContextManager | None = None,
         code: CodeWorkspaceService | None = None,
@@ -687,6 +717,7 @@ class RuntimeControlToolService:
         self._executions = executions
         self._artifacts = artifacts
         self._evidence = evidence
+        self._findings = findings
         self._events = events
         self._transcript = transcript
         self._skills = skills
@@ -1743,6 +1774,64 @@ class RuntimeControlToolService:
                 expected_graph_version=reasoning_arguments.expected_graph_version,
             )
             return _reasoning_mutation_payload(graph, node.id)
+        if tool_name == "create_finding":
+            self._require_primary_cognition(scope)
+            await self._interactive_run(scope.run_id)
+            reasoning = self._require_reasoning_proposals()
+            finding_arguments = _CreateFindingArguments.model_validate(raw_arguments)
+            candidate_result = await reasoning.query(
+                QueryReasoningGraph(
+                    run_id=scope.run_id,
+                    node_ids=(finding_arguments.reasoning_node_id,),
+                    limit=2,
+                    edge_limit=0,
+                )
+            )
+            if len(candidate_result.nodes) != 1:
+                raise ApplicationConflictError(
+                    "finding_candidate_not_found",
+                    "Draft Finding requires one existing Reasoning candidate",
+                    details={"reasoning_node_id": finding_arguments.reasoning_node_id},
+                )
+            candidate = candidate_result.nodes[0]
+            if (
+                candidate.kind is not ReasoningNodeKind.VULNERABILITY_CANDIDATE
+                or candidate.status is not ReasoningNodeStatus.CANDIDATE
+            ):
+                raise ApplicationConflictError(
+                    "finding_candidate_not_projectable",
+                    "Only a candidate Vulnerability Reasoning Node may become a Draft Finding",
+                    details={
+                        "reasoning_node_id": candidate.id,
+                        "kind": candidate.kind.value,
+                        "status": candidate.status.value,
+                    },
+                )
+            finding = await self._require_findings().create_finding(
+                scope.run_id,
+                CreateFinding(
+                    finding_id=_finding_projection_id(scope, call_id),
+                    title=finding_arguments.title,
+                    severity=finding_arguments.severity,
+                    affected_assets=finding_arguments.affected_assets,
+                    description=finding_arguments.description,
+                    evidence=[
+                        FindingEvidence(**item.model_dump()) for item in finding_arguments.evidence
+                    ]
+                    + [
+                        FindingEvidence(
+                            description=(
+                                "Projected from validated Reasoning Vulnerability Candidate"
+                            ),
+                            location=f"reasoning://{candidate.id}",
+                        )
+                    ],
+                    reproduction_steps=finding_arguments.reproduction_steps,
+                    impact=finding_arguments.impact,
+                    recommendation=finding_arguments.recommendation,
+                ),
+            )
+            return finding.model_dump(mode="json")
         if tool_name == "record_negative_result":
             self._require_primary_cognition(scope)
             reasoning = self._require_reasoning_proposals()
@@ -1858,6 +1947,11 @@ class RuntimeControlToolService:
             raise RuntimeError("Evidence registration service is not configured")
         return self._evidence
 
+    def _require_findings(self) -> FindingApplicationService:
+        if self._findings is None:
+            raise RuntimeError("Finding service is not configured")
+        return self._findings
+
     @staticmethod
     def _require_primary_planner(scope: RuntimeToolScope) -> None:
         if scope.agent_id != "primary":
@@ -1901,7 +1995,10 @@ class RuntimeControlToolService:
         ):
             if artifact_id is None:
                 continue
-            artifact = await self._artifacts.get(artifact_id)
+            artifact = await self._artifacts.get_target_http_for_evidence(
+                artifact_id,
+                expected_run_id=run_id,
+            )
             if artifact.run_id != run_id:
                 raise ApplicationConflictError(
                     "target_http_artifact_run_mismatch",
@@ -1981,6 +2078,15 @@ def _artifact_evidence_id(scope: RuntimeToolScope, call_id: str) -> str:
         uuid5(
             NAMESPACE_URL,
             f"riftx:{scope.run_id}:{scope.session_id}:artifact-evidence:{call_id}",
+        )
+    )
+
+
+def _finding_projection_id(scope: RuntimeToolScope, call_id: str) -> str:
+    return str(
+        uuid5(
+            NAMESPACE_URL,
+            f"riftx:{scope.run_id}:{scope.session_id}:finding:{call_id}",
         )
     )
 
@@ -2370,6 +2476,15 @@ def _source_refs(
             evidence_refs.append(f"artifact://{artifact_id}")
         if evidence_refs:
             return evidence_refs
+    if tool_name == "create_finding" and isinstance(result, dict):
+        finding_refs: list[str] = []
+        if finding_id := _string_argument(result, "id"):
+            finding_refs.append(f"finding://{finding_id}")
+        if reasoning_node_id := _string_argument(arguments, "reasoning_node_id"):
+            finding_refs.append(f"reasoning://{reasoning_node_id}")
+        finding_refs.extend(f"artifact://{item}" for item in _result_artifact_ids(result))
+        if finding_refs:
+            return list(dict.fromkeys(finding_refs))
     if tool_name == "call_mcp_tool" and isinstance(result, dict):
         mcp_refs: list[str] = []
         if tool_id := _string_argument(result, "tool_id"):

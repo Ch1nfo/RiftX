@@ -234,6 +234,41 @@ async def test_same_value_update_has_no_event_or_clock_tick(tmp_path: Path) -> N
     await database.dispose()
 
 
+async def test_stable_finding_id_is_idempotent_and_rejects_content_drift(
+    tmp_path: Path,
+) -> None:
+    database, runs, findings, _, _ = await _repositories(tmp_path / "riftx.db")
+    events = RecordingEvents()
+    service = FindingApplicationService(
+        run_repository=runs,
+        finding_repository=findings,
+        event_repository=events,
+    )
+    command = CreateFinding(
+        finding_id="stable-finding-id",
+        title="Anonymous diagnostics disclosure",
+        severity=FindingSeverity.LOW,
+    )
+
+    created = await service.create_finding("run-1", command)
+    replayed = await service.create_finding("run-1", command)
+
+    assert replayed == created
+    assert [item[1] for item in events.items] == ["finding.created"]
+    with pytest.raises(ApplicationConflictError) as captured:
+        await service.create_finding(
+            "run-1",
+            CreateFinding(
+                finding_id=created.id,
+                title="Drifted title",
+                severity=FindingSeverity.LOW,
+            ),
+        )
+    assert captured.value.code == "finding_idempotency_conflict"
+    assert len(await findings.list("run-1")) == 2
+    await database.dispose()
+
+
 async def test_concurrent_confirmation_emits_and_promotes_exactly_once(
     tmp_path: Path,
 ) -> None:

@@ -64,6 +64,15 @@ class ArtifactEvidenceSource(Protocol):
         max_bytes: int,
     ) -> ArtifactContentSlice: ...
 
+    async def read_target_http_content_slice(
+        self,
+        artifact_id: str,
+        *,
+        expected_run_id: str,
+        offset: int,
+        max_bytes: int,
+    ) -> ArtifactContentSlice: ...
+
 
 class CodeEvidenceSource(Protocol):
     async def read_location(
@@ -150,12 +159,20 @@ class EvidenceApplicationService:
         scope = await self._scope(command, resolved_audit_id=command.audit_id)
         size = command.end_offset - command.start_offset
         if command.audit_id is None:
-            content = await self._artifacts.read_content_slice(
-                command.artifact_id,
-                expected_run_id=command.run_id,
-                offset=command.start_offset,
-                max_bytes=size,
-            )
+            try:
+                content = await self._artifacts.read_content_slice(
+                    command.artifact_id,
+                    expected_run_id=command.run_id,
+                    offset=command.start_offset,
+                    max_bytes=size,
+                )
+            except EntityNotFoundError:
+                content = await self._artifacts.read_target_http_content_slice(
+                    command.artifact_id,
+                    expected_run_id=command.run_id,
+                    offset=command.start_offset,
+                    max_bytes=size,
+                )
         else:
             content = await self._artifacts.read_audit_content_slice(
                 command.artifact_id,

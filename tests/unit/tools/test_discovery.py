@@ -198,6 +198,7 @@ async def test_task_planner_resident_schemas_are_strict_and_role_scoped(
         "propose_hypothesis",
         "record_attempt",
         "propose_finding",
+        "create_finding",
         "record_negative_result",
         "query_reasoning_graph",
     }
@@ -214,6 +215,15 @@ async def test_task_planner_resident_schemas_are_strict_and_role_scoped(
         "end_offset",
     ]
     assert "status" not in schemas["propose_finding"]["parameters"]["properties"]
+    create_finding = schemas["create_finding"]["parameters"]
+    assert create_finding["required"] == [
+        "reasoning_node_id",
+        "title",
+        "severity",
+        "evidence",
+    ]
+    assert "status" not in create_finding["properties"]
+    assert create_finding["properties"]["evidence"]["minItems"] == 1
 
 
 async def test_registered_only_hides_and_rejects_run_shell(tmp_path: Path) -> None:

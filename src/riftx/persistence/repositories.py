@@ -9,7 +9,7 @@ from json import JSONDecodeError
 from typing import Never
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from sqlalchemy import and_, case, func, or_, select, update
+from sqlalchemy import and_, case, exists, func, or_, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -232,6 +232,37 @@ class SQLAlchemyArtifactRepository:
 
     async def get_for_reconciliation(self, artifact_id: str) -> Artifact | None:
         statement = select(ArtifactRecord).where(ArtifactRecord.id == artifact_id)
+        try:
+            async with self._session_factory() as session:
+                record = await session.scalar(statement)
+        except JSONDecodeError:
+            raise RepositoryIntegrityError("Artifact", artifact_id) from None
+        except SQLAlchemyError:
+            raise RepositoryUnavailableError("Artifact persistence is unavailable") from None
+        return artifact_from_record(record) if record is not None else None
+
+    async def get_target_http_for_evidence(
+        self,
+        artifact_id: str,
+        run_id: str,
+    ) -> Artifact | None:
+        referenced = exists(
+            select(TargetHttpRequestRecord.id).where(
+                TargetHttpRequestRecord.run_id == run_id,
+                or_(
+                    TargetHttpRequestRecord.request_artifact_id == ArtifactRecord.id,
+                    TargetHttpRequestRecord.response_artifact_id == ArtifactRecord.id,
+                ),
+            )
+        )
+        statement = select(ArtifactRecord).where(
+            ArtifactRecord.id == artifact_id,
+            ArtifactRecord.run_id == run_id,
+            ArtifactRecord.access_class == ArtifactAccessClass.PUBLIC_EXPORT.value,
+            artifact_has_valid_owner(),
+            artifact_has_consistent_execution_owner(),
+            referenced,
+        )
         try:
             async with self._session_factory() as session:
                 record = await session.scalar(statement)

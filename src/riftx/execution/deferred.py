@@ -9,6 +9,7 @@ import shlex
 from collections.abc import Collection
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -783,15 +784,14 @@ class DeferredExecutionDispatcher:
             tool_id=tool_id,
             arguments=_arguments(event.data),
             command_preview=(
-                spec.command_text or shlex.join(spec.argv)
-                if spec is not None
-                else tool_id
+                spec.command_text or shlex.join(spec.argv) if spec is not None else tool_id
             ),
             reason=str(event.data.get("reason") or ""),
             target_summary=(
                 spec.target_summary
                 if spec is not None and spec.target_summary is not None
-                else _optional_string(event.data.get("target_summary"))
+                else _control_target_summary(tool_id, _arguments(event.data))
+                or _optional_string(event.data.get("target_summary"))
             ),
             approval_level=ApprovalLevel(
                 str(event.data.get("approval_level") or ApprovalLevel.SENSITIVE.value)
@@ -886,6 +886,24 @@ def _arguments(data: dict[str, object]) -> dict[str, object]:
 
 def _optional_string(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _control_target_summary(tool_id: str, arguments: dict[str, object]) -> str | None:
+    if tool_id != "target_http_request":
+        return None
+    url = arguments.get("url")
+    if not isinstance(url, str):
+        return None
+    try:
+        parsed = urlsplit(url)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"} or hostname is None:
+        return None
+    host = f"[{hostname}]" if ":" in hostname else hostname
+    return f"{parsed.scheme}://{host}{f':{port}' if port is not None else ''}"
 
 
 def _bounded_cwd(workspace_path: str, requested: object) -> Path:

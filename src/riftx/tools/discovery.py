@@ -91,6 +91,7 @@ RESIDENT_TOOL_IDS: Final[tuple[str, ...]] = (
     "propose_hypothesis",
     "record_attempt",
     "propose_finding",
+    "create_finding",
     "record_negative_result",
     "query_reasoning_graph",
     "delegate",
@@ -1084,6 +1085,9 @@ def _resident_schema(
         "propose_finding": (
             "Propose an Evidence-backed Vulnerability Candidate for later validation."
         ),
+        "create_finding": (
+            "Project one validated Vulnerability Candidate into an idempotent Draft Finding."
+        ),
         "record_negative_result": (
             "Record an Evidence-backed Negative Result that invalidates a Reasoning claim."
         ),
@@ -1946,6 +1950,49 @@ def _resident_schema(
                 "maxLength": 64,
             }
             required.append("invalidated_node_id")
+    elif tool_id == "create_finding":
+        evidence_item = {
+            "type": "object",
+            "properties": {
+                "artifact_id": {"type": "string", "minLength": 1, "maxLength": 64},
+                "execution_id": {"type": "string", "minLength": 1, "maxLength": 64},
+                "description": {"type": "string", "maxLength": 20_000},
+                "location": {"type": "string", "minLength": 1, "maxLength": 8_192},
+            },
+            "additionalProperties": False,
+            "anyOf": [
+                {"required": ["artifact_id"]},
+                {"required": ["execution_id"]},
+            ],
+        }
+        properties = {
+            "reasoning_node_id": {"type": "string", "minLength": 1, "maxLength": 64},
+            "title": {"type": "string", "minLength": 1, "maxLength": 500},
+            "severity": {
+                "type": "string",
+                "enum": ["info", "low", "medium", "high", "critical"],
+            },
+            "affected_assets": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1, "maxLength": 8_192},
+                "maxItems": 100,
+            },
+            "description": {"type": "string", "maxLength": 20_000},
+            "evidence": {
+                "type": "array",
+                "items": evidence_item,
+                "minItems": 1,
+                "maxItems": 100,
+            },
+            "reproduction_steps": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1, "maxLength": 8_192},
+                "maxItems": 100,
+            },
+            "impact": {"type": "string", "maxLength": 20_000},
+            "recommendation": {"type": "string", "maxLength": 20_000},
+        }
+        required = ["reasoning_node_id", "title", "severity", "evidence"]
     elif tool_id == "query_reasoning_graph":
         properties = {
             "node_ids": {

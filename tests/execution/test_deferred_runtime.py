@@ -522,6 +522,37 @@ async def test_provider_control_intent_requires_approval_and_settles_once(
     assert settled is not None and settled.status is ToolCallStatus.COMPLETED
 
 
+async def test_target_http_control_intent_uses_server_owned_redacted_target_summary(
+    durable_dispatcher: DurableDispatcherFixture,
+) -> None:
+    fixture = durable_dispatcher
+    intent = await fixture.dispatcher.prepare_control(
+        session=fixture.session,
+        cycle=fixture.cycles["cycle-1"],
+        step=fixture.steps["cycle-1"],
+        event=AgentEngineEvent(
+            sequence=1,
+            event_type=AgentEngineEventType.TOOL_CALL_READY,
+            data={
+                "call_id": "target-http-call",
+                "tool_id": "target_http_request",
+                "arguments": {
+                    "method": "GET",
+                    "url": "https://user:secret@example.test:8443/private?token=value",
+                },
+                "target_summary": "model-owned-summary",
+                "approval_level": ApprovalLevel.ALWAYS.value,
+                "approval_policy": "explicit",
+                "approval_required": True,
+            },
+        ),
+    )
+
+    assert intent.target_summary == "https://example.test:8443"
+    assert "secret" not in intent.target_summary
+    assert "private" not in intent.target_summary
+
+
 async def test_provider_control_intent_can_persist_a_deterministic_execution_claim(
     durable_dispatcher: DurableDispatcherFixture,
 ) -> None:

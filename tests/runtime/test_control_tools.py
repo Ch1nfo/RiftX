@@ -13,6 +13,7 @@ from tests.integration.persistence.test_capability_repository import version
 
 from riftx.application.errors import ApplicationConflictError, PentestBudgetExceededError
 from riftx.application.services import (
+    CreateFinding,
     QueryReasoningGraph,
     ReasoningGraphQueryResult,
     RegisterArtifactSpanEvidence,
@@ -56,6 +57,7 @@ from riftx.domain import (
     BrowserSessionStatus,
     Execution,
     ExecutorType,
+    Finding,
     FormFieldSummary,
     FormSummary,
     InteractiveElement,
@@ -259,6 +261,28 @@ class FakeReasoningProposals:
             offset=command.offset,
             nodes=tuple(graph.nodes) if graph is not None else (),
             edges=tuple(graph.edges) if graph is not None else (),
+        )
+
+
+class FakeFindings:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, CreateFinding]] = []
+
+    async def create_finding(self, run_id: str, command: CreateFinding) -> Finding:
+        self.calls.append((run_id, command))
+        assert command.finding_id is not None
+        return Finding(
+            id=command.finding_id,
+            run_id=run_id,
+            title=command.title,
+            severity=command.severity,
+            status=command.status,
+            affected_assets=command.affected_assets or [],
+            description=command.description,
+            evidence=command.evidence or [],
+            reproduction_steps=command.reproduction_steps or [],
+            impact=command.impact,
+            recommendation=command.recommendation,
         )
 
 
@@ -757,6 +781,15 @@ class FakeTargetArtifacts(FakeArtifacts):
             return SimpleNamespace(run_id="run-1")
         return await super().get(artifact_id)
 
+    async def get_target_http_for_evidence(
+        self,
+        artifact_id: str,
+        *,
+        expected_run_id: str,
+    ) -> object:
+        del expected_run_id
+        return await self.get(artifact_id)
+
 
 class ForeignTargetArtifacts(FakeTargetArtifacts):
     async def get(self, artifact_id: str) -> object:
@@ -1092,6 +1125,7 @@ def service(
     working_memory_proposals: FakeWorkingMemoryProposals | None = None,
     reasoning_proposals: FakeReasoningProposals | None = None,
     evidence: FakeEvidenceRegistration | None = None,
+    findings: FakeFindings | None = None,
     budget_exhaustion_handler: object | None = None,
     worker_id: str = "runtime",
 ) -> tuple[RuntimeControlToolService, FakeEvents, FakeTranscript, FakeExecutions]:
@@ -1103,6 +1137,7 @@ def service(
         executions=execution_service,  # type: ignore[arg-type]
         artifacts=artifacts or FakeArtifacts(),  # type: ignore[arg-type]
         evidence=evidence,  # type: ignore[arg-type]
+        findings=findings,  # type: ignore[arg-type]
         events=events,
         transcript=transcript,  # type: ignore[arg-type]
         skills=skills,
@@ -1301,6 +1336,120 @@ async def test_primary_cognitive_tools_inject_scope_and_fixed_candidate_states()
     assert all(node.run_id == "run-1" for node in reasoning.graph.nodes)
     assert all(node.session_id == "session-1" for node in reasoning.graph.nodes)
     assert all(node.created_by == "primary" for node in reasoning.graph.nodes)
+
+
+async def test_primary_projects_candidate_to_stable_draft_finding() -> None:
+    reasoning = FakeReasoningProposals()
+    findings = FakeFindings()
+    control, _, transcript, _ = service(
+        reasoning_proposals=reasoning,
+        findings=findings,
+        runs=FakeRuns(),
+    )
+    candidate = await control(
+        SCOPE,
+        "propose_finding",
+        {
+            "expected_graph_version": 0,
+            "node_id": "candidate-1",
+            "claim": "Anonymous diagnostics disclose deployment metadata",
+            "evidence_ids": ["evidence-1"],
+        },
+        "candidate-call",
+    )
+    arguments = {
+        "reasoning_node_id": candidate["node"]["id"],
+        "title": "Anonymous diagnostics disclosure",
+        "severity": "low",
+        "affected_assets": ["http://127.0.0.1/diagnostics"],
+        "description": "The endpoint returns deployment metadata without authentication.",
+        "evidence": [
+            {
+                "artifact_id": "response-artifact-1",
+                "description": "HTTP 200 response",
+                "location": "http://127.0.0.1/diagnostics",
+            }
+        ],
+        "reproduction_steps": ["GET /diagnostics without credentials"],
+        "impact": "Exposes deployment metadata.",
+        "recommendation": "Require authentication or remove the endpoint.",
+    }
+
+    created = await control(SCOPE, "create_finding", arguments, "finding-call")
+    replayed = await control(SCOPE, "create_finding", arguments, "finding-call")
+
+    assert replayed["id"] == created["id"]
+    assert created["status"] == "draft"
+    assert [command.finding_id for _, command in findings.calls] == [
+        created["id"],
+        created["id"],
+    ]
+    projected = findings.calls[0][1]
+    assert projected.status.value == "draft"
+    assert projected.evidence is not None
+    assert projected.evidence[-1].location == "reasoning://candidate-1"
+    assert transcript.rows[-1][1].structured_content["source_refs"] == [
+        f"finding://{created['id']}",
+        "reasoning://candidate-1",
+        "artifact://response-artifact-1",
+    ]
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        await control(
+            SCOPE,
+            "create_finding",
+            {**arguments, "status": "confirmed"},
+            "forged-confirmed-finding",
+        )
+    with pytest.raises(ValidationError, match="must reference an Artifact or Execution"):
+        await control(
+            SCOPE,
+            "create_finding",
+            {**arguments, "evidence": [{"description": "unsupported"}]},
+            "unsupported-finding-evidence",
+        )
+    assert len(findings.calls) == 2
+
+
+async def test_create_finding_rejects_non_candidate_and_subagent() -> None:
+    reasoning = FakeReasoningProposals()
+    findings = FakeFindings()
+    control, _, _, _ = service(
+        reasoning_proposals=reasoning,
+        findings=findings,
+        runs=FakeRuns(),
+    )
+    await control(
+        SCOPE,
+        "record_observation",
+        {
+            "expected_graph_version": 0,
+            "node_id": "observation-1",
+            "claim": "HTTP endpoint responded",
+            "evidence_ids": ["evidence-1"],
+        },
+        "observation-call",
+    )
+    arguments = {
+        "reasoning_node_id": "observation-1",
+        "title": "Invalid projection",
+        "severity": "low",
+        "evidence": [{"artifact_id": "response-artifact-1"}],
+    }
+
+    with pytest.raises(ApplicationConflictError) as captured:
+        await control(SCOPE, "create_finding", arguments, "finding-call")
+    assert captured.value.code == "finding_candidate_not_projectable"
+
+    subagent_scope = RuntimeToolScope(
+        run_id="run-1",
+        session_id="session-subagent",
+        agent_id="subagent",
+        model_profile="test-profile",
+    )
+    with pytest.raises(ApplicationConflictError) as captured:
+        await control(subagent_scope, "create_finding", arguments, "subagent-call")
+    assert captured.value.code == "cognitive_tools_primary_required"
+    assert findings.calls == []
 
 
 async def test_primary_registers_artifact_evidence_for_reasoning() -> None:
@@ -1596,14 +1745,7 @@ async def test_approved_patch_and_revert_are_receipt_bound_and_transcripted() ->
     code = FakeCode()
     tracker = FakeControlIntents()
     control, _, transcript, _ = service(code=code, control_intents=tracker)
-    patch = (
-        "*** Begin Patch\n"
-        "*** Update File: src/app.py\n"
-        "@@\n"
-        "-old\n"
-        "+new\n"
-        "*** End Patch"
-    )
+    patch = "*** Begin Patch\n*** Update File: src/app.py\n@@\n-old\n+new\n*** End Patch"
 
     applied = await control(
         SCOPE,
