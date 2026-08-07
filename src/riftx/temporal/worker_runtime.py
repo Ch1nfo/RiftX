@@ -123,6 +123,7 @@ from riftx.persistence import (
     SQLAlchemyExecutionRepository,
     SQLAlchemyFindingRepository,
     SQLAlchemyNodeRepository,
+    SQLAlchemyPentestStatusReader,
     SQLAlchemyProviderStateRepository,
     SQLAlchemyReasoningGraphRepository,
     SQLAlchemyReportRepository,
@@ -1156,8 +1157,16 @@ async def build_temporal_worker(
         )
         report_service = ReportApplicationService(
             run_repository=run_repository,
+            engagement_repository=engagement_repository,
+            execution_repository=execution_repository,
             finding_repository=finding_repository,
             artifact_repository=artifact_repository,
+            evidence_repository=evidence_ledger_repository,
+            reasoning_graph_repository=reasoning_graph_repository,
+            task_graph_repository=task_graph_repository,
+            pentest_status_reader=SQLAlchemyPentestStatusReader(
+                database.session_factory
+            ),
             report_repository=report_repository,
             event_repository=event_repository,
             artifact_service=artifact_service,

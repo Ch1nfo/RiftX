@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import html
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
+from urllib.parse import urlsplit
 
 from pydantic import AwareDatetime, BaseModel, Field
 
@@ -21,21 +23,38 @@ from riftx.application.event_projection import (
 )
 from riftx.application.ports import (
     ArtifactRepository,
+    EngagementRepository,
+    ExecutionRepository,
     FindingRepository,
+    PentestStatusReader,
     ReportRepository,
     RunEventRepository,
     RunRepository,
 )
 from riftx.domain import (
     ArtifactContentTrust,
+    Engagement,
+    EntryPoint,
+    EntryPointKind,
+    Execution,
     Finding,
     Report,
     ReportFormat,
     Run,
     RunEvent,
+    RunKind,
     RunStatus,
 )
 from riftx.domain.base import utc_now
+from riftx.evidence import (
+    ArtifactSpanLocator,
+    CodeLocationLocator,
+    Evidence,
+    EvidenceLedgerRepository,
+)
+from riftx.reasoning import ReasoningGraphRepository, ReasoningNode
+from riftx.target_http.redaction import safe_url_metadata
+from riftx.tasks import Task, TaskGraphRepository
 
 from .artifacts import ArtifactApplicationService, RegisterArtifactContent
 from .closure import CLOSURE_EVALUATED_EVENT_TYPE, ClosureOutcome
@@ -46,6 +65,12 @@ _MAX_TEXT_LENGTH = 10_000
 _REPORT_EVENT_FIELDS: Mapping[str, frozenset[str]] = {
     "run.created": frozenset({"status"}),
     "run.status_changed": frozenset({"from", "to", "status"}),
+    "run.pause_requested": frozenset(
+        {"workflow_synced", "failed_resource_types", "pause_fence_acquired"}
+    ),
+    "run.resume_requested": frozenset(),
+    "run.cleanup_reconciled": frozenset({"workflow_synced", "failed_resource_types"}),
+    "pentest.budget_exhausted": frozenset({"budget_name", "limit", "used", "reason"}),
     "agent.plan_updated": frozenset({"agent_step_id", "plan_summary"}),
     "agent.completion_requested": frozenset({"agent_step_id", "run_summary"}),
     "agent.cycle_completed": frozenset(
@@ -140,8 +165,130 @@ class ReportEventSummary(BaseModel):
     created_at: AwareDatetime
 
 
+class ReportEngagement(BaseModel):
+    id: str
+    name: str = ""
+    description: str = ""
+    authorization_reference_present: bool = False
+    authorization_reference_scheme: str | None = None
+
+
+class ReportPentestAdmission(BaseModel):
+    approval_mode: str
+    model_profile: str | None = None
+    entry_points: list[dict[str, object]] = Field(default_factory=list)
+    prohibited_actions: list[str] = Field(default_factory=list)
+    stop_conditions: list[str] = Field(default_factory=list)
+
+
+class ReportCapabilitySelection(BaseModel):
+    kind: str
+    capability_id: str
+    version: str
+    digest: str
+    source: str
+    active: bool
+
+
+class ReportPackLock(BaseModel):
+    lock_id: str
+    capability_id: str
+    capability_version_id: str
+    capability_version: str
+    capability_digest: str
+    active: bool
+
+
+class ReportPentestBudget(BaseModel):
+    limits: dict[str, int]
+    elapsed_seconds: int
+    model_calls: int
+    tool_calls: int
+    input_tokens: int
+    output_tokens: int
+    token_usage_complete: bool
+    observed_target_interactions: int
+    active_target_interactions: int
+
+
+class ReportStopStatus(BaseModel):
+    latest_event_type: str | None = None
+    confirmed: bool
+    workflow_synced: bool | None = None
+    failed_resource_types: list[str] = Field(default_factory=list)
+
+
+class ReportExecutionSummary(BaseModel):
+    id: str
+    session_id: str | None = None
+    tool_call_id: str | None = None
+    tool_id: str | None = None
+    tool_version: str | None = None
+    node_id: str
+    status: str
+    exit_code: int | None = None
+    physical_stop_confirmed: bool
+    created_at: AwareDatetime | None = None
+    started_at: AwareDatetime | None = None
+    finished_at: AwareDatetime | None = None
+
+
+class ReportLedgerEvidence(BaseModel):
+    id: str
+    kind: str
+    digest: str
+    ledger_digest: str
+    artifact_id: str | None = None
+    task_id: str | None = None
+    trust_class: str
+    redaction_status: str
+    replay_strategy: str
+    replayable: bool
+    locator: dict[str, object]
+
+
+class ReportReasoningNode(BaseModel):
+    id: str
+    kind: str
+    status: str
+    claim: str
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class ReportReasoningEdge(BaseModel):
+    source_node_id: str
+    target_node_id: str
+    relation_type: str
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class ReportTaskSummary(BaseModel):
+    id: str
+    sequence: int
+    title: str
+    status: str
+    completion_summary: str | None = None
+    blocked_reason: str | None = None
+    stop_condition: str | None = None
+
+
+class ReportPentestSource(BaseModel):
+    admission: ReportPentestAdmission
+    capabilities: list[ReportCapabilitySelection] = Field(default_factory=list)
+    capability_allowlists: dict[str, list[str]] = Field(default_factory=dict)
+    pack_locks: list[ReportPackLock] = Field(default_factory=list)
+    budget: ReportPentestBudget
+    stop: ReportStopStatus
+    executions: list[ReportExecutionSummary] = Field(default_factory=list)
+    evidence: list[ReportLedgerEvidence] = Field(default_factory=list)
+    reasoning_nodes: list[ReportReasoningNode] = Field(default_factory=list)
+    reasoning_edges: list[ReportReasoningEdge] = Field(default_factory=list)
+    tasks: list[ReportTaskSummary] = Field(default_factory=list)
+
+
 class ReportSource(BaseModel):
     run_id: str
+    engagement: ReportEngagement | None = None
     objective: str
     scope: dict[str, object]
     success_criteria: list[dict[str, object]] = Field(default_factory=list)
@@ -154,11 +301,12 @@ class ReportSource(BaseModel):
     findings: list[ReportFinding] = Field(default_factory=list)
     artifacts: list[ReportArtifactSummary] = Field(default_factory=list)
     key_events: list[ReportEventSummary] = Field(default_factory=list)
+    pentest: ReportPentestSource | None = None
     generated_at: AwareDatetime = Field(default_factory=utc_now)
 
 
 class StructuredReport(BaseModel):
-    schema_version: str = "riftx.report.v1"
+    schema_version: str = "riftx.report.v2"
     title: str
     executive_summary: str
     source: ReportSource
@@ -213,6 +361,12 @@ class ReportApplicationService:
         report_repository: ReportRepository,
         event_repository: RunEventRepository,
         artifact_service: ArtifactApplicationService,
+        engagement_repository: EngagementRepository | None = None,
+        execution_repository: ExecutionRepository | None = None,
+        evidence_repository: EvidenceLedgerRepository | None = None,
+        reasoning_graph_repository: ReasoningGraphRepository | None = None,
+        task_graph_repository: TaskGraphRepository | None = None,
+        pentest_status_reader: PentestStatusReader | None = None,
         composer: ReportComposer | None = None,
     ) -> None:
         self._run_repository = run_repository
@@ -221,6 +375,12 @@ class ReportApplicationService:
         self._report_repository = report_repository
         self._event_repository = event_repository
         self._artifact_service = artifact_service
+        self._engagement_repository = engagement_repository
+        self._execution_repository = execution_repository
+        self._evidence_repository = evidence_repository
+        self._reasoning_graph_repository = reasoning_graph_repository
+        self._task_graph_repository = task_graph_repository
+        self._pentest_status_reader = pentest_status_reader
         self._composer = composer or DeterministicReportComposer()
 
     async def generate(self, run_id: str, command: GenerateReports | None = None) -> list[Report]:
@@ -327,6 +487,8 @@ class ReportApplicationService:
         restricted_artifact_ids = await self._artifact_repository.restricted_artifact_ids(
             target_http_artifact_candidates(raw_events)
         )
+        protected_artifact_ids = sensitive_artifact_ids | restricted_artifact_ids
+        artifacts = [item for item in artifacts if item.id not in protected_artifact_ids]
         events = [
             redact_sensitive_event(
                 event,
@@ -335,14 +497,23 @@ class ReportApplicationService:
             )
             for event in raw_events
         ]
-        artifact_ids = {item.id for item in all_artifacts}
+        artifact_ids = {item.id for item in all_artifacts if item.id not in protected_artifact_ids}
         report_findings = [
             _finding_for_report(item, artifact_ids=artifact_ids) for item in findings
         ]
         summary = _run_summary(events)
         closure_outcome, closure_reason_codes = _closure_summary(events)
+        engagement = (
+            await self._engagement_repository.get(target.engagement_id)
+            if self._engagement_repository is not None
+            else None
+        )
+        pentest = (
+            await self._build_pentest_source(target) if target.kind is RunKind.PENTEST else None
+        )
         return ReportSource(
             run_id=target.id,
+            engagement=_engagement_for_report(target, engagement),
             objective=_truncate(target.objective.description, _MAX_TEXT_LENGTH),
             scope=target.scope.model_dump(mode="json"),
             success_criteria=[item.model_dump(mode="json") for item in target.success_criteria],
@@ -374,6 +545,121 @@ class ReportApplicationService:
                 for event in events
                 if event.event_type in _REPORT_EVENT_FIELDS
             ],
+            pentest=pentest,
+        )
+
+    async def _build_pentest_source(self, run: Run) -> ReportPentestSource:
+        if run.pentest_admission is None:
+            raise ApplicationConflictError(
+                "pentest_report_admission_missing",
+                "Pentest report generation requires the durable admission contract",
+            )
+        if any(
+            dependency is None
+            for dependency in (
+                self._execution_repository,
+                self._evidence_repository,
+                self._reasoning_graph_repository,
+                self._task_graph_repository,
+                self._pentest_status_reader,
+            )
+        ):
+            raise ApplicationConflictError(
+                "pentest_report_projection_unavailable",
+                "Pentest report generation requires the durable professional fact readers",
+            )
+        assert self._execution_repository is not None
+        assert self._evidence_repository is not None
+        assert self._reasoning_graph_repository is not None
+        assert self._task_graph_repository is not None
+        assert self._pentest_status_reader is not None
+
+        snapshot = await self._pentest_status_reader.read(run.id, f"{run.id}:primary")
+        executions = await self._all_executions(run.id)
+        evidence = await self._all_evidence(run.id)
+        reasoning_graph = await self._reasoning_graph_repository.get(run.id)
+        task_graph = await self._task_graph_repository.get(run.id)
+        start = run.started_at or run.created_at
+        end = run.finished_at or utc_now()
+        usage = snapshot.usage
+        stop = snapshot.stop
+        return ReportPentestSource(
+            admission=ReportPentestAdmission(
+                approval_mode=run.approval_mode.value,
+                model_profile=run.model_profile,
+                entry_points=[_entry_point_for_report(item) for item in run.entry_points],
+                prohibited_actions=[
+                    item.value for item in run.pentest_admission.prohibited_actions
+                ],
+                stop_conditions=[item.value for item in run.pentest_admission.stop_conditions],
+            ),
+            capabilities=[
+                ReportCapabilitySelection(
+                    kind=item.kind.value,
+                    capability_id=item.capability_id,
+                    version=item.version,
+                    digest=item.capability_digest,
+                    source=item.source.value,
+                    active=item.active,
+                )
+                for item in snapshot.selections
+            ],
+            capability_allowlists={
+                item.kind.value: list(item.capability_ids) for item in snapshot.allowlists
+            },
+            pack_locks=[
+                ReportPackLock(
+                    lock_id=item.lock_id,
+                    capability_id=item.capability_id,
+                    capability_version_id=item.capability_version_id,
+                    capability_version=item.capability_version,
+                    capability_digest=item.capability_digest,
+                    active=item.active,
+                )
+                for item in snapshot.pack_locks
+            ],
+            budget=ReportPentestBudget(
+                limits=run.pentest_admission.budget.model_dump(mode="json"),
+                elapsed_seconds=max(0, int((end - start).total_seconds())),
+                model_calls=usage.model_calls,
+                tool_calls=usage.tool_calls,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                token_usage_complete=usage.token_usage_complete,
+                observed_target_interactions=usage.observed_target_interactions,
+                active_target_interactions=usage.active_target_interactions,
+            ),
+            stop=ReportStopStatus(
+                latest_event_type=stop.latest_event_type,
+                confirmed=stop.confirmed,
+                workflow_synced=stop.workflow_synced,
+                failed_resource_types=list(stop.failed_resource_types),
+            ),
+            executions=[_execution_for_report(item) for item in executions],
+            evidence=[_ledger_evidence_for_report(item) for item in evidence],
+            reasoning_nodes=(
+                [_reasoning_node_for_report(item) for item in reasoning_graph.nodes]
+                if reasoning_graph is not None
+                else []
+            ),
+            reasoning_edges=(
+                [
+                    ReportReasoningEdge(
+                        source_node_id=item.source_node_id,
+                        target_node_id=item.target_node_id,
+                        relation_type=item.relation_type.value,
+                        evidence_ids=list(item.evidence_ids),
+                    )
+                    for item in reasoning_graph.edges
+                ]
+                if reasoning_graph is not None
+                else []
+            ),
+            tasks=(
+                [_task_for_report(item) for item in task_graph.tasks]
+                if task_graph is not None
+                else []
+            ),
         )
 
     async def _require_run(self, run_id: str) -> Run:
@@ -400,12 +686,165 @@ class ReportApplicationService:
             if len(page) < 1000:
                 return events
 
+    async def _all_executions(self, run_id: str) -> Sequence[Execution]:
+        assert self._execution_repository is not None
+        executions: list[Execution] = []
+        offset = 0
+        while True:
+            page = list(
+                await self._execution_repository.list(
+                    run_id,
+                    limit=1000,
+                    offset=offset,
+                )
+            )
+            executions.extend(page)
+            if len(page) < 1000:
+                return executions
+            offset += len(page)
+
+    async def _all_evidence(self, run_id: str) -> Sequence[Evidence]:
+        assert self._evidence_repository is not None
+        evidence: list[Evidence] = []
+        offset = 0
+        while True:
+            page = list(
+                await self._evidence_repository.list(
+                    run_id,
+                    limit=1000,
+                    offset=offset,
+                )
+            )
+            evidence.extend(page)
+            if len(page) < 1000:
+                return evidence
+            offset += len(page)
+
     async def _latest_by_format(self, run_id: str) -> dict[ReportFormat, Report]:
         reports = await self._report_repository.list(run_id, limit=1000)
         latest: dict[ReportFormat, Report] = {}
         for report in reports:
             latest[report.format] = report
         return latest
+
+
+def _engagement_for_report(run: Run, engagement: Engagement | None) -> ReportEngagement:
+    if engagement is None:
+        return ReportEngagement(id=run.engagement_id)
+    authorization_scheme = (
+        urlsplit(engagement.authorization_reference).scheme.lower()
+        if engagement.authorization_reference
+        else None
+    )
+    return ReportEngagement(
+        id=engagement.id,
+        name=_truncate(engagement.name, _MAX_SUMMARY_LENGTH),
+        description=_truncate(engagement.description, _MAX_TEXT_LENGTH),
+        authorization_reference_present=engagement.authorization_reference is not None,
+        authorization_reference_scheme=authorization_scheme or None,
+    )
+
+
+def _entry_point_for_report(entry_point: EntryPoint) -> dict[str, object]:
+    if entry_point.kind is EntryPointKind.URL:
+        metadata = safe_url_metadata(entry_point.value)
+        return {
+            "kind": entry_point.kind.value,
+            "url": metadata if metadata is not None else {"redacted": True},
+        }
+    return {
+        "kind": entry_point.kind.value,
+        "value": _truncate(entry_point.value, _MAX_SUMMARY_LENGTH),
+    }
+
+
+def _execution_for_report(execution: Execution) -> ReportExecutionSummary:
+    return ReportExecutionSummary(
+        id=execution.id,
+        session_id=execution.session_id,
+        tool_call_id=execution.tool_call_id,
+        tool_id=execution.tool_id,
+        tool_version=execution.tool_version,
+        node_id=execution.node_id,
+        status=execution.status.value,
+        exit_code=execution.exit_code,
+        physical_stop_confirmed=execution.physical_stop_confirmed_at is not None,
+        created_at=execution.created_at,
+        started_at=execution.started_at,
+        finished_at=execution.finished_at,
+    )
+
+
+def _ledger_evidence_for_report(evidence: Evidence) -> ReportLedgerEvidence:
+    locator: dict[str, object]
+    if isinstance(evidence.locator, ArtifactSpanLocator):
+        locator = {
+            "locator_type": evidence.locator.locator_type,
+            "artifact_id": evidence.locator.artifact_id,
+            "start_offset": evidence.locator.start_offset,
+            "end_offset": evidence.locator.end_offset,
+            "artifact_sha256": evidence.locator.artifact_sha256,
+        }
+    elif isinstance(evidence.locator, CodeLocationLocator):
+        locator = {
+            "locator_type": evidence.locator.locator_type,
+            "source": evidence.locator.source.value,
+            "path": evidence.locator.path,
+            "start_line": evidence.locator.start_line,
+            "start_column": evidence.locator.start_column,
+            "end_line": evidence.locator.end_line,
+            "end_column": evidence.locator.end_column,
+            "source_digest": evidence.locator.source_digest,
+        }
+    else:
+        locator = {
+            "locator_type": evidence.locator.locator_type,
+            "scheme": urlsplit(evidence.source_uri).scheme,
+            "source_uri_digest": hashlib.sha256(evidence.source_uri.encode("utf-8")).hexdigest(),
+        }
+    return ReportLedgerEvidence(
+        id=evidence.id,
+        kind=evidence.kind.value,
+        digest=evidence.digest,
+        ledger_digest=evidence.ledger_digest,
+        artifact_id=evidence.artifact_id,
+        task_id=evidence.task_id,
+        trust_class=evidence.trust_class.value,
+        redaction_status=evidence.redaction_status.value,
+        replay_strategy=evidence.replay.strategy.value,
+        replayable=evidence.replay.replayable,
+        locator=locator,
+    )
+
+
+def _reasoning_node_for_report(node: ReasoningNode) -> ReportReasoningNode:
+    return ReportReasoningNode(
+        id=node.id,
+        kind=node.kind.value,
+        status=node.status.value,
+        claim=_truncate(node.claim, _MAX_TEXT_LENGTH),
+        evidence_ids=list(node.evidence_ids),
+    )
+
+
+def _task_for_report(task: Task) -> ReportTaskSummary:
+    return ReportTaskSummary(
+        id=task.id,
+        sequence=task.sequence,
+        title=_truncate(task.title, _MAX_SUMMARY_LENGTH),
+        status=task.status.value,
+        completion_summary=(
+            _truncate(task.completion_summary, _MAX_TEXT_LENGTH)
+            if task.completion_summary
+            else None
+        ),
+        blocked_reason=(
+            _truncate(task.blocked_reason, _MAX_TEXT_LENGTH) if task.blocked_reason else None
+        ),
+        stop_condition=(
+            _truncate(task.stop_condition, _MAX_TEXT_LENGTH) if task.stop_condition else None
+        ),
+    )
 
 
 def render_report(report: StructuredReport, report_format: ReportFormat) -> tuple[str, str, str]:

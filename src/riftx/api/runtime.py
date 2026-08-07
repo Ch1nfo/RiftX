@@ -92,18 +92,22 @@ from riftx.persistence import (
     SQLAlchemyAuditPreflightRepository,
     SQLAlchemyCapabilityRepository,
     SQLAlchemyEngagementRepository,
+    SQLAlchemyEvidenceLedgerRepository,
     SQLAlchemyExecutionRepository,
     SQLAlchemyFindingRepository,
     SQLAlchemyGraphReadRepository,
     SQLAlchemyLocalAuditJobRepository,
     SQLAlchemyNodeRepository,
     SQLAlchemyPentestCreationUnitOfWork,
+    SQLAlchemyPentestStatusReader,
+    SQLAlchemyReasoningGraphRepository,
     SQLAlchemyReportRepository,
     SQLAlchemyRunEventRepository,
     SQLAlchemyRunnerCommandRepository,
     SQLAlchemyRunnerCredentialRepository,
     SQLAlchemyRunRepository,
     SQLAlchemyRuntimeApprovalRepository,
+    SQLAlchemyTaskGraphRepository,
     SQLAlchemyTerminalRepository,
     SQLAlchemyToolCallIntentRepository,
     SQLAlchemyTrafficMetadataReadRepository,
@@ -788,6 +792,14 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
     node_repository = SQLAlchemyNodeRepository(database.session_factory)
     artifact_repository = SQLAlchemyArtifactRepository(database.session_factory)
     report_repository = SQLAlchemyReportRepository(database.session_factory)
+    evidence_ledger_repository = SQLAlchemyEvidenceLedgerRepository(
+        database.session_factory
+    )
+    reasoning_graph_repository = SQLAlchemyReasoningGraphRepository(
+        database.session_factory
+    )
+    task_graph_repository = SQLAlchemyTaskGraphRepository(database.session_factory)
+    pentest_status_reader = SQLAlchemyPentestStatusReader(database.session_factory)
     approval_repository = SQLAlchemyApprovalRepository(database.session_factory)
     runtime_approval_repository = SQLAlchemyRuntimeApprovalRepository(database.session_factory)
     execution_repository = SQLAlchemyExecutionRepository(database.session_factory)
@@ -1089,8 +1101,14 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         ),
         report_service=ReportApplicationService(
             run_repository=run_repository,
+            engagement_repository=engagement_repository,
+            execution_repository=execution_repository,
             finding_repository=finding_repository,
             artifact_repository=artifact_repository,
+            evidence_repository=evidence_ledger_repository,
+            reasoning_graph_repository=reasoning_graph_repository,
+            task_graph_repository=task_graph_repository,
+            pentest_status_reader=pentest_status_reader,
             report_repository=report_repository,
             event_repository=event_repository,
             artifact_service=artifact_service,

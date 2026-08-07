@@ -57,6 +57,7 @@ from riftx.application.services import (
     EvidenceApplicationService,
     ExecutionApplicationService,
     FindingApplicationService,
+    GenerateReports,
     ModelProfileApplicationService,
     NodeApplicationService,
     NodeRegistration,
@@ -74,6 +75,8 @@ from riftx.application.services import (
     WorkflowSignalObservation,
     WorkflowSignalObservationState,
     WorkflowSignalReconciler,
+    closure_event_id,
+    closure_event_payload,
 )
 from riftx.application.traffic import TrafficExchangeDetail, TrafficExchangePage
 from riftx.application.workflow_router import RunWorkflowControlRouter
@@ -99,6 +102,7 @@ from riftx.domain import (
     Finding,
     FindingSeverity,
     Objective,
+    ReportFormat,
     Run,
     RunKind,
     RunnerCommandKind,
@@ -159,6 +163,7 @@ from riftx.persistence import (
     SQLAlchemyGraphReadRepository,
     SQLAlchemyNodeRepository,
     SQLAlchemyPentestCreationUnitOfWork,
+    SQLAlchemyPentestStatusReader,
     SQLAlchemyReasoningGraphRepository,
     SQLAlchemyReportRepository,
     SQLAlchemyRunEventRepository,
@@ -973,8 +978,22 @@ tools:
             ),
             report_service=ReportApplicationService(
                 run_repository=run_repository,
+                engagement_repository=engagement_repository,
+                execution_repository=execution_repository,
                 finding_repository=finding_repository,
                 artifact_repository=artifact_repository,
+                evidence_repository=SQLAlchemyEvidenceLedgerRepository(
+                    database.session_factory
+                ),
+                reasoning_graph_repository=SQLAlchemyReasoningGraphRepository(
+                    database.session_factory
+                ),
+                task_graph_repository=SQLAlchemyTaskGraphRepository(
+                    database.session_factory
+                ),
+                pentest_status_reader=SQLAlchemyPentestStatusReader(
+                    database.session_factory
+                ),
                 report_repository=report_repository,
                 event_repository=event_repository,
                 artifact_service=artifact_service,
@@ -1828,6 +1847,8 @@ async def test_service_enumeration_reaches_finding_and_precise_negative_result(
     missing_artifact_id = ""
     missing_evidence_id = ""
     finding_id = ""
+    json_report_id = ""
+    json_report_artifact_id = ""
     try:
         registry = ToolRegistry(tools_path, node_id="local")
         await registry.refresh()
@@ -2441,8 +2462,131 @@ async def test_service_enumeration_reaches_finding_and_precise_negative_result(
             None,
         ]
         assert findings[0].evidence[-1].location == ("reasoning://diagnostics-disclosure-candidate")
+
+        current = await restarted.run_repository.get(run_id)
+        assert current is not None
+        if current.status is RunStatus.PAUSED:
+            await restarted.run_repository.update_status(run_id, RunStatus.RUNNING)
+        await restarted.run_repository.update_status(run_id, RunStatus.COMPLETING)
+        closure_verifier = ClosureVerifierApplicationService(
+            runs=restarted.run_repository,
+            task_graphs=SQLAlchemyTaskGraphRepository(
+                restarted.control_plane.database.session_factory
+            ),
+            reasoning_graphs=SQLAlchemyReasoningGraphRepository(
+                restarted.control_plane.database.session_factory
+            ),
+            evidence=evidence_ledger,
+        )
+        closure = await closure_verifier.verify(run_id)
+        await restarted.event_repository.append(
+            run_id,
+            "run.closure_evaluated",
+            closure_event_payload(closure),
+            event_id=closure_event_id(closure),
+        )
+        await restarted.run_repository.update_status(run_id, RunStatus.COMPLETED)
+
+        async for client in _client(restarted.control_plane):
+            generated = await client.post(
+                f"/api/v1/runs/{run_id}/reports",
+                json={"formats": ["json"]},
+            )
+            assert generated.status_code == 201, generated.text
+            report = generated.json()["items"][0]
+            json_report_id = str(report["id"])
+            json_report_artifact_id = str(report["artifact_id"])
+            content = await client.get(str(report["content_url"]))
+            assert content.status_code == 200, content.text
+            payload = content.json()
+            assert payload["schema_version"] == "riftx.report.v2"
+            source = payload["source"]
+            assert source["run_status"] == "completed"
+            assert source["closure_outcome"] == "partial"
+            assert set(source["closure_reason_codes"]) == {
+                "success_criterion_unmapped",
+                "task_graph_missing",
+            }
+            assert source["engagement"]["authorization_reference_present"] is True
+            assert source["engagement"]["authorization_reference_scheme"] == "ticket"
+            pentest = source["pentest"]
+            assert pentest["budget"]["limits"]["max_target_interactions"] == 3
+            assert pentest["budget"]["observed_target_interactions"] == 3
+            assert pentest["stop"] == {
+                "latest_event_type": "run.pause_requested",
+                "confirmed": True,
+                "workflow_synced": True,
+                "failed_resource_types": [],
+            }
+            budget_stop = next(
+                item
+                for item in source["key_events"]
+                if item["event_type"] == "pentest.budget_exhausted"
+            )
+            assert budget_stop["payload"] == {
+                "budget_name": "max_target_interactions",
+                "limit": 3,
+                "used": 3,
+                "reason": "exhausted",
+            }
+            assert pentest["executions"][0]["id"] == execution_id
+            assert pentest["executions"][0]["status"] == "completed"
+            assert {item["id"] for item in pentest["evidence"]} == {
+                evidence_id,
+                diagnostics_evidence_id,
+                missing_evidence_id,
+            }
+            assert [
+                (item["id"], item["kind"], item["status"]) for item in pentest["reasoning_nodes"]
+            ] == [
+                ("service-endpoint-observation", "observation", "recorded"),
+                ("service-http-hypothesis", "hypothesis", "unverified"),
+                ("diagnostics-disclosure-observation", "observation", "recorded"),
+                (
+                    "diagnostics-disclosure-candidate",
+                    "vulnerability_candidate",
+                    "candidate",
+                ),
+                ("missing-path-hypothesis", "hypothesis", "unverified"),
+                ("missing-path-negative-result", "negative_result", "recorded"),
+            ]
+            assert pentest["reasoning_edges"] == [
+                {
+                    "source_node_id": "missing-path-negative-result",
+                    "target_node_id": "missing-path-hypothesis",
+                    "relation_type": "invalidates",
+                    "evidence_ids": [missing_evidence_id],
+                }
+            ]
+            assert source["findings"][0]["id"] == finding_id
+            assert source["findings"][0]["status"] == "draft"
+            assert source["findings"][0]["evidence"][0]["content_url"] is None
+            assert diagnostics_artifact_id not in {item["id"] for item in source["artifacts"]}
+            assert missing_artifact_id not in {item["id"] for item in source["artifacts"]}
+            serialized = json.dumps(payload, sort_keys=True)
+            assert "ticket://pentest-123" not in serialized
+            assert '{"build":"fixture-1","environment":"test"}' not in serialized
+            assert '{"error":"not_found"}' not in serialized
+            assert str(tmp_path) not in serialized
     finally:
         await restarted.control_plane.close()
+
+    replayed = await _build_runtime(tmp_path, database_path=database_path)
+    try:
+        source = await replayed.control_plane.report_service.build_source(run_id)
+        assert source.pentest is not None
+        assert [item.id for item in source.findings] == [finding_id]
+        assert any(item.kind == "negative_result" for item in source.pentest.reasoning_nodes)
+        reused = await replayed.control_plane.report_service.generate(
+            run_id,
+            GenerateReports(formats=[ReportFormat.JSON], reuse_existing=True),
+        )
+        assert [(item.id, item.artifact_id) for item in reused] == [
+            (json_report_id, json_report_artifact_id)
+        ]
+        assert len(await replayed.finding_repository.list(run_id)) == 1
+    finally:
+        await replayed.control_plane.close()
         server.close()
         await server.wait_closed()
 
