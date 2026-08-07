@@ -8,7 +8,7 @@
 >
 > 当前分支：`ch1nfo/riftx-3-code-audit`
 >
-> 当前实现基线：`b2193139`（阶段 A-B 已完成）
+> 当前实现基线：`d73a0c86`（阶段 A-B 与 C1 已完成）
 >
 > 实施事实与测试账本：[`docs/implementation/FORMAL_AGENT_PROGRESS.md`](docs/implementation/FORMAL_AGENT_PROGRESS.md)
 >
@@ -37,7 +37,7 @@ RiftX 当前不是“底座没做完”，而是“底座已经很重，专业�
 - Capability、Version、Selection、Pack Lock、Progressive Skill 等成长底座已经存在，但“专业人士添加方法并在下一次运行中安全生效”的用户闭环尚未完成；
 - Code Audit、Marketplace、多租户、远程集群、更多 Agent 角色和更多 Pack 继续冻结。
 
-**当前不应重写架构，也不应先删除大块代码。阶段 A-B 已完成；下一步只复用现有 Target HTTP、Traffic、Secret Reference、Scope、Approval、Evidence、Reasoning 和 Report，建立一个有两个测试用户与两个对象的最小本地授权差异场景。此前不启用 Browser、Crawler、Fuzzer、新身份系统或新 Web Scanner。**
+**当前不应重写架构，也不应先删除大块代码。阶段 A-B 与 C1 已完成；下一步只让生产 Runtime 通过安全身份引用执行 C1 的登录、所有权正常访问与跨对象差异验证，并形成 Evidence 与 Reasoning。此前不启用 Browser、Crawler、Fuzzer、新身份系统或新 Web Scanner。**
 
 ---
 
@@ -118,6 +118,12 @@ c7709790  close service enumeration loop
 b2193139  close network service reporting
 ```
 
+阶段 C 当前实现：
+
+```text
+d73a0c86  establish stateful web target
+```
+
 最近已验证的相关回归包括：
 
 ```text
@@ -145,7 +151,7 @@ Changed production files scoped mypy: passed
 | 缺口 | 当前状态 | V1 必须 |
 | --- | --- | --- |
 | 网络服务专业闭环 | 已完成枚举、HTTP 正负验证、Draft Finding、Closure 和 JSON Report | 已完成 |
-| 状态化 Web 闭环 | Browser、Traffic、Target HTTP 已存在，身份/授权场景未闭环 | 是 |
+| 状态化 Web 闭环 | C1 可复位靶场与 Target HTTP 边界 E2E 已完成；待生产 Runtime 身份引用、Evidence/Reasoning 与 Attack Chain | 是 |
 | 专业报告 | 网络服务 JSON Report 已验收；状态化 Web 与 Attack Chain 尚未验收 | 是 |
 | 用户驱动能力成长 | Capability 底座存在，缺少一次完整添加、选择、复盘、禁用和回滚 | 是 |
 | 默认产品面收缩 | 未按真实消费者审计 | 是 |
@@ -352,7 +358,7 @@ Migration 历史不得删除或重写。优先删除重复入口、不可达分�
 | --- | --- | --- |
 | A. 剩余 Pentest 预算收口 | completed | 所有 Admission 预算具有明确执行语义和硬停止 |
 | B. 网络服务专业闭环 | completed | 一个真实服务从枚举走到证据化结论、Closure 和 Report |
-| C. 状态化 Web 与报告 | in progress；C1 当前施工 | 一个身份/授权场景走到 Attack Chain、Closure 和 Report |
+| C. 状态化 Web 与报告 | in progress；C2 当前施工 | 一个身份/授权场景走到 Attack Chain、Closure 和 Report |
 | D. 用户驱动能力成长 | pending | 一项专业方法可添加、选择、复盘、禁用和回滚 |
 | E. 默认产品面收缩与发布 | pending | Pentest-first 产品可安装、可理解、可回归、可发布 |
 
@@ -573,7 +579,7 @@ b2193139  feat(pentest): close network service reporting
 
 阶段 C 只在阶段 B 完成后开始。它不重做报告系统，而是在 B 的证据链上增加身份、会话、授权差异和多步攻击链。
 
-### 9.1 C1：一个最小身份/对象授权靶场（当前唯一实现切片）
+### 9.1 C1：一个最小身份/对象授权靶场（completed）
 
 使用仓库内可复位的本地 Web 服务，只保留：
 
@@ -584,7 +590,21 @@ b2193139  feat(pentest): close network service reporting
 
 先使用 Target HTTP 和 Traffic 完成协议级验证。只有登录流程确实依赖浏览器行为时才启用 Browser；不得为了“覆盖 Browser”强行增加 UI 自动化。
 
-### 9.2 C2：身份、状态与最小验证
+已完成实现：
+
+- 新增随机 localhost 端口、测试后确定关闭的可复位状态化 HTTP 靶场；
+- 靶场只包含 Alice/Bob、两个对象、登录、各自所有权正常访问和一个确定性跨对象分支；
+- 生产 Target HTTP 边界 E2E 覆盖 Approval 前零网络副作用、Scope 越界拒绝、两用户登录、Cookie 状态、正常与跨对象访问、目标预算耗尽与 Run 暂停；
+- Event、Traffic、Attack Surface 和 Artifact 标题导出不包含测试密码或会话 Cookie；
+- C1 不创建 Finding、Report、Attack Chain、新表、migration、Pack、Browser 场景、Scanner、Worker 或 UI。
+
+提交：
+
+```text
+d73a0c86  feat(pentest): establish stateful web target
+```
+
+### 9.2 C2：身份、状态与最小验证（当前唯一实现切片）
 
 必须复用现有 Run/Session/Request identity、Traffic Ledger、Secret Reference、Scope、Approval、Evidence 和 Reasoning：
 
@@ -855,17 +875,18 @@ Ledger commit:
 
 ## 15. 当前唯一施工指令
 
-从实现基线 `b2193139` 继续，只做 C1“一个最小身份/对象授权靶场”：
+从实现基线 `d73a0c86` 继续，只做 C2“身份、状态与最小验证”：
 
-1. 先审计现有 Target HTTP request schema、Traffic Ledger、Cookie/Header 处理、Secret Reference 和 localhost 测试服务，只修复阻断最小身份流的生产断点；
-2. 在仓库测试内建立一个每次随机 localhost 端口、每次测试后关闭的状态化 HTTP 服务，不引入 Docker、外部镜像或公网依赖；
-3. 靶场只保留两个测试用户、两个对象、一个登录入口、各自对象的正常访问与一个确定性跨对象授权分支；测试数据不得使用真实账号、Token 或 Secret；
-4. C1 只验收靶场可复位性、登录状态、所有权正常访问、跨对象分支和请求前 Scope/Approval/预算边界；不在本切片创建 Finding、Attack Chain 或最终 Report；
-5. 协议级登录能用 Target HTTP 完成时不启用 Browser；只有真实前端行为阻断 C2 时才准入 Browser；
-6. Cookie、Token 和密码不得进入 URL、Event、Artifact 标题、Graph、Report 或测试失败输出；若现有 Target HTTP 尚不支持安全身份引用，只增加一个复用现有 Credential/Secret Reference 的薄入口；
-7. 每个请求及重定向继续逐次执行 Scope 校验；未批准、越界、预算耗尽和登录失败不得产生目标成功结论；
-8. C1 不新增身份服务、会话数据库、Crawler、Fuzzer、Web Scanner、表、migration、Pack、Planner、Graph、Worker 或 UI；
-9. 所有 Agent 测试和运行使用 `conda run --no-capture-output -n agent ...`；通过目标测试、受影响回归、全仓 Ruff、scoped mypy 和 `git diff --check` 后形成 C1 独立实现提交，C1 完成前不进入 C2-D。
+1. 从 `RuntimeControlToolService → DeferredExecutionDispatcher → TargetHttpApplicationService → RunnerTargetHttpClient` 追踪 C1 场景，不以直接调用 Application Service 作为 C2 的最终生产验收；
+2. 审计 Target HTTP 的 Header、Cookie、Body 与持久 Tool Call Intent；密码、Cookie 和 Token 不得作为模型明文参数或持久在 Approval 快照中；
+3. 若现有路径不能安全表达身份，只增加一个最小、类型化的 Credential/Session Reference 入口；引用必须受当前 Run/Session Selection 与 Capability Permission 约束，未允许的引用在 Runner 副作用前失败关闭；
+4. 复用 C1 同一靶场，通过生产 Runtime 完成 Alice/Bob 登录、各自对象基线访问和一次 Alice 访问 Bob 对象的单变量验证；
+5. 正常所有权响应与跨对象响应分别登记精确受保护 HTTP Evidence，并形成 Observation、明确前置条件的 Hypothesis 和一次结构化 Attempt；
+6. C2 只证明身份差异与证据链；不创建 Domain Finding、不确认漏洞、不构建最终 Attack Chain 或 Report，这些留给 C3；
+7. 暂停、Control Plane 重建和恢复后，只恢复非敏感引用、Exchange/Evidence/Reasoning 身份与已固定 Capability；不从 Event、Transcript 或 Artifact 标题恢复明文 Secret；
+8. 每个请求和重定向继续逐次检查 Scope、Approval、Run 状态和目标预算；登录失败、越界、被阻断或预算耗尽不得被写成目标结论；
+9. 协议级流程能完成时不启用 Browser；C2 不新增身份服务、会话数据库、Crawler、Fuzzer、Web Scanner、表、migration、Planner、Graph、Worker 或 UI；
+10. 所有 Agent 测试和运行使用 `conda run --no-capture-output -n agent ...`；通过目标测试、受影响回归、全仓 Ruff、scoped mypy 和 `git diff --check` 后形成 C2 独立实现提交，C2 完成前不进入 C3-D。
 
 ---
 

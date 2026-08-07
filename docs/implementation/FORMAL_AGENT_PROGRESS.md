@@ -33,7 +33,7 @@
 ## 2. Current wave
 
 - Stage：`Pentest-first V1 — Stage C 状态化 Web 与 Attack Chain`
-- Current task：`C1 — 一个最小身份/对象授权靶场`
+- Current task：`C2 — 身份、状态与最小验证`
 - Status：`in_progress`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
@@ -53,11 +53,13 @@
 - Completed predecessor：PACK-302，implementation commits `d4f6e4eb`、`02cde9fe`、`eb41f77d`、`41eb8896`、`36100d47`、`0c70cf2e`、`3a1f0fc8`、`e4281b2f`、`6550f85a`、`faf12c50`、`ab3f50b6`、`4ba069e4`。
 - Completed predecessor：PEN-500，implementation commits `315039fc`、`86aaecdf`、`e2314e9b`、`8b9ef440`、`8f1b2554`、`33c863ea`、`70f6f4a0`、`2271bc8e`、`9a4714fc`、`ca12ad9b`、`ad91c3f4`、`2c0f8004`、`73288673`、`b6b5f739`、`53812397`、`1c379dcc`。
 - Completed predecessor：Stage B 网络服务专业闭环，implementation commits `54c2489b`、`c7709790`、`5018f071`、`b2193139`。
+- Completed predecessor：Stage C/C1 最小身份/对象授权靶场，implementation commit `d73a0c86`。
 - Product behavior：PACK-302 已交付可重复运行且零覆盖的 `riftx onboard`、顶级 `riftx doctor`、live overlay、本地操作员只读 `/api/v1/system/diagnostics`、有真实修复语义的 `riftx doctor --fix`、Onboard 后可直接运行的两个安全 Demo，以及本地只读 Capability/Pack 检查命令；Onboard 复用现有 Runtime/Model/Tool/Pack 生产路径初始化用户级配置、完整 Alembic schema、22 个 Official Pack 与 66 个 active lock；Pack 持久化写入具备 SQLite 一致性备份、双端 inode identity、恢复后完整性复检和失败自动回滚；Doctor `backup_restore` 已改为只读真实 readiness，只在已到 Alembic head 的 file-backed SQLite、当前用户所有的普通数据库文件和安全的 owner-only 备份目录前置条件全部成立时返回 `ready`，不为诊断创建备份或替换数据库。
 - Completed PEN-500 implementation commits：ADR `315039fc`；Domain/持久化 `86aaecdf`；Workflow/Runner Identity `e2314e9b`；Effect Policy/Interactive Guard `8b9ef440`；专用 Admission/Application/API 创建入口 `8f1b2554`；Capability Selection 原子绑定 `33c863ea`；Pentest status/API `70f6f4a0`；Pentest CLI `2271bc8e`；Attack Surface `9a4714fc`；隔离生命周期 `ca12ad9b`；目标交互预算 `ad91c3f4`、`2c0f8004`；运行中用量 `73288673`；Model/Token/Duration 门禁 `b6b5f739`；Tool/Duration 门禁 `53812397`；统一预算停止 `1c379dcc`。
 - Verification：阶段 A 完整 Control Plane `67 passed`；Runtime/Execution/Target HTTP/Temporal Worker `467 passed`；预算处理聚焦回归 `215 passed`；全仓 Ruff passed；6 个变更核心源文件 scoped mypy passed；Alembic 单 head `7b3d1e5f9a24`；`git diff --check` passed。
 - Stage B verification：B4 受影响 Report/Closure/Worker 回归 `78 passed`；完整 Control Plane `68 passed`；最终聚焦回归 `19 passed`；全仓 Ruff passed；3 个变更生产文件 scoped mypy passed；`git diff --check` passed。
-- Next delivery slice：只建立一个仓库内可复位的最小状态化 Web 靶场，包含两个测试用户、两个对象、登录、正常所有权访问和一个确定性跨对象授权分支；先复用 Target HTTP/Traffic，不启动 Browser、Crawler、Fuzzer、新身份系统或 Web Scanner。
+- Stage C/C1 verification：聚焦 E2E `1 passed`；Target HTTP 受影响回归 `47 passed`；完整 Control Plane 加 C1 `69 passed`；全仓 Ruff passed；2 个新测试文件 scoped mypy passed；`git diff --check` passed。
+- Next delivery slice：只让生产 Runtime 通过安全 Credential/Session Reference 复现 C1 的两身份基线与单次跨对象差异，形成精确 HTTP Evidence、Observation、Hypothesis 和 Attempt；不启动 Browser、Crawler、Fuzzer、新身份系统、Finding 或 Attack Chain。
 
 ## 3. 研究与实现基线
 
@@ -1094,6 +1096,18 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 - Non-goals upheld：未新增表、migration、Pack、Scanner、Planner、Graph、Worker、Browser 场景或 UI；未自动确认 Finding。
 - Implementation commits：`54c2489b`、`c7709790`、`5018f071`、`b2193139`。
 - Completion：Stage B 已完成；下一施工切片是 C1 最小身份/对象授权靶场，不提前开始 Browser、Attack Chain、能力学习或默认产品面删减。
+
+### Stage C：状态化 Web 与 Attack Chain
+
+- Status：in_progress
+- Started：2026-08-07
+- C1 resettable target slice：`d73a0c86` 新增仓库内状态化 localhost HTTP 靶场，每次绑定随机端口并在测试后关闭；只包含 Alice/Bob、两个对象、登录、各自所有权基线和一个确定性跨对象授权分支。
+- C1 production boundary E2E：复用现有 Pentest Admission、Target HTTP、Traffic、Scope、Approval 和 Target Interaction Budget；未批准与越界请求零网络副作用，Alice/Bob 登录和各自对象访问成功，Alice 访问 Bob 对象的分支可重复，第六次目标交互在网络前耗尽预算并暂停 Run。
+- C1 safety：Event、Traffic、Attack Surface 与 Artifact 标题导出不包含测试密码或会话 Cookie；靶场请求日志只保留 Method、Path、Actor 和 Status；测试失败断言不回显敏感值。
+- Verification：`tests/integration/api/test_pentest_stateful_web.py` `1 passed`；Target HTTP 回归 `47 passed`；完整 Control Plane 加 C1 `69 passed`；`conda run --no-capture-output -n agent ruff check .` passed；C1 两文件 scoped mypy passed；`git diff --check` passed。
+- Non-goals upheld：C1 未修改生产 schema/service，未新增表、migration、Pack、Browser 场景、Scanner、Planner、Graph、Worker 或 UI，未创建 Finding、Report 或 Attack Chain。
+- Implementation commit：`d73a0c86`。
+- Completion：C1 已完成；当前唯一施工切片是 C2 身份、状态与最小验证，不提前创建 Finding、Attack Chain、Report 或启动 Browser。
 
 ## 9. Known pre-existing worktree state
 
