@@ -27,8 +27,8 @@ async def test_system_diagnostics_reports_migration_and_official_pack_state(
     unmanaged = await service.snapshot()
     assert unmanaged.database.status == "unmanaged"
     assert unmanaged.official_packs.status == "ready"
-    assert unmanaged.official_packs.installed_pack_count == 22
-    assert unmanaged.official_packs.active_lock_count == 66
+    assert unmanaged.official_packs.installed_pack_count == 10
+    assert unmanaged.official_packs.active_lock_count == 30
 
     async with database.engine.begin() as connection:
         await connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32))"))

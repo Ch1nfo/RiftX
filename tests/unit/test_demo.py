@@ -5,7 +5,7 @@ from pathlib import Path
 import yaml
 
 from riftx.config import RiftXConfig
-from riftx.demo import run_code_audit_demo, run_pentest_demo
+from riftx.demo import run_pentest_demo
 
 
 def _config(tool_path: Path) -> RiftXConfig:
@@ -53,21 +53,3 @@ def test_pentest_demo_degrades_when_tool_config_is_unavailable(tmp_path: Path) -
     assert result.unavailable_optional_tools == ("nmap", "nuclei")
     assert result.tool_config_issue is not None
     assert "bundled transcript" in result.degradation_path
-
-
-def test_code_audit_demo_runs_real_builtin_detectors_and_redacts_credentials() -> None:
-    result = run_code_audit_demo()
-
-    assert result.sanitized is True
-    assert result.pack_id == "code-audit-foundation"
-    assert result.files_scanned == 3
-    assert {finding.rule_id for finding in result.findings} == {
-        "configuration.insecure_setting",
-        "dependency.unpinned",
-        "python.dangerous_api",
-        "secret.hardcoded_credential",
-    }
-    assert result.degradation_path.startswith("Built-in static detectors")
-    rendered_evidence = "\n".join(finding.evidence for finding in result.findings)
-    assert "demo-secret-value" not in rendered_evidence
-    assert "[REDACTED]" in rendered_evidence

@@ -25,25 +25,13 @@ async def test_official_pack_bootstrap_is_idempotent_and_exposes_techniques(
 
     assert first == second
     assert [install.pack_id for install in first] == [
-        "authn-authz-audit",
-        "code-audit-foundation",
         "credential-handling",
-        "dependency-and-supply-chain",
-        "deserialization-audit",
-        "entrypoint-discovery",
         "evidence-and-reporting",
-        "file-upload-and-path-audit",
-        "finding-verification",
-        "injection-audit",
         "negative-results",
         "passive-recon",
         "pentest-foundation",
-        "repository-mapping",
         "scope-and-safety",
-        "secret-and-config-audit",
         "service-enumeration",
-        "ssrf-and-outbound-request-audit",
-        "variant-analysis",
         "vulnerability-verification",
         "web-attack-surface",
         "web-request-analysis",
@@ -52,25 +40,13 @@ async def test_official_pack_bootstrap_is_idempotent_and_exposes_techniques(
         session_id="session-1"
     )
     assert [technique.id for technique in techniques] == [
-        "authn-authz-audit.technique",
-        "code-audit-foundation.technique",
         "credential-handling.technique",
-        "dependency-and-supply-chain.technique",
-        "deserialization-audit.technique",
-        "entrypoint-discovery.technique",
         "evidence-and-reporting.technique",
-        "file-upload-and-path-audit.technique",
-        "finding-verification.technique",
-        "injection-audit.technique",
         "negative-results.technique",
         "passive-recon.technique",
         "pentest-foundation.technique",
-        "repository-mapping.technique",
         "scope-and-safety.technique",
-        "secret-and-config-audit.technique",
         "service-enumeration.technique",
-        "ssrf-and-outbound-request-audit.technique",
-        "variant-analysis.technique",
         "vulnerability-verification.technique",
         "web-attack-surface.technique",
         "web-request-analysis.technique",
@@ -88,12 +64,12 @@ async def test_official_pack_bootstrap_is_idempotent_and_exposes_techniques(
             )
         }
     assert counts == {
-        "capabilities": 66,
-        "capability_versions": 66,
-        "capability_packs": 22,
-        "capability_pack_members": 66,
-        "capability_pack_installs": 22,
-        "capability_pack_locks": 66,
+        "capabilities": 30,
+        "capability_versions": 30,
+        "capability_packs": 10,
+        "capability_pack_members": 30,
+        "capability_pack_installs": 10,
+        "capability_pack_locks": 30,
     }
     await database.dispose()
 

@@ -73,23 +73,4 @@ describe("Layout theme control", () => {
 
     expect(screen.getByLabelText("当前工作区")).toBeInTheDocument();
   });
-
-  it("keeps Code audit active while viewing a local Audit result", () => {
-    render(
-      <ThemeProvider initialTheme="dark">
-        <LanguageProvider>
-          <MemoryRouter initialEntries={["/audits/audit-1"]}>
-            <Routes>
-              <Route element={<Layout />}>
-                <Route path="audits/:auditId" element={<div>Audit result</div>} />
-              </Route>
-            </Routes>
-          </MemoryRouter>
-        </LanguageProvider>
-      </ThemeProvider>,
-    );
-
-    expect(screen.getByRole("link", { name: "Code audit" })).toHaveClass("active");
-    expect(screen.getByText("Local audit findings")).toBeInTheDocument();
-  });
 });

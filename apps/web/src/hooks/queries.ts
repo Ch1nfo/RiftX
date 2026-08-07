@@ -8,7 +8,6 @@ import {
 import { api, RiftXAPIError } from "../api/client";
 import type {
   ApprovalDecisionPayload,
-  CreateLocalAuditPayload,
   CreateRunPayload,
   CreateTerminalPayload,
   RegisterArtifactPayload,
@@ -18,8 +17,6 @@ import type {
   RunActionListItem,
   RunEventList,
   RunKind,
-  LocalAuditJob,
-  LocalAuditFindingSeverity,
   UpdateFindingPayload,
   UpdateToolPayload,
   RunStatus,
@@ -46,13 +43,6 @@ export const queryKeys = {
   nodes: (status?: NodeStatus) => ["nodes", status ?? "all"] as const,
   tools: (nodeId: string) => ["tools", nodeId] as const,
   modelProfiles: ["model-profiles"] as const,
-  localAudit: (auditId: string) => ["local-audit", auditId] as const,
-  localAuditFindings: (auditId: string) =>
-    ["local-audit", auditId, "findings"] as const,
-  localAuditSeveritySummary: (auditId: string) =>
-    ["local-audit", auditId, "severity-summary"] as const,
-  localAuditFinding: (auditId: string, findingId: string) =>
-    ["local-audit", auditId, "findings", findingId] as const,
 };
 
 const ACTION_PAGE_SIZE = 50;
@@ -113,98 +103,6 @@ export function useRun(runId: string) {
     queryFn: () => api.getRun(runId),
     enabled: Boolean(runId),
   });
-}
-
-const LOCAL_AUDIT_TERMINAL_STATUSES = new Set([
-  "completed",
-  "failed",
-  "cancelled",
-]);
-
-export function useCreateLocalAudit() {
-  return useMutation({
-    mutationFn: async (payload: CreateLocalAuditPayload) => {
-      const created = await api.createLocalAudit(payload);
-      return api.startLocalAudit(created.audit_id);
-    },
-  });
-}
-
-export function useLocalAudit(auditId: string) {
-  return useQuery({
-    queryKey: queryKeys.localAudit(auditId),
-    queryFn: () => api.getLocalAudit(auditId),
-    enabled: Boolean(auditId),
-    refetchInterval: (query) => {
-      const job = query.state.data as LocalAuditJob | undefined;
-      return job && LOCAL_AUDIT_TERMINAL_STATUSES.has(job.status) ? false : 1_000;
-    },
-  });
-}
-
-export function useLocalAuditFindings(auditId: string, enabled: boolean) {
-  return useInfiniteQuery({
-    queryKey: queryKeys.localAuditFindings(auditId),
-    queryFn: ({ pageParam }) =>
-      api.listLocalAuditFindings(auditId, { limit: 100, offset: pageParam }),
-    initialPageParam: 0,
-    getNextPageParam: (page) => {
-      const nextOffset = page.offset + page.items.length;
-      return nextOffset < page.total ? nextOffset : undefined;
-    },
-    enabled: Boolean(auditId) && enabled,
-  });
-}
-
-const LOCAL_AUDIT_SEVERITIES: LocalAuditFindingSeverity[] = [
-  "critical",
-  "high",
-  "medium",
-  "low",
-  "info",
-];
-
-export function useLocalAuditSeveritySummary(auditId: string, enabled: boolean) {
-  return useQuery({
-    queryKey: queryKeys.localAuditSeveritySummary(auditId),
-    queryFn: async () => {
-      const pages = await Promise.all(
-        LOCAL_AUDIT_SEVERITIES.map((severity) =>
-          api.listLocalAuditFindings(auditId, { limit: 1, severity }),
-        ),
-      );
-      return Object.fromEntries(
-        LOCAL_AUDIT_SEVERITIES.map((severity, index) => [
-          severity,
-          pages[index]?.total ?? 0,
-        ]),
-      ) as Record<LocalAuditFindingSeverity, number>;
-    },
-    enabled: Boolean(auditId) && enabled,
-  });
-}
-
-export function useLocalAuditFinding(auditId: string, findingId: string) {
-  return useQuery({
-    queryKey: queryKeys.localAuditFinding(auditId, findingId),
-    queryFn: () => api.getLocalAuditFinding(auditId, findingId),
-    enabled: Boolean(auditId && findingId),
-  });
-}
-
-export function useLocalAuditControl(auditId: string) {
-  const queryClient = useQueryClient();
-  return {
-    cancel: useMutation({
-      mutationFn: () => api.cancelLocalAudit(auditId),
-      onSuccess: (job) => {
-        queryClient.setQueryData(queryKeys.localAudit(auditId), job);
-        void queryClient.invalidateQueries({
-          queryKey: queryKeys.localAuditFindings(auditId),
-        });
-      },
-    }),
-  };
 }
 
 export function useRunEvents(runId: string) {

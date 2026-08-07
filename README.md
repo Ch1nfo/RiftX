@@ -164,9 +164,8 @@ visibly marked **DEMO / SANITIZED**.
 
 ## Advanced: product tour
 
-These screens illustrate implemented surfaces; they are not the default Quickstart. Code Audit
-screens represent a **frozen/experimental** surface that receives only security, compatibility,
-and existing-user fixes. Click any image for the full-resolution view.
+These screens illustrate implemented surfaces; they are not the default Quickstart. Click any
+image for the full-resolution view.
 
 <table>
   <tbody>
@@ -218,16 +217,6 @@ and existing-user fixes. Click any image for the full-resolution view.
       <td width="50%" valign="top">
         <a href="docs/assets/readme/en/17-connectors.webp"><img src="docs/assets/readme/en/17-connectors.webp" alt="Managed Browser Chrome and Burp connectors" width="100%"></a>
         <p><strong>Browser and connectors</strong><br>Bring Managed Browser, Chrome, and Burp captures into one evidence chain.</p>
-      </td>
-    </tr>
-    <tr>
-      <td width="50%" valign="top">
-        <a href="docs/assets/readme/en/18-local-code-audit.webp"><img src="docs/assets/readme/en/18-local-code-audit.webp" alt="Start a read-only local RiftX code audit" width="100%"></a>
-        <p><strong>Local code audit</strong><br>Select a same-machine folder and scan a sealed snapshot without executing project code.</p>
-      </td>
-      <td width="50%" valign="top">
-        <a href="docs/assets/readme/en/19-local-audit-findings.webp"><img src="docs/assets/readme/en/19-local-audit-findings.webp" alt="Inspect RiftX local code audit findings" width="100%"></a>
-        <p><strong>Audit findings</strong><br>Inspect severity, confidence, relative location, rule identity, and redacted evidence.</p>
       </td>
     </tr>
   </tbody>

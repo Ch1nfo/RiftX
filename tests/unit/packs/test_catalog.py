@@ -6,14 +6,12 @@ from pathlib import Path
 import pytest
 
 from riftx.capabilities import (
-    CapabilityEffectClass,
     CapabilityKind,
     CapabilitySource,
     CapabilityTrustTier,
     CapabilityVersionStatus,
     capability_pack_digest,
 )
-from riftx.domain.enums import ApprovalLevel
 from riftx.packs import OFFICIAL_PACK_ROOT, OfficialPackCatalog
 
 
@@ -22,25 +20,13 @@ def test_official_catalog_loads_versioned_evidence_aware_foundation_bundles() ->
     second = OfficialPackCatalog().load()
 
     assert [bundle.source.pack_id for bundle in first] == [
-        "authn-authz-audit",
-        "code-audit-foundation",
         "credential-handling",
-        "dependency-and-supply-chain",
-        "deserialization-audit",
-        "entrypoint-discovery",
         "evidence-and-reporting",
-        "file-upload-and-path-audit",
-        "finding-verification",
-        "injection-audit",
         "negative-results",
         "passive-recon",
         "pentest-foundation",
-        "repository-mapping",
         "scope-and-safety",
-        "secret-and-config-audit",
         "service-enumeration",
-        "ssrf-and-outbound-request-audit",
-        "variant-analysis",
         "vulnerability-verification",
         "web-attack-surface",
         "web-request-analysis",
@@ -74,92 +60,6 @@ def test_official_catalog_loads_versioned_evidence_aware_foundation_bundles() ->
             assert document.source is CapabilitySource.OFFICIAL
             assert version.manifest.kind is CapabilityKind.SKILL
             assert version.manifest.provenance.source_digest == document.digest
-
-
-def test_code_audit_packs_use_only_production_safe_code_workflows() -> None:
-    pack_ids = {
-        "authn-authz-audit",
-        "code-audit-foundation",
-        "dependency-and-supply-chain",
-        "deserialization-audit",
-        "entrypoint-discovery",
-        "file-upload-and-path-audit",
-        "finding-verification",
-        "injection-audit",
-        "repository-mapping",
-        "secret-and-config-audit",
-        "ssrf-and-outbound-request-audit",
-        "variant-analysis",
-    }
-    bundles = {
-        bundle.source.pack_id: bundle
-        for bundle in OfficialPackCatalog().load()
-        if bundle.source.pack_id in pack_ids
-    }
-
-    assert set(bundles) == pack_ids
-    analysis_tools = {
-        "glob",
-        "grep",
-        "read_many_files",
-        "symbol_search",
-        "find_references",
-        "record_observation",
-        "propose_hypothesis",
-        "propose_finding",
-        "record_negative_result",
-    }
-    expected_tools = {
-        "authn-authz-audit": analysis_tools | {"call_hierarchy"},
-        "code-audit-foundation": {
-            "list_files",
-            "read_many_files",
-            "symbol_search",
-            "list_ready_tasks",
-            "add_task",
-            "query_reasoning_graph",
-            "record_observation",
-            "record_negative_result",
-            "complete_task",
-            "complete_run",
-        },
-        "dependency-and-supply-chain": analysis_tools | {"list_files"},
-        "deserialization-audit": analysis_tools | {"call_hierarchy"},
-        "entrypoint-discovery": analysis_tools
-        - {"propose_finding"}
-        | {"call_hierarchy"},
-        "file-upload-and-path-audit": analysis_tools | {"call_hierarchy"},
-        "finding-verification": analysis_tools
-        | {"call_hierarchy", "query_reasoning_graph"},
-        "injection-audit": analysis_tools | {"call_hierarchy"},
-        "repository-mapping": analysis_tools
-        - {"propose_hypothesis", "propose_finding"}
-        | {"list_files"},
-        "secret-and-config-audit": analysis_tools | {"list_files"},
-        "ssrf-and-outbound-request-audit": analysis_tools | {"call_hierarchy"},
-        "variant-analysis": analysis_tools
-        | {"call_hierarchy", "query_reasoning_graph"},
-    }
-    for pack_id, bundle in bundles.items():
-        assert set(bundle.source.tool_requirements) == expected_tools[pack_id]
-        assert len(bundle.capability_versions) == 3
-        assert len(bundle.skill_documents) == 1
-        assert len(bundle.negative_cases) >= 2
-        assert len(bundle.evaluation_cases) == 1
-        assert all(
-            version.manifest.permission.approval_level is ApprovalLevel.NEVER
-            and not version.manifest.permission.requires_scope
-            and not version.manifest.permission.credential_references
-            and version.manifest.permission.effect_class
-            is (
-                CapabilityEffectClass.READ_ONLY
-                if version.manifest.kind is CapabilityKind.EVAL_CASE
-                else CapabilityEffectClass.LOCAL_MUTATION
-            )
-            for version in bundle.capability_versions
-        )
-
-
 def test_official_catalog_rejects_missing_negative_cases(tmp_path: Path) -> None:
     root = _copy_pack(tmp_path, "pentest-foundation")
     (root / "pentest-foundation" / "negative_cases.yaml").write_text("[]\n")

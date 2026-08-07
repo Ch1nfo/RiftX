@@ -10,16 +10,11 @@ import { DashboardPage } from "./DashboardPage";
 afterEach(() => vi.restoreAllMocks());
 
 describe("DashboardPage", () => {
-  it("isolates general and Code Audit Run caches", () => {
+  it("uses a distinct cache for the general Run list", () => {
     expect(queryKeys.runs(undefined, "general")).toEqual([
       "runs",
       "all",
       "general",
-    ]);
-    expect(queryKeys.runs(undefined, "code_audit")).toEqual([
-      "runs",
-      "all",
-      "code_audit",
     ]);
   });
 

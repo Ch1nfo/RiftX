@@ -46,13 +46,13 @@ def test_local_capability_state_lists_authoritative_official_inventory(
     state = inspect_local_capability_state(config, cwd=tmp_path)
 
     assert state.verification_status == "ready"
-    assert len(state.capabilities) == 66
-    assert len(state.packs) == 22
+    assert len(state.capabilities) == 30
+    assert len(state.packs) == 10
     assert all(item.status == "active" for item in state.capabilities)
     assert all(item.persistence_status == "ready" for item in state.packs)
     assert {item.pack_id for item in state.packs} >= {
         "pentest-foundation",
-        "code-audit-foundation",
+        "scope-and-safety",
     }
 
 

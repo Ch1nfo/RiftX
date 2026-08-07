@@ -987,8 +987,8 @@ Codex 每完成一个 Slice 更新本表，并链接实现提交和验证结果�
 | 4 | 移除默认 Audit 装配 | completed | `c9215956` | 聚焦 `535 passed, 5 skipped`；Ruff、Phase Gate `344 passed` | 默认不装配 Audit/Preflight/Plan/Local Job/Reconciler；Runner 删除 Preflight 注入链；保留历史 Safety Stop 清理后端 |
 | 4 | 删除 Audit Worker/Source Ingest | completed | `50a60acc` | 聚焦 `762 passed, 5 skipped`；历史持久化 `23 passed`；Ruff、Phase Gate `340 passed` | 删除 Source Ingest、Materializer、Snapshot Mount、Runner Preflight Client/Backend 与 Worker 配置，净删 18,235 行；保留历史记录、migration 和 Safety Stop |
 | 4 | 删除 Audit API/Application | completed | `4b30c570` | 聚焦 `316 passed`；全仓收集 `4866 tests`；Ruff、Phase Gate `340 passed` | 删除 Audit API、Schema、Application Service、Workflow Router 分支和 CLI，净删约 17,900 行；历史 Run/API fail closed，仅保留 Safety Stop 与底层数据兼容 |
-| 4 | 删除 Audit Domain/Persistence 上层 | completed | 本提交 | 聚焦 `96 + 80 passed`；migration/schema `83 passed`；跨组件 `281 passed`；Backup/Pentest `34 passed`；全仓收集 `4464 tests`；Ruff、Phase Gate `340 passed` | 删除 Preflight/Plan/Static Effect Domain、上层 Repository/UoW/Mapper 和本地 Audit Job，净删 21,954 行；保留 migration、ORM metadata、历史读取、Snapshot 与 Safety Stop |
-| 4 | 删除 Audit Pack/Demo/Web | pending | — | — | C2 |
+| 4 | 删除 Audit Domain/Persistence 上层 | completed | `6d0ae34e` | 聚焦 `96 + 80 passed`；migration/schema `83 passed`；跨组件 `281 passed`；Backup/Pentest `34 passed`；全仓收集 `4464 tests`；Ruff、Phase Gate `340 passed` | 删除 Preflight/Plan/Static Effect Domain、上层 Repository/UoW/Mapper 和本地 Audit Job，净删 21,954 行；保留 migration、ORM metadata、历史读取、Snapshot 与 Safety Stop |
+| 4 | 删除 Audit Pack/Demo/Web | completed | 本提交 | Python 聚焦 `88 passed`；Web `258 passed` 且生产构建通过；全仓收集 `4379 tests`；Ruff、Phase Gate `340 passed`；干净 wheel 含 10 个 Official Pack 且无 Audit Detector/Code Audit Pack 资产 | 删除 Audit Detector、12 个 Code Audit Official Pack、Demo 与 Web 产品面，净删 10,318 行；保留 Pentest/共享 Pack、Snapshot 兼容读取与未引用的历史截图 |
 | 4 | Replay/Enum 兼容收尾 | pending | — | — | C2 |
 | 5 | 入口和空壳抽象清理 | pending | — | — | 删除后执行 |
 | 6 | 文档、配置和依赖收尾 | pending | — | — | — |

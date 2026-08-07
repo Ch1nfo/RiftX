@@ -1,9 +1,0 @@
-{
-  "type": "object",
-  "required": ["objective", "source_snapshot"],
-  "properties": {
-    "objective": {"type": "string"},
-    "source_snapshot": {"type": "string"},
-    "success_criteria": {"type": "array", "items": {"type": "string"}}
-  }
-}
