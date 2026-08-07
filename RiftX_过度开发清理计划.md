@@ -10,7 +10,7 @@
 >
 > 计划基线：`fea06c87`
 >
-> 当前状态：Pentest-first R1 已通过发布门；Phase 0 清理基线已建立
+> 当前状态：Pentest-first R1 已通过发布门；Phase 1 零消费者叶子代码清理完成
 >
 > 上游产品边界：[`RiftX_正式版_开发优化文档.md`](RiftX_正式版_开发优化文档.md)
 >
@@ -973,8 +973,8 @@ Codex 每完成一个 Slice 更新本表，并链接实现提交和验证结果�
 | --- | --- | --- | --- | --- | --- |
 | 0 | 清理基线与备份 | completed | `703065b3` | Pentest 基线 `9 passed`；Alembic/Backup/Restore ready；wheel 与 CLI 启动通过 | 删除前置门已满足 |
 | 1 | Security Agent Harness | completed | `dc182854` | Evaluation/Docs/E2E、Ruff、Phase Gate 通过 | 删除 10 个 Harness/Fixture 文件，净删约 1,300 行 |
-| 1 | Capability API Schema | completed | 本提交 | API/OpenAPI、CLI、Capability、Pentest 回归通过 | 删除 248 行未接线 Schema 及自验证测试 |
-| 1 | Fact Promotion 写入栈 | pending | — | — | A3 |
+| 1 | Capability API Schema | completed | `2ba28d8c` | API/OpenAPI、CLI、Capability、Pentest 回归通过 | 删除 248 行未接线 Schema 及自验证测试 |
+| 1 | Fact Promotion 写入栈 | completed | 本提交 | Graph 历史读取、API、migration、Pentest、Ruff 通过 | 删除 790 行无装配写入栈；保留 ORM、migration 和 Graph 投影 |
 | 2 | Capability 公共写契约 | pending | — | — | C1 |
 | 2 | Capability 持久化写路径 | pending | — | — | C1 |
 | 2 | Capability Domain 收缩 | pending | — | — | C1 |
