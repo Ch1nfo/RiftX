@@ -79,30 +79,6 @@ class CapabilityVersionStatus(StrEnum):
     ARCHIVED = "archived"
 
 
-class CapabilityCandidateStatus(StrEnum):
-    DRAFT = "draft"
-    TESTED = "tested"
-    APPROVED = "approved"
-    REJECTED = "rejected"
-    PROMOTED = "promoted"
-
-
-class PromotionStatus(StrEnum):
-    PENDING = "pending"
-    EVALUATING = "evaluating"
-    WAITING_APPROVAL = "waiting_approval"
-    APPROVED = "approved"
-    REJECTED = "rejected"
-    PROMOTED = "promoted"
-    FAILED = "failed"
-
-
-class EvaluationResultStatus(StrEnum):
-    PASSED = "passed"
-    FAILED = "failed"
-    INCONCLUSIVE = "inconclusive"
-
-
 class CapabilityDependencyKind(StrEnum):
     TOOL = "tool"
     SKILL = "skill"
@@ -261,72 +237,6 @@ class CapabilityVersion(CapabilityModel):
         return self
 
 
-class CapabilityCandidate(CapabilityModel):
-    candidate_id: OpaqueId
-    proposed_manifest: CapabilityManifest
-    candidate_digest: Digest
-    status: CapabilityCandidateStatus
-    proposed_by: NonEmpty
-    source_run_id: str | None = Field(default=None, min_length=1)
-    created_at: AwareDatetime
-    updated_at: AwareDatetime
-    promoted_version_id: str | None = Field(default=None, min_length=1)
-
-    @model_validator(mode="after")
-    def validate_candidate(self) -> CapabilityCandidate:
-        if self.candidate_digest != capability_manifest_digest(self.proposed_manifest):
-            raise ValueError("candidate digest does not match proposed manifest")
-        if self.updated_at < self.created_at:
-            raise ValueError("candidate update cannot predate creation")
-        if self.status is CapabilityCandidateStatus.PROMOTED:
-            if self.promoted_version_id is None:
-                raise ValueError("promoted candidates require a version ID")
-        elif self.promoted_version_id is not None:
-            raise ValueError("only promoted candidates can reference a promoted version")
-        return self
-
-
-class PromotionRun(CapabilityModel):
-    promotion_id: OpaqueId
-    candidate_id: OpaqueId
-    status: PromotionStatus
-    requested_by: NonEmpty
-    approval_reference: str | None = Field(default=None, min_length=1)
-    promoted_version_id: str | None = Field(default=None, min_length=1)
-    created_at: AwareDatetime
-    updated_at: AwareDatetime
-
-    @model_validator(mode="after")
-    def validate_promotion(self) -> PromotionRun:
-        if self.updated_at < self.created_at:
-            raise ValueError("promotion update cannot predate creation")
-        if self.status is PromotionStatus.PROMOTED and self.promoted_version_id is None:
-            raise ValueError("promoted runs require a version ID")
-        return self
-
-
-class CapabilityEvaluationResult(CapabilityModel):
-    result_id: OpaqueId
-    promotion_id: OpaqueId
-    evaluator: NonEmpty
-    status: EvaluationResultStatus
-    scenario_ids: tuple[NonEmpty, ...]
-    report: dict[str, JsonValue]
-    report_digest: Digest
-    created_at: AwareDatetime
-
-    @model_validator(mode="after")
-    def validate_evaluation(self) -> CapabilityEvaluationResult:
-        if not self.scenario_ids:
-            raise ValueError("capability evaluation requires at least one scenario")
-        if len(self.scenario_ids) != len(set(self.scenario_ids)):
-            raise ValueError("capability evaluation scenario IDs must be unique")
-        expected = canonical_payload_digest(self.report, domain=b"riftx.capability-eval/v1\0")
-        if self.report_digest != expected:
-            raise ValueError("evaluation report digest does not match canonical report")
-        return self
-
-
 class CapabilityPackMember(CapabilityModel):
     capability_id: LogicalId
     version: SemanticVersion
@@ -427,10 +337,6 @@ def capability_manifest_digest(manifest: CapabilityManifest) -> str:
 
 def capability_pack_digest(manifest: CapabilityPackManifest) -> str:
     return canonical_payload_digest(manifest, domain=CAPABILITY_PACK_DIGEST_DOMAIN)
-
-
-def evaluation_report_digest(report: dict[str, JsonValue]) -> str:
-    return canonical_payload_digest(report, domain=b"riftx.capability-eval/v1\0")
 
 
 def ensure_aware(value: datetime) -> datetime:
