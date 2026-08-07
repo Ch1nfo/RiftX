@@ -37,11 +37,16 @@ reports, and operator-maintained methods into one recoverable Pentest workflow.
 > assets for which you have explicit authorization, and never expose the Control Plane
 > to a LAN or the public Internet.
 
+> [!NOTE]
+> The Code Audit product surface is retired. Historical records, migrations, read-only
+> Snapshot compatibility, and Safety Stop cleanup remain; there is no supported Code
+> Audit CLI, API, Worker, Runner, Demo, or Web workflow.
+
 ## Pentest-first quick start
 
 This is the supported path from a clean checkout to the first evidence-backed report.
-The standalone Demo and generic platform commands are optional and are not substitutes
-for a real authorized Pentest.
+Generic platform commands are optional and are not substitutes for a real authorized
+Pentest.
 
 ### 1. Install and onboard
 
@@ -72,6 +77,9 @@ Stateful browser Pentests are optional. Install them only on a Runner that needs
 conda run --no-capture-output -n agent python -m pip install -e ".[browser]"
 conda run --no-capture-output -n agent playwright install chromium
 ```
+
+Browser, MCP, and Connector integrations are optional extensions. Missing or disabled
+integrations degrade only their own capabilities and do not block the basic Pentest path.
 
 ### 2. Start the local services
 
@@ -146,21 +154,6 @@ attributable after a client disconnects.
   deterministic graph projections retain provenance.
 - **Stop means confirmed** — RiftX fences new effects first and reports a Run stopped
   only after every known owner returns affirmative stop evidence.
-
-## Advanced: standalone sanitized Demo
-
-This is a **simulated/sanitized presentation**, not a Pentest result. The independent
-[`@riftx/demo`](apps/demo) uses sanitized local state and never contacts
-a Control Plane, Temporal, model provider, Runner, browser session, or target.
-
-```bash
-conda run --no-capture-output -n agent pnpm install
-conda run --no-capture-output -n agent pnpm demo:dev
-# Open http://127.0.0.1:5174/?lang=en
-```
-
-Use `?lang=en` or `?lang=zh-CN` to fix the presentation locale. Every screen remains
-visibly marked **DEMO / SANITIZED**.
 
 ## Advanced: product tour
 
@@ -356,10 +349,6 @@ conda run --no-capture-output -n agent pnpm --filter @riftx/web typecheck
 conda run --no-capture-output -n agent pnpm --filter @riftx/web test
 conda run --no-capture-output -n agent pnpm --filter @riftx/web build
 
-# Standalone Demo
-conda run --no-capture-output -n agent pnpm --filter @riftx/demo typecheck
-conda run --no-capture-output -n agent pnpm --filter @riftx/demo test
-conda run --no-capture-output -n agent pnpm --filter @riftx/demo build
 ```
 
 The authoritative feature-to-evidence matrix and release commands live in
@@ -373,7 +362,6 @@ commit being qualified; this README intentionally does not publish stale test co
 - [Model Profile and credential hardening](docs/model-profile-hardening.md)
 - [Chrome Connector](apps/browser-extension/README.md)
 - [Burp Connector](apps/burp-extension/README.md)
-- Demo: [product contract](apps/demo/PRODUCT.md) · [design system](apps/demo/DESIGN.md)
 
 ## Contributing
 

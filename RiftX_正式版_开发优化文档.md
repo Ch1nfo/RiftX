@@ -8,9 +8,9 @@
 >
 > 当前分支：`ch1nfo/riftx-3-code-audit`
 >
-> 当前代码基线：`013d1e3a`；本次优化计划起点：`d63e6f84`
+> 当前清理代码基线：`629f39a7`；本次优化计划起点：`d63e6f84`
 >
-> 当前状态：Pentest-first R1 开发与发布门已完成；后续按真实用户需求进入 R2+
+> 当前状态：Pentest-first R1 已完成；过度开发清理 Phase 6 已收尾，待执行最终发布 Gate
 >
 > 实施与测试事实：[`docs/implementation/FORMAL_AGENT_PROGRESS.md`](docs/implementation/FORMAL_AGENT_PROGRESS.md)
 >
@@ -28,9 +28,9 @@
 
 ## 0. 一页执行结论
 
-RiftX 已经有足够厚的 Agent、Runtime、安全、持久化和专业事实底座。当前问题不是“能力太少”，而是已有能力没有被收敛成一条专业用户愿意持续使用的 Pentest 主路径。
+RiftX 已经有足够厚的 Agent、Runtime、安全、持久化和专业事实底座。Pentest-first 主路径与过度开发清理已经完成代码收敛：Code Audit 的 Detector、Pack、Demo、Web、CLI、API、Worker 和 Runner 执行面均已删除，只保留 migration、ORM、历史读取、Snapshot 兼容和 Safety Stop。
 
-项目确实存在过度开发，主要表现为：
+清理前的过度开发主要表现为：
 
 - 生产代码约 18 万行、424 个 Python 文件、111 个 API 路由和 51 个 migration；
 - Capability、Code Audit、Evaluation、Web、Browser、MCP、Connector 等横向能力同时存在；
@@ -38,7 +38,7 @@ RiftX 已经有足够厚的 Agent、Runtime、安全、持久化和专业事实�
 - 历史账本保留了 Candidate、Promotion、Replay、Marketplace 等远期任务，容易被误当成当前待办；
 - 能力成长曾被 Candidate、Promotion、Evaluation 等远期设想包围，最小 Operator Skill 闭环直到阶段 D 才完成。
 
-但现在不应进行大规模删库或重写。安全边界、migration、恢复路径和旧数据兼容都使“先删再说”风险很高，而且删代码本身不会让 Pentest 更好用。
+清理遵循删除准入门逐 Slice 完成，没有改写 migration，也没有破坏恢复路径和旧数据兼容。Browser、MCP、Connector 等仍有真实专业消费者的能力继续按需保留。
 
 正式版路径只包含三个交付包：
 
@@ -46,7 +46,7 @@ RiftX 已经有足够厚的 Agent、Runtime、安全、持久化和专业事实�
 2. 复用现有 Report 完成一次人工复盘与版本迭代（已完成）；
 3. 收缩默认产品面、验证干净环境和启动成本，并完成最终发布回归（已完成）。
 
-Pentest-first R1 已完成，不再存在必须继续扩建的平台任务。后续默认进入维护模式：只修安全、数据兼容和真实用户阻断；Operator Tool、Technique、团队共享和 Code Audit 恢复必须满足第 9 节触发条件。
+Pentest-first R1 已完成，不再存在必须继续扩建的平台任务。后续默认进入维护模式：只修安全、数据兼容和真实用户阻断；Operator Tool、Technique、团队共享和 Code Audit 重建必须满足第 9 节触发条件。
 
 ---
 
@@ -94,7 +94,7 @@ RiftX 的目标是：
 
 以下内容不阻塞当前正式版：
 
-- Code Audit 新功能、Detector、Pack 或新里程碑；
+- Code Audit 产品线重建、Detector、Pack 或新里程碑；
 - Marketplace、在线 Registry、组织同步、多租户和远程集群；
 - 常驻多 Agent 团队、新 Planner、新 Graph 或第二套 Runtime；
 - Candidate/Promotion 自动流水线、自动生成、自动批准或自动启用 Skill；
@@ -113,12 +113,12 @@ RiftX 的目标是：
 
 | 项目 | 当前规模 | 结论 |
 | --- | ---: | --- |
-| 生产 Python 文件 | 424 | 禁止继续随意加层和抽象 |
-| 生产 Python 代码 | 约 18 万行 | 优先复用和收缩入口 |
-| Python 测试文件 | 298 | 测试多不等于用户闭环完成 |
-| API 路由 | 111 | 需要默认产品面和消费者审计 |
+| 生产 Python 文件 | 378 | 禁止继续随意加层和抽象 |
+| 生产 Python 代码 | 约 14 万行 | 继续优先复用和删除零消费者代码 |
+| Python 测试文件 | 268 | 测试随退役生产面同步收缩 |
+| API 路由 | 91 | Code Audit API 产品面已删除 |
 | Alembic migration | 51 | 历史不可重写，新增表必须极谨慎 |
-| Official Pack | 22 | 不再以 Pack 数量作为进度 |
+| Official Pack | 10 | 只保留 Pentest 与共享专业能力 |
 
 ### 2.2 已经完成且不再扩建的能力
 
@@ -132,20 +132,21 @@ RiftX 的目标是：
 | 状态化 Web 闭环 | Alice/Bob、Credential Reference、跨对象 Attempt、Finding、Closure、JSON/Markdown Report 已完成 | 阶段 C completed |
 | 能力底座 | Capability Version、Selection、Progressive Skill 与 Operator 生命周期已存在 | 阶段 D completed；只做回归 |
 | 报告投影 | JSON/Markdown 已显示 Selection、Allowlist、Execution、Evidence、Attempt、Finding 和停止事实 | 阶段 D completed；只做回归 |
+| Code Audit 兼容层 | 产品执行面已退役；仅保留 migration、ORM、历史读取、Snapshot 兼容和 Safety Stop | retired compatibility；不再作为产品面维护 |
 
 阶段 C3 的实现提交为 `a8b29a4c`，已验证状态化 Web E2E、Report、Temporal、Target HTTP、Runtime Control、Worker、Control Plane、文档合同、Ruff、scoped mypy 和 `git diff --check`。
 
 ### 2.3 当前真正缺口
 
-Pentest-first R1 当前没有未完成的代码缺口。E4 已在同一候选代码上完成 wheel、干净 Onboard/Doctor、Control Plane、两个 Pentest 场景、Operator Skill、安全失败关闭、恢复、migration、Backup/Restore、全仓 Python、Web 和文档 Gate。
+Pentest-first R1 当前没有未完成的代码缺口。过度开发清理已完成 Phase 0–6 的代码切片；当前只需在清理后的同一候选代码上重跑最终 wheel、Onboard/Doctor、Control Plane、Pentest、Operator Skill、安全、恢复、migration、Backup/Restore、全仓 Python、Web 和文档 Gate。
 
 仓库外仍可由产品所有者决定版本号、Git tag、远程推送和制品发布；这些发布动作不属于本地开发完成条件。当前包仍明确标记为 `2.0.0-alpha.0`，避免在未获授权时擅自宣告公开 GA。
 
 ### 2.4 对“过度开发”的准确判断
 
-**已经过度的部分**：产品面、历史计划范围、Capability 远期模型、默认暴露概念和文档数量。
+**已经清理的过度开发**：Code Audit 产品面、Capability 无消费者写入栈、Evaluation Harness、重复入口、空壳抽象、无消费者配置，以及默认无条件初始化。
 
-**尚不能直接判定为应删除的部分**：Runtime、安全边界、Code Audit 持久化、Capability 表、Browser、MCP、Connector 和前端页面。它们可能有迁移、兼容、安全或高级用户消费者。
+**必须继续保留的部分**：Runtime、安全边界、Code Audit 历史 migration/ORM/读取兼容、Capability 历史表、Browser、MCP、Connector 和 Pentest Web 页面。它们承担迁移、兼容、安全或高级用户责任。
 
 因此优化顺序固定为：
 
@@ -155,7 +156,8 @@ Pentest-first R1 当前没有未完成的代码缺口。E4 已在同一候选代
 → [已完成] 测量真实成本与审计消费者
 → [已完成] 对非当前命令运行时做局部惰性导入
 → [已完成] 执行 R1 发布门
-→ [未来按证据] 删除同时满足三项准入条件的代码
+→ [已完成] 按准入门逐 Slice 删除零消费者代码与 Code Audit 产品面
+→ [当前] 在清理后候选代码上执行最终发布 Gate
 ```
 
 ---
@@ -173,11 +175,11 @@ Pentest-first R1 当前没有未完成的代码缺口。E4 已在同一候选代
 
 这些能力看起来重，但承担安全、恢复或审计责任，不能以 YAGNI 为由删除。
 
-### 3.2 立即冻结
+### 3.2 继续冻结或退役
 
 R1 前不再开发：
 
-- Code Audit 新能力；
+- Code Audit 产品线恢复或新能力；
 - Capability Candidate、Promotion、Evaluation 自动流程；
 - Marketplace、Gateway、多租户、组织同步和远程 Registry；
 - 新 Agent 角色、Planner、Graph、Memory 类型或 Runtime；
@@ -185,18 +187,17 @@ R1 前不再开发：
 - 新 Official Pack、通用 Scanner、Crawler、Fuzzer 和 Connector；
 - 没有当前生产消费者的 Domain、Repository、Adapter 和兼容层。
 
-冻结表示不继续完成，不表示立刻删除历史表或兼容代码。
+冻结或退役表示不继续完成，也不删除历史表、migration 或必要兼容读取。
 
-### 3.3 从默认产品面隐藏，但先保留代码
+### 3.3 非默认产品面与兼容层
 
 | 模块 | R1 处置 | 原因 |
 | --- | --- | --- |
-| `audit` 与 Code Audit 页面 | 标记 frozen/experimental，不进入 Quickstart | 当前主线是 Pentest |
+| Code Audit 历史兼容层 | retired；无 CLI/API/Web/Worker/Runner 产品入口 | 保留 migration、ORM、历史读取、Snapshot 与 Safety Stop |
 | General Run、Memory、Terminal、Node、Execution | 放入 Advanced 文档 | 高级能力不是新手路径 |
-| Capability Candidate/Promotion/Evaluation | 无默认入口，不继续接线 | 当前 Skill 生命周期不需要 |
+| Capability Candidate/Promotion/Evaluation | 在线写路径已删除，仅保留历史 ORM/migration 兼容 | 当前 Skill 生命周期不需要 |
 | Browser、MCP、Connector、外部 Scanner | 可选能力，缺失时降级 | 不应阻塞基础 Pentest |
-| Evaluation Harness | 仅开发与回归使用 | 不是用户产品面 |
-| `demo code-audit` | 明确离线/冻结属性 | 避免误解为当前主产品 |
+| Evaluation Harness | 已删除 | 无生产消费者 |
 
 ### 3.4 删除准入门
 
@@ -466,11 +467,11 @@ run / execution / node / tools / terminal / artifact / memory
 capabilities / packs / attach
 ```
 
-`audit` 和 Code Audit 页面明确标记 frozen/experimental。不要为了隐藏命令删除其实现，也不要在 R1 前重做整个 WebUI。
+本节原始 E1 决策曾要求把 `audit` 和 Code Audit 页面标记为 frozen/experimental。该决策已被 [`RiftX_过度开发清理计划.md`](RiftX_过度开发清理计划.md) supersede：Code Audit 产品入口与 Web 页面现已删除，历史兼容层继续保留。
 
 任何类似 `Configured model not found` 的问题必须先在 RiftX CLI/API 内复现并定位。若字符串和失败来自 Codex、编辑器或外部 Provider，不得把它当作 RiftX 功能缺口继续开发。
 
-E1 已由实现提交 `fdfa06e5` 完成：README 中英版把 Onboard、Doctor、Pentest、Approval、Report 和 Operator Skill 放到首条真实 Quickstart；顶级 CLI help 使用现有 Typer 分组区分 Getting started、Service operation、Pentest workflow、Advanced 与 Experimental；通用 Run 和平台命令仍可调用，Code Audit 明确 frozen/experimental，Demo 明确 simulated/sanitized。未删除命令、修改 API、重做 WebUI 或新增导航框架。
+E1 已由实现提交 `fdfa06e5` 完成：README 中英版把 Onboard、Doctor、Pentest、Approval、Report 和 Operator Skill 放到首条真实 Quickstart；顶级 CLI help 使用现有 Typer 分组区分 Getting started、Service operation、Pentest workflow、Advanced 与 Experimental。其 Code Audit 与 Demo 处置是当时事实，后续已由过度开发清理计划 supersede。
 
 ### 8.2 安装和降级体验
 
@@ -478,7 +479,6 @@ E1 已由实现提交 `fdfa06e5` 完成：README 中英版把 Onboard、Doctor�
 - Doctor 区分 ready、degraded、failed，并给出修复命令；
 - 缺少 Nmap、Nuclei、Browser、MCP 或 Connector 时，基础 Pentest 仍可启动；
 - 模型配置错误显示 profile/provider/model 和实际候选；
-- 离线 Demo 明确标记 simulated/transcript，不冒充真实 Pentest；
 - Quickstart 从安装到第一份报告只有一条路径。
 
 E2 已由实现提交 `8ea90890` 完成：新增隔离 XDG、空可选工具 PATH 的纵向 E2E，真实运行 Onboard、Doctor、生产 Control Plane 装配和 Pentest Admission，并验证重复 Onboard 不覆盖配置。审计同时发现并修复 Onboard 未写入必需 `security.trust_profile` 的真实启动阻断；当前生成配置固定为唯一支持的 `local_single_operator`。缺少 Nmap、Nuclei、Browser、MCP、LSP 和 Scanner 时 Doctor 明确 degraded 而不失败；Temporal 缺失仍返回显式 `temporal_unavailable`，已持久 Admission 可按原请求重试。
@@ -489,16 +489,16 @@ E3 已由实现提交 `2975e818` 完成，完整证据见 [`docs/pentest-r1-cons
 
 | 模块 | 事实结论 | R1 处置 |
 | --- | --- | --- |
-| Code Audit runtime / snapshot / materializer | API、Worker、Snapshot、migration 和旧数据消费者存在 | 冻结兼容 |
+| Code Audit 历史兼容层 | Detector、Pack、Demo、Web、CLI/API/Worker/Runner 执行面已删除；保留 migration、ORM、历史读取、Snapshot 和 Safety Stop | retired compatibility |
 | Browser / MCP / Connector | 状态化 Web、Worker Tool、API、停止与持久化消费者存在 | 按需初始化 |
-| Candidate / Promotion / Evaluation | 无 R1 在线入口，但有 Repository、Schema、migration 和回归消费者 | 冻结兼容 |
+| Candidate / Promotion / Evaluation | 在线写契约、Repository 写路径与无消费者模型已删除；保留历史 ORM/migration 兼容 | retired compatibility |
 | General Agent / Memory / Terminal | Agent Runtime 或 Advanced 用户与恢复路径直接使用 | Advanced |
-| Demo / 前端非主线路由 | 非主路径；Demo 可离线演示，前端条件挂载 | 按需初始化 |
-| 重复 wrapper / 旧入口 | 均存在部署或 CLI/API 兼容责任 | 保留 |
+| Pentest Web 前端 | 生产 Pentest 页面按构建产物条件挂载 | 按需初始化 |
+| 重复 wrapper / 旧入口 | 隐藏 `interactive` 已删除；独立 Runner 入口保留部署责任 | 最小兼容 |
 
-本轮测得 `riftx --help` 7 次冷启动中位数为 2.3360 秒。把 API、Runner、Temporal Worker、Demo 和 Capability Management 从 CLI 顶层移到实际命令后，中位数降至 1.7278 秒，约降低 26%；防回退测试验证导入 CLI 时这些运行时不在 `sys.modules`。
+E3 当时测得 `riftx --help` 7 次冷启动中位数为 2.3360 秒。把 API、Runner、Temporal Worker、Demo 和 Capability Management 从 CLI 顶层移到实际命令后，中位数降至 1.7278 秒，约降低 26%；防回退测试验证导入 CLI 时这些运行时不在 `sys.modules`。
 
-E3 没有发现满足“零消费者、无兼容责任、有测量收益”的删除候选，因此没有删除模块、表或 migration，也没有建设通用 lazy-import 框架。Control Plane 首次装配中位数约 0.4821 秒，当前不足以支持重写装配器或拆包。
+E3 当时没有发现删除候选；该历史判断已被后续逐 Slice 引用审计与清理证据 supersede。清理删除了已证明无消费者的产品面和写入栈，仍未改写 migration，也没有建设通用 lazy-import 框架。
 
 ### 8.4 R1 发布门
 
@@ -578,7 +578,7 @@ R1 完成后按真实用户阻断逐层开放，不并行建设。
 
 ### 9.4 Code Audit 恢复条件
 
-Code Audit 只有在 Pentest R1 稳定，且有明确用户任务、维护预算和消费者后才恢复。恢复时先复用现有 Audit 基础，不能重启一套新的 Agent 平台计划。
+Code Audit 只有在 Pentest R1 稳定，且有明确用户任务、维护预算和消费者后才允许重建。重建时复用当前 Pentest/共享事实与历史兼容层，不能恢复已删除的整条纵向栈或重启一套新的 Agent 平台计划。
 
 ---
 

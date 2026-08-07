@@ -992,8 +992,8 @@ Codex 每完成一个 Slice 更新本表，并链接实现提交和验证结果�
 | 4 | Replay/Enum 兼容收尾 | completed | `4231d457` | 聚焦 `179 passed`；装配 `56 passed`；Artifact/API `94 passed`；migration/Signal `64 passed`；全仓收集 `4370 tests`；Ruff、`compileall`、Release Gate ready | 删除 Audit Artifact 新写入、Web/MCP Code Audit 副作用、Signal factory 和退役 effect 操作，净删 425 行；保留历史 Enum、ORM、migration、Signal、Snapshot 解析与 Safety Stop |
 | 5 | 遗留入口清理 | completed | `f1497052` | CLI `72 passed`；Ruff | 删除无消费者的隐藏 `riftx interactive` 别名；保留无子命令交互模式和独立部署入口 `riftx-runner` |
 | 5 | 空壳抽象清理 | completed | `63f47689` | 策略聚焦 `52 passed`；跨边界 `247 passed`；全仓收集 `4370 tests`；Ruff、`compileall`、Release Gate ready | 删除零生产消费者的 Audit alternative 元数据、6 个 future-only operation 和对应测试，净删 196 行；保留实际 effect admission、历史读取与 Safety Stop 抽象 |
-| 6 | 配置和依赖收尾 | completed | 本提交 | 配置/Runner/Doctor/CLI/Worker `151 passed`；Snapshot/Control Plane `105 passed`；全仓收集 `4254 tests`；Ruff、`compileall`、Release Gate ready | Audit deployment policy 收缩为 4 个历史 Snapshot 兼容字段，旧 YAML 其余字段忽略；删除 Runner Audit 配置、Source Root 隔离、Scanner Doctor 空壳和示例配置，净删 1,612 行；依赖审计无零消费者候选 |
-| 6 | 文档收尾 | pending | — | — | 配置收尾后执行 |
+| 6 | 配置和依赖收尾 | completed | `629f39a7` | 配置/Runner/Doctor/CLI/Worker `151 passed`；Snapshot/Control Plane `105 passed`；全仓收集 `4254 tests`；Ruff、`compileall`、Release Gate ready | Audit deployment policy 收缩为 4 个历史 Snapshot 兼容字段，旧 YAML 其余字段忽略；删除 Runner Audit 配置、Source Root 隔离、Scanner Doctor 空壳和示例配置，净删 1,612 行；依赖审计无零消费者候选 |
+| 6 | 文档收尾 | completed | 本提交 | README、权威优化文档、历史账本与发布记录对齐；文档合同、CLI/配置回归、Ruff、diff check | 删除已退役 Demo/Code Audit 产品说明；历史材料仅加 retired/superseded banner，不改写历史事实 |
 | 7 | 最终发布 Gate | pending | — | — | — |
 
 状态只允许：`pending`、`in_progress`、`completed`、`blocked`。

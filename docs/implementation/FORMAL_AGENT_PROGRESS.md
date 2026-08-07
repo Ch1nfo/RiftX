@@ -1,5 +1,10 @@
 # RiftX 正式版 Agent 开发实施账本
 
+> [!WARNING]
+> 本账本记录 Pentest-first R1 与此前实现事实。后续过度开发清理已 supersede 其中关于
+> Code Audit frozen、Demo 和旧入口的产品判断；当前状态以
+> [`RiftX_过度开发清理计划.md`](../../RiftX_过度开发清理计划.md) 为准，历史正文不改写。
+
 > 状态：completed
 >
 > 启动日期：2026-08-05（Asia/Shanghai）

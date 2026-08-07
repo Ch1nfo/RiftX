@@ -82,16 +82,16 @@ def test_readmes_expose_one_pentest_first_quickstart() -> None:
             README.read_text(encoding="utf-8"),
             "## Pentest-first quick start",
             "## Why RiftX",
-            "simulated/sanitized presentation",
+            "The Code Audit product surface is retired.",
         ),
         (
             README_ZH.read_text(encoding="utf-8"),
             "## Pentest-first 快速开始",
             "## 为什么选择 RiftX",
-            "模拟/脱敏展示",
+            "Code Audit 产品面已退役。",
         ),
     )
-    for text, start_heading, end_heading, demo_label in contracts:
+    for text, start_heading, end_heading, retirement_label in contracts:
         assert text.index(start_heading) < text.index(end_heading)
         quickstart = text.split(start_heading, maxsplit=1)[1].split(
             end_heading,
@@ -109,5 +109,6 @@ def test_readmes_expose_one_pentest_first_quickstart() -> None:
         ):
             assert command in quickstart
         assert "riftx run create" not in quickstart
-        assert demo_label in text
-        assert "frozen/experimental" in text
+        assert retirement_label in text
+        assert "apps/demo" not in text
+        assert "frozen/experimental" not in text

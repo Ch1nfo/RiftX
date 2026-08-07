@@ -36,10 +36,14 @@ RiftX 将授权目标、Scope、审批、执行、证据、Finding、Report 与�
 > 当前可信配置仅为 loopback 上的 `local_single_operator`。
 > 只能将 RiftX 用于已获得明确授权的资产，切勿把 Control Plane 暴露到局域网或公网。
 
+> [!NOTE]
+> Code Audit 产品面已退役。仓库只保留历史记录、migration、只读 Snapshot 兼容与
+> Safety Stop 清理；不再支持 Code Audit CLI、API、Worker、Runner、Demo 或 Web 工作流。
+
 ## Pentest-first 快速开始
 
-这是从干净代码库到第一份证据化 Report 的正式支持路径。独立 Demo 和通用平台命令
-都是可选项，不能代替真实授权 Pentest。
+这是从干净代码库到第一份证据化 Report 的正式支持路径。通用平台命令是可选项，
+不能代替真实授权 Pentest。
 
 ### 1. 安装并 Onboard
 
@@ -61,6 +65,9 @@ conda run --no-capture-output -n agent riftx doctor
 
 `onboard` 会创建用户配置、Model Profile、Tool Registry、数据库和 Official Packs，
 不会覆盖已有配置。缺少可选工具只会被报告为降级能力，不阻止基础 Pentest 路径启动。
+
+Browser、MCP 与 Connector 都是可选扩展。缺失或未启用时只降级对应能力，不阻止
+基础 Pentest 路径。
 
 ### 2. 启动本地服务
 
@@ -128,24 +135,9 @@ RiftX 把每个 Run 视为持久化行动状态。WebUI 与 CLI 只是状态投�
 - **证据天然可追溯** —— Artifact、Finding、Report、流量元数据与确定性图谱投影都保留来源。
 - **停止必须被确认** —— RiftX 先围栏新效果，只有所有已知所有者返回明确停止证明后才报告 Run 已停止。
 
-## 高级：独立脱敏 Demo
-
-这是**模拟/脱敏展示**，不是 Pentest 结果。独立的 [`@riftx/demo`](apps/demo) 使用已脱敏的本地状态，
-不会连接 Control Plane、Temporal、模型服务、Runner、浏览器会话或目标系统。
-
-```bash
-conda run --no-capture-output -n agent pnpm install
-conda run --no-capture-output -n agent pnpm demo:dev
-# 打开 http://127.0.0.1:5174/?lang=zh-CN
-```
-
-使用 `?lang=en` 或 `?lang=zh-CN` 可固定演示语言。
-每个界面都会持续显示 **DEMO / SANITIZED**。
-
 ## 高级：产品导览
 
-这些界面展示已实现能力，不是默认 Quickstart。Code Audit 页面属于 **frozen/experimental**
-能力，只接受安全、兼容和现有用户阻断修复。点击图片可查看完整分辨率。
+这些界面展示已实现能力，不是默认 Quickstart。点击图片可查看完整分辨率。
 
 <table>
   <tbody>
@@ -197,16 +189,6 @@ conda run --no-capture-output -n agent pnpm demo:dev
       <td width="50%" valign="top">
         <a href="docs/assets/readme/zh/17-connectors.webp"><img src="docs/assets/readme/zh/17-connectors.webp" alt="Managed Browser Chrome 与 Burp 连接器" width="100%"></a>
         <p><strong>浏览器与连接器</strong><br>将 Managed Browser、Chrome 与 Burp 捕获接入同一证据链。</p>
-      </td>
-    </tr>
-    <tr>
-      <td width="50%" valign="top">
-        <a href="docs/assets/readme/zh/18-local-code-audit.webp"><img src="docs/assets/readme/zh/18-local-code-audit.webp" alt="启动 RiftX 只读本地代码审计" width="100%"></a>
-        <p><strong>本地代码审计</strong><br>选择同一台机器上的文件夹，扫描封存快照且不执行项目代码。</p>
-      </td>
-      <td width="50%" valign="top">
-        <a href="docs/assets/readme/zh/19-local-audit-findings.webp"><img src="docs/assets/readme/zh/19-local-audit-findings.webp" alt="查看 RiftX 本地代码审计发现项" width="100%"></a>
-        <p><strong>审计发现项</strong><br>查看严重性、置信度、相对位置、规则身份和脱敏证据。</p>
       </td>
     </tr>
   </tbody>
@@ -340,10 +322,6 @@ conda run --no-capture-output -n agent pnpm --filter @riftx/web typecheck
 conda run --no-capture-output -n agent pnpm --filter @riftx/web test
 conda run --no-capture-output -n agent pnpm --filter @riftx/web build
 
-# 独立 Demo
-conda run --no-capture-output -n agent pnpm --filter @riftx/demo typecheck
-conda run --no-capture-output -n agent pnpm --filter @riftx/demo test
-conda run --no-capture-output -n agent pnpm --filter @riftx/demo build
 ```
 
 权威的“功能到证据”矩阵与发布命令位于
@@ -357,7 +335,6 @@ conda run --no-capture-output -n agent pnpm --filter @riftx/demo build
 - [Model Profile 与凭据安全加固](docs/model-profile-hardening.md)
 - [Chrome 连接器](apps/browser-extension/README.md)
 - [Burp 连接器](apps/burp-extension/README.md)
-- Demo：[产品契约](apps/demo/PRODUCT.md) · [设计系统](apps/demo/DESIGN.md)
 
 ## 参与贡献
 
