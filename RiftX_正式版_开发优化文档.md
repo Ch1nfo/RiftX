@@ -8,13 +8,15 @@
 >
 > 当前分支：`ch1nfo/riftx-3-code-audit`
 >
-> 当前代码基线：`2975e818`；本次优化计划起点：`d63e6f84`
+> 当前代码基线：`013d1e3a`；本次优化计划起点：`d63e6f84`
 >
-> 当前施工：E4 Pentest R1 发布门；E3 已完成
+> 当前状态：Pentest-first R1 开发与发布门已完成；后续按真实用户需求进入 R2+
 >
 > 实施与测试事实：[`docs/implementation/FORMAL_AGENT_PROGRESS.md`](docs/implementation/FORMAL_AGENT_PROGRESS.md)
 >
 > 消费者与成本事实：[`docs/pentest-r1-consumer-audit.md`](docs/pentest-r1-consumer-audit.md)
+>
+> R1 发布事实：[`docs/pentest-r1-release-check.md`](docs/pentest-r1-release-check.md)
 >
 > 平台边界：[`ADR-0012`](docs/architecture/decisions/0012-riftx-formal-security-agent-platform-boundaries.md)
 >
@@ -40,9 +42,9 @@ RiftX 已经有足够厚的 Agent、Runtime、安全、持久化和专业事实�
 
 1. Operator Skill 的最小生命周期和新 Pentest 门禁（已完成）；
 2. 复用现有 Report 完成一次人工复盘与版本迭代（已完成）；
-3. 收缩默认产品面、验证干净环境和启动成本，并完成最终发布回归（只剩发布回归）。
+3. 收缩默认产品面、验证干净环境和启动成本，并完成最终发布回归（已完成）。
 
-正式版完成前停止新增通用平台能力。默认入口、干净环境和消费者审计均已完成；剩余工作只有 E4 发布门，不再扩建能力成长平台，也不安排大规模删代码。
+Pentest-first R1 已完成，不再存在必须继续扩建的平台任务。后续默认进入维护模式：只修安全、数据兼容和真实用户阻断；Operator Tool、Technique、团队共享和 Code Audit 恢复必须满足第 9 节触发条件。
 
 ---
 
@@ -133,11 +135,9 @@ RiftX 的目标是：
 
 ### 2.3 当前真正缺口
 
-只剩下以下发布缺口：
+Pentest-first R1 当前没有未完成的代码缺口。E4 已在同一候选代码上完成 wheel、干净 Onboard/Doctor、Control Plane、两个 Pentest 场景、Operator Skill、安全失败关闭、恢复、migration、Backup/Restore、全仓 Python、Web 和文档 Gate。
 
-1. 用当前代码基线执行一次完整 R1 回归矩阵，而不是继续依赖各阶段分散的历史通过记录；
-2. 验证可分发构建、migration、Backup/Restore、两个 Pentest 场景、Operator Skill 生命周期和安全失败关闭能在同一候选版本连续通过；
-3. 形成一份简短发布记录，明确通过命令、失败修复、环境要求和已知限制。
+仓库外仍可由产品所有者决定版本号、Git tag、远程推送和制品发布；这些发布动作不属于本地开发完成条件。当前包仍明确标记为 `2.0.0-alpha.0`，避免在未获授权时擅自宣告公开 GA。
 
 ### 2.4 对“过度开发”的准确判断
 
@@ -152,7 +152,7 @@ RiftX 的目标是：
 → [已完成] 收缩默认入口
 → [已完成] 测量真实成本与审计消费者
 → [已完成] 对非当前命令运行时做局部惰性导入
-→ [当前] 执行 R1 发布门
+→ [已完成] 执行 R1 发布门
 → [未来按证据] 删除同时满足三项准入条件的代码
 ```
 
@@ -282,7 +282,7 @@ CLI/API
 | B. 网络服务专业闭环 | completed | 真实服务从枚举走到证据化结论、Closure 和 Report |
 | C. 状态化 Web 与报告 | completed | 身份/授权场景走到证据化结论、Closure 和 Report |
 | D. 用户驱动能力成长 | completed | Operator Skill 可验证、启用、使用、复盘、禁用和回滚 |
-| E. 默认产品面收缩与发布 | in progress；E4 当前施工 | Pentest-first 产品可安装、可理解、可回归、可发布 |
+| E. 默认产品面收缩与发布 | completed | Pentest-first 产品可安装、可理解、可回归、可发布 |
 
 阶段 A、B、C、D 只保留回归合同，不再扩建。除安全修复、数据兼容和真实用户阻断外，不得跳过阶段。
 
@@ -502,6 +502,8 @@ E3 没有发现满足“零消费者、无兼容责任、有测量收益”的�
 
 E4 是 R1 前最后阶段，只做现有能力的同版本发布证明。不得借发布门新增产品能力。
 
+E4 已完成，完整环境、命令、结果、阻断修复和已知限制见 [`docs/pentest-r1-release-check.md`](docs/pentest-r1-release-check.md)。首次全仓运行发现 Artifact Service 两项受保护 Evidence 读取方法未进入 RunKind 公开异步方法分类；`013d1e3a` 将其登记为只读入口，107 项聚焦回归通过。最终全仓结果为 `5383 passed, 5 skipped`，Ruff、scoped mypy、Web 270 项测试与生产 build、wheel 隔离安装和文档合同全部通过。
+
 #### E4.1 分发与干净启动
 
 - 从当前提交构建 wheel，不依赖工作树源码隐式可见；
@@ -670,35 +672,26 @@ conda run --no-capture-output -n agent ...
 
 ---
 
-## 12. 当前唯一施工指令
+## 12. R1 完成后的唯一准入规则
 
-从实现提交 `2975e818` 继续，只完成 E4 Pentest R1 发布门：
+R1 已完成，没有默认的下一项平台开发任务。后续只允许三类工作：
 
-1. 先创建 `docs/pentest-r1-release-check.md` 的最小记录骨架，写入候选提交、环境和待执行 Gate；不得新建 Release Domain、数据库表或自动化平台；
-2. 使用当前 wheel/安装方式验证干净 CLI、Onboard、Doctor、Control Plane health 和可选工具降级；如果构建链本身失败，只修包元数据或真实导入错误；
-3. 运行网络服务、状态化 Web、Operator Skill 三条既有纵向 E2E，不增加新场景；
-4. 运行 Scope/Approval/Credential/Redaction/Budget、暂停/恢复/取消/重启/Stop Proof 的现有失败关闭与恢复回归；
-5. 运行 migration、Database Maintenance、Backup/Restore 和旧 Run/Report 读取回归；不得重写或删除 migration 历史；
-6. 运行全仓 Python、Ruff、必要 scoped mypy、Web test/build、文档合同和 `git diff --check`；
-7. 每个失败单独判断是否为 R1 阻断。只修共享根因，形成小型实现提交并重跑受影响 Gate；非阻断问题写入已知限制；
-8. 所有 Gate 通过后，更新发布记录和实施账本，形成独立文档提交，并把 Stage E 标记 completed；
-9. E4 禁止新增 Capability 类型、Pack、Scanner、Browser 场景、Agent 角色、Planner、Graph、Memory、市场、评测平台或删除任务。
+1. 可复现的安全、数据损坏、恢复或受支持兼容问题；
+2. 真实专业 Pentest 用户被现有 Tool、Skill 或工作流明确阻断；
+3. 产品所有者明确授权的版本号、tag、远程推送或制品发布动作。
 
-建议起始验证命令（按风险从小到大执行）：
+遇到第 2 类需求时，从第 9 节最靠前且满足触发条件的阶段开始，每次仍只实现一个最小纵向用户结果。不得因为 R1 完成就自动启动 Operator Tool、Technique、团队共享、Code Audit、Marketplace 或大规模删除。
+
+每次维护仍执行最小 Gate：
 
 ```bash
-conda run --no-capture-output -n agent pytest -q tests/integration/api/test_onboarded_pentest.py
-conda run --no-capture-output -n agent pytest -q tests/integration/api/test_control_plane.py::test_service_enumeration_reaches_finding_and_precise_negative_result
-conda run --no-capture-output -n agent pytest -q tests/integration/api/test_pentest_stateful_web.py
-conda run --no-capture-output -n agent pytest -q tests/integration/api/test_operator_skill_reports.py
-conda run --no-capture-output -n agent pytest -q tests/integration/persistence/test_migrations.py tests/integration/persistence/test_database_maintenance.py
-conda run --no-capture-output -n agent pytest -q tests/docs/test_formal_agent_docs.py
-conda run --no-capture-output -n agent pytest -q
-conda run --no-capture-output -n agent ruff check .
-pnpm web:test
-pnpm web:build
+conda run --no-capture-output -n agent pytest -q <affected tests>
+conda run --no-capture-output -n agent ruff check <affected paths>
+conda run --no-capture-output -n agent mypy <affected source paths>
 git diff --check
 ```
+
+涉及 Runtime、安全、持久化、CLI 分发或 Web 时，必须补跑相应 E4 Gate；完整发布证据以 [`docs/pentest-r1-release-check.md`](docs/pentest-r1-release-check.md) 为基线。
 
 ---
 
@@ -713,8 +706,8 @@ git diff --check
 → [已完成] E1：默认产品入口与 Quickstart 单路径
 → [已完成] E2：干净 XDG Onboard 与可选工具降级
 → [已完成] E3：消费者、启动成本审计与局部惰性导入
-→ [当前且最后] E4：Pentest R1 发布门
+→ [已完成] E4：Pentest R1 发布门
 → [按需] R2+：Operator Tool、Technique 与团队共享
 ```
 
-RiftX 当前不需要更多架构，也不应立刻大规模删代码。默认入口、干净环境、能力成长和成本审计已经完成；最短路径是执行一次同版本发布矩阵，修复真实阻断，然后发布。高上限来自专业用户持续沉淀方法，不来自一次性把所有平台设想全部开发完。
+RiftX 当前不需要更多架构，也不应立刻大规模删代码。Pentest-first R1 已完成；后续高上限来自专业用户持续沉淀方法，并在真实阻断出现时按需增加 Operator Tool 和 Technique，不来自一次性把所有平台设想全部开发完。

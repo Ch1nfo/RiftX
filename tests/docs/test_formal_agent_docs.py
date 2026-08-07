@@ -14,9 +14,10 @@ PENTEST_ADR = (
     / "docs/architecture/decisions/0013-riftx-pentest-run-admission-and-attack-surface.md"
 )
 LEDGER = REPOSITORY_ROOT / "docs/implementation/FORMAL_AGENT_PROGRESS.md"
+RELEASE_CHECK = REPOSITORY_ROOT / "docs/pentest-r1-release-check.md"
 README = REPOSITORY_ROOT / "README.md"
 README_ZH = REPOSITORY_ROOT / "README_ZH.md"
-AUTHORITATIVE_DOCUMENTS = (PLAN, ADR, PENTEST_ADR, LEDGER)
+AUTHORITATIVE_DOCUMENTS = (PLAN, ADR, PENTEST_ADR, LEDGER, RELEASE_CHECK)
 
 PLAN_STAGE_ROW = re.compile(
     r"^\| ([A-E])\. ([^|]+?) \| ([^|]+?) \| ([^|]+?) \|$",
@@ -47,13 +48,17 @@ def test_plan_and_ledger_share_the_current_delivery_route() -> None:
         "completed",
         "completed",
         "completed",
-        "in progress；E4 当前施工",
+        "completed",
     ]
     assert "### 7.8 D2：复盘与人工改进（completed）" in plan_text
     assert "- Stage：`Pentest-first R1 — Stage E 默认产品面收缩与发布`" in ledger_text
     assert "- Current task：`E4 — Pentest R1 发布门`" in ledger_text
-    assert "2975e818" in plan_text
-    assert "2975e818" in ledger_text
+    assert "- Status：`completed`" in ledger_text
+    assert "013d1e3a" in plan_text
+    assert "013d1e3a" in ledger_text
+    release_text = RELEASE_CHECK.read_text(encoding="utf-8")
+    assert "5383 passed, 5 skipped" in release_text
+    assert "Stage E 可以标记为 completed" in release_text
 
 
 def test_adr_freezes_all_workload_and_system_boundaries() -> None:

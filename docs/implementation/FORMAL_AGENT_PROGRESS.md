@@ -1,6 +1,6 @@
 # RiftX 正式版 Agent 开发实施账本
 
-> 状态：active
+> 状态：completed
 >
 > 启动日期：2026-08-05（Asia/Shanghai）
 >
@@ -34,7 +34,7 @@
 
 - Stage：`Pentest-first R1 — Stage E 默认产品面收缩与发布`
 - Current task：`E4 — Pentest R1 发布门`
-- Status：`in_progress`
+- Status：`completed`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
 - Completed predecessor：CAP-001，domain/API commit `0fd20fda`，persistence commit `84481149`。
@@ -73,7 +73,10 @@
 - Stage E/E1 verification：Onboard、Doctor、CLI、Operator Skill Report 与文档合同 `100 passed`；全仓 Ruff passed；`cli/app.py` scoped mypy 在禁用既有 Typer/Click `override`、`arg-type`、`return-value` 兼容错误后 passed；`git diff --check` passed。
 - Stage E/E2 verification：Onboard、Doctor、CLI、隔离 XDG 生产装配/Pentest Admission 与文档合同 `100 passed`；全仓 Ruff passed；`onboarding.py` scoped mypy passed；`git diff --check` passed。
 - Stage E/E3 verification：CLI、Demo、隔离 XDG Onboard/Pentest Admission 与文档合同 `81 passed`；全仓 Ruff passed；`cli/app.py` scoped mypy passed；`git diff --check` passed。7 次冷启动 `riftx --help` 中位数从本轮修改前 2.3360 s 降至 1.7278 s；CLI 导入不再提前加载 API、Runner、Temporal Worker、Demo 和 Capability Management。
-- Next delivery slice：只执行同一候选提交上的分发、三条纵向用户闭环、安全/恢复、migration、全仓 Python 和 Web 发布门；只修可复现的 R1 阻断。
+- Stage E/E4 blocker fix：首次全仓回归发现 `ArtifactApplicationService.get_target_http_for_evidence` 与 `read_target_http_content_slice` 未进入 RunKind Effect Inventory；`013d1e3a` 将两项确定性受保护读取登记为 read-only，不改变权限、持久化或副作用语义。
+- Stage E/E4 verification：最终全仓 `5383 passed, 5 skipped, 17 warnings`；修复聚焦回归 `107 passed`；完整 Control Plane `68 passed`；Target HTTP/Runtime Control/fail-safe `157 passed`；Worker/Temporal Activities `36 passed`；migration/Database Maintenance `26 passed`；Web `22 files / 270 tests passed` 且生产 build passed；全仓 Ruff、6 个核心文件与修复文件 scoped mypy、文档合同、wheel 隔离安装、重复 Onboard Digest、live Doctor 和 `/healthz` passed。
+- Stage E/E4 release record：`docs/pentest-r1-release-check.md` 记录环境、命令、阻断、修复、已知限制和最终结论。
+- Next delivery slice：无 R1 必做开发。只在安全/兼容缺陷、真实专业用户阻断或产品所有者授权发布动作出现时开始新任务。
 
 ## 3. 研究与实现基线
 
@@ -1188,6 +1191,14 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 - E3 completion：completed。
 - E4 current target：在同一候选提交上完成分发与干净启动、网络服务、状态化 Web、Operator Skill、安全失败关闭、恢复、migration、Backup/Restore、全仓 Python、Web build 和发布记录。
 - E4 completion gate：所有 R1 Gate 通过或存在明确、非阻断的已知限制；每个真实阻断有独立根因修复提交；Stage E 随发布记录完成而结束。
+- E4 blocker：首次全仓结果 `5382 passed, 5 skipped, 1 failed`；唯一失败为 Artifact Application Service 两项 Target HTTP Evidence 读取方法未被 managed effect inventory 分类。
+- E4 fix：`013d1e3a` 将 `get_target_http_for_evidence` 与 `read_target_http_content_slice` 登记为 read-only；两项方法只执行精确 Owner、Digest 和内容读取验证，不产生外部效果。
+- E4 focused verification：RunKind Policy、Artifact、Evidence `107 passed`；完整 Control Plane `68 passed`；Target HTTP、Runtime Control、fail-safe `157 passed`；Worker/Temporal Activities `36 passed`；migration、Backup/Restore `26 passed`。
+- E4 release verification：最终全仓 `5383 passed, 5 skipped, 17 warnings`；全仓 Ruff passed；CLI、Onboard、Pentest、Report、Target HTTP、Worker 6 个核心文件与修复文件 scoped mypy passed；Web `22 files / 270 tests passed` 且生产 build passed；最终代码提交构建 wheel 后从临时 venv/site-packages 成功运行 Help、两次零覆盖 Onboard、Control Plane `/healthz` 和 live Doctor。
+- E4 known limitations：5 个 skip 来自 Windows/PowerShell/cgroup 平台条件；17 个 warning 来自 Python 3.12 下 aiosqlite 默认 datetime adapter 弃用；Web 有一个大于 500 kB 的 chunk 警告；包版本保持 `2.0.0-alpha.0`，未创建 tag、推送或发布制品。
+- E4 implementation commit：`013d1e3a`。
+- E4 release evidence：`docs/pentest-r1-release-check.md`。
+- E4 completion：completed；Stage E completed；Pentest-first R1 completed。
 
 ## 9. Known pre-existing worktree state
 
