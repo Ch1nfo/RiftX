@@ -88,6 +88,7 @@ def test_environment_compatibility_maps_into_api_settings(tmp_path: Path) -> Non
             "RIFTX_CODE_LSP_BACKEND_VERSION": "1.0.0",
             "RIFTX_CODE_LSP_TOKEN_ENV": "RIFTX_LSP_TOKEN",
             "RIFTX_CODE_LSP_TIMEOUT_SECONDS": "20",
+            "RIFTX_WEB_SEARCH_ENABLED": "true",
             "RIFTX_WEB_SEARCH_PROVIDERS": "searxng,openai_hosted",
             "RIFTX_SEARXNG_ENDPOINT": "https://search.example.test/base",
             "RIFTX_WEB_SEARCH_TIMEOUT_SECONDS": "45",
@@ -276,15 +277,15 @@ def test_runtime_tool_path_defaults_to_local_non_example_file(tmp_path: Path) ->
     assert settings.tools_config_path == Path("configs/tools.yaml")
 
 
-def test_web_search_defaults_to_official_openai_hosted_provider(tmp_path: Path) -> None:
+def test_web_search_has_no_default_provider(tmp_path: Path) -> None:
     config = load_riftx_config(
         system_path=tmp_path / "missing-system.yaml",
         user_path=tmp_path / "missing-user.yaml",
         environment={},
     )
 
-    assert config.web.search.enabled is True
-    assert config.web.search.providers == ("openai_hosted",)
+    assert config.web.search.enabled is False
+    assert config.web.search.providers == ()
     assert config.web.search.searxng_endpoint is None
 
 

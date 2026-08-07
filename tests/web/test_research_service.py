@@ -318,6 +318,7 @@ def test_configured_provider_resolver_combines_searxng_and_official_openai() -> 
     )
     resolver = ConfiguredSearchProviderResolver(
         WebSearchConfig(
+            enabled=True,
             providers=("searxng", "openai_hosted"),
             searxng_endpoint="https://search.example.test",
         ),
@@ -346,6 +347,7 @@ def test_configured_provider_resolver_falls_back_without_granting_hosted_capabil
     )
     resolver = ConfiguredSearchProviderResolver(
         WebSearchConfig(
+            enabled=True,
             providers=("openai_hosted", "searxng"),
             searxng_endpoint="https://search.example.test",
         ),
@@ -361,7 +363,7 @@ def test_configured_provider_resolver_falls_back_without_granting_hosted_capabil
 
 def test_configured_provider_resolver_reports_no_available_provider() -> None:
     resolver = ConfiguredSearchProviderResolver(
-        WebSearchConfig(providers=("openai_hosted",)),
+        WebSearchConfig(enabled=True, providers=("openai_hosted",)),
         _model_provider(
             ModelProfile(
                 provider=ModelProviderKind.OPENAI_COMPATIBLE,

@@ -734,8 +734,8 @@ class SkillsConfig(_ConfigModel):
 
 
 class WebSearchConfig(_ConfigModel):
-    enabled: bool = True
-    providers: tuple[Literal["openai_hosted", "searxng"], ...] = ("openai_hosted",)
+    enabled: bool = False
+    providers: tuple[Literal["openai_hosted", "searxng"], ...] = ()
     searxng_endpoint: str | None = None
     timeout_seconds: float = Field(default=30, gt=0, le=60)
 
