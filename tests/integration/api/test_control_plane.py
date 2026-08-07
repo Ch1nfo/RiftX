@@ -51,7 +51,6 @@ from riftx.application.services import (
     ApprovalRequestRecorder,
     ArtifactApplicationService,
     AuditApplicationService,
-    AuditPreflightApplicationService,
     ClosureVerifierApplicationService,
     EventApplicationService,
     EvidenceApplicationService,
@@ -4192,8 +4191,12 @@ models:
     )
 
     runtime = await build_control_plane(settings)
-    assert isinstance(runtime.audit_service, AuditApplicationService)
-    assert isinstance(runtime.audit_preflight_service, AuditPreflightApplicationService)
+    assert runtime.audit_service is None
+    assert runtime.local_audit_job_service is None
+    assert runtime.audit_preflight_service is None
+    assert runtime.audit_preflight_plan_service is None
+    assert runtime.audit_preflight_runner_service is None
+    assert runtime.audit_control_service is not None
     assert runtime.connector_service is None
     process_executor = runtime.process_supervisor._process_executor
     assert process_executor._require_containment is True
@@ -4235,9 +4238,9 @@ models:
             missing_preflight_cancel = await client.post(
                 "/api/v1/audits/preflight/missing-preflight-job/cancel"
             )
-            assert missing_preflight.status_code == 404
-            assert missing_preflight_cancel.status_code == 404
-            assert missing_preflight.json()["error"]["code"] == "resource_not_accessible"
+            assert missing_preflight.status_code == 503
+            assert missing_preflight_cancel.status_code == 503
+            assert missing_preflight.json()["error"]["code"] == "audit_preflight_unavailable"
             assert missing_preflight_cancel.json() == missing_preflight.json()
 
             created = await client.post(

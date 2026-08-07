@@ -4,6 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query, status
 
+from riftx.application.errors import ServiceUnavailableError
 from riftx.application.run_kind_effects import (
     EffectMode,
     EffectOrigin,
@@ -19,9 +20,9 @@ from riftx.domain import RunKind, RunStatus
 
 from ..dependencies import (
     AuditObjectAuthorizerDependency,
-    AuditServiceDependency,
     AuthorizedRunReadDependency,
     LocalPrincipalDependency,
+    OptionalAuditServiceDependency,
     RunServiceDependency,
     ToolServiceDependency,
 )
@@ -80,7 +81,7 @@ async def create_run(
 @router.get("", response_model=RunListResponse, responses=_ERROR_RESPONSES)
 async def list_runs(
     run_service: RunServiceDependency,
-    audit_service: AuditServiceDependency,
+    audit_service: OptionalAuditServiceDependency,
     principal: LocalPrincipalDependency,
     audit_authorizer: AuditObjectAuthorizerDependency,
     run_status: Annotated[RunStatus | None, Query(alias="status")] = None,
@@ -89,6 +90,11 @@ async def list_runs(
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> RunListResponse:
     if run_kind is RunKind.CODE_AUDIT:
+        if audit_service is None:
+            raise ServiceUnavailableError(
+                "audit_service_unavailable",
+                "RiftX Code Audit is retired from the default runtime",
+            )
         runs = []
         page_offset = offset
         remaining = limit

@@ -332,6 +332,8 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
     assert runtime.mcp_registry is None
     assert captured["control_tools"]._mcp is None
     assert runtime.safety_stopper is not None
+    assert runtime.audit_cleanup_reconciler is not None
+    assert captured["code_workspace"]._snapshot_store is None
     assert runtime.runner_control_service is not None
     process_executor = runtime.process_supervisor._process_executor
     assert process_executor._require_containment is True

@@ -983,8 +983,8 @@ Codex 每完成一个 Slice 更新本表，并链接实现提交和验证结果�
 | 3 | Web Research 按需 Provider | completed | `9b6efe77` | Config、Provider、Fetcher、Research、Worker、Runtime、Pentest 回归通过 | 默认无 Search Provider；远程 Client 仅在 Tool 调用解析 Provider 时创建；保留常驻 `web_fetch` 的轻量 Fetcher |
 | 3 | Connector opt-in | completed | `dd50de0a` | Config、API surface、Service、Persistence、migration、Pentest 回归通过 | 默认不 include Router、不构造 Service；`connectors.enabled` 显式启用；保留历史表 |
 | 3 | Browser Engine 惰性创建 | completed | `4b011725` | Browser Manager、Service、Stop、Worker、Control Plane、Pentest 回归通过 | Manager 启动不构造 Engine；首个 Session 串行创建唯一 Engine；失败不登记假 Session |
-| 4 | 停止新 Code Audit 创建 | completed | 本提交 | CLI、API retirement、Route Policy、历史读取、Pentest 回归通过 | 移除 CLI scan/demo 与写 Client；创建、Start、Preflight/Plan 返回无请求体解析的 `410 code_audit_retired` |
-| 4 | 移除默认 Audit 装配 | pending | — | — | C2 |
+| 4 | 停止新 Code Audit 创建 | completed | `532b0328` | CLI、API retirement、Route Policy、历史读取、Pentest 回归通过 | 移除 CLI scan/demo 与写 Client；创建、Start、Preflight/Plan 返回无请求体解析的 `410 code_audit_retired` |
+| 4 | 移除默认 Audit 装配 | completed | 本提交 | 聚焦 `535 passed, 5 skipped`；Ruff、Phase Gate `344 passed` | 默认不装配 Audit/Preflight/Plan/Local Job/Reconciler；Runner 删除 Preflight 注入链；保留历史 Safety Stop 清理后端 |
 | 4 | 删除 Audit Worker/Source Ingest | pending | — | — | C2 |
 | 4 | 删除 Audit API/Application | pending | — | — | C2 |
 | 4 | 删除 Audit Domain/Persistence 上层 | pending | — | — | C2 |

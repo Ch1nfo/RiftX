@@ -501,7 +501,7 @@ class ControlPlane:
     settings: APISettings
     database: Database
     run_service: RunApplicationService
-    audit_service: AuditApplicationService
+    audit_service: AuditApplicationService | None
     action_service: ActionApplicationService
     event_service: EventApplicationService
     execution_service: ExecutionApplicationService
@@ -822,10 +822,16 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
     browser_repository = SQLAlchemyBrowserRepository(database.session_factory)
     runner_credential_repository = SQLAlchemyRunnerCredentialRepository(database.session_factory)
     runner_command_repository = SQLAlchemyRunnerCommandRepository(database.session_factory)
-    audit_preflight_repository = SQLAlchemyAuditPreflightRepository(
-        database.session_factory
+    audit_preflight_repository = (
+        SQLAlchemyAuditPreflightRepository(database.session_factory)
+        if settings.audit.enabled
+        else None
     )
-    local_audit_job_service = await _create_local_audit_job_service(settings, database)
+    local_audit_job_service = (
+        await _create_local_audit_job_service(settings, database)
+        if settings.audit.enabled
+        else None
+    )
     context_repository = SQLAlchemyContextCompilationRepository(database.session_factory)
     memory_repository = SQLAlchemyMemoryRepository(database.session_factory)
     model_profile_service = ModelProfileApplicationService(
@@ -880,10 +886,14 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         events=event_repository,
         lease_duration=timedelta(seconds=settings.runner_command_lease_seconds),
     )
-    audit_preflight_runner_service = AuditPreflightRunnerService(
-        repository=audit_preflight_repository,
-        credentials=runner_credential_repository,
-        lease_duration=timedelta(seconds=settings.audit.source_ingest.lease_seconds),
+    audit_preflight_runner_service = (
+        AuditPreflightRunnerService(
+            repository=audit_preflight_repository,
+            credentials=runner_credential_repository,
+            lease_duration=timedelta(seconds=settings.audit.source_ingest.lease_seconds),
+        )
+        if audit_preflight_repository is not None
+        else None
     )
     # Process and PTY work share one trusted containment root so durable
     # identities resolve to the same kernel ownership namespace after restart.
@@ -998,25 +1008,37 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         hooks=hooks,
         events=event_repository,
     )
-    audit_service = _create_audit_service(
-        settings,
-        database,
-        aggregate_repository=audit_aggregate_repository,
-    )
-    audit_preflight_service = _create_audit_preflight_service(
-        settings,
-        database,
-        repository=audit_preflight_repository,
-        source_ingest_available=_create_audit_preflight_availability_check(
+    audit_service = (
+        _create_audit_service(
             settings,
-            node_service=node_service,
-            credentials=runner_credential_repository,
-        ),
+            database,
+            aggregate_repository=audit_aggregate_repository,
+        )
+        if settings.audit.enabled
+        else None
     )
-    audit_preflight_plan_service = _create_audit_preflight_plan_service(
-        settings,
-        database,
-        preflight_repository=audit_preflight_repository,
+    audit_preflight_service = (
+        _create_audit_preflight_service(
+            settings,
+            database,
+            repository=audit_preflight_repository,
+            source_ingest_available=_create_audit_preflight_availability_check(
+                settings,
+                node_service=node_service,
+                credentials=runner_credential_repository,
+            ),
+        )
+        if audit_preflight_repository is not None
+        else None
+    )
+    audit_preflight_plan_service = (
+        _create_audit_preflight_plan_service(
+            settings,
+            database,
+            preflight_repository=audit_preflight_repository,
+        )
+        if audit_preflight_repository is not None
+        else None
     )
     workflow_router = RunWorkflowControlRouter(
         runs=run_repository,
@@ -1056,8 +1078,14 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
             packs=official_pack_catalog,
         ),
     )
+    # Historical cleanup remains assembled even when the retired product edge is not.
+    audit_cleanup_backend = audit_service or _create_audit_service(
+        settings,
+        database,
+        aggregate_repository=audit_aggregate_repository,
+    )
     audit_control_service = AuditControlApplicationService(
-        audits=audit_service,
+        audits=audit_cleanup_backend,
         projector=AuditRunStateProjector(
             SQLAlchemyAuditControlUnitOfWork(database.session_factory)
         ),

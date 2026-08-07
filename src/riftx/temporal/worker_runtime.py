@@ -1111,7 +1111,8 @@ async def build_temporal_worker(
                 "target_http_requests": target_http_service,
             },
         )
-        audit_service = AuditApplicationService(
+        # This backend is retained only so Safety Stop can converge historical Runs.
+        audit_cleanup_backend = AuditApplicationService(
             creation_uow=SQLAlchemyAuditCreationUnitOfWork(database.session_factory),
             aggregate_repository=audit_aggregate_repository,
             feature_enabled=config.audit.enabled,
@@ -1133,7 +1134,7 @@ async def build_temporal_worker(
             safety_stopper=safety_stopper,
         )
         audit_cleanup_reconciler = AuditControlApplicationService(
-            audits=audit_service,
+            audits=audit_cleanup_backend,
             projector=AuditRunStateProjector(
                 SQLAlchemyAuditControlUnitOfWork(database.session_factory)
             ),

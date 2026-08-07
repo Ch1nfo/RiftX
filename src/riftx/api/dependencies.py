@@ -171,8 +171,19 @@ def get_pentest_status_service(request: Request) -> PentestStatusApplicationServ
     return service
 
 
+def get_optional_audit_service(request: Request) -> AuditApplicationService | None:
+    service = getattr(request.app.state.control_plane, "audit_service", None)
+    return service if isinstance(service, AuditApplicationService) else None
+
+
 def get_audit_service(request: Request) -> AuditApplicationService:
-    return request.app.state.control_plane.audit_service
+    service = get_optional_audit_service(request)
+    if service is None:
+        raise ServiceUnavailableError(
+            "audit_service_unavailable",
+            "RiftX Code Audit is retired from the default runtime",
+        )
+    return service
 
 
 def get_audit_control_service(request: Request) -> AuditControlApplicationService:
@@ -364,6 +375,10 @@ PentestStatusServiceDependency = Annotated[
     Depends(get_pentest_status_service),
 ]
 AuditServiceDependency = Annotated[AuditApplicationService, Depends(get_audit_service)]
+OptionalAuditServiceDependency = Annotated[
+    AuditApplicationService | None,
+    Depends(get_optional_audit_service),
+]
 AuditControlServiceDependency = Annotated[
     AuditControlApplicationService,
     Depends(get_audit_control_service),
@@ -462,7 +477,7 @@ class RunReadAuthorizationSnapshot:
 @dataclass(frozen=True, slots=True)
 class RunReadAuthorizer:
     run_service: RunApplicationService
-    audit_service: AuditApplicationService
+    audit_service: AuditApplicationService | None
     principal: LocalPrincipal
     audit_authorizer: AuditObjectAuthorizer
 
@@ -472,7 +487,7 @@ class RunReadAuthorizer:
         try:
             kind = await self.run_service.resolve_kind(run_id)
             if kind is RunKind.CODE_AUDIT:
-                aggregate = await self.audit_service.get_by_run_authorized(
+                aggregate = await self._require_audit_service().get_by_run_authorized(
                     run_id,
                     principal=self.principal,
                     authorizer=self.audit_authorizer,
@@ -488,7 +503,7 @@ class RunReadAuthorizer:
         try:
             kind = await self.run_service.resolve_kind(run_id)
             if kind is RunKind.CODE_AUDIT:
-                aggregate = await self.audit_service.get_by_run_authorized(
+                aggregate = await self._require_audit_service().get_by_run_authorized(
                     run_id,
                     principal=self.principal,
                     authorizer=self.audit_authorizer,
@@ -531,6 +546,14 @@ class RunReadAuthorizer:
         if current != frozen:
             raise resource_not_accessible()
 
+    def _require_audit_service(self) -> AuditApplicationService:
+        if self.audit_service is None:
+            raise ServiceUnavailableError(
+                "audit_service_unavailable",
+                "RiftX Code Audit is retired from the default runtime",
+            )
+        return self.audit_service
+
 
 def require_run_read_binding(expected_run_id: str, actual_run_id: str | None) -> None:
     """Revalidate immutable child ownership after the authorized full read."""
@@ -550,7 +573,7 @@ async def load_authorized_child[ReadT](awaitable: Awaitable[ReadT]) -> ReadT:
 
 def get_run_read_authorizer(
     run_service: RunServiceDependency,
-    audit_service: AuditServiceDependency,
+    audit_service: OptionalAuditServiceDependency,
     principal: LocalPrincipalDependency,
     audit_authorizer: AuditObjectAuthorizerDependency,
 ) -> RunReadAuthorizer:
