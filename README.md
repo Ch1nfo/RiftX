@@ -51,6 +51,8 @@ Pentest.
 ### 1. Install and onboard
 
 Prerequisites: Python `3.12`, the Conda environment `agent`, and a local Temporal CLI.
+Docker is not an installation or core Pentest runtime prerequisite. Onboard, Doctor,
+Control Plane, Worker, Runner, and the WebUI all support host-native operation.
 
 ```bash
 conda run --no-capture-output -n agent python -m pip install -e .

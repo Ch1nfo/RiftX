@@ -11,6 +11,9 @@ The current release deliberately supports only the explicit
 on loopback. `remote_multiuser`, non-loopback listeners, proxy/remote identity, and a
 LAN/public reverse-proxy ingress are unavailable and fail closed at startup. This
 profile is for one operator on one workstation; it is not a tenant or multi-user ACL.
+Docker is not required to install or run the supported RiftX product path. Any
+container or VM boundary used for additional payload isolation is an operator-selected
+deployment control, not a RiftX runtime dependency.
 
 ## Process and trust boundaries
 

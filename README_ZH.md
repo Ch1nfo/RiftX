@@ -48,6 +48,8 @@ RiftX 将授权目标、Scope、审批、执行、证据、Finding、Report 与�
 ### 1. 安装并 Onboard
 
 前置条件：Python `3.12`、名为 `agent` 的 Conda 环境，以及本地 Temporal CLI。
+Docker 不属于 RiftX 的安装或核心 Pentest 运行前置条件；Onboard、Doctor、Control Plane、
+Worker、Runner 和 WebUI 均采用宿主机原生运行方式。
 
 ```bash
 conda run --no-capture-output -n agent python -m pip install -e .
