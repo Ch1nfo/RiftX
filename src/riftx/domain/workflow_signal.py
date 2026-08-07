@@ -188,40 +188,6 @@ class WorkflowSignalIntent(DomainModel):
         )
 
     @classmethod
-    def code_audit(
-        cls,
-        *,
-        audit_id: str,
-        run_id: str,
-        workflow_id: str,
-        signal_kind: WorkflowSignalKind,
-        source_event_kind: WorkflowSignalSourceKind,
-        source_event_id: str,
-        source_state_version: int,
-        payload: dict[str, JsonValue],
-        intent_id: str | None = None,
-        created_at: AwareDatetime | None = None,
-    ) -> WorkflowSignalIntent:
-        now = created_at or utc_now()
-        return cls(
-            id=intent_id or new_id(),
-            owner_kind=WorkflowSignalOwnerKind.CODE_AUDIT,
-            run_id=run_id,
-            run_kind=RunKind.CODE_AUDIT,
-            audit_id=audit_id,
-            workflow_protocol_version=CODE_AUDIT_WORKFLOW_PROTOCOL_V1,
-            workflow_id=workflow_id,
-            signal_kind=signal_kind,
-            source_event_kind=source_event_kind,
-            source_event_id=source_event_id,
-            source_state_version=source_state_version,
-            payload=payload,
-            created_at=now,
-            updated_at=now,
-            next_attempt_at=now,
-        )
-
-    @classmethod
     def pentest_run(
         cls,
         *,

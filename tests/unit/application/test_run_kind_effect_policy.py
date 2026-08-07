@@ -470,10 +470,7 @@ def test_generic_cancel_has_no_retired_audit_api_fallback() -> None:
         )
     assert captured.value.reason is PolicyDenialReason.RUN_KIND_UNSUPPORTED
 
-    assert (
-        RunEffectOperation.CANCEL_AUDIT,
-        EffectOrigin.LOCAL_OPERATOR_API,
-    ) not in RUN_KIND_EFFECT_POLICIES
+    assert "cancel_audit" not in {operation.value for operation in RunEffectOperation}
 
 
 @pytest.mark.parametrize(
@@ -934,7 +931,7 @@ def test_public_web_services_and_interactive_target_tools_have_explicit_kinds() 
     ):
         policy = RUN_KIND_EFFECT_POLICIES[(operation, EffectOrigin.APPLICATION_SERVICE)]
         assert policy.allowed_run_kinds == frozenset(
-            {RunKind.GENERAL, RunKind.PENTEST, RunKind.CODE_AUDIT}
+            {RunKind.GENERAL, RunKind.PENTEST}
         )
         assert policy.required_effect is OperationEffect.HOST_EXECUTION
         assert policy.effect_mode is EffectMode.NORMAL

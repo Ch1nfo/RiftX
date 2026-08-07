@@ -22,8 +22,10 @@ from riftx.application.services.workflow_signals import (
 )
 from riftx.domain import RunKind, RunStatus
 from riftx.domain.workflow_signal import (
+    CODE_AUDIT_WORKFLOW_PROTOCOL_V1,
     WorkflowSignalIntent,
     WorkflowSignalKind,
+    WorkflowSignalOwnerKind,
     WorkflowSignalSourceKind,
 )
 from riftx.temporal.workflow_signal_transport import (
@@ -48,9 +50,12 @@ def _general_intent() -> WorkflowSignalIntent:
 
 
 def _audit_intent() -> WorkflowSignalIntent:
-    return WorkflowSignalIntent.code_audit(
+    return WorkflowSignalIntent(
+        owner_kind=WorkflowSignalOwnerKind.CODE_AUDIT,
         audit_id="audit-1",
         run_id="run-audit-1",
+        run_kind=RunKind.CODE_AUDIT,
+        workflow_protocol_version=CODE_AUDIT_WORKFLOW_PROTOCOL_V1,
         workflow_id="riftx-code-audit-audit-1",
         signal_kind=WorkflowSignalKind.CANCEL,
         source_event_kind=WorkflowSignalSourceKind.CONTROL_INTENT,

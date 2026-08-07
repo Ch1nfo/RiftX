@@ -161,13 +161,11 @@ def run(
     )
 
 
-@pytest.mark.parametrize("kind", [RunKind.GENERAL, RunKind.CODE_AUDIT])
 async def test_application_search_is_run_guarded_recorded_and_untrusted(
-    kind: RunKind,
 ) -> None:
     provider = StaticProvider()
     recorder = FakeRecorder()
-    runs = FakeRuns(run(kind=kind))
+    runs = FakeRuns(run())
     service = WebResearchApplicationService(
         runs=runs,
         providers=StaticResolver(provider),  # type: ignore[arg-type]
@@ -211,14 +209,12 @@ async def test_application_search_rechecks_run_before_each_provider_effect() -> 
     assert provider.calls == []
 
 
-@pytest.mark.parametrize("kind", [RunKind.GENERAL, RunKind.CODE_AUDIT])
 async def test_application_research_promotes_only_fetched_canonical_sources(
-    kind: RunKind,
 ) -> None:
     provider = StaticProvider()
     recorder = FakeRecorder()
     service = WebResearchApplicationService(
-        runs=FakeRuns(run(kind=kind)),
+        runs=FakeRuns(run()),
         providers=StaticResolver(provider),  # type: ignore[arg-type]
         fetcher=FakeFetcher(),  # type: ignore[arg-type]
         recorder=recorder,  # type: ignore[arg-type]

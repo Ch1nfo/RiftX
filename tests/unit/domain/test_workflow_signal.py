@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
+from riftx.domain import RunKind
 from riftx.domain.workflow_signal import (
     CODE_AUDIT_WORKFLOW_PROTOCOL_V1,
     GENERAL_RUN_WORKFLOW_PROTOCOL_V1,
@@ -97,9 +98,12 @@ def test_general_owner_cannot_claim_reserved_pentest_workflow_identity() -> None
 
 
 def test_code_audit_cannot_fallback_to_general_workflow_identity_or_protocol() -> None:
-    intent = WorkflowSignalIntent.code_audit(
+    intent = WorkflowSignalIntent(
+        owner_kind=WorkflowSignalOwnerKind.CODE_AUDIT,
         audit_id="audit-1",
         run_id="run-1",
+        run_kind=RunKind.CODE_AUDIT,
+        workflow_protocol_version=CODE_AUDIT_WORKFLOW_PROTOCOL_V1,
         workflow_id="riftx-code-audit-audit-1",
         signal_kind=WorkflowSignalKind.CANCEL,
         source_event_kind=WorkflowSignalSourceKind.CONTROL_INTENT,

@@ -923,14 +923,12 @@ async def test_partial_workspace_read_publishes_full_owner_bound_artifact(
     assert artifacts.calls == [
         {
             "run_id": "run-1",
-            "audit_id": None,
             "path": "large.txt",
             "content": content,
             "source_digest": None,
         },
         {
             "run_id": "run-1",
-            "audit_id": None,
             "path": "large.txt",
             "content": content,
             "source_digest": None,
@@ -1103,9 +1101,8 @@ async def test_code_audit_reads_owner_bound_snapshot_not_run_output(tmp_path: Pa
     assert read.source_digest == snapshot_digest
     assert read.content == content[:8].decode()
     assert read.content_digest == hashlib.sha256(content).hexdigest()
-    assert read.artifact_id == "artifact-1"
-    assert artifacts.calls[0]["audit_id"] == "audit-1"
-    assert artifacts.calls[0]["content"] == content
+    assert read.artifact_id is None
+    assert artifacts.calls == []
     assert grepped.matches[0].path == "audit.py"
     assert symbols.source == "audit_snapshot"
     assert symbols.source_digest == snapshot_digest

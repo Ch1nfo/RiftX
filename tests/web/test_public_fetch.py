@@ -9,9 +9,6 @@ import pytest
 
 from riftx.application.errors import (
     ApplicationConflictError,
-    RepositoryUnavailableError,
-    ResourceNotAccessibleError,
-    ServiceUnavailableError,
 )
 from riftx.application.services.artifacts import RegisterArtifactContent
 from riftx.domain import ArtifactContentTrust, RunKind, RunStatus
@@ -119,7 +116,7 @@ def fetcher(
     )
 
 
-async def test_public_fetch_supports_code_audit_with_the_same_public_boundary() -> None:
+async def test_public_fetch_rejects_retired_code_audit_before_network_io() -> None:
     network_calls = 0
 
     def handle(_: httpx.Request) -> httpx.Response:
@@ -141,15 +138,15 @@ async def test_public_fetch_supports_code_audit_with_the_same_public_boundary() 
             resolver=public_resolver,
         )
 
-        result = await service.fetch(
-            "audit-run",
-            FetchRequest(url="https://example.com/"),
-        )
+        with pytest.raises(ApplicationConflictError) as captured:
+            await service.fetch(
+                "audit-run",
+                FetchRequest(url="https://example.com/"),
+            )
 
-    assert result.status is FetchResultStatus.FETCHED
-    assert result.chunks[0].content == "public audit advisory"
-    assert len(artifacts.items) == 2
-    assert network_calls == 1
+    assert captured.value.code == "run_kind_operation_unsupported"
+    assert artifacts.items == []
+    assert network_calls == 0
 
 
 async def test_public_fetch_rejects_paused_run_before_network_io() -> None:
@@ -162,7 +159,7 @@ async def test_public_fetch_rejects_paused_run_before_network_io() -> None:
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
         service = PublicWebFetcher(
-            runs=MemoryRuns(RunKind.CODE_AUDIT, RunStatus.PAUSED),  # type: ignore[arg-type]
+            runs=MemoryRuns(RunKind.GENERAL, RunStatus.PAUSED),  # type: ignore[arg-type]
             sources=MemorySources(),
             artifacts=MemoryArtifacts(),
             client=client,
@@ -284,7 +281,6 @@ async def test_same_origin_redirect_is_followed() -> None:
 
     service, _, _ = fetcher(
         httpx.MockTransport(handle),
-        kind=RunKind.CODE_AUDIT,
     )
     result = await service.fetch("run-1", FetchRequest(url="https://example.com/old"))
 
@@ -408,7 +404,6 @@ async def test_literal_private_address_is_rejected_before_transport() -> None:
 
     service, _, _ = fetcher(
         httpx.MockTransport(handle),
-        kind=RunKind.CODE_AUDIT,
     )
     with pytest.raises(PublicDestinationError, match="non-public"):
         await service.fetch("run-1", FetchRequest(url="http://127.0.0.1/admin"))
@@ -417,82 +412,20 @@ async def test_literal_private_address_is_rejected_before_transport() -> None:
 
 class RecordingArtifactService:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, str | None, RegisterArtifactContent]] = []
+        self.calls: list[tuple[str, RegisterArtifactContent]] = []
 
     async def register_content(
         self,
         run_id: str,
         command: RegisterArtifactContent,
     ) -> SimpleNamespace:
-        self.calls.append((run_id, None, command))
+        self.calls.append((run_id, command))
         return SimpleNamespace(id="artifact-general")
 
-    async def register_audit_content(
-        self,
-        audit_id: str,
-        run_id: str,
-        command: RegisterArtifactContent,
-    ) -> SimpleNamespace:
-        self.calls.append((run_id, audit_id, command))
-        return SimpleNamespace(id="artifact-audit")
 
-
-class AuditOwner:
-    def __init__(
-        self,
-        *,
-        run_id: str = "audit-run",
-        audit_id: str = "audit-1",
-        missing: bool = False,
-        error: Exception | None = None,
-    ) -> None:
-        self.run_id = run_id
-        self.audit_id = audit_id
-        self.missing = missing
-        self.error = error
-        self.calls = 0
-
-    async def get_by_run_authorized(self, run_id: str, *, authorize: object) -> object | None:
-        self.calls += 1
-        if self.error is not None:
-            raise self.error
-        if self.missing:
-            return None
-        authorize(  # type: ignore[operator]
-            SimpleNamespace(
-                requested_audit_id=self.audit_id,
-                audit_id=self.audit_id,
-                scan_run_id=self.run_id,
-                run_id=self.run_id,
-                run_kind=RunKind.CODE_AUDIT.value,
-            )
-        )
-        return SimpleNamespace(
-            audit=SimpleNamespace(value=SimpleNamespace(id=self.audit_id)),
-            run=SimpleNamespace(id=self.run_id),
-        )
-
-
-@pytest.mark.parametrize(
-    ("kind", "expected_id", "expected_owner"),
-    [
-        (RunKind.GENERAL, "artifact-general", None),
-        (RunKind.PENTEST, "artifact-general", None),
-        (RunKind.CODE_AUDIT, "artifact-audit", "audit-1"),
-    ],
-)
-async def test_application_web_artifact_store_routes_exact_owner_and_trust(
-    kind: RunKind,
-    expected_id: str,
-    expected_owner: str | None,
-) -> None:
+async def test_application_web_artifact_store_registers_interactive_content() -> None:
     service = RecordingArtifactService()
-    audits = AuditOwner()
-    store = ApplicationWebArtifactStore(
-        service,  # type: ignore[arg-type]
-        runs=MemoryRuns(kind),  # type: ignore[arg-type]
-        audits=audits,  # type: ignore[arg-type]
-    )
+    store = ApplicationWebArtifactStore(service)  # type: ignore[arg-type]
 
     artifact_id = await store.save(
         "audit-run",
@@ -502,47 +435,9 @@ async def test_application_web_artifact_store_routes_exact_owner_and_trust(
         description="Public Web source",
     )
 
-    assert artifact_id == expected_id
-    assert service.calls[0][:2] == ("audit-run", expected_owner)
-    assert service.calls[0][2].content_trust is ArtifactContentTrust.UNTRUSTED_SOURCE
-    assert audits.calls == (1 if kind is RunKind.CODE_AUDIT else 0)
-
-
-@pytest.mark.parametrize(
-    ("audits", "error_type", "error_code"),
-    [
-        (AuditOwner(missing=True), ResourceNotAccessibleError, "resource_not_accessible"),
-        (AuditOwner(run_id="foreign-run"), ResourceNotAccessibleError, "resource_not_accessible"),
-        (
-            AuditOwner(error=RepositoryUnavailableError("offline")),
-            ServiceUnavailableError,
-            "web_artifact_owner_unavailable",
-        ),
-    ],
-)
-async def test_application_web_artifact_store_fails_closed_without_exact_audit_owner(
-    audits: AuditOwner,
-    error_type: type[Exception],
-    error_code: str,
-) -> None:
-    service = RecordingArtifactService()
-    store = ApplicationWebArtifactStore(
-        service,  # type: ignore[arg-type]
-        runs=MemoryRuns(RunKind.CODE_AUDIT),  # type: ignore[arg-type]
-        audits=audits,  # type: ignore[arg-type]
-    )
-
-    with pytest.raises(error_type) as captured:
-        await store.save(
-            "audit-run",
-            name="public-source.txt",
-            mime_type="text/plain",
-            content=b"must not escape audit ownership",
-            description="Public Web source",
-        )
-
-    assert captured.value.code == error_code  # type: ignore[attr-defined]
-    assert service.calls == []
+    assert artifact_id == "artifact-general"
+    assert service.calls[0][0] == "audit-run"
+    assert service.calls[0][1].content_trust is ArtifactContentTrust.UNTRUSTED_SOURCE
 
 
 def test_public_fetch_rejects_embedded_credentials() -> None:

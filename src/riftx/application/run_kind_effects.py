@@ -297,7 +297,6 @@ class RunEffectOperation(StrEnum):
     COMPACT_RUN = "compact_run"
     CONNECTOR_EVENTS = "connector_events"
     CONNECTOR_WEBUI = "connector_webui"
-    CREATE_AUDIT = "create_audit"
     CREATE_FINDING = "create_finding"
     CREATE_MEMORY = "create_memory"
     CREATE_PENTEST = "create_pentest"
@@ -305,13 +304,8 @@ class RunEffectOperation(StrEnum):
     CREATE_TERMINAL = "create_terminal"
     DELETE_MEMORY = "delete_memory"
     DOWNLOAD_ARTIFACT = "download_artifact"
-    DOWNLOAD_AUDIT_ARTIFACT = "download_audit_artifact"
     GENERATE_REPORTS = "generate_reports"
     GET_ARTIFACT = "get_artifact"
-    GET_AUDIT = "get_audit"
-    GET_LOCAL_AUDIT_FINDING = "get_local_audit_finding"
-    GET_LOCAL_AUDIT_REPORT = "get_local_audit_report"
-    GET_AUDIT_ARTIFACT = "get_audit_artifact"
     GET_BROWSER = "get_browser"
     GET_CONTEXT_COMPILATION = "get_context_compilation"
     GET_EXECUTION = "get_execution"
@@ -334,9 +328,6 @@ class RunEffectOperation(StrEnum):
     GET_TERMINAL = "get_terminal"
     LIST_APPROVALS = "list_approvals"
     LIST_ARTIFACTS = "list_artifacts"
-    LIST_AUDIT_ARTIFACTS = "list_audit_artifacts"
-    LIST_AUDITS = "list_audits"
-    LIST_LOCAL_AUDIT_FINDINGS = "list_local_audit_findings"
     LIST_CONNECTOR_RUNS = "list_connector_runs"
     LIST_EVENTS = "list_events"
     LIST_FINDINGS = "list_findings"
@@ -351,23 +342,19 @@ class RunEffectOperation(StrEnum):
     LIST_TOOLS = "list_tools"
     OBSERVE_BROWSER = "observe_browser"
     OPEN_BROWSER = "open_browser"
-    PAUSE_AUDIT = "pause_audit"
     PAUSE_RUN = "pause_run"
     PIN_MEMORY = "pin_memory"
     REGISTER_ARTIFACT = "register_artifact"
     REJECT = "reject"
     RELEASE_BROWSER = "release_browser"
-    RESUME_AUDIT = "resume_audit"
     RESUME_RUN = "resume_run"
     SEARCH_MEMORIES = "search_memories"
     STREAM_BROWSER = "stream_browser"
     STREAM_EVENTS = "stream_events"
-    START_AUDIT = "start_audit"
     SUBMIT_HTTP_CAPTURE = "submit_http_capture"
     SWITCH_RUN_MODEL = "switch_run_model"
     TAKEOVER_BROWSER = "takeover_browser"
     TERMINAL_WEBSOCKET = "terminal_websocket"
-    CANCEL_AUDIT = "cancel_audit"
     UPDATE_FINDING = "update_finding"
     UPDATE_MEMORY = "update_memory"
     WAIT_EXECUTION = "wait_execution"
@@ -405,10 +392,6 @@ class RunEffectOperation(StrEnum):
     SERVICE_RUN_SWITCH_MODEL = "service.run.switch_model"
     SERVICE_RUN_APPEND_MESSAGE = "service.run.append_message"
     SERVICE_RUN_CLEANUP = "service.run.cleanup"
-    SERVICE_AUDIT_CREATE_DRAFT = "service.audit.create_draft"
-    SERVICE_AUDIT_PAUSE = "service.audit.pause"
-    SERVICE_AUDIT_RESUME = "service.audit.resume"
-    SERVICE_AUDIT_CANCEL = "service.audit.cancel"
     SERVICE_AUDIT_RECONCILE = "service.audit.reconcile"
     PERSIST_AUDIT_CONTROL_TRANSITION = "persistence.audit_control.transition"
     PERSIST_AUDIT_CLEANUP_CONVERGENCE = "persistence.audit_control.cleanup_convergence"
@@ -1615,36 +1598,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         _dedicated(RunEffectOperation.SERVICE_AUDIT_RECONCILE),
     ),
     _rule(
-        RunEffectOperation.SERVICE_AUDIT_PAUSE,
-        EffectOrigin.APPLICATION_SERVICE,
-        RunEffectFamily.WORKFLOW_CONTROL,
-        _AUDIT_ONLY,
-        OperationEffect.WORKFLOW_CONTROL,
-        OwnershipResolverKind.AUDIT_ID,
-        EffectMode.NORMAL,
-        _SAME,
-    ),
-    _rule(
-        RunEffectOperation.SERVICE_AUDIT_RESUME,
-        EffectOrigin.APPLICATION_SERVICE,
-        RunEffectFamily.WORKFLOW_CONTROL,
-        _AUDIT_ONLY,
-        OperationEffect.WORKFLOW_CONTROL,
-        OwnershipResolverKind.AUDIT_ID,
-        EffectMode.NORMAL,
-        _SAME,
-    ),
-    _rule(
-        RunEffectOperation.SERVICE_AUDIT_CANCEL,
-        EffectOrigin.APPLICATION_SERVICE,
-        RunEffectFamily.WORKFLOW_CONTROL,
-        _AUDIT_ONLY,
-        OperationEffect.HOST_CONTROL,
-        OwnershipResolverKind.AUDIT_ID,
-        EffectMode.NORMAL,
-        _SAME,
-    ),
-    _rule(
         RunEffectOperation.SERVICE_AUDIT_RECONCILE,
         EffectOrigin.SAFETY_RECONCILER,
         RunEffectFamily.SAFETY_STOP,
@@ -1794,16 +1747,6 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         _dedicated(RunEffectOperation.AUDIT_ARTIFACT_INGEST),
     ),
     _rule(
-        RunEffectOperation.AUDIT_ARTIFACT_INGEST,
-        EffectOrigin.APPLICATION_SERVICE,
-        RunEffectFamily.ARTIFACT,
-        _AUDIT_ONLY,
-        OperationEffect.DURABLE_WRITE,
-        OwnershipResolverKind.AUDIT_ID,
-        EffectMode.NORMAL,
-        _SAME,
-    ),
-    _rule(
         RunEffectOperation.SERVICE_FINDING_CREATE,
         EffectOrigin.APPLICATION_SERVICE,
         RunEffectFamily.FINDING,
@@ -1915,7 +1858,7 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         RunEffectOperation.SERVICE_WEB_FETCH,
         EffectOrigin.APPLICATION_SERVICE,
         RunEffectFamily.WEB_RESEARCH,
-        (_INTERACTIVE_RUNS | _AUDIT_ONLY),
+        _INTERACTIVE_RUNS,
         OperationEffect.HOST_EXECUTION,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
@@ -1928,7 +1871,7 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         ),
         EffectOrigin.APPLICATION_SERVICE,
         RunEffectFamily.WEB_RESEARCH,
-        (_INTERACTIVE_RUNS | _AUDIT_ONLY),
+        _INTERACTIVE_RUNS,
         OperationEffect.HOST_EXECUTION,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
@@ -1958,7 +1901,7 @@ _SERVICE_RULES: tuple[RunKindEffectPolicy, ...] = (
         RunEffectOperation.SERVICE_MCP_INVOKE,
         EffectOrigin.APPLICATION_SERVICE,
         RunEffectFamily.MCP,
-        (_INTERACTIVE_RUNS | _AUDIT_ONLY),
+        _INTERACTIVE_RUNS,
         OperationEffect.HOST_EXECUTION,
         OwnershipResolverKind.RUN_ID,
         EffectMode.NORMAL,
@@ -2629,12 +2572,6 @@ MANAGED_EFFECT_ENTRYPOINTS: tuple[ManagedEffectEntrypoint, ...] = (
     _entry(
         "riftx.application.services.artifacts:ArtifactApplicationService.register_content",
         RunEffectOperation.SERVICE_ARTIFACT_REGISTER_CONTENT,
-        EffectOrigin.APPLICATION_SERVICE,
-    ),
-    _entry(
-        "riftx.application.services.artifacts:"
-        "ArtifactApplicationService.register_audit_content",
-        RunEffectOperation.AUDIT_ARTIFACT_INGEST,
         EffectOrigin.APPLICATION_SERVICE,
     ),
     _entry(

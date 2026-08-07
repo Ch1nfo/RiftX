@@ -124,7 +124,6 @@ class CodeArtifactPublisher(Protocol):
         self,
         run_id: str,
         *,
-        audit_id: str | None,
         path: str,
         content: bytes,
         source_digest: str | None,
@@ -544,6 +543,7 @@ class CodeWorkspaceService:
     ) -> CodeReadResult:
         if (
             self._artifacts is None
+            or audit_id is not None
             or result.offset != 0
             or result.eof
             or result.size <= _ARTIFACT_THRESHOLD_BYTES
@@ -551,7 +551,6 @@ class CodeWorkspaceService:
             return result
         artifact_id = await self._artifacts.publish(
             run_id,
-            audit_id=audit_id,
             path=result.path,
             content=content,
             source_digest=result.source_digest,

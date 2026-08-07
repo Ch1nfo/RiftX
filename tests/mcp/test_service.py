@@ -135,11 +135,9 @@ async def service_for(
     )
 
 
-@pytest.mark.parametrize("kind", [RunKind.GENERAL, RunKind.CODE_AUDIT])
 async def test_mcp_service_persists_identity_bound_result_and_returns_bounded_preview(
-    kind: RunKind,
 ) -> None:
-    service, adapter, artifacts, tool_calls = await service_for(run(kind=kind))
+    service, adapter, artifacts, tool_calls = await service_for(run())
     found = service.search_tools("read")
     detail = service.get_tool(str(found[0]["id"]))
 

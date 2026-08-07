@@ -29,7 +29,6 @@ class ArtifactCodePublisher:
         self,
         run_id: str,
         *,
-        audit_id: str | None,
         path: str,
         content: bytes,
         source_digest: str | None,
@@ -45,11 +44,7 @@ class ArtifactCodePublisher:
             description=description,
             content_trust=ArtifactContentTrust.UNTRUSTED_SOURCE,
         )
-        artifact = (
-            await self._artifacts.register_audit_content(audit_id, run_id, command)
-            if audit_id is not None
-            else await self._artifacts.register_content(run_id, command)
-        )
+        artifact = await self._artifacts.register_content(run_id, command)
         return artifact.id
 
     async def publish_patch_receipt(

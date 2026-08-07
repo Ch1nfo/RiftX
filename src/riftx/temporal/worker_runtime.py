@@ -1028,13 +1028,8 @@ async def build_temporal_worker(
             event_repository=event_repository,
             paths=paths,
             max_artifact_bytes=config.audit.max_artifact_bytes,
-            audit_repository=audit_aggregate_repository,
         )
-        web_artifact_store = ApplicationWebArtifactStore(
-            artifact_service,
-            runs=run_repository,
-            audits=audit_aggregate_repository,
-        )
+        web_artifact_store = ApplicationWebArtifactStore(artifact_service)
         mcp_service = (
             MCPApplicationService(
                 registry=mcp_registry,

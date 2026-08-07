@@ -23,12 +23,7 @@ import httpx
 from riftx.application.errors import (
     ApplicationConflictError,
     EntityNotFoundError,
-    RepositoryIntegrityError,
-    RepositoryUnavailableError,
-    ServiceUnavailableError,
-    resource_not_accessible,
 )
-from riftx.application.ports import AuditAggregateReadRepository, AuditAuthorizationBinding
 from riftx.application.run_kind_effects import (
     EffectMode,
     EffectOrigin,
@@ -41,7 +36,7 @@ from riftx.application.services.artifacts import (
 )
 from riftx.application.services.runs import require_run_kind_effect_operation
 from riftx.context.token_counter import estimate_context_tokens
-from riftx.domain import ArtifactContentTrust, Run, RunKind, RunStatus
+from riftx.domain import ArtifactContentTrust, Run, RunStatus
 from riftx.domain.base import utc_now
 
 from .models import (
@@ -112,13 +107,8 @@ class ApplicationWebArtifactStore:
     def __init__(
         self,
         service: ArtifactApplicationService,
-        *,
-        runs: RunRepository,
-        audits: AuditAggregateReadRepository,
     ) -> None:
         self._service = service
-        self._runs = runs
-        self._audits = audits
 
     async def save(
         self,
@@ -136,50 +126,7 @@ class ApplicationWebArtifactStore:
             description=description,
             content_trust=ArtifactContentTrust.UNTRUSTED_SOURCE,
         )
-        run = await self._runs.get(run_id)
-        if run is None:
-            raise EntityNotFoundError("Run", run_id)
-        if run.kind in {RunKind.GENERAL, RunKind.PENTEST}:
-            artifact = await self._service.register_content(run_id, command)
-            return artifact.id
-        if run.kind is not RunKind.CODE_AUDIT:
-            raise resource_not_accessible()
-
-        audit_id: str | None = None
-
-        def authorize(binding: AuditAuthorizationBinding) -> None:
-            nonlocal audit_id
-            if (
-                binding.requested_audit_id != binding.audit_id
-                or binding.scan_run_id != run.id
-                or binding.run_id != run.id
-                or binding.run_kind != RunKind.CODE_AUDIT.value
-            ):
-                raise resource_not_accessible()
-            audit_id = binding.audit_id
-
-        try:
-            aggregate = await self._audits.get_by_run_authorized(
-                run.id,
-                authorize=authorize,
-            )
-        except (RepositoryIntegrityError, RepositoryUnavailableError):
-            raise ServiceUnavailableError(
-                "web_artifact_owner_unavailable",
-                "Code Audit Web Artifact ownership is temporarily unavailable",
-            ) from None
-        if (
-            aggregate is None
-            or audit_id is None
-            or aggregate.audit.value.id != audit_id
-            or aggregate.run.id != run.id
-        ):
-            raise resource_not_accessible()
-        artifact = await self._service.register_audit_content(
-            audit_id,
-            run.id,
-            command,
-        )
+        artifact = await self._service.register_content(run_id, command)
         return artifact.id
 
 

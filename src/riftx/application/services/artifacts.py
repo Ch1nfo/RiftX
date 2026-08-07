@@ -18,8 +18,6 @@ from riftx.application.errors import (
 )
 from riftx.application.ports import (
     ArtifactRepository,
-    AuditAggregateReadRepository,
-    AuditAuthorizationBinding,
     ExecutionRepository,
     RunEventRepository,
     RunRepository,
@@ -31,7 +29,6 @@ from riftx.domain import (
     ArtifactContentTrust,
     ArtifactIngestMethod,
     ArtifactIngestProvenance,
-    RunKind,
 )
 from riftx.domain.base import new_id
 from riftx.runner import (
@@ -86,14 +83,12 @@ class ArtifactApplicationService:
         paths: RunnerPaths,
         max_artifact_bytes: int = _DEFAULT_MAX_ARTIFACT_BYTES,
         content_store: LocalArtifactContentStore | None = None,
-        audit_repository: AuditAggregateReadRepository | None = None,
     ) -> None:
         self._run_repository = run_repository
         self._execution_repository = execution_repository
         self._artifact_repository = artifact_repository
         self._event_repository = event_repository
         self._paths = paths
-        self._audit_repository = audit_repository
         self._content_store = content_store or LocalArtifactContentStore(
             paths,
             max_artifact_bytes=max_artifact_bytes,
@@ -174,45 +169,6 @@ class ArtifactApplicationService:
             node_id=run.node_id,
             audit_id=None,
             access_class=ArtifactAccessClass.PUBLIC_EXPORT,
-            command=command,
-        )
-
-    async def register_audit_content(
-        self,
-        audit_id: str,
-        run_id: str,
-        command: RegisterArtifactContent,
-    ) -> Artifact:
-        run = await self._run_repository.get(run_id)
-        if run is None:
-            raise EntityNotFoundError("Run", run_id)
-        if run.kind is not RunKind.CODE_AUDIT or self._audit_repository is None:
-            raise resource_not_accessible()
-
-        def authorize(binding: AuditAuthorizationBinding) -> None:
-            if (
-                binding.requested_audit_id != audit_id
-                or binding.audit_id != audit_id
-                or binding.scan_run_id != run_id
-                or binding.run_id != run_id
-                or binding.run_kind != RunKind.CODE_AUDIT.value
-            ):
-                raise resource_not_accessible()
-
-        try:
-            aggregate = await self._audit_repository.get_by_run_authorized(
-                run_id,
-                authorize=authorize,
-            )
-        except (RepositoryIntegrityError, RepositoryUnavailableError):
-            raise _audit_persistence_unavailable() from None
-        if aggregate is None or aggregate.audit.value.id != audit_id:
-            raise resource_not_accessible()
-        return await self._register_owned_content(
-            run_id=run.id,
-            node_id=run.node_id,
-            audit_id=audit_id,
-            access_class=ArtifactAccessClass.AUDIT_INTERNAL,
             command=command,
         )
 
@@ -762,13 +718,6 @@ def _artifact_persistence_unavailable() -> ServiceUnavailableError:
     return ServiceUnavailableError(
         "artifact_persistence_unavailable",
         "Artifact metadata is temporarily unavailable",
-    )
-
-
-def _audit_persistence_unavailable() -> ServiceUnavailableError:
-    return ServiceUnavailableError(
-        "audit_persistence_unavailable",
-        "Audit metadata is temporarily unavailable",
     )
 
 

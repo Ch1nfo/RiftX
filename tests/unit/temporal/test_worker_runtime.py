@@ -199,19 +199,9 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
     real_context_compiler = worker_runtime.ContextCompiler
     real_control_tools = worker_runtime.RuntimeControlToolService
 
-    def capture_web_artifact_store(
-        service: object,
-        *,
-        runs: object,
-        audits: object,
-    ) -> object:
-        captured["web_artifact_runs"] = runs
-        captured["web_artifact_audits"] = audits
-        return real_web_artifact_store(  # type: ignore[arg-type]
-            service,
-            runs=runs,
-            audits=audits,
-        )
+    def capture_web_artifact_store(service: object) -> object:
+        captured["web_artifact_service"] = service
+        return real_web_artifact_store(service)  # type: ignore[arg-type]
 
     def capture_context_compiler(*args: object, **kwargs: object) -> object:
         captured["context_sources"] = kwargs["sources"]
@@ -295,8 +285,10 @@ async def test_build_temporal_worker_assembles_runtime_and_closes_idempotently(
     )
     assert captured["control_tools"]._budget_exhaustion_handler is not None
     assert runtime.run_repository is not None
-    assert captured["web_artifact_runs"] is runtime.run_repository
-    assert captured["web_artifact_audits"] is not None
+    assert isinstance(
+        captured["web_artifact_service"],
+        worker_runtime.ArtifactApplicationService,
+    )
     assert isinstance(captured["task_planner"], worker_runtime.SQLAlchemyTaskPlanner)
     assert isinstance(
         captured["working_memory_proposals"],
