@@ -44,17 +44,14 @@ def test_plan_and_ledger_share_the_current_delivery_route() -> None:
         "completed",
         "completed",
         "completed",
-        "in progress；D1 当前施工",
+        "in progress；D2 当前施工",
         "pending",
     ]
-    assert (
-        "### 9.0 D1：Operator Skill 生命周期门禁（当前唯一实现切片）"
-        in plan_text
-    )
-    assert "- Stage：`Pentest-first V1 — Stage D 用户驱动能力成长`" in ledger_text
-    assert "- Current task：`D1 — Operator Skill 生命周期门禁`" in ledger_text
-    assert "a8b29a4c" in plan_text
-    assert "a8b29a4c" in ledger_text
+    assert "### 7.8 D2：复盘与人工改进（当前施工）" in plan_text
+    assert "- Stage：`Pentest-first R1 — Stage D 用户驱动能力成长`" in ledger_text
+    assert "- Current task：`D2 — 基于现有 Report 的人工复盘与版本迭代`" in ledger_text
+    assert "6f59e278" in plan_text
+    assert "6f59e278" in ledger_text
 
 
 def test_adr_freezes_all_workload_and_system_boundaries() -> None:

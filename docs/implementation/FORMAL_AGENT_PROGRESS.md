@@ -32,8 +32,8 @@
 
 ## 2. Current wave
 
-- Stage：`Pentest-first V1 — Stage D 用户驱动能力成长`
-- Current task：`D1 — Operator Skill 生命周期门禁`
+- Stage：`Pentest-first R1 — Stage D 用户驱动能力成长`
+- Current task：`D2 — 基于现有 Report 的人工复盘与版本迭代`
 - Status：`in_progress`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
@@ -56,6 +56,7 @@
 - Completed predecessor：Stage C/C1 最小身份/对象授权靶场，implementation commit `d73a0c86`。
 - Completed predecessor：Stage C/C2 身份、状态与最小验证，implementation commit `85decf8d`。
 - Completed predecessor：Stage C/C3 结论、Closure 与 Report，implementation commit `a8b29a4c`。
+- Completed predecessor：Stage D/D1 Operator Skill 生命周期门禁，implementation commit `6f59e278`。
 - Product behavior：PACK-302 已交付可重复运行且零覆盖的 `riftx onboard`、顶级 `riftx doctor`、live overlay、本地操作员只读 `/api/v1/system/diagnostics`、有真实修复语义的 `riftx doctor --fix`、Onboard 后可直接运行的两个安全 Demo，以及本地只读 Capability/Pack 检查命令；Onboard 复用现有 Runtime/Model/Tool/Pack 生产路径初始化用户级配置、完整 Alembic schema、22 个 Official Pack 与 66 个 active lock；Pack 持久化写入具备 SQLite 一致性备份、双端 inode identity、恢复后完整性复检和失败自动回滚；Doctor `backup_restore` 已改为只读真实 readiness，只在已到 Alembic head 的 file-backed SQLite、当前用户所有的普通数据库文件和安全的 owner-only 备份目录前置条件全部成立时返回 `ready`，不为诊断创建备份或替换数据库。
 - Completed PEN-500 implementation commits：ADR `315039fc`；Domain/持久化 `86aaecdf`；Workflow/Runner Identity `e2314e9b`；Effect Policy/Interactive Guard `8b9ef440`；专用 Admission/Application/API 创建入口 `8f1b2554`；Capability Selection 原子绑定 `33c863ea`；Pentest status/API `70f6f4a0`；Pentest CLI `2271bc8e`；Attack Surface `9a4714fc`；隔离生命周期 `ca12ad9b`；目标交互预算 `ad91c3f4`、`2c0f8004`；运行中用量 `73288673`；Model/Token/Duration 门禁 `b6b5f739`；Tool/Duration 门禁 `53812397`；统一预算停止 `1c379dcc`。
 - Verification：阶段 A 完整 Control Plane `67 passed`；Runtime/Execution/Target HTTP/Temporal Worker `467 passed`；预算处理聚焦回归 `215 passed`；全仓 Ruff passed；6 个变更核心源文件 scoped mypy passed；Alembic 单 head `7b3d1e5f9a24`；`git diff --check` passed。
@@ -63,7 +64,8 @@
 - Stage C/C1 verification：聚焦 E2E `1 passed`；Target HTTP 受影响回归 `47 passed`；完整 Control Plane 加 C1 `69 passed`；全仓 Ruff passed；2 个新测试文件 scoped mypy passed；`git diff --check` passed。
 - Stage C/C2 verification：状态化 Web E2E `2 passed`；Target HTTP `63 passed`；Runtime Control Tools `52 passed`；完整 Control Plane `68 passed`；Worker `13 passed`；Tool discovery `11 passed`；全仓 Ruff passed；6 个变更生产文件与 3 个新增/变更测试文件 scoped mypy passed；`git diff --check` passed。`runtime/control_tools.py` 单文件仍仅命中既有 62 个变量复用类型错误。
 - Stage C/C3 verification：状态化 Web E2E `2 passed`；Report Application `2 passed`；Temporal Activities `23 passed`；Target HTTP `63 passed`；Runtime Control Tools `52 passed`；Worker Runtime `13 passed`；完整 Control Plane `68 passed`；文档合同 `3 passed`；全仓 Ruff passed；`reports.py`、`api/runtime.py`、`temporal/worker_runtime.py` 与状态化 Web 测试 scoped mypy passed；`git diff --check` passed。`test_control_plane.py` 单文件 mypy 仍仅命中既有 5177–5179 行 3 个 `object` 索引错误。
-- Next delivery slice：复用 Progressive Skill、Capability Version/Status 和 Pentest Selection，让 Operator Skill 经静态验证、注册、显式启用后才能进入新 Pentest，并关闭禁用、回滚和旧 Run 快照语义；不新增表、Marketplace、Promotion 工作流或 UI。
+- Stage D/D1 verification：Operator Skill lifecycle/CLI `3 passed`；Capability Management、Doctor、CLI 与 Skill unit `111 passed`；Capability/Skill/Pentest persistence `10 passed`；状态化 Web `2 passed`；完整 Control Plane `68 passed`；文档合同 `3 passed`；全仓 Ruff passed；5 个变更源/测试文件 scoped mypy passed；`git diff --check` passed。
+- Next delivery slice：复用现有 Report 和 Capability Selection，证明 v1 Operator Skill 的 Run/Report 事实在用户修改并启用 v2 后仍可解释，并让下一 Run 固定 v2；优先只补纵向 E2E 与专业用户文档，不新增 Review Domain、表、命令、自动评分或自动改写。
 
 ## 3. 研究与实现基线
 
@@ -127,13 +129,13 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | O0 平台根基与计划迁移 | completed | S0-S2 已完成；优化计划、ADR、账本和文档合同完成迁移 |
 | O1 开箱即用收口 | completed | PACK-302 的真实 Backup/Restore Doctor 检查通过 |
 | P1 真实 Pentest Run | completed | 非空 Scope admission、Pentest CLI、真实隔离目标和重启恢复 |
-| P2 专业验证闭环 | in_progress | 状态化 Web、Attack Surface、Hypothesis、Evidence 与 Negative Result |
-| P3 Attack Chain 与收口 | pending | Report、Coverage、Attack Chain 和 Stop Proof |
-| P4 Operator 能力成长 | pending | Trajectory、Review、Replay、批准、激活和回滚 |
+| P2 专业验证闭环 | completed | 网络服务与状态化 Web 的 Hypothesis、Evidence、Negative Result 和 Finding |
+| P3 专业结果与收口 | completed | Closure、JSON/Markdown Report、恢复和 Stop Proof |
+| P4 Operator 能力成长 | in_progress | D1 生命周期已完成；D2 人工复盘与版本迭代施工中 |
 | R1 Pentest 发布门 | pending | Pentest-only 回归、真实场景和安全发布检查通过 |
 | O2 代码优化 | pending | 默认产品面收缩，非核心模块经引用审计后隔离或删除 |
 | Frozen Code Audit | frozen | 只修复安全、数据兼容和现有用户阻断问题 |
-| Post-V1 Ecosystem | deferred | 真实第三方分发或规模化运维需求出现后再启动 |
+| Post-R1 Ecosystem | deferred | 真实第三方分发或规模化运维需求出现后再启动 |
 
 ## 7. Task status
 
@@ -163,6 +165,8 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | AUD-404 | AUD-400, AUD-403 | pending | — |
 | AUD-405 | CAP-101, AUD-403 | pending | — |
 | PEN-500 | CAP-102, COG-202 | completed | `315039fc`, `86aaecdf`, `e2314e9b`, `8b9ef440`, `8f1b2554`, `33c863ea`, `70f6f4a0`, `2271bc8e`, `9a4714fc`, `ca12ad9b`, `ad91c3f4`, `2c0f8004`, `73288673`, `b6b5f739`, `53812397`, `1c379dcc` |
+| D1 | Stage C | completed | `6f59e278` |
+| D2 | D1 | in_progress | — |
 | PEN-501 | CAP-102, PEN-500 | pending | — |
 | PEN-502 | COG-203, PEN-500, PEN-501 | pending | — |
 | PEN-503 | CAP-102, PEN-502 | pending | — |
@@ -181,7 +185,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | ECO-801 | ECO-800 | pending | — |
 | ECO-802 | LEARN-605, ECO-801 | pending | — |
 
-交付说明：AUD-400 至 AUD-405 与 EVAL-700 冻结，不阻塞 Pentest-first V1；ECO-800 至 ECO-802 属于 Post-V1。任务状态仍保留 `pending`，用于保存历史依赖和未来恢复入口，不代表当前排期。
+交付说明：AUD-400 至 AUD-405 与 EVAL-700 冻结，不阻塞 Pentest-first R1；ECO-800 至 ECO-802 属于 Post-R1。任务状态仍保留 `pending`，用于保存历史依赖和未来恢复入口，不代表当前排期。
 
 ## 8. Task records
 
@@ -1128,15 +1132,22 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 - C3 verification：状态化 Web E2E `2 passed`；Report Application `2 passed`；Temporal Activities `23 passed`；Target HTTP `63 passed`；Runtime Control Tools `52 passed`；Worker Runtime `13 passed`；完整 Control Plane `68 passed`；全仓 Ruff passed；3 个生产文件与状态化 Web 测试 scoped mypy passed；`git diff --check` passed。
 - C3 non-goals upheld：未新增表、migration、Pack、Attack Chain Domain、Browser、Crawler、Fuzzer、Scanner、Planner、Graph、Worker 或 UI。
 - C3 implementation commit：`a8b29a4c`。
-- Completion：Stage C 已完成；当前唯一施工切片是 D1 Operator Skill 生命周期门禁。
+- Completion：Stage C 已完成；后续 D1 已关闭 Operator Skill 生命周期门禁。
 
 ### Stage D：用户驱动能力成长
 
 - Status：in_progress
 - Started：2026-08-07
-- D1 gap：Operator Skill 已能被 Progressive Skill Registry 校验、按 Session 固定快照并在重启后恢复，但显式 Skill ID 目前仍可绕过 Capability Version Status 直接进入 Pentest。
-- D1 target：本地 Operator Skill 经静态验证后幂等注册为 `approved` Skill Capability Version，必须经显式启用才可被新 Pentest 选择；禁用和回滚只影响新 Run，旧 Run 保留固定快照。
-- D1 non-goals：不新增表、Marketplace、Registry Service、Capability Candidate/Promotion 工作流、自动批准、复盘 UI 或自动改写 Skill。
+- D1 lifecycle：`6f59e278` 复用 Progressive Skill Registry、Capability Version/Status 和本地 SQLite，新增 `riftx skills validate/register/activate/list/disable/rollback`；同 ID/version/digest 幂等，同版本源漂移要求提升版本号，Operator 根目录不能伪装 Official 来源。
+- D1 admission：显式 Operator Skill 只有在 active Capability Version 的 ID/version/source/source digest 与当前包完全一致时才能进入新 Pentest；未注册、approved、disabled、源漂移或源删除均在 Run 创建和网络副作用前拒绝。
+- D1 safety：Capability Manifest 使用保守的 target-interaction/always-approval/scope-required/zero-credential 权限；Skill 的 preferred tools 不扩大 Run Tool allowlist；完整 Document/Reference 继续只由 Session Selection 快照保存。
+- D1 rollback：禁用只影响新 Run；回滚要求操作者先从 Git/备份恢复旧源码再切换已有 Version 状态，不建设包缓存；旧 Run 在源码漂移或删除后仍从持久快照恢复原文与 References。
+- D1 verification：Operator Skill lifecycle/CLI `3 passed`；Capability Management、Doctor、CLI 与 Skill unit `111 passed`；Capability/Skill/Pentest persistence `10 passed`；状态化 Web `2 passed`；完整 Control Plane `68 passed`；文档合同 `3 passed`；全仓 Ruff passed；5 个变更源/测试文件 scoped mypy passed；`git diff --check` passed。
+- D1 non-goals upheld：未新增表、migration、Marketplace、Registry Service、Capability Candidate/Promotion、包下载/缓存、复盘 UI、自动批准或自动改写 Skill。
+- D1 implementation commit：`6f59e278`。
+- D1 completion：completed。
+- D2 current target：先验证现有 JSON/Markdown Report 是否已经完整投影 Operator Skill Selection、allowlist、Attempt、Evidence、Finding、Negative Result、失败和停止原因；只在真实字段缺失时补确定性脱敏投影。
+- D2 completion gate：v1 Skill 的 Run/Report 在用户修改、注册并启用 v2 后仍显示 v1；下一 Run 固定 v2；用户可据此人工决定保留、禁用或继续修改，不引入自动评分、自动生成、自动改写或自动批准。
 
 ## 9. Known pre-existing worktree state
 

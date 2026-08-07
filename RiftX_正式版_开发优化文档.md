@@ -8,9 +8,9 @@
 >
 > 当前分支：`ch1nfo/riftx-3-code-audit`
 >
-> 当前代码基线：`a8b29a4c`；本次重写输入计划基线：`d63e6f84`
+> 当前代码基线：`6f59e278`；本次重写输入计划基线：`d63e6f84`
 >
-> 当前施工：D1 Operator Skill 生命周期门禁；阶段 A、B、C 已完成
+> 当前施工：D2 基于现有 Report 的人工复盘与版本迭代；D1 已完成
 >
 > 实施与测试事实：[`docs/implementation/FORMAL_AGENT_PROGRESS.md`](docs/implementation/FORMAL_AGENT_PROGRESS.md)
 >
@@ -34,13 +34,13 @@ RiftX 已经有足够厚的 Agent、Runtime、安全、持久化和专业事实�
 
 但现在不应进行大规模删库或重写。安全边界、migration、恢复路径和旧数据兼容都使“先删再说”风险很高，而且删代码本身不会让 Pentest 更好用。
 
-从现在起只做三个交付包：
+正式版路径只包含三个交付包：
 
-1. 完成 Operator Skill 的最小生命周期和新 Pentest 门禁；
+1. Operator Skill 的最小生命周期和新 Pentest 门禁（已完成）；
 2. 复用现有 Report 完成一次人工复盘与版本迭代，不建设自动学习平台；
 3. 收缩默认产品面，完成干净环境安装、两条真实场景和发布回归。
 
-正式版完成前停止新增通用平台能力。剩余工作不是几十个历史 Task，而是 D1、D2、E 三个有边界的用户结果。
+正式版完成前停止新增通用平台能力。剩余工作不是几十个历史 Task，而是 D2、E 两个有边界的用户结果。
 
 ---
 
@@ -133,11 +133,9 @@ RiftX 的目标是：
 
 只剩下以下产品缺口：
 
-1. Operator Skill 文件可以被 Progressive Skill Registry 发现，但显式选择时尚未强制要求对应 active Capability Version；
-2. 用户还不能通过一组简单命令完成 Skill 注册、启用、禁用和回滚；
-3. “试用后改进”没有收敛成一次基于现有 Report 的人工操作流程；
-4. 默认 README、CLI help 和入口仍像通用 Agent 平台，而不是 Pentest 产品；
-5. 可选模块是否真实拖慢安装、启动或维护尚未测量，不能凭体感删除。
+1. “试用后改进”尚未通过一次基于现有 Report 的版本迭代 E2E 证明；
+2. 默认 README、CLI help 和入口仍像通用 Agent 平台，而不是 Pentest 产品；
+3. 可选模块是否真实拖慢安装、启动或维护尚未测量，不能凭体感删除。
 
 ### 2.4 对“过度开发”的准确判断
 
@@ -281,7 +279,7 @@ CLI/API
 | A. Pentest 预算与停止 | completed | Admission 预算有明确执行语义和硬停止 |
 | B. 网络服务专业闭环 | completed | 真实服务从枚举走到证据化结论、Closure 和 Report |
 | C. 状态化 Web 与报告 | completed | 身份/授权场景走到证据化结论、Closure 和 Report |
-| D. 用户驱动能力成长 | in progress；D1 当前施工 | Operator Skill 可验证、启用、使用、复盘、禁用和回滚 |
+| D. 用户驱动能力成长 | in progress；D2 当前施工 | Operator Skill 可验证、启用、使用、复盘、禁用和回滚 |
 | E. 默认产品面收缩与发布 | pending | Pentest-first 产品可安装、可理解、可回归、可发布 |
 
 阶段 A、B、C 只保留回归合同，不再扩建。除安全修复、数据兼容和真实用户阻断外，不得跳过阶段。
@@ -319,7 +317,7 @@ CLI/API
 
 这是人工可控的“越用越好用”。R1 不自动生成、不自动改写、不自动批准 Skill。
 
-### 7.2 D1 的边界
+### 7.2 D1 的边界（completed）
 
 D1 只关闭一个真实漏洞：显式 Operator Skill 当前可从 Progressive Skill Registry 直接进入 Pentest，而不要求 active Capability Version。
 
@@ -427,7 +425,9 @@ R1 不保存 Operator Skill 历史源码包，因此 rollback 不是包管理器
 - Skill 不能扩展 Tool allowlist；
 - Skill 不能降低 Tool 自身 Approval、绕过 Scope 或 Credential Reference 权限。
 
-### 7.8 D2：复盘与人工改进
+D1 已由实现提交 `6f59e278` 完成：新增本地 `skills` 生命周期命令、Operator 来源校验、保守 Capability Version、Pentest active/source digest 门禁、完整 Selection 快照回归，以及源码删除后的旧 Run 可解释性；未新增表、migration、包缓存、Candidate/Promotion、UI 或自动学习流程。
+
+### 7.8 D2：复盘与人工改进（当前施工）
 
 现有 Report 已包含 Capability Selection、Allowlist、Attempt、Evidence、Finding、Closure 和停止信息。D2 首先验证这些事实是否足以回答：
 
@@ -440,12 +440,6 @@ R1 不保存 Operator Skill 历史源码包，因此 rollback 不是包管理器
 若现有 JSON/Markdown Report 已能回答，不新增 Review Domain、表或命令，只补文档和 E2E。若确有字段缺失，只向 `ReportApplicationService` 增加确定性、脱敏投影。
 
 D2 的完成结果是：用户根据一次真实 Run 修改 Skill、提升版本、重新注册并在下一次 Run 使用新版本。自动评分、自动改写、Replay Lab 和 Trajectory Store 全部延期。
-
-### 9.0 D1：Operator Skill 生命周期门禁（当前唯一实现切片）
-
-当前只实现 7.2 至 7.7。D1 完成并形成独立实现提交前，不开始 D2、阶段 E、Operator Tool、Marketplace 或任何自动学习能力。
-
----
 
 ## 8. 阶段 E：产品面收缩与发布
 
@@ -632,27 +626,24 @@ conda run --no-capture-output -n agent ...
 
 ## 12. 当前唯一施工指令
 
-从实现提交 `a8b29a4c` 继续，只完成 D1：
+从实现提交 `6f59e278` 继续，只完成 D2：
 
-1. 复用现有 Progressive Skill、Capability Repository 和 Pentest Resolver；
-2. 增加薄 `skills validate/register/activate/list/disable/rollback` 本地命令；
-3. `register` 生成保守的 Operator Skill Capability Version，初始状态为 approved；
-4. 显式 activate 后，新 Pentest 才能选择该 Skill；
-5. Resolver 强制匹配 ID/version/source/source digest；
-6. 完整 Skill Document/Reference 只进入 Session Selection 快照；
-7. Skill 不扩展 Tool allowlist，不降低 Tool Approval，不新增 Credential 权限；
-8. disable 只影响新 Run；
-9. rollback 要求操作者先恢复旧源码，不建设历史包缓存；
-10. 覆盖幂等、漂移、禁用、回滚、源码删除、旧 Run 快照和权限回归；
-11. 运行聚焦测试、受影响回归、全仓 Ruff、scoped mypy、文档合同和 `git diff --check`；
-12. 形成 D1 独立实现提交，再单独更新实施账本。
+1. 先证明现有 JSON/Markdown Report 是否已经显示 Operator Skill ID、Version、Digest、Source、Tool allowlist、Attempt、Evidence、Finding、Negative Result、失败与停止原因；
+2. 若事实已存在，不新增 Review Domain、表、命令或存储，只补一个纵向 E2E 和专业用户文档；
+3. 若仅缺少报告字段，只修改 `ReportApplicationService` 的确定性脱敏投影，不复制 Report 业务逻辑；
+4. E2E 必须覆盖：v1 Skill 进入 Run 和 Report、用户依据结果修改 Skill 并提升为 v2、v2 注册/启用、下一 Run 固定 v2，而旧 Run Report 仍显示 v1；
+5. 明确区分 Skill 方法问题、Tool 执行失败、Scope/Approval/预算阻断与目标 Negative Result；
+6. 不自动评分、自动改写、自动批准或自动生成 Skill；
+7. 运行 Report、Capability Selection、Skill lifecycle、Pentest E2E、全仓 Ruff、scoped mypy、文档合同和 `git diff --check`；
+8. 形成 D2 独立提交，再单独更新实施账本；D2 完成前不开始阶段 E 或 R2 Operator Tool。
 
 建议起始验证命令：
 
 ```bash
 conda run --no-capture-output -n agent pytest -q tests/unit/skills/test_progressive.py
+conda run --no-capture-output -n agent pytest -q tests/unit/test_operator_skill_lifecycle.py
 conda run --no-capture-output -n agent pytest -q tests/integration/persistence/test_skill_selection_repository.py
-conda run --no-capture-output -n agent pytest -q tests/integration/persistence/test_capability_repository.py
+conda run --no-capture-output -n agent pytest -q tests/integration/api/test_pentest_stateful_web.py
 conda run --no-capture-output -n agent pytest -q tests/docs/test_formal_agent_docs.py
 conda run --no-capture-output -n agent ruff check .
 git diff --check
@@ -666,8 +657,8 @@ git diff --check
 [已完成] A：预算与停止语义
 → [已完成] B：网络服务专业闭环
 → [已完成] C：状态化 Web、Closure 与 Report
-→ [当前] D1：Operator Skill 生命周期与 Admission 门禁
-→ [下一步] D2：复用现有 Report 完成人工复盘和版本迭代
+→ [已完成] D1：Operator Skill 生命周期与 Admission 门禁
+→ [当前] D2：复用现有 Report 完成人工复盘和版本迭代
 → [最后] E：默认产品面收缩、消费者审计和 R1 发布
 → [按需] R2+：Operator Tool、Technique 与团队共享
 ```
