@@ -33,7 +33,7 @@
 ## 2. Current wave
 
 - Stage：`Pentest-first R1 — Stage E 默认产品面收缩与发布`
-- Current task：`E1 — 默认产品入口与 Quickstart 单路径`
+- Current task：`E2 — 干净 XDG Onboard 与可选工具降级`
 - Status：`in_progress`
 - Completed predecessor：SEC-000，implementation commit `a15e8e94`。
 - Completed predecessor：SEC-001，implementation commit `53161141`。
@@ -58,6 +58,7 @@
 - Completed predecessor：Stage C/C3 结论、Closure 与 Report，implementation commit `a8b29a4c`。
 - Completed predecessor：Stage D/D1 Operator Skill 生命周期门禁，implementation commit `6f59e278`。
 - Completed predecessor：Stage D/D2 Operator Skill 人工复盘与版本迭代，implementation commit `a929fdb4`。
+- Completed predecessor：Stage E/E1 默认产品入口与 Quickstart 单路径，implementation commit `fdfa06e5`。
 - Product behavior：PACK-302 已交付可重复运行且零覆盖的 `riftx onboard`、顶级 `riftx doctor`、live overlay、本地操作员只读 `/api/v1/system/diagnostics`、有真实修复语义的 `riftx doctor --fix`、Onboard 后可直接运行的两个安全 Demo，以及本地只读 Capability/Pack 检查命令；Onboard 复用现有 Runtime/Model/Tool/Pack 生产路径初始化用户级配置、完整 Alembic schema、22 个 Official Pack 与 66 个 active lock；Pack 持久化写入具备 SQLite 一致性备份、双端 inode identity、恢复后完整性复检和失败自动回滚；Doctor `backup_restore` 已改为只读真实 readiness，只在已到 Alembic head 的 file-backed SQLite、当前用户所有的普通数据库文件和安全的 owner-only 备份目录前置条件全部成立时返回 `ready`，不为诊断创建备份或替换数据库。
 - Completed PEN-500 implementation commits：ADR `315039fc`；Domain/持久化 `86aaecdf`；Workflow/Runner Identity `e2314e9b`；Effect Policy/Interactive Guard `8b9ef440`；专用 Admission/Application/API 创建入口 `8f1b2554`；Capability Selection 原子绑定 `33c863ea`；Pentest status/API `70f6f4a0`；Pentest CLI `2271bc8e`；Attack Surface `9a4714fc`；隔离生命周期 `ca12ad9b`；目标交互预算 `ad91c3f4`、`2c0f8004`；运行中用量 `73288673`；Model/Token/Duration 门禁 `b6b5f739`；Tool/Duration 门禁 `53812397`；统一预算停止 `1c379dcc`。
 - Verification：阶段 A 完整 Control Plane `67 passed`；Runtime/Execution/Target HTTP/Temporal Worker `467 passed`；预算处理聚焦回归 `215 passed`；全仓 Ruff passed；6 个变更核心源文件 scoped mypy passed；Alembic 单 head `7b3d1e5f9a24`；`git diff --check` passed。
@@ -67,7 +68,8 @@
 - Stage C/C3 verification：状态化 Web E2E `2 passed`；Report Application `2 passed`；Temporal Activities `23 passed`；Target HTTP `63 passed`；Runtime Control Tools `52 passed`；Worker Runtime `13 passed`；完整 Control Plane `68 passed`；文档合同 `3 passed`；全仓 Ruff passed；`reports.py`、`api/runtime.py`、`temporal/worker_runtime.py` 与状态化 Web 测试 scoped mypy passed；`git diff --check` passed。`test_control_plane.py` 单文件 mypy 仍仅命中既有 5177–5179 行 3 个 `object` 索引错误。
 - Stage D/D1 verification：Operator Skill lifecycle/CLI `3 passed`；Capability Management、Doctor、CLI 与 Skill unit `111 passed`；Capability/Skill/Pentest persistence `10 passed`；状态化 Web `2 passed`；完整 Control Plane `68 passed`；文档合同 `3 passed`；全仓 Ruff passed；5 个变更源/测试文件 scoped mypy passed；`git diff --check` passed。
 - Stage D/D2 verification：Report、状态化 Web、Operator Skill lifecycle 与 v1→v2 纵向 E2E `8 passed`；全仓 Ruff passed；`reports.py` scoped mypy passed；`git diff --check` passed。
-- Next delivery slice：只收缩 README、CLI help 和 Quickstart 的默认 Pentest 路径；Advanced 命令继续保留，不删除实现、不重做 WebUI、不拆可选依赖。
+- Stage E/E1 verification：Onboard、Doctor、CLI、Operator Skill Report 与文档合同 `100 passed`；全仓 Ruff passed；`cli/app.py` scoped mypy 在禁用既有 Typer/Click `override`、`arg-type`、`return-value` 兼容错误后 passed；`git diff --check` passed。
+- Next delivery slice：只证明干净 XDG Onboard、Doctor 可选工具降级和基础 Pentest Admission；没有真实阻断时只补 E2E/发布证据，不拆依赖或删除模块。
 
 ## 3. 研究与实现基线
 
@@ -135,7 +137,7 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 | P3 专业结果与收口 | completed | Closure、JSON/Markdown Report、恢复和 Stop Proof |
 | P4 Operator 能力成长 | completed | D1 生命周期与 D2 人工复盘/版本迭代闭环完成 |
 | R1 Pentest 发布门 | in_progress | Pentest-only 回归、真实场景和安全发布检查通过 |
-| O2 代码优化 | in_progress | E1 收缩默认产品面；删除仍需引用与成本证据 |
+| O2 代码优化 | in_progress | E1 默认产品面已收缩；删除仍需引用与成本证据 |
 | Frozen Code Audit | frozen | 只修复安全、数据兼容和现有用户阻断问题 |
 | Post-R1 Ecosystem | deferred | 真实第三方分发或规模化运维需求出现后再启动 |
 
@@ -1160,8 +1162,14 @@ SEC-001 之前不创建新的专业能力评分结论。当前只冻结每个 Ev
 
 - Status：in_progress
 - Started：2026-08-07
-- E1 current target：让 README、CLI help 和 Quickstart 第一层只突出 Pentest 正常路径；现有 General、Audit 和平台命令继续保留为 Advanced/frozen，不删除实现。
-- E1 completion gate：专业用户从安装、Onboard、Doctor、模型配置到创建 Pentest 和生成第一份 Report 只有一条可执行主路径；默认帮助不再把平台内部概念与主路径等权展示。
+- E1 entrypoints：`fdfa06e5` 将 README 中英版首条路径改为 Onboard → Doctor → Pentest → Approval → Report，并链接 Operator Skill 人工迭代指南；旧通用 Run 示例保留在贡献者/高级区。
+- E1 CLI：顶级 help 复用 Typer 原生分组，按 Getting started、Service operation、Pentest workflow、Advanced、Experimental 展示；冗余显式 `interactive` 入口仍可调用但不占默认帮助，Audit 明确 frozen/experimental。
+- E1 verification：Onboard、Doctor、CLI、Operator Skill Report 与文档合同 `100 passed`；全仓 Ruff passed；`cli/app.py` scoped mypy 在禁用既有 Typer/Click `override`、`arg-type`、`return-value` 兼容错误后 passed；`git diff --check` passed。
+- E1 non-goals upheld：未删除命令、修改 API、重做 WebUI、新增导航框架、拆依赖或开发 Code Audit。
+- E1 implementation commit：`fdfa06e5`。
+- E1 completion：completed。
+- E2 current target：在隔离 XDG 与缺少可选外部工具的条件下，证明 Onboard、Doctor、配置加载和基础 Pentest Admission 可工作。
+- E2 completion gate：全新用户目录无需 Nmap、Nuclei、Browser、MCP 或 Connector 即可完成 Onboard、得到可执行修复提示、启动最小 Control Plane 并创建 Pentest Run；重复 Onboard 不覆盖用户文件。
 
 ## 9. Known pre-existing worktree state
 

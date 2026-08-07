@@ -47,13 +47,13 @@ def test_plan_and_ledger_share_the_current_delivery_route() -> None:
         "completed",
         "completed",
         "completed",
-        "in progress；E1 当前施工",
+        "in progress；E2 当前施工",
     ]
     assert "### 7.8 D2：复盘与人工改进（completed）" in plan_text
     assert "- Stage：`Pentest-first R1 — Stage E 默认产品面收缩与发布`" in ledger_text
-    assert "- Current task：`E1 — 默认产品入口与 Quickstart 单路径`" in ledger_text
-    assert "a929fdb4" in plan_text
-    assert "a929fdb4" in ledger_text
+    assert "- Current task：`E2 — 干净 XDG Onboard 与可选工具降级`" in ledger_text
+    assert "fdfa06e5" in plan_text
+    assert "fdfa06e5" in ledger_text
 
 
 def test_adr_freezes_all_workload_and_system_boundaries() -> None:

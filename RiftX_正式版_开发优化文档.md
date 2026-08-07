@@ -8,9 +8,9 @@
 >
 > 当前分支：`ch1nfo/riftx-3-code-audit`
 >
-> 当前代码基线：`a929fdb4`；本次重写输入计划基线：`d63e6f84`
+> 当前代码基线：`fdfa06e5`；本次重写输入计划基线：`d63e6f84`
 >
-> 当前施工：E1 默认产品入口与 Quickstart 单路径；阶段 D 已完成
+> 当前施工：E2 干净 XDG Onboard 与可选工具降级；E1 已完成
 >
 > 实施与测试事实：[`docs/implementation/FORMAL_AGENT_PROGRESS.md`](docs/implementation/FORMAL_AGENT_PROGRESS.md)
 >
@@ -280,7 +280,7 @@ CLI/API
 | B. 网络服务专业闭环 | completed | 真实服务从枚举走到证据化结论、Closure 和 Report |
 | C. 状态化 Web 与报告 | completed | 身份/授权场景走到证据化结论、Closure 和 Report |
 | D. 用户驱动能力成长 | completed | Operator Skill 可验证、启用、使用、复盘、禁用和回滚 |
-| E. 默认产品面收缩与发布 | in progress；E1 当前施工 | Pentest-first 产品可安装、可理解、可回归、可发布 |
+| E. 默认产品面收缩与发布 | in progress；E2 当前施工 | Pentest-first 产品可安装、可理解、可回归、可发布 |
 
 阶段 A、B、C、D 只保留回归合同，不再扩建。除安全修复、数据兼容和真实用户阻断外，不得跳过阶段。
 
@@ -466,6 +466,8 @@ capabilities / packs / attach
 
 任何类似 `Configured model not found` 的问题必须先在 RiftX CLI/API 内复现并定位。若字符串和失败来自 Codex、编辑器或外部 Provider，不得把它当作 RiftX 功能缺口继续开发。
 
+E1 已由实现提交 `fdfa06e5` 完成：README 中英版把 Onboard、Doctor、Pentest、Approval、Report 和 Operator Skill 放到首条真实 Quickstart；顶级 CLI help 使用现有 Typer 分组区分 Getting started、Service operation、Pentest workflow、Advanced 与 Experimental；通用 Run 和平台命令仍可调用，Code Audit 明确 frozen/experimental，Demo 明确 simulated/sanitized。未删除命令、修改 API、重做 WebUI 或新增导航框架。
+
 ### 8.2 安装和降级体验
 
 - 干净 XDG 环境完成一次真实 Onboard；
@@ -628,24 +630,24 @@ conda run --no-capture-output -n agent ...
 
 ## 12. 当前唯一施工指令
 
-从实现提交 `a929fdb4` 继续，只完成 E1 默认产品入口与 Quickstart 单路径：
+从实现提交 `fdfa06e5` 继续，只完成 E2 干净 XDG Onboard 与可选工具降级：
 
-1. 审计 `README.md`、`riftx --help`、Pentest CLI 帮助和现有示例，记录用户从安装到第一份 Report 当前必须经过的真实步骤；
-2. 第一层只突出 `onboard / doctor / model / pentest / approvals / report / skills`，其余现有命令保留为 Advanced，不删除实现、不改 API 路径；
-3. Quickstart 只保留一条真实 Pentest 路径，命令必须可执行，离线 Demo 必须明确标记 simulated/transcript；
-4. `audit` 与 Code Audit 只标记 frozen/experimental，不继续开发，也不为了隐藏入口重做 WebUI；
-5. 优先修改已有 README、CLI help 文案或命令分组；没有当前用户阻断时不新增配置层、导航框架或文档站；
-6. 补最小 CLI help/README 合同测试，防止通用平台概念重新占据默认入口；
-7. 运行 CLI、Onboard/Doctor、Pentest 创建、Operator Skill、文档合同、全仓 Ruff、scoped mypy 和 `git diff --check`；
-8. 形成 E1 独立实现提交，再单独更新实施账本；E1 完成前不做消费者删除、可选依赖拆分或 R2 Operator Tool。
+1. 在隔离的 `XDG_CONFIG_HOME`、`XDG_STATE_HOME`、`XDG_DATA_HOME` 和空 PATH 工具目录中运行真实 `riftx onboard --non-interactive`，不得复用开发者现有配置；
+2. 证明 Onboard 生成的配置、模型、Tool Registry、数据库、Workspace 和 Skill 路径可由现有加载器直接读取，并且重复运行不覆盖用户文件；
+3. 在缺少 Nmap、Nuclei、Browser、MCP 和 Connector 的条件下运行 `riftx doctor`，基础 Pentest 所需检查必须 ready，可选能力必须明确 degraded 而不是伪装 ready 或阻断启动；
+4. 使用 Onboard 产物启动最小 Control Plane，并通过现有 Pentest 创建路径证明基础 Admission 不依赖可选工具；不要求在本切片启动真实模型回合或目标交互；
+5. 若现有错误已足够清晰，只补 E2E/文档证据；只有真实阻断时才修改 Onboard、Doctor 或配置装配；
+6. 不拆依赖、不做 lazy-load 框架、不删除 Browser/MCP/Connector/Code Audit，也不新增第二套安装器；
+7. 运行 Onboard/Doctor、配置加载、Pentest 创建、Backup/Restore、CLI、文档合同、全仓 Ruff、必要 scoped mypy 和 `git diff --check`；
+8. 形成 E2 独立实现提交，再单独更新实施账本；E2 完成前不开始消费者删除或 R2 Operator Tool。
 
 建议起始验证命令：
 
 ```bash
-conda run --no-capture-output -n agent pytest -q tests/unit/skills/test_progressive.py
+conda run --no-capture-output -n agent pytest -q tests/unit/test_onboarding.py
+conda run --no-capture-output -n agent pytest -q tests/unit/test_doctor.py
 conda run --no-capture-output -n agent pytest -q tests/unit/cli/test_app.py
-conda run --no-capture-output -n agent pytest -q tests/unit/test_onboard.py tests/unit/test_doctor.py
-conda run --no-capture-output -n agent pytest -q tests/integration/api/test_operator_skill_reports.py
+conda run --no-capture-output -n agent pytest -q tests/integration/api/test_control_plane.py -k pentest_create
 conda run --no-capture-output -n agent pytest -q tests/docs/test_formal_agent_docs.py
 conda run --no-capture-output -n agent ruff check .
 git diff --check
@@ -661,8 +663,9 @@ git diff --check
 → [已完成] C：状态化 Web、Closure 与 Report
 → [已完成] D1：Operator Skill 生命周期与 Admission 门禁
 → [已完成] D2：复用现有 Report 完成人工复盘和版本迭代
-→ [当前] E1：默认产品入口与 Quickstart 单路径
-→ [最后] E2-E4：安装降级、消费者成本审计和 R1 发布门
+→ [已完成] E1：默认产品入口与 Quickstart 单路径
+→ [当前] E2：干净 XDG Onboard 与可选工具降级
+→ [最后] E3-E4：消费者成本审计和 R1 发布门
 → [按需] R2+：Operator Tool、Technique 与团队共享
 ```
 
