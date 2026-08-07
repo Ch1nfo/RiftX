@@ -111,6 +111,9 @@ def test_onboarding_creates_authoritative_user_config_and_disables_missing_tools
     assert config.models.path == result.models_path
     assert config.tools.path == result.tools_path
     assert config.workspace.root == tmp_path / "data" / "riftx" / "workspaces"
+    assert config.audit.snapshot_root == tmp_path / "data" / "riftx" / "audit" / "snapshots"
+    assert not (tmp_path / "data" / "riftx" / "audit" / "tmp").exists()
+    assert not (tmp_path / "data" / "riftx" / "audit" / "fixes").exists()
     assert config.security.trust_profile == "local_single_operator"
     assert models.models["primary"] == _local_profile()
     assert tools.tools["available"].enabled

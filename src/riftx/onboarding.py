@@ -59,7 +59,7 @@ def initialize_local_onboarding(
         _absolute(workspace_root) if workspace_root is not None else data_root / "workspaces"
     )
     secrets_root = state_root / "secrets"
-    audit_root = data_root / "audit"
+    audit_snapshot_root = data_root / "audit" / "snapshots"
 
     models = ModelsConfig(default_profile="primary", models={"primary": model_profile})
     models_content = _yaml_bytes(models.model_dump(mode="json", exclude_none=False))
@@ -90,9 +90,7 @@ def initialize_local_onboarding(
             "local_principal_path": str(secrets_root / "local-principal.json"),
         },
         "audit": {
-            "snapshot_root": str(audit_root / "snapshots"),
-            "temp_root": str(audit_root / "tmp"),
-            "fix_root": str(audit_root / "fixes"),
+            "snapshot_root": str(audit_snapshot_root),
         },
     }
     RiftXConfig.model_validate(runtime_payload)
@@ -106,9 +104,7 @@ def initialize_local_onboarding(
         data_root,
         workspace,
         data_root / "skills",
-        audit_root / "snapshots",
-        audit_root / "tmp",
-        audit_root / "fixes",
+        audit_snapshot_root,
     )
     directory_batch = OwnerDirectoryBatch()
     created_files: list[tuple[Path, tuple[int, int]]] = []
