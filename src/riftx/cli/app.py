@@ -28,7 +28,13 @@ from riftx.api import APISettings, create_app
 from riftx.capability_management import (
     CapabilityManagementError,
     LocalCapabilityState,
+    activate_operator_skill,
+    disable_operator_skill,
     inspect_local_capability_state,
+    inspect_operator_skills,
+    register_operator_skill,
+    rollback_operator_skill,
+    validate_operator_skills,
 )
 from riftx.config import (
     RiftXConfig,
@@ -131,6 +137,7 @@ model_app = typer.Typer(help="Configure model provider profiles.")
 demo_app = typer.Typer(help="Run sanitized offline security demonstrations.")
 capabilities_app = typer.Typer(help="Inspect the local Capability catalog.")
 packs_app = typer.Typer(help="Inspect and manage local Capability Packs.")
+skills_app = typer.Typer(help="Validate and manage local Operator Skills.")
 audit_app = typer.Typer(
     cls=_AuditGroup,
     help="Audit a local folder with read-only static analysis.",
@@ -148,6 +155,7 @@ app.add_typer(model_app, name="model")
 app.add_typer(demo_app, name="demo")
 app.add_typer(capabilities_app, name="capabilities")
 app.add_typer(packs_app, name="packs")
+app.add_typer(skills_app, name="skills")
 app.add_typer(audit_app, name="audit")
 
 
@@ -676,11 +684,148 @@ def list_packs(context: typer.Context) -> None:
     console.print(table)
 
 
+@skills_app.command("validate")
+def validate_skills(
+    context: typer.Context,
+    skill_id: Annotated[
+        str | None,
+        typer.Argument(help="Optional Operator Skill ID."),
+    ] = None,
+) -> None:
+    """Validate Operator Skill packages without changing persistence."""
+
+    documents = _operator_skill_action(
+        context,
+        lambda config: validate_operator_skills(config, skill_id),
+    )
+    console.print(f"Validated {len(documents)} Operator Skill package(s).")
+    for document in documents:
+        console.print(
+            f"- {document.id} {document.version} {document.digest[:12]}",
+            markup=False,
+        )
+
+
+@skills_app.command("register")
+def register_skill(
+    context: typer.Context,
+    skill_id: Annotated[str, typer.Argument(help="Operator Skill ID.")],
+) -> None:
+    """Register the current Operator Skill package as approved."""
+
+    version = _operator_skill_action(
+        context,
+        lambda config: register_operator_skill(config, skill_id),
+    )
+    console.print(
+        f"Registered {skill_id} {version.manifest.version} as {version.status.value}; "
+        f"source digest {version.manifest.provenance.source_digest}.",
+        markup=False,
+    )
+
+
+@skills_app.command("activate")
+def activate_skill(
+    context: typer.Context,
+    skill_id: Annotated[str, typer.Argument(help="Operator Skill ID.")],
+    version: Annotated[str, typer.Argument(help="Registered Skill version.")],
+) -> None:
+    """Activate a registered Operator Skill for new Pentest Runs."""
+
+    activated = _operator_skill_action(
+        context,
+        lambda config: activate_operator_skill(config, skill_id, version),
+    )
+    console.print(
+        f"Activated {skill_id} {activated.manifest.version}; new Pentest Runs may select it."
+    )
+
+
+@skills_app.command("disable")
+def disable_skill(
+    context: typer.Context,
+    skill_id: Annotated[str, typer.Argument(help="Operator Skill ID.")],
+    version: Annotated[
+        str | None,
+        typer.Argument(help="Version to disable; defaults to the active version."),
+    ] = None,
+) -> None:
+    """Disable an Operator Skill version for new Pentest Runs."""
+
+    disabled = _operator_skill_action(
+        context,
+        lambda config: disable_operator_skill(config, skill_id, version),
+    )
+    console.print(
+        f"Disabled {skill_id} {disabled.manifest.version}; existing Run snapshots are unchanged."
+    )
+
+
+@skills_app.command("rollback")
+def rollback_skill(
+    context: typer.Context,
+    skill_id: Annotated[str, typer.Argument(help="Operator Skill ID.")],
+    version: Annotated[str, typer.Argument(help="Restored registered Skill version.")],
+) -> None:
+    """Activate a restored old Operator Skill version."""
+
+    rolled_back = _operator_skill_action(
+        context,
+        lambda config: rollback_operator_skill(config, skill_id, version),
+    )
+    console.print(
+        f"Rolled back {skill_id} to {rolled_back.manifest.version}; "
+        "new Pentest Runs use the restored source package."
+    )
+
+
+@skills_app.command("list")
+def list_skills(
+    context: typer.Context,
+    skill_id: Annotated[
+        str | None,
+        typer.Argument(help="Optional Operator Skill ID."),
+    ] = None,
+) -> None:
+    """List local Operator Skill packages and registered versions."""
+
+    items = _operator_skill_action(
+        context,
+        lambda config: inspect_operator_skills(config, skill_id),
+    )
+    table = Table(title=f"{len(items)} Operator Skill version(s)", expand=True)
+    table.add_column("Skill")
+    table.add_column("Version")
+    table.add_column("Capability")
+    table.add_column("Source")
+    table.add_column("Digest")
+    for item in items:
+        table.add_row(
+            item.skill_id,
+            item.version,
+            item.capability_status,
+            item.source_status,
+            item.source_digest[:12],
+        )
+    console.print(table)
+
+
 def _capability_state(context: typer.Context) -> LocalCapabilityState:
     try:
         return inspect_local_capability_state(_state(context).config)
     except CapabilityManagementError as exc:
         console.print(f"[red]Capability inspection failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+
+def _operator_skill_action[T](
+    context: typer.Context,
+    action: Callable[[RiftXConfig], T],
+) -> T:
+    try:
+        return action(_state(context).config)
+    except CapabilityManagementError as exc:
+        console.print(f"[red]Operator Skill operation failed:[/red] {exc}")
         raise typer.Exit(1) from exc
 
 

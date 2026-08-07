@@ -14,6 +14,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 
 from riftx.application.errors import RepositoryError
+from riftx.capabilities import CapabilitySource
 from riftx.config import RiftXConfig
 from riftx.config_maintenance import (
     RuntimeConfigMigrationError,
@@ -40,7 +41,11 @@ from riftx.packs import (
     bootstrap_official_packs,
 )
 from riftx.persistence import Database, SQLAlchemyCapabilityRepository
-from riftx.skills import ProgressiveSkillRegistry, SkillDocumentError
+from riftx.skills import (
+    ProgressiveSkillRegistry,
+    SkillDocumentError,
+    SkillPackageRoot,
+)
 from riftx.tools.config import ToolConfigError, load_tool_config
 
 
@@ -731,7 +736,14 @@ def _check_skills(
             fixable=True,
         )
     try:
-        operator_skills = ProgressiveSkillRegistry(operator_root).validate()
+        operator_skills = ProgressiveSkillRegistry(
+            (
+                SkillPackageRoot(
+                    operator_root,
+                    expected_source=CapabilitySource.OPERATOR,
+                ),
+            )
+        ).validate()
     except (OSError, UnicodeError, SkillDocumentError, ValueError) as exc:
         return DoctorCheck(
             id="skills",

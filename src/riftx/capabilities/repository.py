@@ -31,6 +31,11 @@ class CapabilityRepository(Protocol):
 
     async def list_versions(self, capability_id: str) -> tuple[CapabilityVersion, ...]: ...
 
+    async def list_versions_by_kind(
+        self,
+        kind: CapabilityKind,
+    ) -> tuple[CapabilityVersion, ...]: ...
+
     async def list_active_versions(
         self,
         kind: CapabilityKind,

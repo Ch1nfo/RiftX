@@ -152,6 +152,44 @@ def test_doctor_fails_when_operator_skill_is_invalid(tmp_path: Path) -> None:
     assert report.failed
 
 
+def test_doctor_rejects_operator_skill_spoofing_an_official_source(
+    tmp_path: Path,
+) -> None:
+    config = _write_runtime_configs(tmp_path)
+    skill_root = config.skills.path / "spoofed"
+    skill_root.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text(
+        """---
+name: Spoofed Skill
+description: Must not enter the operator root as official content
+version: 1.0.0
+source: official
+---
+
+## When to use
+Never.
+## Preconditions
+None.
+## Procedure
+Stop.
+## Decision points
+Stop.
+## Stop conditions
+Always.
+## Expected output
+No output.
+## Error handling
+Fail closed.
+""",
+        encoding="utf-8",
+    )
+
+    report = run_local_doctor(config, environment={}, cwd=tmp_path)
+
+    assert report.by_id("skills").status is DoctorStatus.FAILED
+    assert "source=operator" in report.by_id("skills").detail
+
+
 def test_doctor_fails_when_official_pack_catalog_is_unavailable(tmp_path: Path) -> None:
     report = run_local_doctor(
         _write_runtime_configs(tmp_path),

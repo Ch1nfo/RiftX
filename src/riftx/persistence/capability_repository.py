@@ -179,6 +179,32 @@ class SQLAlchemyCapabilityRepository:
         except SQLAlchemyError:
             raise RepositoryUnavailableError("Capability persistence is unavailable") from None
 
+    async def list_versions_by_kind(
+        self,
+        kind: CapabilityKind,
+    ) -> tuple[CapabilityVersion, ...]:
+        statement = (
+            select(CapabilityVersionRecord)
+            .join(
+                CapabilityRecord,
+                CapabilityRecord.id == CapabilityVersionRecord.capability_id,
+            )
+            .where(CapabilityRecord.kind == kind.value)
+            .order_by(CapabilityVersionRecord.capability_id, CapabilityVersionRecord.created_at)
+        )
+        try:
+            async with self._session_factory() as session:
+                records = (await session.scalars(statement)).all()
+                return tuple(
+                    [await _from_version_record(session, record) for record in records]
+                )
+        except RepositoryError:
+            raise
+        except (JSONDecodeError, TypeError, ValueError):
+            raise RepositoryIntegrityError("Capability", kind.value) from None
+        except SQLAlchemyError:
+            raise RepositoryUnavailableError("Capability persistence is unavailable") from None
+
     async def set_version_status(
         self,
         version_id: str,

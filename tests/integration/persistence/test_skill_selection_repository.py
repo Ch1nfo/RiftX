@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -168,6 +169,25 @@ async def test_skill_selection_survives_restart_and_pins_original_package(
         }
     ]
     await reopened.dispose()
+
+    shutil.rmtree(directory)
+    deleted_source = Database(database_url)
+    after_delete = ProgressiveSkillContextManager(
+        SkillRegistry(skill_root),
+        SQLAlchemySkillSelectionStore(deleted_source.session_factory),
+    )
+    deleted_visibility = await after_delete.visibility(
+        run_id="run-1",
+        session_id="session-primary",
+        agent_id="primary",
+    )
+
+    assert deleted_visibility.available_skills == []
+    assert deleted_visibility.loaded_skill_documents[0].description == "original"
+    assert deleted_visibility.loaded_skill_documents[0].digest == original_digest
+    assert deleted_visibility.loaded_skill_references[0].content == "reference:original"
+    assert deleted_visibility.loaded_skills[0].stale is True
+    await deleted_source.dispose()
 
 
 async def test_skill_selection_isolated_and_subagent_allowlist_fails_closed(
