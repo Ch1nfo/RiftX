@@ -974,11 +974,86 @@ def _render_markdown(report: StructuredReport) -> str:
             lines.extend(["#### Recommendation", "", finding.recommendation, ""])
 
     if source.pentest is not None:
+        pentest = source.pentest
+        lines.extend(["## Pentest Method Context", "", "### Capability Selections", ""])
+        if not pentest.capabilities:
+            lines.extend(["No Capability selections were recorded.", ""])
+        else:
+            for capability in pentest.capabilities:
+                lines.append(
+                    f"- `{capability.kind}` `{capability.capability_id}` version "
+                    f"`{capability.version}` from `{capability.source}` — digest "
+                    f"`{capability.digest}`; active: `{str(capability.active).lower()}`"
+                )
+            lines.append("")
+
+        lines.extend(["### Capability Allowlists", ""])
+        if not pentest.capability_allowlists:
+            lines.extend(["No Capability allowlists were recorded.", ""])
+        else:
+            for kind, capability_ids in sorted(pentest.capability_allowlists.items()):
+                values = ", ".join(f"`{item}`" for item in capability_ids) or "None"
+                lines.append(f"- **{kind}:** {values}")
+            lines.append("")
+
+        workflow_synced = (
+            str(pentest.stop.workflow_synced).lower()
+            if pentest.stop.workflow_synced is not None
+            else "unknown"
+        )
+        lines.extend(
+            [
+                "### Stop Status",
+                "",
+                f"- **Latest event:** `{pentest.stop.latest_event_type or 'none'}`",
+                f"- **Confirmed:** `{str(pentest.stop.confirmed).lower()}`",
+                f"- **Workflow synced:** `{workflow_synced}`",
+                "- **Failed resource types:** "
+                + (
+                    ", ".join(f"`{item}`" for item in pentest.stop.failed_resource_types)
+                    or "None"
+                ),
+                "",
+                "### Executions",
+                "",
+            ]
+        )
+        if not pentest.executions:
+            lines.extend(["No executions were recorded.", ""])
+        else:
+            for execution in pentest.executions:
+                tool = execution.tool_id or "unknown"
+                exit_code = (
+                    f"; exit: `{execution.exit_code}`"
+                    if execution.exit_code is not None
+                    else ""
+                )
+                lines.append(
+                    f"- `{execution.status}` `{tool}` on `{execution.node_id}`"
+                    f"{exit_code}; physical stop: "
+                    f"`{str(execution.physical_stop_confirmed).lower()}`"
+                )
+            lines.append("")
+
+        lines.extend(["### Evidence Ledger", ""])
+        if not pentest.evidence:
+            lines.extend(["No ledger evidence was recorded.", ""])
+        else:
+            for ledger_evidence in pentest.evidence:
+                lines.append(
+                    f"- `{ledger_evidence.kind}` `{ledger_evidence.id}` — digest "
+                    f"`{ledger_evidence.digest}`; trust: "
+                    f"`{ledger_evidence.trust_class}`; redaction: "
+                    f"`{ledger_evidence.redaction_status}`; replayable: "
+                    f"`{str(ledger_evidence.replayable).lower()}`"
+                )
+            lines.append("")
+
         lines.extend(["## Pentest Evidence Chain", "", "### Reasoning", ""])
-        if not source.pentest.reasoning_nodes:
+        if not pentest.reasoning_nodes:
             lines.extend(["No reasoning nodes were recorded.", ""])
         else:
-            for node in source.pentest.reasoning_nodes:
+            for node in pentest.reasoning_nodes:
                 evidence_refs = ", ".join(f"`{item}`" for item in node.evidence_ids)
                 suffix = f" — evidence: {evidence_refs}" if evidence_refs else ""
                 lines.append(
@@ -986,10 +1061,10 @@ def _render_markdown(report: StructuredReport) -> str:
                 )
             lines.append("")
         lines.extend(["### Attempts", ""])
-        if not source.pentest.attempts:
+        if not pentest.attempts:
             lines.extend(["No structured attempts were recorded.", ""])
         else:
-            for attempt in source.pentest.attempts:
+            for attempt in pentest.attempts:
                 lines.append(
                     f"- `{attempt.result_status}` {attempt.action_signature} "
                     f"via `{attempt.tool_id}` — {attempt.result_summary}"
