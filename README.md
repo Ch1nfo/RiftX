@@ -10,6 +10,7 @@ reports, and operator-maintained methods into one recoverable Pentest workflow.
 <p>
   <img alt="Version 2.0.0 Alpha" src="https://img.shields.io/badge/version-2.0.0--alpha.0-245dc7?style=flat-square">
   <img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white">
+  <img alt="Host-native, no Docker required" src="https://img.shields.io/badge/runtime-host--native-2ea44f?style=flat-square">
   <img alt="Local single operator" src="https://img.shields.io/badge/trust-local__single__operator-55d9ff?style=flat-square&labelColor=071632">
   <a href="./LICENSE"><img alt="Apache License 2.0" src="https://img.shields.io/badge/license-Apache--2.0-ffd45a?style=flat-square&labelColor=071632"></a>
 </p>
@@ -53,6 +54,9 @@ Pentest.
 Prerequisites: Python `3.12`, the Conda environment `agent`, and a local Temporal CLI.
 Docker is not an installation or core Pentest runtime prerequisite. Onboard, Doctor,
 Control Plane, Worker, Runner, and the WebUI all support host-native operation.
+The `core_path_excludes_docker` release gate checks distribution dependencies and
+deployment assets, then verifies Onboard, Doctor, Control Plane, and Pentest admission
+with an empty executable `PATH`.
 
 ```bash
 conda run --no-capture-output -n agent python -m pip install -e .
@@ -352,6 +356,10 @@ conda run --no-capture-output -n agent pnpm --filter @riftx/web test
 conda run --no-capture-output -n agent pnpm --filter @riftx/web build
 
 ```
+
+The Release Gate includes `core_path_excludes_docker` to prevent Docker runtime
+dependencies, Docker/Compose deployment assets, or regressions in the host-native core
+path.
 
 The authoritative feature-to-evidence matrix and release commands live in
 [`docs/v2-completion-audit.md`](docs/v2-completion-audit.md). Run them against the exact

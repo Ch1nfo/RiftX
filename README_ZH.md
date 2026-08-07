@@ -10,6 +10,7 @@ RiftX 将授权目标、Scope、审批、执行、证据、Finding、Report 与�
 <p>
   <img alt="版本 2.0.0 Alpha" src="https://img.shields.io/badge/version-2.0.0--alpha.0-245dc7?style=flat-square">
   <img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white">
+  <img alt="宿主机原生，无需 Docker" src="https://img.shields.io/badge/runtime-host--native-2ea44f?style=flat-square">
   <img alt="本地单操作员" src="https://img.shields.io/badge/trust-local__single__operator-55d9ff?style=flat-square&labelColor=071632">
   <a href="./LICENSE"><img alt="Apache License 2.0" src="https://img.shields.io/badge/license-Apache--2.0-ffd45a?style=flat-square&labelColor=071632"></a>
 </p>
@@ -50,6 +51,8 @@ RiftX 将授权目标、Scope、审批、执行、证据、Finding、Report 与�
 前置条件：Python `3.12`、名为 `agent` 的 Conda 环境，以及本地 Temporal CLI。
 Docker 不属于 RiftX 的安装或核心 Pentest 运行前置条件；Onboard、Doctor、Control Plane、
 Worker、Runner 和 WebUI 均采用宿主机原生运行方式。
+发布门禁 `core_path_excludes_docker` 会检查分发依赖与部署资产，并在空 `PATH` 下验证
+Onboard、Doctor、Control Plane 和 Pentest Admission。
 
 ```bash
 conda run --no-capture-output -n agent python -m pip install -e .
@@ -67,6 +70,13 @@ conda run --no-capture-output -n agent riftx doctor
 
 `onboard` 会创建用户配置、Model Profile、Tool Registry、数据库和 Official Packs，
 不会覆盖已有配置。缺少可选工具只会被报告为降级能力，不阻止基础 Pentest 路径启动。
+
+有状态 Browser Pentest 是可选能力。只在确实需要它的 Runner 上安装：
+
+```bash
+conda run --no-capture-output -n agent python -m pip install -e ".[browser]"
+conda run --no-capture-output -n agent playwright install chromium
+```
 
 Browser、MCP 与 Connector 都是可选扩展。缺失或未启用时只降级对应能力，不阻止
 基础 Pentest 路径。
@@ -325,6 +335,9 @@ conda run --no-capture-output -n agent pnpm --filter @riftx/web test
 conda run --no-capture-output -n agent pnpm --filter @riftx/web build
 
 ```
+
+其中 Release Gate 包含 `core_path_excludes_docker`，用于阻止 Docker 运行时依赖、
+Docker/Compose 部署资产或宿主机原生核心路径回归。
 
 权威的“功能到证据”矩阵与发布命令位于
 [`docs/v2-completion-audit.md`](docs/v2-completion-audit.md)。
