@@ -981,8 +981,8 @@ Codex 每完成一个 Slice 更新本表，并链接实现提交和验证结果�
 | 3 | Playwright 可选依赖 | completed | `bb51cc60` | core/browser wheel metadata、Doctor、Browser、Onboard、Pentest 回归通过 | Playwright 移至 `browser` extra；缺失时明确 degraded 与安装命令 |
 | 3 | MCP 按配置初始化 | completed | `38b04072` | 空配置构造、MCP 治理、Worker、Runtime、Pentest 回归通过 | 空配置不创建 Registry/Service/refresh task；标签明确 `not_configured` |
 | 3 | Web Research 按需 Provider | completed | `9b6efe77` | Config、Provider、Fetcher、Research、Worker、Runtime、Pentest 回归通过 | 默认无 Search Provider；远程 Client 仅在 Tool 调用解析 Provider 时创建；保留常驻 `web_fetch` 的轻量 Fetcher |
-| 3 | Connector opt-in | completed | 本提交 | Config、API surface、Service、Persistence、migration、Pentest 回归通过 | 默认不 include Router、不构造 Service；`connectors.enabled` 显式启用；保留历史表 |
-| 3 | Browser Engine 惰性创建 | pending | — | — | B2 |
+| 3 | Connector opt-in | completed | `dd50de0a` | Config、API surface、Service、Persistence、migration、Pentest 回归通过 | 默认不 include Router、不构造 Service；`connectors.enabled` 显式启用；保留历史表 |
+| 3 | Browser Engine 惰性创建 | completed | 本提交 | Browser Manager、Service、Stop、Worker、Control Plane、Pentest 回归通过 | Manager 启动不构造 Engine；首个 Session 串行创建唯一 Engine；失败不登记假 Session |
 | 4 | 停止新 Code Audit 创建 | pending | — | — | C2 |
 | 4 | 移除默认 Audit 装配 | pending | — | — | C2 |
 | 4 | 删除 Audit Worker/Source Ingest | pending | — | — | C2 |

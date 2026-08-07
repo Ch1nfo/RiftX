@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import builtins
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from riftx.domain import (
     Scope,
 )
 from riftx.runner import RunnerPaths
+from riftx.runner import browser as browser_module
 from riftx.runner.browser import PlaywrightBrowserEngine, RunnerBrowserManager
 
 
@@ -106,8 +108,10 @@ class FakeEngineSession:
 class FakeEngine:
     def __init__(self) -> None:
         self.sessions: dict[str, FakeEngineSession] = {}
+        self.open_calls = 0
 
     async def open(self, command: BrowserOpenCommand) -> FakeEngineSession:
+        self.open_calls += 1
         session = FakeEngineSession(command.session_id, command.url)
         self.sessions[command.session_id] = session
         return session
@@ -140,6 +144,49 @@ async def test_playwright_engine_reports_optional_install_command(
 
     with pytest.raises(RuntimeError, match=r"riftx\[browser\]"):
         await PlaywrightBrowserEngine(RunnerPaths(tmp_path)).open(open_command())
+
+
+async def test_manager_constructs_default_engine_once_on_first_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = FakeEngine()
+    constructed: list[RunnerPaths] = []
+
+    def create_engine(paths: RunnerPaths) -> FakeEngine:
+        constructed.append(paths)
+        return engine
+
+    monkeypatch.setattr(browser_module, "PlaywrightBrowserEngine", create_engine)
+    manager = RunnerBrowserManager(node_id="local", paths=RunnerPaths(tmp_path))
+
+    assert constructed == []
+    await asyncio.gather(manager.open(open_command()), manager.open(open_command()))
+
+    assert len(constructed) == 1
+    assert engine.open_calls == 1
+
+
+async def test_failed_first_open_leaves_no_active_session(tmp_path: Path) -> None:
+    class FlakyEngine(FakeEngine):
+        async def open(self, command: BrowserOpenCommand) -> FakeEngineSession:
+            if self.open_calls == 0:
+                self.open_calls += 1
+                raise RuntimeError("browser startup failed")
+            return await super().open(command)
+
+    engine = FlakyEngine()
+    manager = RunnerBrowserManager(
+        node_id="local",
+        paths=RunnerPaths(tmp_path),
+        engine=engine,
+    )
+
+    with pytest.raises(RuntimeError, match="browser startup failed"):
+        await manager.open(open_command())
+
+    await manager.open(open_command())
+    assert engine.open_calls == 2
 
 
 async def test_manager_produces_bounded_observation_and_checks_versions(
