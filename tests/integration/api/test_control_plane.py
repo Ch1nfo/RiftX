@@ -231,7 +231,10 @@ from riftx.target_http.models import (
     TargetHttpResult,
     TargetHttpSubmission,
 )
-from riftx.target_http.service import TargetHttpApplicationService
+from riftx.target_http.service import (
+    CapabilityCredentialReferenceAuthorizer,
+    TargetHttpApplicationService,
+)
 from riftx.temporal import RiftXRunWorkflow, WorkflowPhase
 from riftx.temporal.activities import RiftXActivities
 from riftx.temporal.runtime import TemporalRunClient, TemporalRuntimeConfig
@@ -849,6 +852,9 @@ tools:
     async def pause_budget_exhausted_pentest(run_id: str) -> None:
         await run_service.pause(run_id)
 
+    capability_selection_store = SQLAlchemyCapabilitySelectionStore(
+        database.session_factory
+    )
     target_http_service = TargetHttpApplicationService(
         runs=run_repository,
         tool_calls=tool_call_intent_repository,
@@ -856,6 +862,9 @@ tools:
         runner=RunnerTargetHttpClient(node_id=settings.node_id),
         artifacts=artifact_service,
         events=event_repository,
+        credential_references=CapabilityCredentialReferenceAuthorizer(
+            capability_selection_store
+        ),
         budget_exhaustion_handler=pause_budget_exhausted_pentest,
     )
     runner_control_service = RunnerControlService(

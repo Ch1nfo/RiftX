@@ -1553,19 +1553,41 @@ def _resident_schema(
                 "additionalProperties": {"type": "string"},
                 "maxProperties": 100,
             },
+            "header_secret_refs": {
+                "type": "object",
+                "additionalProperties": {"type": "string", "maxLength": 255},
+                "maxProperties": 100,
+                "description": (
+                    "Map Header names to credential references authorized by the selected "
+                    "Session Capability. Never place secret values in headers."
+                ),
+            },
             "query": {
                 "type": "object",
                 "additionalProperties": {"type": "string"},
                 "maxProperties": 100,
             },
             "body": {"type": ["string", "null"], "maxLength": 1_000_000},
+            "body_secret_ref": {
+                "type": ["string", "null"],
+                "minLength": 1,
+                "maxLength": 255,
+                "description": (
+                    "Credential reference for the complete request body; mutually exclusive "
+                    "with body and json_body."
+                ),
+            },
             "json_body": {
                 "type": ["object", "array", "null"],
             },
-            "cookies": {
+            "cookie_secret_refs": {
                 "type": "object",
-                "additionalProperties": {"type": "string"},
+                "additionalProperties": {"type": "string", "maxLength": 255},
                 "maxProperties": 100,
+                "description": (
+                    "Map Cookie names to credential references authorized by the selected "
+                    "Session Capability. Cookie values are never model arguments."
+                ),
             },
             "verify_tls": {"type": "boolean", "default": True},
             "follow_redirects": {"type": "boolean", "default": False},

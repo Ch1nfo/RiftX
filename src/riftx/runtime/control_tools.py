@@ -619,16 +619,18 @@ class _TargetHttpRequestArguments(_Arguments):
     method: str = Field(min_length=1, max_length=32)
     url: str = Field(min_length=1, max_length=8192)
     headers: dict[str, str] = Field(default_factory=dict, max_length=100)
+    header_secret_refs: dict[str, str] = Field(default_factory=dict, max_length=100)
     query: dict[str, str] = Field(default_factory=dict, max_length=100)
     body: str | None = Field(default=None, max_length=1_000_000)
+    body_secret_ref: str | None = Field(default=None, min_length=1, max_length=255)
     json_body: JsonValue | None = None
-    cookies: dict[str, str] = Field(default_factory=dict, max_length=100)
+    cookie_secret_refs: dict[str, str] = Field(default_factory=dict, max_length=100)
     verify_tls: bool = True
     follow_redirects: bool = False
     timeout_seconds: float = Field(default=30, gt=0, le=60)
     max_response_bytes: int = Field(default=2_000_000, ge=1, le=10_000_000)
 
-    @field_validator("headers", "query", "cookies")
+    @field_validator("headers", "query")
     @classmethod
     def validate_string_map(cls, value: dict[str, str]) -> dict[str, str]:
         if any(
@@ -640,10 +642,28 @@ class _TargetHttpRequestArguments(_Arguments):
             raise ValueError("Target HTTP string map is invalid or too large")
         return value
 
+    @field_validator("header_secret_refs", "cookie_secret_refs")
+    @classmethod
+    def validate_reference_map(cls, value: dict[str, str]) -> dict[str, str]:
+        if any(
+            not key
+            or len(key) > 256
+            or not reference.strip()
+            or len(reference) > 255
+            for key, reference in value.items()
+        ):
+            raise ValueError("Target HTTP credential reference map is invalid")
+        return value
+
     @model_validator(mode="after")
     def validate_body_size(self) -> _TargetHttpRequestArguments:
-        if self.body is not None and self.json_body is not None:
-            raise ValueError("Target HTTP accepts body or json_body, not both")
+        if sum(
+            value is not None
+            for value in (self.body, self.json_body, self.body_secret_ref)
+        ) > 1:
+            raise ValueError(
+                "Target HTTP accepts body, json_body, or body_secret_ref, not more than one"
+            )
         if self.json_body is not None:
             encoded = json.dumps(
                 self.json_body,
@@ -1395,10 +1415,12 @@ class RuntimeControlToolService:
                 method=request_arguments.method,
                 url=request_arguments.url,
                 headers=request_arguments.headers,
+                header_secret_refs=request_arguments.header_secret_refs,
                 query=request_arguments.query,
                 body=request_arguments.body,
+                body_secret_ref=request_arguments.body_secret_ref,
                 json_body=request_arguments.json_body,
-                cookies=request_arguments.cookies,
+                cookie_secret_refs=request_arguments.cookie_secret_refs,
                 verify_tls=request_arguments.verify_tls,
                 follow_redirects=request_arguments.follow_redirects,
                 timeout_seconds=request_arguments.timeout_seconds,

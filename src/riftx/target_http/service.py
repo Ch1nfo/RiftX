@@ -20,6 +20,12 @@ from riftx.application.services.artifacts import (
     RegisterArtifactContent,
 )
 from riftx.application.services.runs import require_interactive_run_operation
+from riftx.capabilities import (
+    CapabilityKind,
+    CapabilitySelectionStore,
+    CapabilityVersion,
+    CapabilityVersionStatus,
+)
 from riftx.domain import ArtifactContentTrust, Run, RunStatus
 from riftx.execution import build_execution_key
 from riftx.persistence.repositories import SQLAlchemyRunRepository
@@ -104,6 +110,75 @@ class TargetHttpRequestRepository(Protocol):
     ) -> TargetHttpResult: ...
 
 
+class TargetHttpCredentialReferenceAuthorizer(Protocol):
+    async def require_allowed(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        references: Sequence[str],
+    ) -> None: ...
+
+
+class CapabilityCredentialReferenceAuthorizer:
+    """Allow only references pinned in this Session's selected Techniques."""
+
+    def __init__(self, selections: CapabilitySelectionStore) -> None:
+        self._selections = selections
+
+    async def require_allowed(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        references: Sequence[str],
+    ) -> None:
+        requested = frozenset(references)
+        if not requested:
+            return
+        allowed: set[str] = set()
+        selections = await self._selections.list_selections(
+            session_id,
+            kind=CapabilityKind.TECHNIQUE,
+        )
+        for selection in selections:
+            if (
+                not selection.active
+                or selection.run_id != run_id
+                or selection.session_id != session_id
+            ):
+                continue
+            try:
+                version = CapabilityVersion.model_validate(
+                    selection.snapshot.get("capability_version")
+                )
+            except (TypeError, ValueError) as exc:
+                raise ApplicationConflictError(
+                    "target_http_credential_selection_invalid",
+                    "Target HTTP credential permission snapshot is invalid",
+                ) from exc
+            manifest = version.manifest
+            if (
+                version.status is not CapabilityVersionStatus.ACTIVE
+                or manifest.kind is not CapabilityKind.TECHNIQUE
+                or manifest.capability_id != selection.capability_id
+                or manifest.version != selection.version
+                or version.manifest_digest != selection.digest
+                or manifest.provenance.source is not selection.source
+            ):
+                raise ApplicationConflictError(
+                    "target_http_credential_selection_invalid",
+                    "Target HTTP credential permission snapshot failed integrity validation",
+                )
+            allowed.update(manifest.permission.credential_references)
+        if not requested <= allowed:
+            raise ApplicationConflictError(
+                "target_http_credential_reference_forbidden",
+                "Target HTTP credential reference is outside the Session Capability permission",
+                details={"forbidden_reference_count": len(requested - allowed)},
+            )
+
+
 @dataclass(frozen=True, slots=True)
 class TargetHttpRunStopResult:
     """Fail-closed, per-intent evidence for Run lifecycle aggregation."""
@@ -136,6 +211,7 @@ class TargetHttpApplicationService:
         artifacts: ArtifactApplicationService,
         events: RunEventRepository | None = None,
         target_http_tool_ids: Sequence[str] = tuple(_TARGET_HTTP_TOOL_IDS),
+        credential_references: TargetHttpCredentialReferenceAuthorizer | None = None,
         budget_exhaustion_handler: BudgetExhaustionHandler | None = None,
     ) -> None:
         if not target_http_tool_ids:
@@ -147,6 +223,7 @@ class TargetHttpApplicationService:
         self._artifacts = artifacts
         self._events = events
         self._target_http_tool_ids = frozenset(target_http_tool_ids)
+        self._credential_references = credential_references
         self._budget_exhaustion_handler = budget_exhaustion_handler
         self._locks: dict[str, asyncio.Lock] = {}
         self._lock_users: dict[str, int] = {}
@@ -202,6 +279,17 @@ class TargetHttpApplicationService:
                         "Tool Call intent is not owned by the Target HTTP boundary",
                     )
                 self._raise_if_intent_inactive(intent)
+                if request.credential_references:
+                    if self._credential_references is None:
+                        raise ApplicationConflictError(
+                            "target_http_credential_reference_unavailable",
+                            "Target HTTP credential references are not configured",
+                        )
+                    await self._credential_references.require_allowed(
+                        run_id=submission.run_id,
+                        session_id=submission.session_id,
+                        references=request.credential_references,
+                    )
                 try:
                     claim = await self._tool_calls.claim_execution(
                         intent.id,

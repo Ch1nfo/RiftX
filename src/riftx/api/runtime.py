@@ -91,6 +91,7 @@ from riftx.persistence import (
     SQLAlchemyAuditPreflightPlanRepository,
     SQLAlchemyAuditPreflightRepository,
     SQLAlchemyCapabilityRepository,
+    SQLAlchemyCapabilitySelectionStore,
     SQLAlchemyEngagementRepository,
     SQLAlchemyEvidenceLedgerRepository,
     SQLAlchemyExecutionRepository,
@@ -148,7 +149,10 @@ from riftx.security import (
     validate_operator_runner_credential_separation,
 )
 from riftx.skills import create_default_skill_registry
-from riftx.target_http.service import TargetHttpApplicationService
+from riftx.target_http.service import (
+    CapabilityCredentialReferenceAuthorizer,
+    TargetHttpApplicationService,
+)
 from riftx.temporal.connection import TemporalConnectionSettings, connect_temporal
 from riftx.temporal.runtime import LazyTemporalRunClient, TemporalRuntimeConfig
 from riftx.temporal.workflow_signal_transport import (
@@ -963,6 +967,9 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
     async def pause_budget_exhausted_pentest(run_id: str) -> None:
         await run_service.pause(run_id)
 
+    capability_selection_store = SQLAlchemyCapabilitySelectionStore(
+        database.session_factory
+    )
     target_http_service = TargetHttpApplicationService(
         runs=run_repository,
         tool_calls=tool_call_intent_repository,
@@ -974,6 +981,9 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
         ),
         artifacts=artifact_service,
         events=event_repository,
+        credential_references=CapabilityCredentialReferenceAuthorizer(
+            capability_selection_store
+        ),
         budget_exhaustion_handler=pause_budget_exhausted_pentest,
     )
 

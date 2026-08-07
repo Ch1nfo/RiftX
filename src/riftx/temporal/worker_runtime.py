@@ -185,7 +185,10 @@ from riftx.subagents import (
     SubagentManager,
     SubagentOrchestrator,
 )
-from riftx.target_http.service import TargetHttpApplicationService
+from riftx.target_http.service import (
+    CapabilityCredentialReferenceAuthorizer,
+    TargetHttpApplicationService,
+)
 from riftx.tools import RawToolDefinition, ToolContextManager, ToolDefinition, ToolRegistry
 from riftx.web import (
     ApplicationWebArtifactStore,
@@ -841,6 +844,9 @@ async def build_temporal_worker(
         run_lease_repository = SQLAlchemyRunLeaseRepository(database.session_factory)
         runtime_approval_repository = SQLAlchemyRuntimeApprovalRepository(database.session_factory)
         tool_call_intent_repository = SQLAlchemyToolCallIntentRepository(database.session_factory)
+        capability_selection_store = SQLAlchemyCapabilitySelectionStore(
+            database.session_factory
+        )
         transcript_repository = SQLAlchemyTranscriptRepository(database.session_factory)
         user_input_repository = SQLAlchemyUserInputRequestRepository(database.session_factory)
         context_compilation_repository = SQLAlchemyContextCompilationRepository(
@@ -1082,6 +1088,9 @@ async def build_temporal_worker(
             ),
             artifacts=artifact_service,
             events=event_repository,
+            credential_references=CapabilityCredentialReferenceAuthorizer(
+                capability_selection_store
+            ),
             budget_exhaustion_handler=pause_budget_exhausted_pentest,
         )
         safety_stopper = RunSafetyStopService(
@@ -1187,9 +1196,6 @@ async def build_temporal_worker(
         skill_context = ProgressiveSkillContextManager(
             skill_registry,
             SQLAlchemySkillSelectionStore(database.session_factory),
-        )
-        capability_selection_store = SQLAlchemyCapabilitySelectionStore(
-            database.session_factory
         )
         technique_context = TechniqueContextManager(
             capability_repository,

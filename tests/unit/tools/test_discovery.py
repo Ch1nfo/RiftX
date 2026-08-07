@@ -145,6 +145,34 @@ async def test_run_shell_resident_schema_requires_script(tmp_path: Path) -> None
     }
 
 
+async def test_target_http_schema_exposes_references_instead_of_cookie_values(
+    tmp_path: Path,
+) -> None:
+    manager = ToolContextManager(await _registry(tmp_path, 10))
+    schema = next(
+        item
+        for item in (
+            await manager.visibility(
+                run_id="run-1",
+                session_id="session-1",
+                agent_id="primary",
+            )
+        ).available_tools
+        if item["name"] == "target_http_request"
+    )
+
+    parameters = schema["parameters"]
+    assert isinstance(parameters, dict)
+    properties = parameters["properties"]
+    assert isinstance(properties, dict)
+    assert "cookies" not in properties
+    assert {
+        "header_secret_refs",
+        "body_secret_ref",
+        "cookie_secret_refs",
+    } <= set(properties)
+
+
 async def test_task_planner_resident_schemas_are_strict_and_role_scoped(
     tmp_path: Path,
 ) -> None:
