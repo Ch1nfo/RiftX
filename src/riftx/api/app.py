@@ -133,7 +133,8 @@ def create_app(
     app.include_router(context_router, prefix="/api/v1")
     app.include_router(terminals_router, prefix="/api/v1")
     app.include_router(browser_router, prefix="/api/v1")
-    app.include_router(connectors_router, prefix="/api/v1")
+    if configured_settings.connectors_enabled:
+        app.include_router(connectors_router, prefix="/api/v1")
     app.include_router(security_router, prefix="/api/v1")
     app.include_router(system_router, prefix="/api/v1")
 
@@ -157,7 +158,18 @@ def create_app(
         )
 
     install_local_operator_dependencies(app)
-    apply_route_policy_inventory(app)
+    apply_route_policy_inventory(
+        app,
+        disabled_route_names=(
+            ()
+            if configured_settings.connectors_enabled
+            else tuple(
+                route.name
+                for route in connectors_router.routes
+                if isinstance(route.name, str)
+            )
+        ),
+    )
 
     web_dist = configured_settings.web_dist_path
     if (web_dist / "index.html").is_file():

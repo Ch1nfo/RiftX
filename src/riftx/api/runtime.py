@@ -191,6 +191,7 @@ class APISettings:
         repr=False,
     )
     web_dist_path: Path = Path("apps/web/dist")
+    connectors_enabled: bool = False
     temporal_address: str = "127.0.0.1:7233"
     temporal_namespace: str = "default"
     temporal_task_queue: str = "riftx-v2"
@@ -237,6 +238,7 @@ class APISettings:
             runner_state_path=config.runner.state_path.expanduser(),
             runner_credential_path=config.runner.credential_path.expanduser(),
             web_dist_path=config.web.dist_path.expanduser(),
+            connectors_enabled=config.connectors.enabled,
             temporal_address=config.temporal.target,
             temporal_namespace=config.temporal.namespace,
             temporal_task_queue=config.temporal.task_queue,
@@ -1154,10 +1156,14 @@ async def build_control_plane(settings: APISettings) -> ControlPlane:
             hooks=hooks,
         ),
         browser_service=browser_service,
-        connector_service=ConnectorApplicationService(
-            runs=run_service,
-            submissions=SQLAlchemyConnectorSubmissionRepository(database.session_factory),
-            artifacts=artifact_service,
+        connector_service=(
+            ConnectorApplicationService(
+                runs=run_service,
+                submissions=SQLAlchemyConnectorSubmissionRepository(database.session_factory),
+                artifacts=artifact_service,
+            )
+            if settings.connectors_enabled
+            else None
         ),
         terminal_supervisor=terminal_supervisor,
         graph_repository=graph_repository,

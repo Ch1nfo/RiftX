@@ -92,6 +92,7 @@ def test_environment_compatibility_maps_into_api_settings(tmp_path: Path) -> Non
             "RIFTX_WEB_SEARCH_PROVIDERS": "searxng,openai_hosted",
             "RIFTX_SEARXNG_ENDPOINT": "https://search.example.test/base",
             "RIFTX_WEB_SEARCH_TIMEOUT_SECONDS": "45",
+            "RIFTX_CONNECTORS_ENABLED": "true",
             "RIFTX_ADMIN_TOKEN": "test-only-admin-operator-token-0002",
             "RIFTX_TRUST_PROFILE": "local_single_operator",
             "RIFTX_TRUST_PROXY_AUTH": "false",
@@ -151,6 +152,8 @@ def test_environment_compatibility_maps_into_api_settings(tmp_path: Path) -> Non
     assert config.web.search.providers == ("searxng", "openai_hosted")
     assert config.web.search.searxng_endpoint == "https://search.example.test/base"
     assert config.web.search.timeout_seconds == 45
+    assert config.connectors.enabled is True
+    assert settings.connectors_enabled is True
     assert settings.admin_token == "test-only-admin-operator-token-0002"
     assert config.security.trust_proxy_auth is False
     assert settings.trust_profile.value == "local_single_operator"
@@ -287,6 +290,20 @@ def test_web_search_has_no_default_provider(tmp_path: Path) -> None:
     assert config.web.search.enabled is False
     assert config.web.search.providers == ()
     assert config.web.search.searxng_endpoint is None
+
+
+def test_connectors_are_disabled_by_default(tmp_path: Path) -> None:
+    config = load_riftx_config(
+        system_path=tmp_path / "missing-system.yaml",
+        user_path=tmp_path / "missing-user.yaml",
+        environment={
+            "RIFTX_TRUST_PROFILE": "local_single_operator",
+            "RIFTX_ADMIN_TOKEN": "test-only-admin-operator-token-0002",
+        },
+    )
+
+    assert config.connectors.enabled is False
+    assert APISettings.from_config(config).connectors_enabled is False
 
 
 def test_controlled_lsp_is_disabled_by_default(tmp_path: Path) -> None:

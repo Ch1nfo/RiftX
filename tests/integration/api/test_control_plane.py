@@ -4194,6 +4194,7 @@ models:
     runtime = await build_control_plane(settings)
     assert isinstance(runtime.audit_service, AuditApplicationService)
     assert isinstance(runtime.audit_preflight_service, AuditPreflightApplicationService)
+    assert runtime.connector_service is None
     process_executor = runtime.process_supervisor._process_executor
     assert process_executor._require_containment is True
     assert runtime.terminal_supervisor._require_containment is True

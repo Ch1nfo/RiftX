@@ -980,8 +980,8 @@ Codex 每完成一个 Slice 更新本表，并链接实现提交和验证结果�
 | 2 | Capability Domain 收缩 | completed | `5e5f6dcd` | Capability、Pack、Selection、Operator Skill、migration 回归通过 | 删除零消费者 Model/Enum/digest；保留历史 ORM 字符串约束 |
 | 3 | Playwright 可选依赖 | completed | `bb51cc60` | core/browser wheel metadata、Doctor、Browser、Onboard、Pentest 回归通过 | Playwright 移至 `browser` extra；缺失时明确 degraded 与安装命令 |
 | 3 | MCP 按配置初始化 | completed | `38b04072` | 空配置构造、MCP 治理、Worker、Runtime、Pentest 回归通过 | 空配置不创建 Registry/Service/refresh task；标签明确 `not_configured` |
-| 3 | Web Research 按需 Provider | completed | 本提交 | Config、Provider、Fetcher、Research、Worker、Runtime、Pentest 回归通过 | 默认无 Search Provider；远程 Client 仅在 Tool 调用解析 Provider 时创建；保留常驻 `web_fetch` 的轻量 Fetcher |
-| 3 | Connector opt-in | pending | — | — | B4 |
+| 3 | Web Research 按需 Provider | completed | `9b6efe77` | Config、Provider、Fetcher、Research、Worker、Runtime、Pentest 回归通过 | 默认无 Search Provider；远程 Client 仅在 Tool 调用解析 Provider 时创建；保留常驻 `web_fetch` 的轻量 Fetcher |
+| 3 | Connector opt-in | completed | 本提交 | Config、API surface、Service、Persistence、migration、Pentest 回归通过 | 默认不 include Router、不构造 Service；`connectors.enabled` 显式启用；保留历史表 |
 | 3 | Browser Engine 惰性创建 | pending | — | — | B2 |
 | 4 | 停止新 Code Audit 创建 | pending | — | — | C2 |
 | 4 | 移除默认 Audit 装配 | pending | — | — | C2 |

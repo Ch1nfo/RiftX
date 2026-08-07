@@ -763,6 +763,10 @@ class WebConfig(_ConfigModel):
     search: WebSearchConfig = Field(default_factory=WebSearchConfig)
 
 
+class ConnectorConfig(_ConfigModel):
+    enabled: bool = False
+
+
 class ModelsRuntimeConfig(_ConfigModel):
     path: Path = Path("configs/models.yaml")
     secrets_path: Path = Path(".riftx/secrets/models.json")
@@ -1030,6 +1034,7 @@ class RiftXConfig(_ConfigModel):
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     web: WebConfig = Field(default_factory=WebConfig)
+    connectors: ConnectorConfig = Field(default_factory=ConnectorConfig)
     models: ModelsRuntimeConfig = Field(default_factory=ModelsRuntimeConfig)
     code: CodeConfig = Field(default_factory=CodeConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
@@ -1277,6 +1282,7 @@ _ENVIRONMENT_PATHS: dict[str, tuple[str, ...]] = {
     "RIFTX_WEB_SEARCH_PROVIDERS": ("web", "search", "providers"),
     "RIFTX_SEARXNG_ENDPOINT": ("web", "search", "searxng_endpoint"),
     "RIFTX_WEB_SEARCH_TIMEOUT_SECONDS": ("web", "search", "timeout_seconds"),
+    "RIFTX_CONNECTORS_ENABLED": ("connectors", "enabled"),
     "RIFTX_MODELS_CONFIG": ("models", "path"),
     "RIFTX_MODEL_SECRETS": ("models", "secrets_path"),
     "RIFTX_MODEL_PROFILE": ("models", "profile"),

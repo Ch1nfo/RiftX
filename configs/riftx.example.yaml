@@ -131,6 +131,9 @@ web:
     # searxng_endpoint: https://search.example.com
     timeout_seconds: 30
 
+connectors:
+  enabled: false
+
 models:
   path: configs/models.yaml
   secrets_path: .riftx/secrets/models.json

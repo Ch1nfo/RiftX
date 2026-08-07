@@ -37,6 +37,7 @@ def test_control_plane_route_policy_inventory_is_complete_and_in_openapi(tmp_pat
             local_principal_path=tmp_path / "principal.json",
             admin_token=_TEST_OPERATOR_TOKEN,
             web_dist_path=tmp_path / "missing-web",
+            connectors_enabled=True,
         )
     )
     inventory = app.state.route_policy_inventory

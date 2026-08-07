@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
@@ -327,7 +328,11 @@ def install_local_operator_dependencies(app: FastAPI) -> None:
         )
 
 
-def apply_route_policy_inventory(app: FastAPI) -> tuple[RoutePolicyRecord, ...]:
+def apply_route_policy_inventory(
+    app: FastAPI,
+    *,
+    disabled_route_names: Collection[str] = (),
+) -> tuple[RoutePolicyRecord, ...]:
     """Annotate all API routes and reject unclassified or stale policy entries."""
 
     records: list[RoutePolicyRecord] = []
@@ -403,11 +408,16 @@ def apply_route_policy_inventory(app: FastAPI) -> tuple[RoutePolicyRecord, ...]:
             )
         )
 
-    stale = sorted(ROUTE_POLICIES.keys() - seen_names)
+    disabled = set(disabled_route_names)
+    unknown_disabled = sorted(disabled - ROUTE_POLICIES.keys())
+    unexpectedly_present = sorted(disabled & seen_names)
+    stale = sorted(ROUTE_POLICIES.keys() - seen_names - disabled)
     if (
         unclassified
         or duplicate_names
         or stale
+        or unknown_disabled
+        or unexpectedly_present
         or missing_admin_dependency
         or authentication_dependency_mismatches
         or unsupported_operator_effects
@@ -416,6 +426,8 @@ def apply_route_policy_inventory(app: FastAPI) -> tuple[RoutePolicyRecord, ...]:
             "Control Plane route policy inventory validation failed: "
             f"unclassified={sorted(unclassified)}, "
             f"duplicate_names={sorted(duplicate_names)}, stale={stale}, "
+            f"unknown_disabled={unknown_disabled}, "
+            f"unexpectedly_present={unexpectedly_present}, "
             f"missing_admin_dependency={sorted(missing_admin_dependency)}, "
             "authentication_dependency_mismatches="
             f"{sorted(authentication_dependency_mismatches)}, "
