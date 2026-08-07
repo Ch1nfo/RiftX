@@ -7,8 +7,6 @@ from typing import Protocol
 
 from .models import (
     Capability,
-    CapabilityCandidate,
-    CapabilityEvaluationResult,
     CapabilityKind,
     CapabilityPack,
     CapabilityVersion,
@@ -16,7 +14,6 @@ from .models import (
     PackInstall,
     PackLock,
     PackLockOwnerKind,
-    PromotionRun,
 )
 
 
@@ -47,31 +44,6 @@ class CapabilityRepository(Protocol):
         status: CapabilityVersionStatus,
         *,
         changed_at: datetime,
-    ) -> CapabilityVersion: ...
-
-    async def create_candidate(
-        self,
-        candidate: CapabilityCandidate,
-    ) -> CapabilityCandidate: ...
-
-    async def get_candidate(self, candidate_id: str) -> CapabilityCandidate | None: ...
-
-    async def create_promotion(self, promotion: PromotionRun) -> PromotionRun: ...
-
-    async def add_evaluation_result(
-        self,
-        result: CapabilityEvaluationResult,
-    ) -> CapabilityEvaluationResult: ...
-
-    async def promote_candidate(
-        self,
-        candidate_id: str,
-        promotion_id: str,
-        capability: Capability,
-        version: CapabilityVersion,
-        *,
-        approval_reference: str,
-        promoted_at: datetime,
     ) -> CapabilityVersion: ...
 
     async def register_pack(self, pack: CapabilityPack) -> CapabilityPack: ...

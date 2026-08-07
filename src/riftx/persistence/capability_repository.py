@@ -20,11 +20,8 @@ from riftx.application.errors import (
 )
 from riftx.capabilities import (
     Capability,
-    CapabilityCandidate,
-    CapabilityCandidateStatus,
     CapabilityDependency,
     CapabilityDependencyKind,
-    CapabilityEvaluationResult,
     CapabilityKind,
     CapabilityManifest,
     CapabilityPack,
@@ -35,13 +32,18 @@ from riftx.capabilities import (
     CapabilityVersion,
     CapabilityVersionStatus,
     ConfirmationPolicy,
-    EvaluationResultStatus,
     EvidenceContract,
     PackInstall,
     PackInstallStatus,
     PackLock,
     PackLockOwnerKind,
     PackStatus,
+)
+from riftx.capabilities.models import (
+    CapabilityCandidate,
+    CapabilityCandidateStatus,
+    CapabilityEvaluationResult,
+    EvaluationResultStatus,
     PromotionRun,
     PromotionStatus,
 )
