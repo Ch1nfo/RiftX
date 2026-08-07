@@ -8,9 +8,9 @@
 >
 > 当前分支：`ch1nfo/riftx-3-code-audit`
 >
-> 当前清理代码基线：`629f39a7`；本次优化计划起点：`d63e6f84`
+> 当前清理代码基线：`82351bcf`；本次优化计划起点：`d63e6f84`
 >
-> 当前状态：Pentest-first R1 已完成；过度开发清理 Phase 6 已收尾，待执行最终发布 Gate
+> 当前状态：Pentest-first R1 与过度开发清理全部完成；清理后最终发布 Gate 已通过
 >
 > 实施与测试事实：[`docs/implementation/FORMAL_AGENT_PROGRESS.md`](docs/implementation/FORMAL_AGENT_PROGRESS.md)
 >
@@ -138,7 +138,7 @@ RiftX 的目标是：
 
 ### 2.3 当前真正缺口
 
-Pentest-first R1 当前没有未完成的代码缺口。过度开发清理已完成 Phase 0–6 的代码切片；当前只需在清理后的同一候选代码上重跑最终 wheel、Onboard/Doctor、Control Plane、Pentest、Operator Skill、安全、恢复、migration、Backup/Restore、全仓 Python、Web 和文档 Gate。
+Pentest-first R1 与过度开发清理当前没有未完成的代码缺口。清理后候选已通过 wheel、Onboard/Doctor、Control Plane、Pentest、Operator Skill、安全、恢复、migration、Backup/Restore、全仓 Python、Web 和文档 Gate。
 
 仓库外仍可由产品所有者决定版本号、Git tag、远程推送和制品发布；这些发布动作不属于本地开发完成条件。当前包仍明确标记为 `2.0.0-alpha.0`，避免在未获授权时擅自宣告公开 GA。
 
@@ -157,7 +157,7 @@ Pentest-first R1 当前没有未完成的代码缺口。过度开发清理已完
 → [已完成] 对非当前命令运行时做局部惰性导入
 → [已完成] 执行 R1 发布门
 → [已完成] 按准入门逐 Slice 删除零消费者代码与 Code Audit 产品面
-→ [当前] 在清理后候选代码上执行最终发布 Gate
+→ [已完成] 在清理后候选代码上执行最终发布 Gate
 ```
 
 ---

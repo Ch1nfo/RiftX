@@ -10,7 +10,7 @@
 >
 > 计划基线：`fea06c87`
 >
-> 当前状态：Pentest-first R1 已通过发布门；Phase 2 Capability 未来写模型收缩完成
+> 当前状态：过度开发清理全部完成；清理后最终发布 Gate 已通过
 >
 > 上游产品边界：[`RiftX_正式版_开发优化文档.md`](RiftX_正式版_开发优化文档.md)
 >
@@ -992,9 +992,9 @@ Codex 每完成一个 Slice 更新本表，并链接实现提交和验证结果�
 | 4 | Replay/Enum 兼容收尾 | completed | `4231d457` | 聚焦 `179 passed`；装配 `56 passed`；Artifact/API `94 passed`；migration/Signal `64 passed`；全仓收集 `4370 tests`；Ruff、`compileall`、Release Gate ready | 删除 Audit Artifact 新写入、Web/MCP Code Audit 副作用、Signal factory 和退役 effect 操作，净删 425 行；保留历史 Enum、ORM、migration、Signal、Snapshot 解析与 Safety Stop |
 | 5 | 遗留入口清理 | completed | `f1497052` | CLI `72 passed`；Ruff | 删除无消费者的隐藏 `riftx interactive` 别名；保留无子命令交互模式和独立部署入口 `riftx-runner` |
 | 5 | 空壳抽象清理 | completed | `63f47689` | 策略聚焦 `52 passed`；跨边界 `247 passed`；全仓收集 `4370 tests`；Ruff、`compileall`、Release Gate ready | 删除零生产消费者的 Audit alternative 元数据、6 个 future-only operation 和对应测试，净删 196 行；保留实际 effect admission、历史读取与 Safety Stop 抽象 |
-| 6 | 配置和依赖收尾 | completed | `629f39a7` | 配置/Runner/Doctor/CLI/Worker `151 passed`；Snapshot/Control Plane `105 passed`；全仓收集 `4254 tests`；Ruff、`compileall`、Release Gate ready | Audit deployment policy 收缩为 4 个历史 Snapshot 兼容字段，旧 YAML 其余字段忽略；删除 Runner Audit 配置、Source Root 隔离、Scanner Doctor 空壳和示例配置，净删 1,612 行；依赖审计无零消费者候选 |
-| 6 | 文档收尾 | completed | 本提交 | README、权威优化文档、历史账本与发布记录对齐；文档合同、CLI/配置回归、Ruff、diff check | 删除已退役 Demo/Code Audit 产品说明；历史材料仅加 retired/superseded banner，不改写历史事实 |
-| 7 | 最终发布 Gate | pending | — | — | — |
+| 6 | 配置和依赖收尾 | completed | `629f39a7`、`461a3720` | 配置/Runner/Doctor/CLI/Worker `151 passed`；Snapshot/Control Plane `105 passed`；Onboard 修正 `131 passed`；全仓收集 `4254 tests`；Ruff、`compileall`、Release Gate ready | Audit deployment policy 收缩为 4 个历史 Snapshot 兼容字段，旧 YAML 其余字段忽略；删除 Runner Audit 配置、Source Root 隔离、Scanner Doctor 空壳、示例配置和 Onboard 退役 temp/fix 目录，净删 1,620 行；依赖审计无零消费者候选 |
+| 6 | 文档收尾 | completed | `edca1c15` | 文档合同 `4 passed`；CLI/配置 `106 passed`；Ruff、diff check | 删除已退役 Demo/Code Audit 产品说明；历史材料仅加 retired/superseded banner，不改写历史事实 |
+| 7 | 最终发布 Gate | completed | `8db76391`、`82351bcf`、本提交 | 全仓 `4250 passed, 5 skipped`；Persistence `357 passed`；产品 Gate `346 passed`；Web `258 passed`；Ruff、`compileall`、Release Gate ready；wheel/Onboard/Doctor/Control Plane/browser extra 通过 | 修复干净 wheel 的未跟踪模板依赖并将 FastAPI 收窄到安全验证的 `0.136.x` 路由合同；最终候选 ready |
 
 状态只允许：`pending`、`in_progress`、`completed`、`blocked`。
 
@@ -1024,11 +1024,39 @@ Codex 每完成一个 Slice 更新本表，并链接实现提交和验证结果�
   `1,677,755` bytes，共声明 20 个依赖且 Playwright 仍为核心依赖；`riftx --help` 成功，
   conda 包装下 wall time 为 `2.91s`。
 
+### 15.2 Phase 7 最终记录
+
+最终候选基线：`82351bcf`；最终账本提交为本提交。所有 Agent 相关命令均在 conda
+`agent` 环境下执行。
+
+- Python：全仓 `4250 passed, 5 skipped, 6 warnings`，共收集 4255 项；5 项 skip 分别需要
+  Windows/PowerShell 或 delegated cgroup v2，6 条 warning 为 Python 3.12 下 aiosqlite
+  默认 datetime adapter 弃用提示；
+- 发布与安全：`scripts/qa/release-gate.py` 返回 `ready: true`；网络服务、状态化 Web、
+  Operator Skill、Onboard、Runtime、Target HTTP、Temporal 与 Capability 聚焦 Gate
+  `346 passed`；Ruff、`compileall` 与 diff check 通过；
+- 持久化：Alembic 单 head 为 `7b3d1e5f9a24`；空库、旧库、历史 Audit migration、
+  Backup/Restore 与 Database Maintenance `357 passed`，无 migration 文件修改；
+- 分发：从 `git archive` 干净源码构建 wheel，大小 `1,310,551` bytes，包含 10 个
+  Official Pack，且不含 Code Audit Pack 或 Audit Worker；核心安装无 Playwright，重复
+  Onboard 配置 Digest 不变，Control Plane `/healthz` 与 live Doctor 通过，随后安装
+  `browser` extra 并成功导入 Playwright；
+- Web：Vitest `20 files / 258 tests passed`，typecheck 与 production build 通过；保留一个
+  大于 500 kB chunk 的非阻断警告；
+- 发布阻断修复：`8db76391` 让 wheel 与 Onboard 使用已跟踪的
+  `configs/tools.example.yaml`；`82351bcf` 将 FastAPI 限定为 `>=0.136,<0.137`，避免
+  `0.137+` 延迟 `_IncludedRouter` 绕开启动时的 fail-closed 路由授权清单；
+- 剩余兼容代码：51 个历史 migration、Audit ORM/Record、历史读取、Snapshot 兼容与
+  Safety Stop。它们没有默认 CLI/API/Web/Worker/Runner 产品入口，也不再接受新写入。
+
+已知限制不阻断本地清理完成：当前包仍为 `2.0.0-alpha.0`；未创建 tag、未推送、未发布
+制品；Windows/PowerShell 与 delegated cgroup v2 的主机特定 smoke test 需在对应环境运行。
+
 ---
 
 ## 16. 最终完成定义
 
-本计划只有在以下条件全部成立时才能标记完成：
+以下完成条件现已全部成立：
 
 1. A 类零消费者代码已经删除；
 2. Capability Candidate/Promotion/Evaluation 不再有在线写入面；
