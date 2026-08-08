@@ -8,6 +8,7 @@ RiftX turns authorized objectives, scope, approvals, execution, evidence, findin
 reports, and operator-maintained methods into one recoverable Pentest workflow.
 
 <p>
+  <a href="https://github.com/Ch1nfo/RiftX/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Ch1nfo/RiftX/actions/workflows/ci.yml/badge.svg?branch=main"></a>
   <img alt="Version 2.0.0 Alpha" src="https://img.shields.io/badge/version-2.0.0--alpha.0-245dc7?style=flat-square">
   <img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white">
   <img alt="Host-native, no Docker required" src="https://img.shields.io/badge/runtime-host--native-2ea44f?style=flat-square">
@@ -363,6 +364,9 @@ commit being qualified; this README intentionally does not publish stale test co
 
 ## Documentation
 
+- [Changelog](CHANGELOG.md)
+- [Contributing guide](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
 - [Release qualification and implementation coverage](docs/v2-completion-audit.md)
 - [Deployment, trust boundaries, backup, and stop acceptance](docs/deployment.md)
 - [Model Profile and credential hardening](docs/model-profile-hardening.md)
@@ -373,6 +377,7 @@ commit being qualified; this README intentionally does not publish stale test co
 
 Describe the affected safety boundary and add executable evidence for new behavior.
 Never commit credentials, real target details, captured traffic, or generated reports.
+See the [contributing guide](CONTRIBUTING.md) before opening a pull request.
 
 ## License
 

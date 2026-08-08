@@ -8,6 +8,7 @@ RiftX 将授权目标、Scope、审批、执行、证据、Finding、Report 与�
 纳入同一条可恢复的渗透测试工作流。
 
 <p>
+  <a href="https://github.com/Ch1nfo/RiftX/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Ch1nfo/RiftX/actions/workflows/ci.yml/badge.svg?branch=main"></a>
   <img alt="版本 2.0.0 Alpha" src="https://img.shields.io/badge/version-2.0.0--alpha.0-245dc7?style=flat-square">
   <img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white">
   <img alt="宿主机原生，无需 Docker" src="https://img.shields.io/badge/runtime-host--native-2ea44f?style=flat-square">
@@ -342,6 +343,9 @@ Docker/Compose 部署资产或宿主机原生核心路径回归。
 
 ## 文档
 
+- [变更记录](CHANGELOG.md)
+- [贡献指南](CONTRIBUTING.md)
+- [安全策略](SECURITY.md)
 - [发布资格与实现覆盖](docs/v2-completion-audit.md)
 - [部署、可信边界、备份与停止验收](docs/deployment.md)
 - [Model Profile 与凭据安全加固](docs/model-profile-hardening.md)
@@ -352,6 +356,7 @@ Docker/Compose 部署资产或宿主机原生核心路径回归。
 
 请说明变更影响的安全边界，并为新行为补充可执行证据。
 切勿提交凭据、真实目标详情、捕获流量或生成报告。
+提交 Pull Request 前请先阅读[贡献指南](CONTRIBUTING.md)。
 
 ## 许可证
 

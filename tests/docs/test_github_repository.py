@@ -61,3 +61,15 @@ def test_ci_qualifies_the_docker_free_release_path() -> None:
         assert required in workflow
 
     assert "docker" not in workflow.lower()
+
+
+def test_readmes_expose_github_project_health_links() -> None:
+    for readme_name in ("README.md", "README_ZH.md"):
+        readme = (ROOT / readme_name).read_text(encoding="utf-8")
+        for required in (
+            "https://github.com/Ch1nfo/RiftX/actions/workflows/ci.yml",
+            "CHANGELOG.md",
+            "CONTRIBUTING.md",
+            "SECURITY.md",
+        ):
+            assert required in readme
