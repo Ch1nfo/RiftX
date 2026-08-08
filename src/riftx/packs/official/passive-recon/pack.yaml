@@ -1,0 +1,86 @@
+schema_version: riftx.official-pack-source/v1
+pack_id: passive-recon
+version: 1.0.0
+title: Passive Recon
+description: Scope-bound public-source reconnaissance with provenance and negative-result discipline.
+authored_by: RiftX Security Team
+authored_at: 2026-08-06T00:00:00Z
+tool_requirements:
+  - web_search
+  - web_fetch
+  - web_research
+  - record_observation
+  - record_negative_result
+evidence_contract: &pack_evidence
+  required_refs: [scope, source_url, source_artifact, observation_or_negative_result]
+  minimum_independent_sources: 1
+  confirmation_policy: explicit_verification
+skill_ids: [passive-recon]
+capabilities:
+  - capability_id: passive-recon
+    kind: skill
+    title: Passive Recon Procedure
+    description: Collect authorized public-source attack-surface leads without silently converting them into findings.
+    domains: [pentest, reconnaissance, osint]
+    triggers: [new target, public footprint, passive discovery]
+    dependencies:
+      - {kind: tool, reference: web_search}
+      - {kind: tool, reference: web_fetch}
+      - {kind: tool, reference: web_research}
+      - {kind: tool, reference: record_observation}
+      - {kind: tool, reference: record_negative_result}
+    permission:
+      effect_class: external_service
+      approval_level: sensitive
+      requires_scope: true
+    input_schema:
+      type: object
+      required: [objective, scope]
+      properties:
+        objective: {type: string}
+        scope: {type: object}
+    output_schema:
+      type: object
+      required: [sources, observations, negative_results]
+      properties:
+        sources: {type: array, items: {type: string}}
+        observations: {type: array, items: {type: string}}
+        negative_results: {type: array, items: {type: string}}
+    evidence_contract: *pack_evidence
+    evaluation_case_ids: [eval.passive-recon.baseline]
+  - capability_id: passive-recon.technique
+    kind: technique
+    title: Provenance-first Public Recon
+    description: Search, fetch, correlate, and record public sources with timestamps and bounded scope.
+    domains: [pentest, reconnaissance, provenance]
+    triggers: [domain discovery, asset lead, public metadata]
+    dependencies:
+      - {kind: tool, reference: web_search}
+      - {kind: tool, reference: web_fetch}
+      - {kind: tool, reference: web_research}
+      - {kind: tool, reference: record_observation}
+      - {kind: tool, reference: record_negative_result}
+    permission:
+      effect_class: external_service
+      approval_level: sensitive
+      requires_scope: true
+    input_schema: {type: object}
+    output_schema: {type: object}
+    evidence_contract: *pack_evidence
+    evaluation_case_ids: [eval.passive-recon.baseline]
+  - capability_id: eval.passive-recon.baseline
+    kind: eval_case
+    title: Passive Recon Baseline Case
+    description: Checks scope filtering, source provenance, corroboration, and negative-result handling.
+    domains: [pentest, reconnaissance, evaluation]
+    triggers: [pack validation]
+    permission:
+      effect_class: read_only
+      approval_level: never
+      requires_scope: false
+    input_schema: {type: object}
+    output_schema: {type: object}
+    evidence_contract:
+      required_refs: [evaluation_result]
+      minimum_independent_sources: 1
+      confirmation_policy: manual_review

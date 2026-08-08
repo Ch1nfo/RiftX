@@ -40,6 +40,7 @@ from .research import (
     rank_search_results,
 )
 from .search import (
+    FederatedSearchProvider,
     OpenAIHostedSearchProvider,
     SearchFreshness,
     SearchProvider,
@@ -49,6 +50,12 @@ from .search import (
     SearchResult,
     SearchType,
     SearXNGSearchProvider,
+)
+from .service import (
+    ArtifactBackedResearchRecorder,
+    ConfiguredSearchProviderResolver,
+    ResolvedSearchProviders,
+    WebResearchApplicationService,
 )
 
 __all__ = [
@@ -65,6 +72,7 @@ __all__ = [
     "SourceReference",
     "SourceType",
     "OpenAIHostedSearchProvider",
+    "FederatedSearchProvider",
     "SearchFreshness",
     "SearchProvider",
     "SearchProviderError",
@@ -73,6 +81,10 @@ __all__ = [
     "SearchResult",
     "SearchType",
     "SearXNGSearchProvider",
+    "ArtifactBackedResearchRecorder",
+    "ConfiguredSearchProviderResolver",
+    "ResolvedSearchProviders",
+    "WebResearchApplicationService",
     "WebDestinationClass",
     "WebDocument",
     "WebDocumentChunk",

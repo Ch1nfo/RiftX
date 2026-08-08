@@ -1,0 +1,8 @@
+{
+  "type": "object",
+  "required": ["decision", "reason_codes"],
+  "properties": {
+    "decision": {"type": "string", "enum": ["continue", "wait", "stop"]},
+    "reason_codes": {"type": "array", "items": {"type": "string"}}
+  }
+}

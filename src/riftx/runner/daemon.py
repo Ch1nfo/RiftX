@@ -8,7 +8,7 @@ import logging
 import os
 import platform as platform_module
 from collections.abc import Callable, Coroutine
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Protocol, TypedDict, cast
@@ -22,14 +22,7 @@ from riftx.browser import (
     BrowserOperation,
     BrowserSessionCommand,
 )
-from riftx.config import (
-    AuditConfig,
-    RiftXConfigError,
-    audit_source_ingest_policy_digest,
-    load_riftx_config,
-)
 from riftx.domain import (
-    AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY,
     RUNNER_COMMAND_OWNERSHIP_SCHEMA_VERSION,
     BrowserSessionStatus,
     Execution,
@@ -59,7 +52,6 @@ from riftx.target_http.models import (
     TargetHttpRunnerStopOutcome,
 )
 
-from .audit_preflight import AuditPreflightRunner
 from .browser import BrowserRunner, RunnerBrowserManager, execute_browser_command
 from .control_client import (
     LeasedRunnerCommand,
@@ -116,16 +108,6 @@ _SAFETY_COMMAND_KINDS = frozenset(
         RunnerCommandKind.TERMINAL_CLOSE,
     }
 )
-_AUDIT_READINESS_LABELS = frozenset(
-    {
-        "audit_source_ingest_available",
-        "audit_source_ingest_backend_id",
-        "audit_source_ingest_image_digest",
-        "audit_source_ingest_policy_digest",
-    }
-)
-
-
 class _ExecutionCallbackKwargs(TypedDict):
     runner_command_id: str
     runner_effect_binding_id: str
@@ -162,12 +144,6 @@ def _default_capabilities() -> tuple[str, ...]:
     return tuple(capabilities)
 
 
-def _default_audit_config() -> AuditConfig:
-    # Re-validate explicit default values so platform path aliases (for
-    # example macOS /var -> /private/var) match the shared config loader.
-    return AuditConfig.model_validate(AuditConfig().model_dump(mode="python"))
-
-
 @dataclass(frozen=True, slots=True)
 class RunnerDaemonConfig:
     server_url: str
@@ -191,8 +167,6 @@ class RunnerDaemonConfig:
     require_containment: bool = True
     payload_uid: int | None = None
     payload_gid: int | None = None
-    audit: AuditConfig = field(default_factory=_default_audit_config)
-    audit_preflight_ready: bool = field(default=False, repr=False)
 
     def __post_init__(self) -> None:
         validate_runner_registration_credential(self.registration_token)
@@ -204,12 +178,6 @@ class RunnerDaemonConfig:
             raise ValueError("Runner resource stop timeout must be positive")
         if (self.payload_uid is None) != (self.payload_gid is None):
             raise ValueError("payload_uid and payload_gid must be configured together")
-        if self.audit.enabled and self.node_id != "local":
-            raise ValueError("RiftX Code Audit requires the local Runner node")
-        if self.audit_preflight_ready and (
-            not self.audit.enabled or self.audit.source_ingest.image_digest is None
-        ):
-            raise ValueError("Audit Preflight readiness requires enabled Audit and a pinned image")
         for field_name, value in (
             ("payload_uid", self.payload_uid),
             ("payload_gid", self.payload_gid),
@@ -219,41 +187,20 @@ class RunnerDaemonConfig:
 
     @property
     def registration(self) -> NodeRegistration:
-        capabilities = set(self.capabilities)
-        capabilities.discard(AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY)
-        configured_labels = {
-            key: value
-            for key, value in (self.labels or {}).items()
-            if key not in _AUDIT_READINESS_LABELS
-        }
         labels = {
             "mode": "remote",
             "shell": os.environ.get("SHELL") or os.environ.get("COMSPEC", "unknown"),
             "working_directory": str(Path.cwd()),
             "tool_count": "0",
-            **configured_labels,
+            **(self.labels or {}),
         }
-        if self.audit_preflight_ready:
-            image_digest = self.audit.source_ingest.image_digest
-            assert image_digest is not None
-            capabilities.add(AUDIT_PREFLIGHT_JOB_OWNER_CAPABILITY)
-            labels.update(
-                {
-                    "audit_source_ingest_available": "true",
-                    "audit_source_ingest_backend_id": (self.audit.source_ingest.backend_id),
-                    "audit_source_ingest_image_digest": image_digest,
-                    "audit_source_ingest_policy_digest": (
-                        audit_source_ingest_policy_digest(self.audit.source_ingest)
-                    ),
-                }
-            )
         return NodeRegistration(
             node_id=self.node_id,
             name=self.name,
             platform=self.platform,
             architecture=self.architecture,
             runner_version=self.runner_version,
-            capabilities=tuple(sorted(capabilities)),
+            capabilities=tuple(sorted(self.capabilities)),
             labels=labels,
         )
 
@@ -271,7 +218,6 @@ class RunnerDaemon:
         terminal_handler: TerminalCommandHandler | None = None,
         target_http_handler: TargetHttpRunner | None = None,
         browser_handler: BrowserRunner | None = None,
-        audit_preflight_runner: AuditPreflightRunner | None = None,
         execution_cancellation_journal: OperationJournal | None = None,
         target_http_cancellation_journal: OperationJournal | None = None,
         target_http_delivery_journal: OperationJournal | None = None,
@@ -285,7 +231,6 @@ class RunnerDaemon:
         self._terminal_handler = terminal_handler
         self._target_http_handler = target_http_handler
         self._browser_handler = browser_handler
-        self._audit_preflight_runner = audit_preflight_runner
         self._execution_cancellations = execution_cancellation_journal or OperationJournal(
             config.state_path / "execution-cancellations.json",
             # Pre-ownership journals stored arbitrary execution_key strings.
@@ -339,8 +284,6 @@ class RunnerDaemon:
         while not self._closed:
             try:
                 await self._client.connect(self.config.registration)
-                if self._audit_preflight_runner is not None:
-                    await self._audit_preflight_runner.start()
                 await self.resume_active()
                 delay = self.config.reconnect_initial_seconds
                 safety_only = (
@@ -1356,15 +1299,6 @@ class RunnerDaemon:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
-        audit_results: list[object] = []
-        if self._audit_preflight_runner is not None:
-            audit_results = list(
-                await asyncio.gather(
-                    self._audit_preflight_runner.close(),
-                    return_exceptions=True,
-                )
-            )
-
         # Start independent resource-family shutdowns together. A failed
         # process stop must not starve terminal or browser cleanup.
         resource_stops: list[asyncio.Task[object]] = []
@@ -1396,7 +1330,7 @@ class RunnerDaemon:
         client_results = await asyncio.gather(self._client.close(), return_exceptions=True)
         errors = [
             result
-            for result in (*audit_results, *stop_results, *client_results)
+            for result in (*stop_results, *client_results)
             if isinstance(result, BaseException)
         ]
         if errors:
@@ -1940,13 +1874,13 @@ class RunnerDaemon:
         if binding.resource_kind is not protocol.resource_kind:
             raise RuntimeError(f"Runner command {command.id!r} uses an invalid resource kind")
         if (
-            binding.run_kind is not RunKind.GENERAL
+            binding.run_kind not in {RunKind.GENERAL, RunKind.PENTEST}
             or binding.audit_id is not None
             or binding.plan_digest is not None
         ):
             raise RuntimeError(
-                f"Runner command {command.id!r} requests a Code Audit host effect "
-                "before Audit Runner admission is enabled"
+                f"Runner command {command.id!r} requests a non-interactive host effect "
+                "before that Runner admission is enabled"
             )
         allowed_origins = (
             frozenset(
@@ -2594,10 +2528,6 @@ async def run_runner_daemon(config: RunnerDaemonConfig) -> None:
         credentials=RunnerCredentialStore(config.credential_path),
         registration_token=config.registration_token,
     )
-    config, audit_preflight_runner = await _configure_audit_preflight(
-        config,
-        client,
-    )
     await _run_configured_runner_daemon(
         config,
         client=client,
@@ -2606,18 +2536,7 @@ async def run_runner_daemon(config: RunnerDaemonConfig) -> None:
         runner_paths=runner_paths,
         process_executor=process_executor,
         supervisor=supervisor,
-        audit_preflight_runner=audit_preflight_runner,
     )
-
-
-async def _configure_audit_preflight(
-    config: RunnerDaemonConfig,
-    _client: RunnerControlClient,
-) -> tuple[RunnerDaemonConfig, AuditPreflightRunner | None]:
-    # The v3 local-static product does not use the historical Docker SourceIngest
-    # capsule. Keep the old wire/domain types readable for compatibility, but never
-    # probe Docker or advertise its Runner capability from the supported daemon.
-    return replace(config, audit_preflight_ready=False), None
 
 
 async def _run_configured_runner_daemon(
@@ -2629,7 +2548,6 @@ async def _run_configured_runner_daemon(
     runner_paths: RunnerPaths,
     process_executor: DirectProcessExecutor,
     supervisor: ProcessSupervisor,
-    audit_preflight_runner: AuditPreflightRunner | None,
 ) -> None:
     terminal_supervisor = TerminalSupervisor(
         terminal_repository=terminals,
@@ -2661,7 +2579,6 @@ async def _run_configured_runner_daemon(
         terminal_handler=terminal_manager,
         target_http_handler=RunnerTargetHttpClient(node_id=config.node_id),
         browser_handler=browser_manager,
-        audit_preflight_runner=audit_preflight_runner,
     )
     try:
         await daemon.run_forever()
@@ -2671,14 +2588,6 @@ async def _run_configured_runner_daemon(
 
 @app.command()
 def serve(
-    config_path: Annotated[
-        Path | None,
-        typer.Option(
-            "--config",
-            envvar="RIFTX_CONFIG",
-            help="Shared RiftX config used to enable Code Audit on this Runner.",
-        ),
-    ] = None,
     server_url: Annotated[
         str, typer.Option(envvar="RIFTX_SERVER_URL", help="RiftX Control Plane URL.")
     ] = "http://127.0.0.1:8787",
@@ -2724,12 +2633,6 @@ def serve(
 ) -> None:
     """Connect to a Control Plane and execute commands on this host."""
 
-    audit = AuditConfig()
-    if config_path is not None:
-        try:
-            audit = load_riftx_config(explicit_path=config_path).audit
-        except RiftXConfigError as exc:
-            raise typer.BadParameter(str(exc), param_hint="--config") from exc
     logging.basicConfig(level=logging.INFO)
     asyncio.run(
         run_runner_daemon(
@@ -2743,7 +2646,6 @@ def serve(
                 require_containment=require_containment,
                 payload_uid=payload_uid,
                 payload_gid=payload_gid,
-                audit=audit,
             )
         )
     )

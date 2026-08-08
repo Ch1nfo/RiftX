@@ -1,0 +1,11 @@
+- case_id: eval.web-attack-surface.baseline
+  capability_ids: [web-attack-surface, web-attack-surface.technique]
+  description: Map a small stateful web application with public, authenticated, dynamic, and cross-origin branches.
+  scenario: builtin://eval/web-attack-surface/baseline-v1
+  assertions:
+    - Routes and inputs reference browser observations or captured HTTP exchanges.
+    - Authentication state and trust boundaries remain explicit in the inventory.
+    - Cross-origin redirects and unobserved routes do not become authorized surface entries.
+  negative_case_ids:
+    - negative.web-attack-surface.cross-origin-redirect
+    - negative.web-attack-surface.unobserved-route

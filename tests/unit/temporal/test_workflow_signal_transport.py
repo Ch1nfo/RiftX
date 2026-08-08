@@ -20,11 +20,12 @@ from riftx.application.services.workflow_signals import (
     WorkflowSignalOutcomeUnknown,
     WorkflowSignalTerminallyRejected,
 )
-from riftx.application.workflow_router import WorkflowDispatchDisposition
 from riftx.domain import RunKind, RunStatus
 from riftx.domain.workflow_signal import (
+    CODE_AUDIT_WORKFLOW_PROTOCOL_V1,
     WorkflowSignalIntent,
     WorkflowSignalKind,
+    WorkflowSignalOwnerKind,
     WorkflowSignalSourceKind,
 )
 from riftx.temporal.workflow_signal_transport import (
@@ -49,9 +50,12 @@ def _general_intent() -> WorkflowSignalIntent:
 
 
 def _audit_intent() -> WorkflowSignalIntent:
-    return WorkflowSignalIntent.code_audit(
+    return WorkflowSignalIntent(
+        owner_kind=WorkflowSignalOwnerKind.CODE_AUDIT,
         audit_id="audit-1",
         run_id="run-audit-1",
+        run_kind=RunKind.CODE_AUDIT,
+        workflow_protocol_version=CODE_AUDIT_WORKFLOW_PROTOCOL_V1,
         workflow_id="riftx-code-audit-audit-1",
         signal_kind=WorkflowSignalKind.CANCEL,
         source_event_kind=WorkflowSignalSourceKind.CONTROL_INTENT,
@@ -62,13 +66,32 @@ def _audit_intent() -> WorkflowSignalIntent:
     )
 
 
+def _pentest_intent(
+    *,
+    signal_kind: WorkflowSignalKind = WorkflowSignalKind.APPROVE,
+    source_event_kind: WorkflowSignalSourceKind = (
+        WorkflowSignalSourceKind.APPROVAL_DECISION
+    ),
+    payload: dict[str, object] | None = None,
+) -> WorkflowSignalIntent:
+    return WorkflowSignalIntent.pentest_run(
+        run_id="pentest-1",
+        workflow_id="riftx-pentest-pentest-1",
+        signal_kind=signal_kind,
+        source_event_kind=source_event_kind,
+        source_event_id="pentest-source-1",
+        source_state_version=1,
+        payload=payload or {"approval_id": "approval-pentest-1"},
+        created_at=NOW,
+    )
+
+
 class _Router:
     def __init__(self) -> None:
         self.calls: list[tuple[object, ...]] = []
         self.exact_workflow_ids: list[str | None] = []
         self.general_workflow_id = "riftx-run-run-1"
         self.approve_error: Exception | None = None
-        self.audit_disposition = WorkflowDispatchDisposition.DISPATCHED
 
     def workflow_id(self, run_id: str) -> str:
         assert run_id == "run-1"
@@ -118,19 +141,6 @@ class _Router:
         self.exact_workflow_ids.append(workflow_id)
         self.calls.append(("cancel", run_id))
 
-    async def pause_audit(self, **owner: str) -> WorkflowDispatchDisposition:
-        self.calls.append(("pause_audit", owner))
-        return WorkflowDispatchDisposition.DISPATCHED
-
-    async def resume_audit(self, **owner: str) -> WorkflowDispatchDisposition:
-        self.calls.append(("resume_audit", owner))
-        return WorkflowDispatchDisposition.DISPATCHED
-
-    async def cancel_audit(self, **owner: str) -> WorkflowDispatchDisposition:
-        self.calls.append(("cancel_audit", owner))
-        return self.audit_disposition
-
-
 def _runs(
     *,
     kind: RunKind = RunKind.GENERAL,
@@ -177,6 +187,25 @@ async def test_transport_dispatches_general_approval_to_exact_workflow() -> None
     assert receipt.workflow_id == intent.workflow_id
     assert receipt.identity_digest == intent.identity_digest
     assert receipt.payload_digest == intent.payload_digest
+
+
+async def test_transport_dispatches_pentest_approval_without_general_owner_fallback() -> None:
+    router = _Router()
+    intent = _pentest_intent()
+
+    receipt = await RoutedWorkflowSignalTransport(
+        router,  # type: ignore[arg-type]
+        runs=_runs(
+            kind=RunKind.PENTEST,
+            workflow_id="riftx-pentest-pentest-1",
+        ),  # type: ignore[arg-type]
+        sources=_sources(),  # type: ignore[arg-type]
+    ).send(intent)
+
+    assert router.calls == [("approve", "pentest-1", "approval-pentest-1")]
+    assert router.exact_workflow_ids == ["riftx-pentest-pentest-1"]
+    assert receipt.owner_kind is intent.owner_kind
+    assert receipt.workflow_protocol_version == intent.workflow_protocol_version
 
 
 async def test_transport_supersedes_general_workflow_identity_drift_before_signal() -> None:
@@ -295,9 +324,8 @@ async def test_transport_supersedes_invalid_payload_and_policy_rejection() -> No
     assert captured.value.error_code == "run_kind_effect_policy_denied"
 
 
-async def test_transport_supersedes_audit_signal_when_workflow_never_started() -> None:
+async def test_transport_rejects_retired_audit_signal_without_router_fallback() -> None:
     router = _Router()
-    router.audit_disposition = WorkflowDispatchDisposition.NOT_STARTED
 
     with pytest.raises(WorkflowSignalTerminallyRejected) as captured:
         await RoutedWorkflowSignalTransport(
@@ -309,31 +337,8 @@ async def test_transport_supersedes_audit_signal_when_workflow_never_started() -
             sources=_sources(),  # type: ignore[arg-type]
         ).send(_audit_intent())
 
-    assert captured.value.error_code == "audit_workflow_not_started"
-
-
-async def test_transport_routes_audit_cancel_without_general_fallback() -> None:
-    router = _Router()
-
-    await RoutedWorkflowSignalTransport(
-        router,  # type: ignore[arg-type]
-        runs=_runs(
-            kind=RunKind.CODE_AUDIT,
-            workflow_id="riftx-code-audit-audit-1",
-        ),  # type: ignore[arg-type]
-        sources=_sources(),  # type: ignore[arg-type]
-    ).send(_audit_intent())
-
-    assert router.calls == [
-        (
-            "cancel_audit",
-            {
-                "audit_id": "audit-1",
-                "run_id": "run-audit-1",
-                "signal_identity_digest": _audit_intent().identity_digest,
-            },
-        )
-    ]
+    assert captured.value.error_code == "unsupported_workflow_signal_owner"
+    assert router.calls == []
 
 
 async def test_transport_rejects_foreign_child_source_before_router_call() -> None:

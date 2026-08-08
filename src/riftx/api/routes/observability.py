@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from riftx.application.services.runs import require_general_run_operation
+from riftx.application.services.runs import require_interactive_run_operation
 from riftx.observability import RuntimeMetricsSnapshot
 
 from ..dependencies import (
@@ -30,5 +30,5 @@ async def get_run_metrics(
     service: RuntimeObservabilityServiceDependency,
     authorized_run: AuthorizedRunReadDependency,
 ) -> RuntimeMetricsSnapshot:
-    require_general_run_operation(authorized_run)
+    require_interactive_run_operation(authorized_run)
     return await service.snapshot(run_id)

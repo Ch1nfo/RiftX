@@ -21,9 +21,6 @@ from .routes import (
     actions_router,
     approvals_router,
     artifacts_router,
-    audit_preflight_router,
-    audit_preflight_runner_router,
-    audits_router,
     browser_router,
     connectors_router,
     context_router,
@@ -35,10 +32,13 @@ from .routes import (
     models_router,
     nodes_router,
     observability_router,
+    observer_router,
+    pentests_router,
     reports_router,
     runner_control_router,
     runs_router,
     security_router,
+    system_router,
     terminals_router,
     tools_router,
     traffic_router,
@@ -107,13 +107,12 @@ def create_app(
             allow_headers=["*"],
         )
     app.include_router(runs_router, prefix="/api/v1")
-    app.include_router(audit_preflight_router, prefix="/api/v1")
-    app.include_router(audits_router, prefix="/api/v1")
+    app.include_router(pentests_router, prefix="/api/v1")
     app.include_router(actions_router, prefix="/api/v1")
     app.include_router(nodes_router, prefix="/api/v1")
     app.include_router(observability_router, prefix="/api/v1")
+    app.include_router(observer_router, prefix="/api/v1")
     app.include_router(runner_control_router, prefix="/api/v1")
-    app.include_router(audit_preflight_runner_router, prefix="/api/v1")
     app.include_router(tools_router, prefix="/api/v1")
     app.include_router(events_router, prefix="/api/v1")
     app.include_router(executions_router, prefix="/api/v1")
@@ -128,8 +127,10 @@ def create_app(
     app.include_router(context_router, prefix="/api/v1")
     app.include_router(terminals_router, prefix="/api/v1")
     app.include_router(browser_router, prefix="/api/v1")
-    app.include_router(connectors_router, prefix="/api/v1")
+    if configured_settings.connectors_enabled:
+        app.include_router(connectors_router, prefix="/api/v1")
     app.include_router(security_router, prefix="/api/v1")
+    app.include_router(system_router, prefix="/api/v1")
 
     @app.get("/healthz", tags=["system"])
     async def health() -> dict[str, str]:
@@ -151,7 +152,18 @@ def create_app(
         )
 
     install_local_operator_dependencies(app)
-    apply_route_policy_inventory(app)
+    apply_route_policy_inventory(
+        app,
+        disabled_route_names=(
+            ()
+            if configured_settings.connectors_enabled
+            else tuple(
+                route.name
+                for route in connectors_router.routes
+                if isinstance(route.name, str)
+            )
+        ),
+    )
 
     web_dist = configured_settings.web_dist_path
     if (web_dist / "index.html").is_file():

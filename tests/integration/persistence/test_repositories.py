@@ -16,15 +16,20 @@ from riftx.application.errors import (
 from riftx.application.finalization import cleanup_event_id, report_failure_event_id
 from riftx.domain import (
     Engagement,
+    EntryPoint,
+    EntryPointKind,
     Execution,
     ExecutionStatus,
     ExecutorType,
     InvalidStateTransitionError,
     Objective,
+    PentestAdmission,
+    PentestBudget,
     Run,
     RunKind,
     RunnerPrincipal,
     RunStatus,
+    Scope,
     TerminalSession,
     TerminalStatus,
 )
@@ -44,12 +49,33 @@ def make_run(
     engagement_id: str = "engagement-1",
     kind: RunKind = RunKind.GENERAL,
 ) -> Run:
+    pentest = kind is RunKind.PENTEST
     return Run(
         kind=kind,
         id=run_id,
         engagement_id=engagement_id,
         node_id="local-node",
         objective=Objective(description="Verify persistence"),
+        entry_points=(
+            [EntryPoint(kind=EntryPointKind.DOMAIN, value="example.test")]
+            if pentest
+            else []
+        ),
+        scope=Scope(domains=["example.test"] if pentest else []),
+        pentest_admission=(
+            PentestAdmission(
+                budget=PentestBudget(
+                    max_duration_seconds=3600,
+                    max_model_calls=100,
+                    max_tokens=100_000,
+                    max_tool_calls=200,
+                    max_target_interactions=50,
+                    max_concurrent_target_interactions=2,
+                )
+            )
+            if pentest
+            else None
+        ),
         workspace_path=f"/tmp/riftx/{run_id}",
     )
 
@@ -384,6 +410,7 @@ async def test_run_and_events_survive_database_restart(tmp_path: Path) -> None:
 
     await engagements.create(Engagement(id="engagement-1", name="Test engagement"))
     await runs.create(make_run())
+    await runs.create(make_run(run_id="pentest-run-1", kind=RunKind.PENTEST))
     await runs.create(make_run(run_id="audit-run-1", kind=RunKind.CODE_AUDIT))
     await runs.update_status("run-1", RunStatus.PREPARING)
     running = await runs.update_status("run-1", RunStatus.RUNNING)
@@ -398,11 +425,18 @@ async def test_run_and_events_survive_database_restart(tmp_path: Path) -> None:
     reopened_events = SQLAlchemyRunEventRepository(reopened.session_factory)
 
     persisted = await reopened_runs.get("run-1")
+    persisted_pentest = await reopened_runs.get("pentest-run-1")
     persisted_audit = await reopened_runs.get("audit-run-1")
     timeline = await reopened_events.list_after("run-1")
 
     assert persisted is not None
     assert persisted.kind is RunKind.GENERAL
+    assert persisted_pentest is not None
+    assert persisted_pentest.kind is RunKind.PENTEST
+    assert persisted_pentest.pentest_admission == make_run(
+        run_id="pentest-run-1",
+        kind=RunKind.PENTEST,
+    ).pentest_admission
     assert persisted_audit is not None
     assert persisted_audit.kind is RunKind.CODE_AUDIT
     assert persisted.status is RunStatus.RUNNING
@@ -415,6 +449,39 @@ async def test_run_and_events_survive_database_restart(tmp_path: Path) -> None:
         "agent.message",
     ]
     await reopened.dispose()
+
+
+async def test_recent_run_events_are_bounded_ordered_and_run_scoped(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'recent-events.db'}")
+    await database.create_schema()
+    engagements = SQLAlchemyEngagementRepository(database.session_factory)
+    runs = SQLAlchemyRunRepository(database.session_factory)
+    events = SQLAlchemyRunEventRepository(database.session_factory)
+    await engagements.create(Engagement(id="engagement-1", name="Recent events"))
+    await runs.create(make_run())
+    await runs.create(make_run(run_id="run-2"))
+    for index in range(4):
+        await events.append("run-1", f"observer.event_{index}")
+    await events.append("run-2", "observer.other_run")
+
+    recent = await events.list_recent("run-1", limit=3)
+    assert [event.sequence for event in recent] == [3, 4, 5]
+    assert [event.event_type for event in recent] == [
+        "observer.event_1",
+        "observer.event_2",
+        "observer.event_3",
+    ]
+    assert [event.event_type for event in await events.list_recent("run-2")] == [
+        "run.created",
+        "observer.other_run",
+    ]
+    with pytest.raises(ValueError, match="between 1 and 1000"):
+        await events.list_recent("run-1", limit=0)
+    with pytest.raises(ValueError, match="between 1 and 1000"):
+        await events.list_recent("run-1", limit=1001)
+    await database.dispose()
 
 
 async def test_status_transition_and_event_are_atomic(tmp_path: Path) -> None:

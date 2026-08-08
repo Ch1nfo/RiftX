@@ -8,7 +8,29 @@ from riftx.persistence.audit_static_effect import (
     SnapshotMountPinRecord,
     SnapshotMountStopProofRecord,
 )
+from riftx.persistence.capability_records import (
+    CapabilityCandidateRecord,
+    CapabilityDependencyRecord,
+    CapabilityEvaluationResultRecord,
+    CapabilityEvidenceContractRecord,
+    CapabilityPackInstallRecord,
+    CapabilityPackLockRecord,
+    CapabilityPackMemberRecord,
+    CapabilityPackRecord,
+    CapabilityPermissionRecord,
+    CapabilityPromotionRunRecord,
+    CapabilityRecord,
+    CapabilityVersionRecord,
+)
+from riftx.persistence.capability_selection_records import (
+    AgentCapabilityScopeRecord,
+    AgentCapabilitySelectionRecord,
+)
 from riftx.persistence.orm import Base
+from riftx.persistence.skill_selection_records import (
+    AgentSkillScopeRecord,
+    AgentSkillSelectionRecord,
+)
 from riftx.persistence.workflow_signals import WorkflowSignalIntentRecord
 
 assert AuditPreflightJobRecord.__table__.metadata is Base.metadata
@@ -17,12 +39,32 @@ assert AuditStaticEffectPlanRecord.__table__.metadata is Base.metadata
 assert SnapshotMountLeaseRecord.__table__.metadata is Base.metadata
 assert SnapshotMountPinRecord.__table__.metadata is Base.metadata
 assert SnapshotMountStopProofRecord.__table__.metadata is Base.metadata
+assert CapabilityRecord.__table__.metadata is Base.metadata
+assert CapabilityVersionRecord.__table__.metadata is Base.metadata
+assert CapabilityDependencyRecord.__table__.metadata is Base.metadata
+assert CapabilityPermissionRecord.__table__.metadata is Base.metadata
+assert CapabilityEvidenceContractRecord.__table__.metadata is Base.metadata
+assert CapabilityCandidateRecord.__table__.metadata is Base.metadata
+assert CapabilityPromotionRunRecord.__table__.metadata is Base.metadata
+assert CapabilityEvaluationResultRecord.__table__.metadata is Base.metadata
+assert CapabilityPackRecord.__table__.metadata is Base.metadata
+assert CapabilityPackMemberRecord.__table__.metadata is Base.metadata
+assert CapabilityPackInstallRecord.__table__.metadata is Base.metadata
+assert CapabilityPackLockRecord.__table__.metadata is Base.metadata
+assert AgentCapabilityScopeRecord.__table__.metadata is Base.metadata
+assert AgentCapabilitySelectionRecord.__table__.metadata is Base.metadata
+assert AgentSkillScopeRecord.__table__.metadata is Base.metadata
+assert AgentSkillSelectionRecord.__table__.metadata is Base.metadata
 assert WorkflowSignalIntentRecord.__table__.metadata is Base.metadata
 
 EXPECTED_TABLES = {
     "agent_checkpoints",
+    "agent_capability_scopes",
+    "agent_capability_selections",
     "agent_cycles",
     "agent_sessions",
+    "agent_skill_scopes",
+    "agent_skill_selections",
     "agent_steps",
     "agent_messages",
     "alembic_version",
@@ -50,8 +92,21 @@ EXPECTED_TABLES = {
     "browser_pages",
     "browser_sessions",
     "browser_takeover_summaries",
+    "capabilities",
+    "capability_candidates",
+    "capability_dependencies",
+    "capability_evaluation_results",
+    "capability_evidence_contracts",
+    "capability_pack_installs",
+    "capability_pack_locks",
+    "capability_pack_members",
+    "capability_packs",
+    "capability_permissions",
+    "capability_promotion_runs",
+    "capability_versions",
     "connector_submissions",
     "context_compilations",
+    "evidence_ledger",
     "context_checkpoints",
     "engagements",
     "engagement_facts",
@@ -63,6 +118,11 @@ EXPECTED_TABLES = {
     "nodes",
     "provider_states",
     "reports",
+    "reasoning_edge_evidence",
+    "reasoning_edges",
+    "reasoning_graphs",
+    "reasoning_node_evidence",
+    "reasoning_nodes",
     "runtime_approval_requests",
     "runner_commands",
     "runner_command_ownerships",
@@ -80,6 +140,12 @@ EXPECTED_TABLES = {
     "snapshot_mount_stop_proofs",
     "source_references",
     "target_http_requests",
+    "task_attempts",
+    "task_budgets",
+    "task_dependencies",
+    "task_evidence_requirements",
+    "task_graphs",
+    "tasks",
     "terminal_sessions",
     "tool_call_intents",
     "tool_calls",
@@ -98,6 +164,69 @@ EXPECTED_TABLES = {
 
 def test_metadata_contains_v2_business_tables() -> None:
     assert set(Base.metadata.tables) == EXPECTED_TABLES - {"alembic_version"}
+
+
+def test_capability_schema_separates_candidates_versions_and_locks() -> None:
+    candidates = Base.metadata.tables["capability_candidates"]
+    versions = Base.metadata.tables["capability_versions"]
+    locks = Base.metadata.tables["capability_pack_locks"]
+
+    assert "candidate_digest" in candidates.columns
+    assert "manifest_digest" in versions.columns
+    assert candidates.c.capability_id.foreign_keys == set()
+    assert {
+        foreign_key.target_fullname
+        for foreign_key in candidates.c.promoted_version_id.foreign_keys
+    } == {"capability_versions.id"}
+    assert {
+        foreign_key.target_fullname
+        for foreign_key in locks.c.capability_version_id.foreign_keys
+    } == {"capability_versions.id"}
+    assert {index.name for index in locks.indexes} >= {
+        "ix_capability_pack_locks_owner_active",
+        "ix_capability_pack_locks_version_active",
+    }
+
+
+def test_agent_skill_schema_pins_session_package_snapshots() -> None:
+    scopes = Base.metadata.tables["agent_skill_scopes"]
+    selections = Base.metadata.tables["agent_skill_selections"]
+
+    assert {
+        foreign_key.target_fullname
+        for foreign_key in scopes.c.session_id.foreign_keys
+    } == {"agent_sessions.id"}
+    assert {
+        "version",
+        "skill_digest",
+        "source",
+        "reason",
+        "document_json",
+        "reference_json",
+        "active",
+        "references_loaded",
+    } <= set(selections.columns.keys())
+
+
+def test_agent_capability_schema_unifies_selectable_kinds() -> None:
+    scopes = Base.metadata.tables["agent_capability_scopes"]
+    selections = Base.metadata.tables["agent_capability_selections"]
+
+    assert list(scopes.primary_key.columns.keys()) == ["session_id", "kind"]
+    assert list(selections.primary_key.columns.keys()) == [
+        "session_id",
+        "kind",
+        "capability_id",
+    ]
+    assert {
+        "version",
+        "capability_digest",
+        "source",
+        "reason",
+        "snapshot_json",
+        "state_json",
+        "active",
+    } <= set(selections.columns.keys())
 
 
 def test_audit_preflight_plan_table_separates_token_and_lifecycle_facts() -> None:
@@ -158,6 +287,7 @@ def test_run_table_matches_design_contract() -> None:
         "scope_json",
         "status",
         "approval_mode",
+        "pentest_admission_json",
         "model_profile",
         "workspace_path",
         "temporal_workflow_id",
@@ -174,7 +304,47 @@ def test_run_table_matches_design_contract() -> None:
         for constraint in runs.constraints
         if constraint.__class__.__name__ == "CheckConstraint"
     }
-    assert checks["ck_runs_kind"] == "kind IN ('general', 'code_audit')"
+    assert checks["ck_runs_kind"] == "kind IN ('general', 'pentest', 'code_audit')"
+    assert checks["ck_runs_pentest_admission"] == (
+        "(kind = 'pentest' AND pentest_admission_json IS NOT NULL) OR "
+        "(kind <> 'pentest' AND pentest_admission_json IS NULL)"
+    )
+
+
+def test_pentest_identity_is_explicit_in_workflow_and_runner_constraints() -> None:
+    workflow = Base.metadata.tables["workflow_signal_intents"]
+    workflow_checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in workflow.constraints
+        if constraint.__class__.__name__ == "CheckConstraint"
+    }
+    assert workflow_checks["ck_workflow_signal_intents_owner_kind"] == (
+        "owner_kind IN ('general_run', 'pentest_run', 'code_audit')"
+    )
+    assert workflow_checks["ck_workflow_signal_intents_run_kind"] == (
+        "run_kind IN ('general', 'pentest', 'code_audit')"
+    )
+    assert "owner_identity = 'pentest_run:' || run_id" in workflow_checks[
+        "ck_workflow_signal_intents_owner_binding"
+    ]
+    assert "workflow_id = 'riftx-pentest-' || run_id" in workflow_checks[
+        "ck_workflow_signal_intents_owner_binding"
+    ]
+
+    runner = Base.metadata.tables["runner_effect_bindings"]
+    runner_checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in runner.constraints
+        if constraint.__class__.__name__ == "CheckConstraint"
+    }
+    assert runner_checks["ck_runner_effect_bindings_run_kind"] == (
+        "run_kind IN ('general', 'pentest', 'code_audit')"
+    )
+    assert runner_checks["ck_runner_effect_bindings_run_owner_shape"] == (
+        "(run_kind IN ('general', 'pentest') "
+        "AND audit_id IS NULL AND plan_digest IS NULL) OR "
+        "(run_kind = 'code_audit' AND audit_id IS NOT NULL AND plan_digest IS NOT NULL)"
+    )
 
 
 def test_event_sequence_is_unique_per_run() -> None:
@@ -378,6 +548,116 @@ def test_working_memory_table_is_versioned_structured_state() -> None:
         "state_json",
         "created_at",
         "updated_at",
+    }
+
+
+def test_task_graph_schema_separates_topology_attempts_budgets_and_evidence() -> None:
+    assert set(Base.metadata.tables["task_graphs"].columns.keys()) == {
+        "run_id",
+        "version",
+        "created_at",
+        "updated_at",
+    }
+    assert {
+        "run_id",
+        "parent_task_id",
+        "sequence",
+        "status",
+        "input_scope_json",
+        "expected_output_schema_json",
+        "required_capability_ids_json",
+        "workspace_owner",
+        "session_owner_id",
+        "stop_condition",
+        "reopen_history_json",
+        "version",
+    } <= set(Base.metadata.tables["tasks"].columns.keys())
+    assert set(Base.metadata.tables["task_dependencies"].primary_key.columns.keys()) == {
+        "run_id",
+        "task_id",
+        "depends_on_task_id",
+    }
+    assert {
+        foreign_key.target_fullname
+        for foreign_key in Base.metadata.tables["task_attempts"].c.task_id.foreign_keys
+    } == {"tasks.id", "task_attempts.task_id"}
+    assert {
+        constraint.name for constraint in Base.metadata.tables["task_attempts"].constraints
+    } >= {
+        "uq_task_attempts_owner_id",
+        "uq_task_attempts_owner_sequence",
+    }
+    assert set(Base.metadata.tables["task_budgets"].primary_key.columns.keys()) == {
+        "run_id",
+        "task_id",
+    }
+    assert {
+        "success_criterion_index",
+        "evidence_refs_json",
+    } <= set(Base.metadata.tables["task_evidence_requirements"].columns.keys())
+
+
+def test_evidence_ledger_schema_preserves_identity_scope_and_replay_metadata() -> None:
+    assert set(Base.metadata.tables["evidence_ledger"].columns.keys()) == {
+        "id",
+        "schema_version",
+        "run_id",
+        "session_id",
+        "task_id",
+        "kind",
+        "source_uri",
+        "digest",
+        "ledger_digest",
+        "creator_type",
+        "created_by",
+        "trust_class",
+        "scope_json",
+        "redaction_status",
+        "redaction_policy_ref",
+        "replay_json",
+        "locator_json",
+        "artifact_id",
+        "created_at",
+    }
+    assert {
+        foreign_key.target_fullname
+        for foreign_key in Base.metadata.tables["evidence_ledger"].c.task_id.foreign_keys
+    } == {"tasks.id"}
+
+
+def test_reasoning_graph_schema_normalizes_evidence_lineage() -> None:
+    assert set(Base.metadata.tables["reasoning_graphs"].columns.keys()) == {
+        "run_id",
+        "schema_version",
+        "version",
+        "created_at",
+        "updated_at",
+    }
+    assert {
+        "run_id",
+        "session_id",
+        "task_id",
+        "kind",
+        "status",
+        "claim",
+        "structured_data_json",
+        "reproduction_contract_json",
+        "creator_type",
+        "version",
+    } <= set(Base.metadata.tables["reasoning_nodes"].columns.keys())
+    assert set(
+        Base.metadata.tables["reasoning_node_evidence"].primary_key.columns.keys()
+    ) == {
+        "run_id",
+        "node_id",
+        "evidence_id",
+    }
+    assert set(
+        Base.metadata.tables["reasoning_edge_evidence"].primary_key.columns.keys()
+    ) == {
+        "run_id",
+        "edge_id",
+        "evidence_id",
     }
 
 

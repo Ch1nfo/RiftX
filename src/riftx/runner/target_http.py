@@ -15,6 +15,12 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 from pydantic import JsonValue
 
+from riftx.config import (
+    EnvironmentSecretProvider,
+    KeyringSecretProvider,
+    SecretProvider,
+    resolve_secret,
+)
 from riftx.domain import (
     RUNNER_STOP_ACK_TARGET_HTTP_SCHEMA,
     RunnerCommand,
@@ -34,6 +40,7 @@ from riftx.target_http.errors import (
 )
 from riftx.target_http.models import (
     TargetHttpExchange,
+    TargetHttpRequest,
     TargetHttpResult,
     TargetHttpRunnerRequest,
     TargetHttpRunnerStopOutcome,
@@ -95,6 +102,23 @@ class ClientCertificateResolver(Protocol):
     async def resolve(self, reference: str) -> str | tuple[str, str]: ...
 
 
+class TargetHttpSecretResolver:
+    """Resolve pre-authorized references only at the Runner network boundary."""
+
+    def __init__(self, providers: Sequence[SecretProvider] | None = None) -> None:
+        self._providers = list(
+            providers
+            if providers is not None
+            else (EnvironmentSecretProvider(), KeyringSecretProvider())
+        )
+
+    def resolve(self, reference: str) -> str:
+        value = resolve_secret(reference, self._providers)
+        if value is None:
+            raise ValueError("Target HTTP credential reference is unavailable on the Runner")
+        return value
+
+
 ClientFactory = Callable[..., httpx.AsyncClient]
 
 
@@ -116,6 +140,7 @@ class RunnerTargetHttpClient:
         *,
         node_id: str = "local",
         certificate_resolver: ClientCertificateResolver | None = None,
+        secret_resolver: TargetHttpSecretResolver | None = None,
         client_factory: ClientFactory = httpx.AsyncClient,
         stop_timeout_seconds: float = 5.0,
     ) -> None:
@@ -123,6 +148,7 @@ class RunnerTargetHttpClient:
             raise ValueError("Target HTTP stop timeout must be positive")
         self._node_id = node_id
         self._certificates = certificate_resolver
+        self._secrets = secret_resolver or TargetHttpSecretResolver()
         self._client_factory = client_factory
         self._stop_timeout_seconds = stop_timeout_seconds
         self._active: dict[tuple[str, str], _ActiveTargetHttpRequest] = {}
@@ -245,14 +271,14 @@ class RunnerTargetHttpClient:
                 retry_closes.values(),
                 timeout=max(0.0, stop_deadline - loop.time()),
             )
-            for task in pending:
-                task.cancel()
+            for pending_close_task in pending:
+                pending_close_task.cancel()
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
-            for task in retry_closes.values():
-                if task.done():
+            for close_task in retry_closes.values():
+                if close_task.done():
                     try:
-                        task.result()
+                        close_task.result()
                     except BaseException:
                         pass
 
@@ -305,6 +331,8 @@ class RunnerTargetHttpClient:
         effect_guard: EffectGuard | None,
     ) -> TargetHttpExchange:
         request = launch.request
+        effective_request = self._resolve_request_secrets(request)
+        effective_launch = launch.model_copy(update={"request": effective_request})
         guard = ScopeGuard(launch.scope)
         guard.require(request.url, kind=ScopeTargetKind.URL)
         certificate = None
@@ -328,7 +356,7 @@ class RunnerTargetHttpClient:
             async with asyncio.timeout(request.timeout_seconds):
                 response, body, final_url, redirects, truncated = await _send(
                     client,
-                    launch,
+                    effective_launch,
                     guard,
                     effect_guard,
                 )
@@ -355,6 +383,36 @@ class RunnerTargetHttpClient:
             truncated=truncated,
         )
         return TargetHttpExchange(result=result, response_body=body)
+
+    def _resolve_request_secrets(self, request: TargetHttpRequest) -> TargetHttpRequest:
+        if not request.credential_references:
+            return request
+        return request.model_copy(
+            update={
+                "headers": {
+                    **request.headers,
+                    **{
+                        name: self._secrets.resolve(reference)
+                        for name, reference in request.header_secret_refs.items()
+                    },
+                },
+                "header_secret_refs": {},
+                "body": (
+                    self._secrets.resolve(request.body_secret_ref)
+                    if request.body_secret_ref is not None
+                    else request.body
+                ),
+                "body_secret_ref": None,
+                "cookies": {
+                    **request.cookies,
+                    **{
+                        name: self._secrets.resolve(reference)
+                        for name, reference in request.cookie_secret_refs.items()
+                    },
+                },
+                "cookie_secret_refs": {},
+            }
+        )
 
     @staticmethod
     async def _close_client(active: _ActiveTargetHttpRequest) -> None:
@@ -650,7 +708,7 @@ async def _send(
     effect_guard: EffectGuard | None,
 ) -> tuple[httpx.Response, bytes, str, list[str], bool]:
     request = launch.request
-    current = request.url
+    current = str(httpx.URL(request.url).copy_merge_params(request.query))
     method = request.method
     headers = dict(request.headers)
     content = request.body
@@ -661,7 +719,6 @@ async def _send(
         outbound = client.build_request(
             method,
             current,
-            params=request.query if not redirects else None,
             headers=headers,
             cookies=request.cookies if not redirects else None,
             content=content,

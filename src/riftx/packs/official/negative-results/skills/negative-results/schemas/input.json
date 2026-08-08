@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "required": ["subject_id", "observation", "conditions"],
+  "properties": {
+    "subject_id": {"type": "string"},
+    "observation": {"type": "string"},
+    "conditions": {"type": "object"}
+  }
+}

@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Path, Query
 from pydantic import AfterValidator
 
-from riftx.application.services.runs import require_general_run_operation
+from riftx.application.services.runs import require_interactive_run_operation
 
 from ..dependencies import (
     AuthorizedRunReadDependency,
@@ -49,7 +49,7 @@ async def list_target_http_exchanges(
     authorized_run: AuthorizedRunReadDependency,
     query: Annotated[TrafficExchangeListQuery, Query()],
 ) -> TrafficExchangePage:
-    require_general_run_operation(authorized_run)
+    require_interactive_run_operation(authorized_run)
     return await service.list(
         run_id,
         principal=principal,
@@ -72,7 +72,7 @@ async def get_target_http_exchange(
     principal: LocalPrincipalDependency,
     authorized_run: AuthorizedRunReadDependency,
 ) -> TrafficExchangeDetail:
-    require_general_run_operation(authorized_run)
+    require_interactive_run_operation(authorized_run)
     return await service.get(
         run_id,
         exchange_id,

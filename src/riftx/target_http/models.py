@@ -7,7 +7,7 @@ import hashlib
 import json
 from typing import Any
 
-from pydantic import Field, JsonValue, model_validator
+from pydantic import Field, JsonValue, field_validator, model_validator
 
 from riftx.domain import Scope
 from riftx.domain.base import DomainModel, new_id
@@ -18,10 +18,13 @@ class TargetHttpRequest(DomainModel):
     method: str = Field(min_length=1, max_length=32)
     url: str = Field(min_length=1)
     headers: dict[str, str] = Field(default_factory=dict)
+    header_secret_refs: dict[str, str] = Field(default_factory=dict, max_length=100)
     query: dict[str, str] = Field(default_factory=dict)
     body: str | bytes | None = None
+    body_secret_ref: str | None = Field(default=None, min_length=1, max_length=255)
     json_body: JsonValue | None = None
     cookies: dict[str, str] = Field(default_factory=dict)
+    cookie_secret_refs: dict[str, str] = Field(default_factory=dict, max_length=100)
     proxy: str | None = None
     verify_tls: bool = True
     client_cert_ref: str | None = None
@@ -31,17 +34,50 @@ class TargetHttpRequest(DomainModel):
     save_request: bool = True
     save_response: bool = True
 
+    @field_validator("body_secret_ref")
+    @classmethod
+    def validate_body_secret_ref(cls, value: str | None) -> str | None:
+        return _credential_reference(value) if value is not None else None
+
+    @field_validator("header_secret_refs", "cookie_secret_refs")
+    @classmethod
+    def validate_secret_refs(cls, value: dict[str, str]) -> dict[str, str]:
+        return {name: _credential_reference(reference) for name, reference in value.items()}
+
     @model_validator(mode="after")
     def validate_body(self) -> TargetHttpRequest:
         method = self.method.strip().upper()
         if not method or not method.isascii() or not method.replace("-", "").isalpha():
             raise ValueError("Target HTTP method is invalid")
-        if self.body is not None and self.json_body is not None:
-            raise ValueError("Target HTTP accepts body or json_body, not both")
+        if sum(
+            value is not None
+            for value in (self.body, self.json_body, self.body_secret_ref)
+        ) > 1:
+            raise ValueError(
+                "Target HTTP accepts body, json_body, or body_secret_ref, not more than one"
+            )
         if self.json_body is not None and not isinstance(self.json_body, (dict, list)):
             raise ValueError("Target HTTP json_body must be an object or array")
+        public_headers = {name.lower() for name in self.headers}
+        secret_headers = {name.lower() for name in self.header_secret_refs}
+        if public_headers & secret_headers:
+            raise ValueError("Target HTTP Header cannot have both public and secret values")
+        if set(self.cookies) & set(self.cookie_secret_refs):
+            raise ValueError("Target HTTP Cookie cannot have both public and secret values")
         object.__setattr__(self, "method", method)
         return self
+
+    @property
+    def credential_references(self) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(
+                (
+                    *self.header_secret_refs.values(),
+                    *((self.body_secret_ref,) if self.body_secret_ref is not None else ()),
+                    *self.cookie_secret_refs.values(),
+                )
+            )
+        )
 
     def runner_payload(self) -> dict[str, Any]:
         payload = self.model_dump(mode="json", exclude={"body"})
@@ -120,3 +156,14 @@ class TargetHttpRunnerStopOutcome(DomainModel):
     tool_call_id: str = Field(min_length=1)
     confirmed: bool
     reason: str | None = None
+
+
+def _credential_reference(value: str) -> str:
+    normalized = value.strip()
+    if (
+        not normalized
+        or len(normalized) > 255
+        or any(ord(character) < 33 or ord(character) == 127 for character in normalized)
+    ):
+        raise ValueError("Target HTTP credential reference is invalid")
+    return normalized

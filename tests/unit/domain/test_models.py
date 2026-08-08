@@ -22,6 +22,10 @@ from riftx.domain import (
     MessageType,
     Node,
     Objective,
+    PentestAdmission,
+    PentestBudget,
+    PentestProhibitedAction,
+    PentestStopCondition,
     Report,
     ReportFormat,
     Run,
@@ -158,6 +162,100 @@ def test_run_kind_is_required_strict_and_immutable() -> None:
     assert json.loads(run.model_dump_json())["kind"] == "code_audit"
     with pytest.raises(ValidationError, match="frozen"):
         run.kind = RunKind.GENERAL
+
+
+def _pentest_admission() -> PentestAdmission:
+    return PentestAdmission(
+        budget=PentestBudget(
+            max_duration_seconds=3600,
+            max_model_calls=100,
+            max_tokens=100_000,
+            max_tool_calls=200,
+            max_target_interactions=50,
+            max_concurrent_target_interactions=2,
+        )
+    )
+
+
+def test_pentest_run_requires_admission_network_scope_and_entry_point() -> None:
+    required = {
+        "kind": RunKind.PENTEST,
+        "engagement_id": "engagement-1",
+        "node_id": "node-1",
+        "objective": Objective(description="Assess the authorized target"),
+        "workspace_path": "/tmp/riftx/pentest",
+    }
+
+    with pytest.raises(ValidationError, match="require pentest admission"):
+        Run(**required)
+    with pytest.raises(ValidationError, match="positive network scope"):
+        Run(pentest_admission=_pentest_admission(), **required)
+    with pytest.raises(ValidationError, match="network entry point"):
+        Run(
+            pentest_admission=_pentest_admission(),
+            scope=Scope(domains=["example.test"]),
+            **required,
+        )
+    with pytest.raises(ValidationError, match="non-empty network targets"):
+        Run(
+            pentest_admission=_pentest_admission(),
+            scope=Scope(domains=["example.test"]),
+            entry_points=[EntryPoint(kind=EntryPointKind.FILE, value="/tmp/target")],
+            **required,
+        )
+
+    run = Run(
+        pentest_admission=_pentest_admission(),
+        scope=Scope(domains=["example.test"]),
+        entry_points=[EntryPoint(kind=EntryPointKind.DOMAIN, value="example.test")],
+        **required,
+    )
+    assert run.kind is RunKind.PENTEST
+
+
+def test_non_pentest_run_rejects_pentest_admission() -> None:
+    with pytest.raises(ValidationError, match="only Pentest Runs"):
+        Run(
+            kind=RunKind.GENERAL,
+            engagement_id="engagement-1",
+            node_id="node-1",
+            objective=Objective(description="General work"),
+            workspace_path="/tmp/riftx/general",
+            pentest_admission=_pentest_admission(),
+        )
+
+
+def test_pentest_admission_requires_bounded_budget_and_mandatory_safety_rules() -> None:
+    budget = _pentest_admission().budget
+
+    with pytest.raises(ValidationError, match="greater than 0"):
+        PentestBudget(
+            max_duration_seconds=0,
+            max_model_calls=1,
+            max_tokens=1,
+            max_tool_calls=1,
+            max_target_interactions=1,
+            max_concurrent_target_interactions=1,
+        )
+    with pytest.raises(ValidationError, match="must not exceed"):
+        PentestBudget(
+            max_duration_seconds=1,
+            max_model_calls=1,
+            max_tokens=1,
+            max_tool_calls=1,
+            max_target_interactions=1,
+            max_concurrent_target_interactions=2,
+        )
+    with pytest.raises(ValidationError, match="required prohibited actions"):
+        PentestAdmission(
+            budget=budget,
+            prohibited_actions=[PentestProhibitedAction.DENIAL_OF_SERVICE],
+        )
+    with pytest.raises(ValidationError, match="required stop conditions"):
+        PentestAdmission(
+            budget=budget,
+            stop_conditions=[PentestStopCondition.OPERATOR_STOP],
+        )
 
 
 def test_run_model_profile_matches_its_database_bound() -> None:

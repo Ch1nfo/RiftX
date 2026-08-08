@@ -19,6 +19,7 @@ from riftx.persistence.repositories import SQLAlchemyRunEventRepository
 from riftx.persistence.runtime_repositories import SQLAlchemyAgentSessionRepository
 from riftx.runtime.session import SessionManager
 from riftx.runtime.types import AgentSession, SessionStatus
+from riftx.skills import ProgressiveSkillContextManager
 from riftx.tools import RESIDENT_TOOL_IDS, SUBAGENT_RESIDENT_TOOL_IDS, ToolContextManager
 
 from .models import DelegationPacket, SubagentResult, SubagentStatus
@@ -51,6 +52,7 @@ class SubagentManager:
         sessions: SessionManager,
         session_repository: SQLAlchemyAgentSessionRepository,
         tool_context: ToolContextManager,
+        skill_context: ProgressiveSkillContextManager | None = None,
         limits: SubagentConfig | None = None,
         events: SQLAlchemyRunEventRepository | None = None,
         result_merger: ResultMerger | None = None,
@@ -59,6 +61,7 @@ class SubagentManager:
         self._sessions = sessions
         self._session_repository = session_repository
         self._tool_context = tool_context
+        self._skill_context = skill_context
         self._limits = limits or SubagentConfig()
         self._events = events
         self._result_merger = result_merger
@@ -77,6 +80,7 @@ class SubagentManager:
             raise SubagentLimitError("Subagents cannot delegate another Subagent")
         delegation = await self._hook_delegation(parent, delegation)
         self._validate_tools(delegation)
+        self._validate_skills(delegation)
         lock = self._run_locks.setdefault(parent.run_id, asyncio.Lock())
         async with lock:
             await self._enforce_run_limits(parent.run_id)
@@ -88,7 +92,7 @@ class SubagentManager:
                 session_id=session_id,
             )
             try:
-                self._apply_tool_allowlist(child, delegation)
+                await self._apply_allowlists(child, delegation)
                 await self._sessions.append_message(
                     child.id,
                     TranscriptMessageDraft(
@@ -120,7 +124,9 @@ class SubagentManager:
         if session.parent_session_id is None:
             raise RepositoryConflictError(f"session {session_id!r} is not a Subagent")
         delegation = await self._load_delegation(session_id)
-        self._apply_tool_allowlist(session, delegation)
+        self._validate_tools(delegation)
+        self._validate_skills(delegation)
+        await self._apply_allowlists(session, delegation)
         return SubagentHandle(session, delegation)
 
     async def list_sessions(self, run_id: str) -> list[AgentSession]:
@@ -234,7 +240,19 @@ class SubagentManager:
             if tool_id not in residents:
                 self._tool_context.index.schema(tool_id, require_available=True)
 
-    def _apply_tool_allowlist(
+    def _validate_skills(self, delegation: DelegationPacket) -> None:
+        if not delegation.available_skill_ids:
+            return
+        if self._skill_context is None:
+            raise RepositoryConflictError("Progressive Skill context is unavailable")
+        known = {
+            summary.id for summary in self._skill_context.registry.list_skill_summaries()
+        }
+        unknown = sorted(set(delegation.available_skill_ids) - known)
+        if unknown:
+            raise RepositoryConflictError(f"Unknown delegated Skill: {unknown[0]!r}")
+
+    async def _apply_allowlists(
         self,
         session: AgentSession,
         delegation: DelegationPacket,
@@ -251,15 +269,22 @@ class SubagentManager:
                 ]
             )
         )
-        self._tool_context.restrict_tools(
+        await self._tool_context.restrict_tools(
             allowed,
             run_id=session.run_id,
             session_id=session.id,
             agent_id=session.agent_type,
         )
         for tool_id in registered:
-            self._tool_context.load_tool(
+            await self._tool_context.load_tool(
                 tool_id,
+                run_id=session.run_id,
+                session_id=session.id,
+                agent_id=session.agent_type,
+            )
+        if self._skill_context is not None:
+            await self._skill_context.restrict_skills(
+                delegation.available_skill_ids,
                 run_id=session.run_id,
                 session_id=session.id,
                 agent_id=session.agent_type,

@@ -6,8 +6,9 @@ from pathlib import Path
 import httpx
 import pytest
 
+from riftx.config import EnvironmentSecretProvider
 from riftx.domain import Scope
-from riftx.runner.target_http import RunnerTargetHttpClient
+from riftx.runner.target_http import RunnerTargetHttpClient, TargetHttpSecretResolver
 from riftx.scope import ScopeViolationError
 from riftx.target_http.errors import TargetHttpRunnerExecutionUncertainError
 from riftx.target_http.models import TargetHttpRequest, TargetHttpRunnerRequest
@@ -58,7 +59,7 @@ async def test_runner_uses_host_network_options_and_structured_request() -> None
             TargetHttpRequest(
                 execution_key="execution-key",
                 method="post",
-                url="https://target.internal/api",
+                url="https://target.internal/api?token=private",
                 headers={"X-Test": "value"},
                 query={"page": "1"},
                 json_body={"name": "RiftX"},
@@ -71,7 +72,7 @@ async def test_runner_uses_host_network_options_and_structured_request() -> None
 
     assert observed is not None
     assert observed.method == "POST"
-    assert observed.url == "https://target.internal/api?page=1"
+    assert observed.url == "https://target.internal/api?token=private&page=1"
     assert observed.headers["x-test"] == "value"
     assert observed.headers["cookie"] == "session=authorized-test-cookie"
     assert observed.read() == b'{"name":"RiftX"}'
@@ -85,6 +86,70 @@ async def test_runner_uses_host_network_options_and_structured_request() -> None
         "verified": False,
         "client_certificate_used": False,
     }
+
+
+async def test_runner_resolves_authorized_request_secrets_only_at_send_boundary() -> None:
+    observed: httpx.Request | None = None
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        nonlocal observed
+        observed = request
+        return httpx.Response(200, json={"ok": True})
+
+    request = TargetHttpRequest(
+        execution_key="secret-key",
+        method="POST",
+        url="https://target.internal/login",
+        header_secret_refs={"Authorization": "RIFTX_FIXTURE_AUTH"},
+        body_secret_ref="RIFTX_FIXTURE_LOGIN",
+        cookie_secret_refs={"session": "RIFTX_FIXTURE_SESSION"},
+    )
+    runner = RunnerTargetHttpClient(
+        secret_resolver=TargetHttpSecretResolver(
+            [
+                EnvironmentSecretProvider(
+                    {
+                        "RIFTX_FIXTURE_AUTH": "Bearer runner-only-token",
+                        "RIFTX_FIXTURE_LOGIN": "username=alice&password=runner-only",
+                        "RIFTX_FIXTURE_SESSION": "runner-only-session",
+                    }
+                )
+            ]
+        ),
+        client_factory=ClientFactory(handle),
+    )
+    exchange = await runner.execute(launch(request))
+
+    assert observed is not None
+    assert observed.headers["authorization"] == "Bearer runner-only-token"
+    assert observed.headers["cookie"] == "session=runner-only-session"
+    assert observed.read() == b"username=alice&password=runner-only"
+    persisted_shape = str(request.runner_payload())
+    assert "runner-only-token" not in persisted_shape
+    assert "runner-only-session" not in persisted_shape
+    assert "password=runner-only" not in persisted_shape
+    assert exchange.result.request_hash == request.fingerprint
+
+
+async def test_runner_rejects_unavailable_request_secret_before_client_creation() -> None:
+    factory = ClientFactory(lambda _: pytest.fail("network client must not be used"))
+    runner = RunnerTargetHttpClient(
+        secret_resolver=TargetHttpSecretResolver([EnvironmentSecretProvider({})]),
+        client_factory=factory,
+    )
+
+    with pytest.raises(ValueError, match="unavailable"):
+        await runner.execute(
+            launch(
+                TargetHttpRequest(
+                    execution_key="missing-secret-key",
+                    method="POST",
+                    url="https://target.internal/login",
+                    body_secret_ref="RIFTX_FIXTURE_MISSING",
+                )
+            )
+        )
+    assert factory.client is None
 
 
 async def test_redirect_is_rechecked_against_run_scope() -> None:

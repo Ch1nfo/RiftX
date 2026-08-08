@@ -1,0 +1,87 @@
+schema_version: riftx.official-pack-source/v1
+pack_id: negative-results
+version: 1.0.0
+title: Negative Results
+description: Durable recording and reuse of disproven, exhausted, blocked, duplicate, and inconclusive security paths.
+authored_by: RiftX Security Team
+authored_at: 2026-08-06T00:00:00Z
+tool_requirements:
+  - query_reasoning_graph
+  - record_attempt
+  - record_negative_result
+  - update_task
+  - complete_task
+evidence_contract: &pack_evidence
+  required_refs: [hypothesis_or_task, attempt, observed_result, reuse_scope]
+  minimum_independent_sources: 1
+  confirmation_policy: explicit_verification
+skill_ids: [negative-results]
+capabilities:
+  - capability_id: negative-results
+    kind: skill
+    title: Negative Results Procedure
+    description: Preserve failed and non-confirming work so future planning can avoid equivalent attempts without overgeneralizing.
+    domains: [pentest, reasoning, negative-evidence]
+    triggers: [disproven hypothesis, exhausted attempt, blocked path]
+    dependencies:
+      - {kind: tool, reference: query_reasoning_graph}
+      - {kind: tool, reference: record_attempt}
+      - {kind: tool, reference: record_negative_result}
+      - {kind: tool, reference: update_task}
+      - {kind: tool, reference: complete_task}
+    permission:
+      effect_class: local_mutation
+      approval_level: never
+      requires_scope: false
+    input_schema:
+      type: object
+      required: [subject_id, observation, conditions]
+      properties:
+        subject_id: {type: string}
+        observation: {type: string}
+        conditions: {type: object}
+    output_schema:
+      type: object
+      required: [negative_result_id, action_signature, reuse_scope]
+      properties:
+        negative_result_id: {type: string}
+        action_signature: {type: string}
+        reuse_scope: {type: object}
+    evidence_contract: *pack_evidence
+    evaluation_case_ids: [eval.negative-results.baseline]
+  - capability_id: negative-results.technique
+    kind: technique
+    title: Condition-bounded Negative Evidence
+    description: Record what failed, under which conditions, how confidently, and when the result may be reused.
+    domains: [pentest, reasoning, deduplication]
+    triggers: [failed attempt, no evidence, retry decision]
+    dependencies:
+      - {kind: tool, reference: query_reasoning_graph}
+      - {kind: tool, reference: record_attempt}
+      - {kind: tool, reference: record_negative_result}
+      - {kind: tool, reference: update_task}
+      - {kind: tool, reference: complete_task}
+    permission:
+      effect_class: local_mutation
+      approval_level: never
+      requires_scope: false
+    input_schema: {type: object}
+    output_schema: {type: object}
+    evidence_contract: *pack_evidence
+    evaluation_case_ids: [eval.negative-results.baseline]
+  - capability_id: eval.negative-results.baseline
+    kind: eval_case
+    title: Negative Results Baseline Case
+    description: Checks condition-bounded negatives, duplicate suppression, retry rationale, and task completion use.
+    domains: [pentest, reasoning, evaluation]
+    triggers: [pack validation]
+    permission:
+      effect_class: read_only
+      approval_level: never
+      requires_scope: false
+    input_schema: {type: object}
+    output_schema: {type: object}
+    evidence_contract:
+      required_refs: [evaluation_result]
+      minimum_independent_sources: 1
+      confirmation_policy: manual_review

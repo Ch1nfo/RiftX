@@ -6,10 +6,11 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import text
-from tests.integration.persistence.test_audit_repositories import (
+from tests.integration.persistence._audit_compat import (
     NOW,
     _create_audit,
     _create_engagement,
+    _create_project,
     _project,
     _snapshot,
 )
@@ -19,17 +20,16 @@ from riftx.audit import SnapshotReference, SnapshotReferenceRole
 from riftx.domain import AuditVcsKind, SourceTargetKind
 from riftx.persistence import (
     Database,
-    SQLAlchemyAuditProjectRepository,
-    SQLAlchemyAuditRepository,
     SQLAlchemySnapshotReferenceRepository,
     SQLAlchemySnapshotRepository,
     SQLAlchemySourceSnapshotSealUnitOfWork,
 )
+from riftx.persistence.orm import AuditScanRecord
 
 
 async def _seed(database: Database) -> None:
     await _create_engagement(database, "engagement-1")
-    await SQLAlchemyAuditProjectRepository(database.session_factory).create(_project())
+    await _create_project(database, _project())
     await SQLAlchemySnapshotRepository(database.session_factory).create(_snapshot())
     await _create_audit(database)
 
@@ -115,9 +115,8 @@ async def test_snapshot_reference_owner_fks_and_concurrent_replay_fail_closed(
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'snapshot-owner.db'}")
     await database.create_schema()
     await _seed(database)
-    projects = SQLAlchemyAuditProjectRepository(database.session_factory)
     snapshots = SQLAlchemySnapshotRepository(database.session_factory)
-    await projects.create(_project("project-2"))
+    await _create_project(database, _project("project-2"))
     await snapshots.create(_snapshot("snapshot-2", project_id="project-2"))
     references = SQLAlchemySnapshotReferenceRepository(database.session_factory)
 
@@ -165,9 +164,7 @@ async def test_source_snapshot_seal_is_atomic_replayable_concurrent_and_restart_
     database = Database(database_url)
     await database.create_schema()
     await _create_engagement(database, "engagement-1")
-    await SQLAlchemyAuditProjectRepository(database.session_factory).create(
-        _directory_project()
-    )
+    await _create_project(database, _directory_project())
     await _create_audit(database, snapshot_id=None)
     snapshot = _directory_snapshot("snapshot-local")
     seals = SQLAlchemySourceSnapshotSealUnitOfWork(database.session_factory)
@@ -184,12 +181,12 @@ async def test_source_snapshot_seal_is_atomic_replayable_concurrent_and_restart_
     await database.dispose()
 
     reopened = Database(database_url)
-    audit = await SQLAlchemyAuditRepository(reopened.session_factory).get(
-        "audit-1",
-        project_id="project-1",
-    )
+    async with reopened.session_factory() as session:
+        audit = await session.get(AuditScanRecord, "audit-1")
     references = SQLAlchemySnapshotReferenceRepository(reopened.session_factory)
-    assert audit == first.audit
+    assert audit is not None
+    assert audit.snapshot_id == first.audit.value.snapshot_id
+    assert audit.state_version == first.audit.state_version
     assert await references.list_for_snapshot(
         snapshot.id,
         project_id="project-1",

@@ -1,0 +1,94 @@
+schema_version: riftx.official-pack-source/v1
+pack_id: credential-handling
+version: 1.0.0
+title: Credential Handling
+description: Reference-only credential use through approved scoped tools with redacted evidence and explicit cleanup.
+authored_by: RiftX Security Team
+authored_at: 2026-08-06T00:00:00Z
+tool_requirements:
+  - search_tools
+  - get_tool
+  - run_registered_tool
+  - target_http_request
+  - record_attempt
+  - record_observation
+  - record_negative_result
+evidence_contract: &pack_evidence
+  required_refs: [scope, approval, credential_reference, redacted_attempt_result]
+  minimum_independent_sources: 1
+  confirmation_policy: explicit_verification
+skill_ids: [credential-handling]
+capabilities:
+  - capability_id: credential-handling
+    kind: skill
+    title: Credential Handling Procedure
+    description: Use authorized credential references without exposing secret material to prompts, transcripts, logs, or reports.
+    domains: [pentest, credentials, safety]
+    triggers: [authenticated testing, credential reference, identity transition]
+    dependencies:
+      - {kind: tool, reference: search_tools}
+      - {kind: tool, reference: get_tool}
+      - {kind: tool, reference: run_registered_tool}
+      - {kind: tool, reference: target_http_request}
+      - {kind: tool, reference: record_attempt}
+      - {kind: tool, reference: record_observation}
+      - {kind: tool, reference: record_negative_result}
+    permission:
+      effect_class: credential_access
+      approval_level: always
+      requires_scope: true
+    input_schema:
+      type: object
+      required: [credential_reference, target, purpose, scope]
+      properties:
+        credential_reference: {type: string}
+        target: {type: string}
+        purpose: {type: string}
+        scope: {type: object}
+    output_schema:
+      type: object
+      required: [attempt_id, identity_state, redacted_evidence_ids]
+      properties:
+        attempt_id: {type: string}
+        identity_state: {type: string}
+        redacted_evidence_ids: {type: array, items: {type: string}}
+    evidence_contract: *pack_evidence
+    evaluation_case_ids: [eval.credential-handling.baseline]
+  - capability_id: credential-handling.technique
+    kind: technique
+    title: Reference-only Credential Injection
+    description: Resolve secrets only inside an approved tool boundary and retain redacted identity and outcome metadata.
+    domains: [pentest, credentials, redaction]
+    triggers: [login, authenticated request, role comparison]
+    dependencies:
+      - {kind: tool, reference: search_tools}
+      - {kind: tool, reference: get_tool}
+      - {kind: tool, reference: run_registered_tool}
+      - {kind: tool, reference: target_http_request}
+      - {kind: tool, reference: record_attempt}
+      - {kind: tool, reference: record_observation}
+      - {kind: tool, reference: record_negative_result}
+    permission:
+      effect_class: credential_access
+      approval_level: always
+      requires_scope: true
+    input_schema: {type: object}
+    output_schema: {type: object}
+    evidence_contract: *pack_evidence
+    evaluation_case_ids: [eval.credential-handling.baseline]
+  - capability_id: eval.credential-handling.baseline
+    kind: eval_case
+    title: Credential Handling Baseline Case
+    description: Checks reference-only injection, target and purpose binding, redaction, identity separation, and revocation.
+    domains: [pentest, credentials, evaluation]
+    triggers: [pack validation]
+    permission:
+      effect_class: read_only
+      approval_level: never
+      requires_scope: false
+    input_schema: {type: object}
+    output_schema: {type: object}
+    evidence_contract:
+      required_refs: [evaluation_result]
+      minimum_independent_sources: 1
+      confirmation_policy: manual_review

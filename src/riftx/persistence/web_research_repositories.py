@@ -41,6 +41,8 @@ class SQLAlchemyWebResearchRepository:
                 "blocked_domains": request.blocked_domains,
                 "language": request.language,
                 "region": request.region,
+                "warnings": response.warnings,
+                "artifact_id": response.artifact_id,
             },
             status="completed",
             created_at=response.created_at,
@@ -246,5 +248,7 @@ def _search_response(
             )
             for row in results
         ],
+        warnings=options.get("warnings", []),
+        artifact_id=options.get("artifact_id"),
         created_at=query.created_at,
     )

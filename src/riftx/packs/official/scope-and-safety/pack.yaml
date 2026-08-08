@@ -1,0 +1,86 @@
+schema_version: riftx.official-pack-source/v1
+pack_id: scope-and-safety
+version: 1.0.0
+title: Scope and Safety
+description: Fail-closed authorization, approval, and stopping discipline for security work.
+authored_by: RiftX Security Team
+authored_at: 2026-08-06T00:00:00Z
+tool_requirements:
+  - list_ready_tasks
+  - query_reasoning_graph
+  - record_observation
+  - record_negative_result
+evidence_contract: &pack_evidence
+  required_refs:
+    - scope
+    - approval
+    - stop_condition
+  minimum_independent_sources: 1
+  confirmation_policy: explicit_verification
+skill_ids:
+  - scope-and-safety
+capabilities:
+  - capability_id: scope-and-safety
+    kind: skill
+    title: Scope and Safety Procedure
+    description: Apply existing RiftX Scope, Approval, Effect Policy, and stop boundaries before security actions.
+    domains: [safety, authorization, scope]
+    triggers: [new target, active verification, credential use, ambiguous authorization]
+    dependencies:
+      - {kind: tool, reference: list_ready_tasks}
+      - {kind: tool, reference: query_reasoning_graph}
+      - {kind: tool, reference: record_observation}
+      - {kind: tool, reference: record_negative_result}
+    permission:
+      effect_class: read_only
+      approval_level: never
+      requires_scope: false
+    input_schema:
+      type: object
+      required: [scope, proposed_action]
+      properties:
+        scope: {type: object}
+        proposed_action: {type: object}
+    output_schema:
+      type: object
+      required: [decision, reason_codes]
+      properties:
+        decision: {type: string, enum: [continue, wait, stop]}
+        reason_codes: {type: array, items: {type: string}}
+    evidence_contract: *pack_evidence
+    evaluation_case_ids: [eval.scope-and-safety.boundaries]
+  - capability_id: scope-and-safety.technique
+    kind: technique
+    title: Fail-closed Action Admission
+    description: Check owner, Scope, approval, stale state, and stop conditions before each effect.
+    domains: [safety, authorization]
+    triggers: [tool call, browser action, target request, credential access]
+    dependencies:
+      - {kind: tool, reference: list_ready_tasks}
+      - {kind: tool, reference: query_reasoning_graph}
+      - {kind: tool, reference: record_observation}
+      - {kind: tool, reference: record_negative_result}
+    permission:
+      effect_class: read_only
+      approval_level: never
+      requires_scope: false
+    input_schema: {type: object}
+    output_schema: {type: object}
+    evidence_contract: *pack_evidence
+    evaluation_case_ids: [eval.scope-and-safety.boundaries]
+  - capability_id: eval.scope-and-safety.boundaries
+    kind: eval_case
+    title: Scope and Safety Boundary Case
+    description: Checks that missing Scope, denied approval, and stale state prevent effects.
+    domains: [safety, evaluation]
+    triggers: [pack validation]
+    permission:
+      effect_class: read_only
+      approval_level: never
+      requires_scope: false
+    input_schema: {type: object}
+    output_schema: {type: object}
+    evidence_contract:
+      required_refs: [evaluation_result]
+      minimum_independent_sources: 1
+      confirmation_policy: manual_review

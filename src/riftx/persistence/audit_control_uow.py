@@ -28,8 +28,6 @@ from riftx.domain import (
     RunEvent,
     RunKind,
     RunStatus,
-    WorkflowSignalIntent,
-    WorkflowSignalSourceKind,
 )
 
 from .audit_repositories import compare_and_set_audit_scan, load_validated_audit_scan
@@ -142,17 +140,6 @@ class SQLAlchemyAuditControlUnitOfWork:
                         created_at=request.occurred_at,
                     ),
                 )
-                if (
-                    request.workflow_signal_kind is not None
-                    and replacement_scan.started_at is not None
-                ):
-                    await _stage_control_signal(
-                        session,
-                        session_factory=self._session_factory,
-                        request=request,
-                        scan=replacement_scan,
-                        projected_state_version=projected.state_version,
-                    )
                 return AuditControlProjection(audit=projected, run=run, changed=True)
         except RepositoryError:
             raise
@@ -359,40 +346,6 @@ async def _append_event(session: AsyncSession, event: RunEvent) -> None:
         )
     session.add(event_to_record(event))
     await session.flush()
-
-
-async def _stage_control_signal(
-    session: AsyncSession,
-    *,
-    session_factory: SessionFactory,
-    request: AuditControlTransition,
-    scan: AuditScan,
-    projected_state_version: int,
-) -> None:
-    signal_kind = request.workflow_signal_kind
-    if signal_kind is None or signal_kind.value != request.operation:
-        raise RepositoryConflictError(
-            "Code Audit control signal does not match its lifecycle operation"
-        )
-    intent = WorkflowSignalIntent.code_audit(
-        audit_id=scan.id,
-        run_id=scan.run_id,
-        workflow_id=scan.temporal_workflow_id,
-        signal_kind=signal_kind,
-        source_event_kind=WorkflowSignalSourceKind.CONTROL_INTENT,
-        source_event_id=request.audit_event_id,
-        source_state_version=projected_state_version,
-        payload={"audit_id": scan.id},
-        created_at=request.occurred_at,
-    )
-
-    from .workflow_signals import (  # noqa: PLC0415
-        SQLAlchemyWorkflowSignalIntentRepository,
-    )
-
-    await SQLAlchemyWorkflowSignalIntentRepository(
-        session_factory
-    ).create_in_session(session, intent)
 
 
 __all__ = ["SQLAlchemyAuditControlUnitOfWork"]

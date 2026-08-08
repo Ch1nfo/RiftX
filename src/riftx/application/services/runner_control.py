@@ -71,7 +71,7 @@ from riftx.runtime.types import ToolCallStatus
 from riftx.security import validate_runner_registration_credential
 
 from .nodes import NodeApplicationService, NodeHeartbeat, NodeRegistration
-from .runs import require_general_run_operation
+from .runs import require_interactive_run_operation
 
 _MAX_OUTPUT_CHUNK_BYTES = 256 * 1024
 _STOP_ACK_EXECUTION = RUNNER_STOP_ACK_EXECUTION_SCHEMA
@@ -1312,7 +1312,7 @@ class RunnerControlService:
         to the v1 protocol and are intentionally excluded.
         """
 
-        runs = await self._general_runs_for_node(node_id)
+        runs = await self._interactive_runs_for_node(node_id)
         active_terminals = (
             tuple(await self._terminals.list_active()) if self._terminals is not None else ()
         )
@@ -1375,21 +1375,22 @@ class RunnerControlService:
             )
         )
 
-    async def _general_runs_for_node(self, node_id: str) -> tuple[Run, ...]:
+    async def _interactive_runs_for_node(self, node_id: str) -> tuple[Run, ...]:
         runs: list[Run] = []
-        offset = 0
-        while True:
-            page = tuple(
-                await self._runs.list(
-                    kind=RunKind.GENERAL,
-                    limit=1000,
-                    offset=offset,
+        for kind in (RunKind.GENERAL, RunKind.PENTEST):
+            offset = 0
+            while True:
+                page = tuple(
+                    await self._runs.list(
+                        kind=kind,
+                        limit=1000,
+                        offset=offset,
+                    )
                 )
-            )
-            runs.extend(run for run in page if run.node_id == node_id)
-            if len(page) < 1000:
-                break
-            offset += len(page)
+                runs.extend(run for run in page if run.node_id == node_id)
+                if len(page) < 1000:
+                    break
+                offset += len(page)
         return tuple(runs)
 
     async def _project_stop_receipt(self, receipt: RunnerStopReceipt) -> bool:
@@ -1905,7 +1906,7 @@ class RunnerControlService:
             raise EntityNotFoundError("Run", execution.run_id)
         if allow_safety_stop:
             return
-        require_general_run_operation(run)
+        require_interactive_run_operation(run)
 
     def authenticate_bootstrap(self, token: str) -> None:
         """Validate the shared token used to provision a Runner credential."""

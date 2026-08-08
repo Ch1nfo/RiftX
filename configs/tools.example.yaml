@@ -19,11 +19,20 @@ tools:
       - port_scan
       - service_detection
       - os_detection
+    input_schema:
+      type: object
+      required: [target]
+      properties:
+        target: {type: string, minLength: 1, maxLength: 8192}
+        ports: {type: [string, "null"], minLength: 1, maxLength: 2048}
+        service_detection: {type: boolean, default: false}
+        timeout_seconds: {type: [number, "null"], exclusiveMinimum: 0}
+      additionalProperties: false
     version_probe:
       command:
         - nmap
         - --version
-    approval: never
+    approval: sensitive
     timeout: 1800
     output:
       preferred: xml
@@ -56,11 +65,20 @@ tools:
     executor: process
     capabilities:
       - port_scan
+    input_schema:
+      type: object
+      required: [target]
+      properties:
+        target: {type: string, minLength: 1, maxLength: 8192}
+        ports: {type: [string, "null"], minLength: 1, maxLength: 2048}
+        service_detection: {type: boolean, default: false}
+        timeout_seconds: {type: [number, "null"], exclusiveMinimum: 0}
+      additionalProperties: false
     version_probe:
       command:
         - masscan
         - --version
-    approval: never
+    approval: sensitive
     timeout: 1800
     output:
       preferred: json

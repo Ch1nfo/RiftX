@@ -9,7 +9,7 @@ from json import JSONDecodeError
 from typing import Never
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from sqlalchemy import and_, case, func, or_, select, update
+from sqlalchemy import and_, case, exists, func, or_, select, update
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -232,6 +232,37 @@ class SQLAlchemyArtifactRepository:
 
     async def get_for_reconciliation(self, artifact_id: str) -> Artifact | None:
         statement = select(ArtifactRecord).where(ArtifactRecord.id == artifact_id)
+        try:
+            async with self._session_factory() as session:
+                record = await session.scalar(statement)
+        except JSONDecodeError:
+            raise RepositoryIntegrityError("Artifact", artifact_id) from None
+        except SQLAlchemyError:
+            raise RepositoryUnavailableError("Artifact persistence is unavailable") from None
+        return artifact_from_record(record) if record is not None else None
+
+    async def get_target_http_for_evidence(
+        self,
+        artifact_id: str,
+        run_id: str,
+    ) -> Artifact | None:
+        referenced = exists(
+            select(TargetHttpRequestRecord.id).where(
+                TargetHttpRequestRecord.run_id == run_id,
+                or_(
+                    TargetHttpRequestRecord.request_artifact_id == ArtifactRecord.id,
+                    TargetHttpRequestRecord.response_artifact_id == ArtifactRecord.id,
+                ),
+            )
+        )
+        statement = select(ArtifactRecord).where(
+            ArtifactRecord.id == artifact_id,
+            ArtifactRecord.run_id == run_id,
+            ArtifactRecord.access_class == ArtifactAccessClass.PUBLIC_EXPORT.value,
+            artifact_has_valid_owner(),
+            artifact_has_consistent_execution_owner(),
+            referenced,
+        )
         try:
             async with self._session_factory() as session:
                 record = await session.scalar(statement)
@@ -473,7 +504,7 @@ def _artifact_create_owner_is_valid(
     )
     if not execution_owner_is_valid:
         return False
-    if run_kind == RunKind.GENERAL.value:
+    if run_kind in {RunKind.GENERAL.value, RunKind.PENTEST.value}:
         return artifact.audit_id is None and audit_run_id is None
     if run_kind == RunKind.CODE_AUDIT.value:
         return (
@@ -2493,6 +2524,25 @@ class SQLAlchemyRunEventRepository:
             records = (await session.scalars(statement)).all()
         return [event_from_record(record) for record in records]
 
+    async def list_recent(
+        self,
+        run_id: str,
+        *,
+        limit: int = 100,
+    ) -> Sequence[RunEvent]:
+        if limit < 1 or limit > 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        statement = (
+            select(RunEventRecord)
+            .where(RunEventRecord.run_id == run_id)
+            .order_by(RunEventRecord.sequence.desc())
+            .limit(limit)
+        )
+        async with self._session_factory() as session:
+            records = list((await session.scalars(statement)).all())
+        records.reverse()
+        return [event_from_record(record) for record in records]
+
 
 _FINDING_MUTABLE_FIELDS = (
     "title",
@@ -3041,11 +3091,12 @@ class SQLAlchemyApprovalRepository:
         source_event_id: str,
         decided_at: datetime,
     ) -> None:
-        """Persist the General Workflow decision intent in the decision UoW."""
+        """Persist the interactive Workflow decision intent in the decision UoW."""
 
-        if RunKind(run_record.kind) is not RunKind.GENERAL:
+        run_kind = RunKind(run_record.kind)
+        if run_kind not in {RunKind.GENERAL, RunKind.PENTEST}:
             raise RepositoryConflictError(
-                "Generic Runtime Approval decisions require a General Run owner"
+                "Runtime Approval decisions require an interactive Run owner"
             )
         workflow_id = run_record.temporal_workflow_id
         if not workflow_id:
@@ -3070,7 +3121,12 @@ class SQLAlchemyApprovalRepository:
             if status is ApprovalStatus.APPROVED
             else WorkflowSignalKind.REJECT
         )
-        intent = WorkflowSignalIntent.general_run(
+        intent_factory = (
+            WorkflowSignalIntent.general_run
+            if run_kind is RunKind.GENERAL
+            else WorkflowSignalIntent.pentest_run
+        )
+        intent = intent_factory(
             run_id=approval.run_id,
             workflow_id=workflow_id,
             signal_kind=signal_kind,
@@ -3704,14 +3760,15 @@ class SQLAlchemyExecutionRepository:
         )
         if run_record is None:
             raise EntityNotFoundError("Run", execution.run_id)
-        if RunKind(run_record.kind) is not RunKind.GENERAL:
+        run_kind = RunKind(run_record.kind)
+        if run_kind not in {RunKind.GENERAL, RunKind.PENTEST}:
             # M1 has no authoritative Code Audit effect plan. Persisting the
             # terminal state is safe, but it must never fall back to the
-            # General Workflow protocol.
+            # interactive Workflow protocols.
             return
         if execution.audit_id is not None or execution.plan_digest is not None:
             raise RepositoryConflictError(
-                "General execution completion carried Code Audit ownership"
+                "Interactive execution completion carried Code Audit ownership"
             )
         workflow_id = run_record.temporal_workflow_id
         if not workflow_id:
@@ -3737,7 +3794,12 @@ class SQLAlchemyExecutionRepository:
             or execution.created_at
             or utc_now()
         )
-        intent = WorkflowSignalIntent.general_run(
+        intent_factory = (
+            WorkflowSignalIntent.general_run
+            if run_kind is RunKind.GENERAL
+            else WorkflowSignalIntent.pentest_run
+        )
+        intent = intent_factory(
             run_id=execution.run_id,
             workflow_id=workflow_id,
             signal_kind=WorkflowSignalKind.EXECUTION_COMPLETED,

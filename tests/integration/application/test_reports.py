@@ -4,6 +4,7 @@ import pytest
 
 from riftx.application.errors import ApplicationConflictError
 from riftx.application.services import (
+    CLOSURE_EVALUATED_EVENT_TYPE,
     ArtifactApplicationService,
     GenerateReports,
     RegisterArtifact,
@@ -220,8 +221,11 @@ async def test_report_service_generates_safe_linked_immutable_outputs(tmp_path: 
     assert "<script>alert(1)</script>" not in contents[ReportFormat.HTML]
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in contents[ReportFormat.HTML]
     assert "<img src=x onerror=alert(1)>" not in contents[ReportFormat.HTML]
+    assert "Closure verification returned a partial outcome." in contents[ReportFormat.MARKDOWN]
 
     source = await service.build_source("run-1")
+    assert source.closure_outcome.value == "partial"
+    assert source.closure_reason_codes == ["closure_verification_missing"]
     assert [item.id for item in source.artifacts] == ["artifact-proof"]
     tool_event = next(
         item for item in source.key_events if item.event_type == "agent.tool_completed"
@@ -232,6 +236,33 @@ async def test_report_service_generates_safe_linked_immutable_outputs(tmp_path: 
         "status": "exited",
         "exit_code": 0,
     }
+
+    await event_repository.append(
+        "run-1",
+        CLOSURE_EVALUATED_EVENT_TYPE,
+        {"version": 1, "outcome": "complete", "reason_codes": []},
+    )
+    complete_source = await service.build_source("run-1")
+    assert complete_source.closure_outcome.value == "complete"
+    assert complete_source.closure_reason_codes == []
+
+    await event_repository.append(
+        "run-1",
+        CLOSURE_EVALUATED_EVENT_TYPE,
+        {"version": 1, "outcome": "complete", "reason_codes": ["contradiction"]},
+    )
+    invalid_source = await service.build_source("run-1")
+    assert invalid_source.closure_outcome.value == "partial"
+    assert invalid_source.closure_reason_codes == ["closure_verification_invalid"]
+
+    await event_repository.append(
+        "run-1",
+        CLOSURE_EVALUATED_EVENT_TYPE,
+        {"version": 1, "outcome": "partial", "reason_codes": []},
+    )
+    unspecified_source = await service.build_source("run-1")
+    assert unspecified_source.closure_outcome.value == "partial"
+    assert unspecified_source.closure_reason_codes == ["closure_partial_unspecified"]
 
     generated_again = await service.generate(
         "run-1",

@@ -339,8 +339,13 @@ class RunRecord(Base):
     __tablename__ = "runs"
     __table_args__ = (
         CheckConstraint(
-            "kind IN ('general', 'code_audit')",
+            "kind IN ('general', 'pentest', 'code_audit')",
             name="ck_runs_kind",
+        ),
+        CheckConstraint(
+            "(kind = 'pentest' AND pentest_admission_json IS NOT NULL) OR "
+            "(kind <> 'pentest' AND pentest_admission_json IS NULL)",
+            name="ck_runs_pentest_admission",
         ),
         Index(
             "uq_runs_id_engagement_kind",
@@ -381,6 +386,9 @@ class RunRecord(Base):
     scope_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     status: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
     approval_mode: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False)
+    pentest_admission_json: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON(none_as_null=True)
+    )
     model_profile: Mapped[str | None] = mapped_column(String(255))
     workspace_path: Mapped[str] = mapped_column(Text, nullable=False)
     temporal_workflow_id: Mapped[str | None] = mapped_column(String(255), unique=True)
@@ -2126,7 +2134,7 @@ class RunnerEffectBindingRecord(Base):
             name="ck_runner_effect_bindings_schema",
         ),
         CheckConstraint(
-            "run_kind IN ('general', 'code_audit')",
+            "run_kind IN ('general', 'pentest', 'code_audit')",
             name="ck_runner_effect_bindings_run_kind",
         ),
         CheckConstraint(
@@ -2148,7 +2156,8 @@ class RunnerEffectBindingRecord(Base):
             name="ck_runner_effect_bindings_resource_kind",
         ),
         CheckConstraint(
-            "(run_kind = 'general' AND audit_id IS NULL AND plan_digest IS NULL) OR "
+            "(run_kind IN ('general', 'pentest') "
+            "AND audit_id IS NULL AND plan_digest IS NULL) OR "
             "(run_kind = 'code_audit' AND audit_id IS NOT NULL AND plan_digest IS NOT NULL)",
             name="ck_runner_effect_bindings_run_owner_shape",
         ),
@@ -2468,6 +2477,486 @@ class WorkingMemoryRecord(Base):
     state_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
+
+
+class TaskGraphRecord(Base):
+    __tablename__ = "task_graphs"
+    __table_args__ = (CheckConstraint("version >= 1", name="ck_task_graphs_version"),)
+
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
+
+
+class TaskRecord(Base):
+    __tablename__ = "tasks"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'running', 'blocked', 'completed', 'failed', 'cancelled')",
+            name="ck_tasks_status",
+        ),
+        CheckConstraint("sequence >= 1", name="ck_tasks_sequence"),
+        CheckConstraint("version >= 1", name="ck_tasks_version"),
+        CheckConstraint("parent_task_id IS NULL OR parent_task_id <> id", name="ck_tasks_parent"),
+        CheckConstraint(
+            "(status = 'blocked' AND blocked_reason IS NOT NULL) OR status <> 'blocked'",
+            name="ck_tasks_blocked_reason",
+        ),
+        CheckConstraint(
+            "(status = 'completed' AND completion_summary IS NOT NULL "
+            "AND completed_at IS NOT NULL) "
+            "OR (status <> 'completed' AND completed_at IS NULL)",
+            name="ck_tasks_completion_shape",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "parent_task_id"],
+            ["tasks.run_id", "tasks.id"],
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("run_id", "id", name="uq_tasks_run_id_id"),
+        UniqueConstraint("run_id", "sequence", name="uq_tasks_run_sequence"),
+        Index("ix_tasks_run_status_sequence", "run_id", "status", "sequence"),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("task_graphs.run_id", ondelete="CASCADE"), nullable=False
+    )
+    parent_task_id: Mapped[str | None] = mapped_column(String(ID_LENGTH))
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
+    input_scope_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    expected_output_schema_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    required_capability_ids_json: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    workspace_owner: Mapped[str | None] = mapped_column(String(128))
+    session_owner_id: Mapped[str | None] = mapped_column(String(ID_LENGTH))
+    stop_condition: Mapped[str | None] = mapped_column(Text)
+    completion_summary: Mapped[str | None] = mapped_column(Text)
+    blocked_reason: Mapped[str | None] = mapped_column(Text)
+    reopen_history_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class TaskDependencyRecord(Base):
+    __tablename__ = "task_dependencies"
+    __table_args__ = (
+        CheckConstraint("task_id <> depends_on_task_id", name="ck_task_dependencies_not_self"),
+        ForeignKeyConstraint(
+            ["run_id", "task_id"],
+            ["tasks.run_id", "tasks.id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "depends_on_task_id"],
+            ["tasks.run_id", "tasks.id"],
+            ondelete="CASCADE",
+        ),
+    )
+
+    run_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    depends_on_task_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class TaskAttemptRecord(Base):
+    __tablename__ = "task_attempts"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('running', 'succeeded', 'failed', 'cancelled')",
+            name="ck_task_attempts_status",
+        ),
+        CheckConstraint("sequence >= 1", name="ck_task_attempts_sequence"),
+        CheckConstraint(
+            "retry_of_attempt_id IS NULL OR retry_of_attempt_id <> id",
+            name="ck_task_attempts_retry",
+        ),
+        CheckConstraint(
+            "(status = 'running' AND finished_at IS NULL AND failure_summary IS NULL) OR "
+            "(status = 'failed' AND finished_at IS NOT NULL AND failure_summary IS NOT NULL) OR "
+            "(status IN ('succeeded', 'cancelled') AND finished_at IS NOT NULL "
+            "AND failure_summary IS NULL)",
+            name="ck_task_attempts_lifecycle",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "task_id"],
+            ["tasks.run_id", "tasks.id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "task_id", "retry_of_attempt_id"],
+            ["task_attempts.run_id", "task_attempts.task_id", "task_attempts.id"],
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("run_id", "task_id", "id", name="uq_task_attempts_owner_id"),
+        UniqueConstraint("run_id", "task_id", "sequence", name="uq_task_attempts_owner_sequence"),
+        Index("ix_task_attempts_run_status", "run_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    task_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False, index=True)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(STATUS_LENGTH), nullable=False, index=True)
+    session_id: Mapped[str | None] = mapped_column(String(ID_LENGTH), index=True)
+    worker_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    retry_of_attempt_id: Mapped[str | None] = mapped_column(String(ID_LENGTH))
+    failure_summary: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+
+
+class TaskBudgetRecord(Base):
+    __tablename__ = "task_budgets"
+    __table_args__ = (
+        CheckConstraint(
+            "max_model_calls IS NOT NULL OR max_tool_calls IS NOT NULL OR "
+            "max_tokens IS NOT NULL OR max_duration_seconds IS NOT NULL",
+            name="ck_task_budgets_nonempty",
+        ),
+        CheckConstraint(
+            "max_model_calls IS NULL OR max_model_calls >= 1",
+            name="ck_task_budgets_model_calls",
+        ),
+        CheckConstraint(
+            "max_tool_calls IS NULL OR max_tool_calls >= 1",
+            name="ck_task_budgets_tool_calls",
+        ),
+        CheckConstraint("max_tokens IS NULL OR max_tokens >= 1", name="ck_task_budgets_tokens"),
+        CheckConstraint(
+            "max_duration_seconds IS NULL OR max_duration_seconds > 0",
+            name="ck_task_budgets_duration",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "task_id"],
+            ["tasks.run_id", "tasks.id"],
+            ondelete="CASCADE",
+        ),
+    )
+
+    run_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    task_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    max_model_calls: Mapped[int | None] = mapped_column(Integer)
+    max_tool_calls: Mapped[int | None] = mapped_column(Integer)
+    max_tokens: Mapped[int | None] = mapped_column(Integer)
+    max_duration_seconds: Mapped[float | None] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class TaskEvidenceRequirementRecord(Base):
+    __tablename__ = "task_evidence_requirements"
+    __table_args__ = (
+        CheckConstraint("minimum_count >= 1", name="ck_task_evidence_minimum_count"),
+        CheckConstraint(
+            "success_criterion_index IS NULL OR success_criterion_index >= 0",
+            name="ck_task_evidence_success_criterion_index",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "task_id"],
+            ["tasks.run_id", "tasks.id"],
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("run_id", "task_id", "id", name="uq_task_evidence_requirements_owner_id"),
+        Index("ix_task_evidence_requirements_run_task", "run_id", "task_id"),
+        Index(
+            "ix_task_evidence_requirements_run_criterion",
+            "run_id",
+            "success_criterion_index",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    task_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    evidence_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    minimum_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    success_criterion_index: Mapped[int | None] = mapped_column(Integer)
+    evidence_refs_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class EvidenceRecord(Base):
+    __tablename__ = "evidence_ledger"
+    __table_args__ = (
+        CheckConstraint(
+            "schema_version = 'riftx.evidence/v1'",
+            name="ck_evidence_schema_version",
+        ),
+        CheckConstraint(
+            "kind IN ('execution_output', 'artifact_span', 'http_request_response', "
+            "'browser_observation', 'code_location', 'code_flow', 'scanner_signal', "
+            "'user_decision', 'deterministic_parser_result', 'external_research_source')",
+            name="ck_evidence_kind",
+        ),
+        CheckConstraint(
+            "creator_type IN ('agent', 'operator', 'system', 'tool', 'parser', 'scanner')",
+            name="ck_evidence_creator_type",
+        ),
+        CheckConstraint(
+            "trust_class IN ('generated', 'user_provided', 'untrusted_source', "
+            "'untrusted_tool_output')",
+            name="ck_evidence_trust_class",
+        ),
+        CheckConstraint(
+            "redaction_status IN ('not_required', 'redacted', 'restricted', 'metadata_only')",
+            name="ck_evidence_redaction_status",
+        ),
+        CheckConstraint(
+            "(redaction_status = 'redacted' AND redaction_policy_ref IS NOT NULL) OR "
+            "(redaction_status = 'not_required' AND redaction_policy_ref IS NULL) OR "
+            "redaction_status IN ('restricted', 'metadata_only')",
+            name="ck_evidence_redaction_shape",
+        ),
+        CheckConstraint(_lower_hex_digest_check("digest"), name="ck_evidence_digest"),
+        CheckConstraint(
+            _lower_hex_digest_check("ledger_digest"),
+            name="ck_evidence_ledger_digest",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "task_id"],
+            ["tasks.run_id", "tasks.id"],
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("run_id", "id", name="uq_evidence_owner_id"),
+        Index("ix_evidence_run_created_id", "run_id", "created_at", "id"),
+        Index("ix_evidence_run_task_created", "run_id", "task_id", "created_at"),
+        Index("ix_evidence_run_kind_created", "run_id", "kind", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"), nullable=False
+    )
+    session_id: Mapped[str | None] = mapped_column(
+        ForeignKey("agent_sessions.id", ondelete="RESTRICT"), index=True
+    )
+    task_id: Mapped[str | None] = mapped_column(String(ID_LENGTH))
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_uri: Mapped[str] = mapped_column(Text, nullable=False)
+    digest: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    ledger_digest: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    creator_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    trust_class: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    redaction_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    redaction_policy_ref: Mapped[str | None] = mapped_column(Text)
+    replay_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    locator_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    artifact_id: Mapped[str | None] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="RESTRICT"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class ReasoningGraphRecord(Base):
+    __tablename__ = "reasoning_graphs"
+    __table_args__ = (
+        CheckConstraint(
+            "schema_version = 'riftx.reasoning-graph/v1'",
+            name="ck_reasoning_graphs_schema_version",
+        ),
+        CheckConstraint("version >= 1", name="ck_reasoning_graphs_version"),
+        Index("ix_reasoning_graphs_updated_at", "updated_at"),
+    )
+
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"), primary_key=True
+    )
+    schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class ReasoningNodeRecord(Base):
+    __tablename__ = "reasoning_nodes"
+    __table_args__ = (
+        CheckConstraint(
+            "schema_version = 'riftx.reasoning-graph/v1'",
+            name="ck_reasoning_nodes_schema_version",
+        ),
+        CheckConstraint(
+            "kind IN ('observation', 'fact_candidate', 'confirmed_fact', 'hypothesis', "
+            "'vulnerability_candidate', 'finding', 'proof', 'negative_result')",
+            name="ck_reasoning_nodes_kind",
+        ),
+        CheckConstraint(
+            "status IN ('recorded', 'candidate', 'promoted', 'confirmed', 'unverified', "
+            "'investigating', 'supported', 'rejected', 'invalidated', 'resolved', "
+            "'false_positive', 'validated', 'failed')",
+            name="ck_reasoning_nodes_status",
+        ),
+        CheckConstraint(
+            "creator_type IN ('agent', 'operator', 'system', 'reducer', 'tool', "
+            "'parser', 'scanner')",
+            name="ck_reasoning_nodes_creator_type",
+        ),
+        CheckConstraint("version >= 1", name="ck_reasoning_nodes_version"),
+        CheckConstraint(
+            "(kind = 'finding') OR reproduction_contract_json IS NULL",
+            name="ck_reasoning_nodes_reproduction_kind",
+        ),
+        CheckConstraint(
+            "kind <> 'finding' OR status <> 'confirmed' OR "
+            "reproduction_contract_json IS NOT NULL",
+            name="ck_reasoning_nodes_confirmed_finding",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "task_id"],
+            ["tasks.run_id", "tasks.id"],
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint("run_id", "id", name="uq_reasoning_nodes_owner_id"),
+        Index("ix_reasoning_nodes_run_kind_status", "run_id", "kind", "status"),
+        Index("ix_reasoning_nodes_run_updated", "run_id", "updated_at", "id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("reasoning_graphs.run_id", ondelete="CASCADE"), nullable=False
+    )
+    schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    session_id: Mapped[str | None] = mapped_column(
+        ForeignKey("agent_sessions.id", ondelete="RESTRICT"), index=True
+    )
+    task_id: Mapped[str | None] = mapped_column(String(ID_LENGTH))
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    claim: Mapped[str] = mapped_column(Text, nullable=False)
+    structured_data_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    reproduction_contract_json: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON(none_as_null=True)
+    )
+    creator_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class ReasoningEdgeRecord(Base):
+    __tablename__ = "reasoning_edges"
+    __table_args__ = (
+        CheckConstraint(
+            "schema_version = 'riftx.reasoning-graph/v1'",
+            name="ck_reasoning_edges_schema_version",
+        ),
+        CheckConstraint(
+            "relation_type IN ('supports', 'contradicts', 'derived_from', "
+            "'discovered_on', 'validates', 'exploits', 'invalidates', 'depends_on')",
+            name="ck_reasoning_edges_relation_type",
+        ),
+        CheckConstraint(
+            "creator_type IN ('agent', 'operator', 'system', 'reducer', 'tool', "
+            "'parser', 'scanner')",
+            name="ck_reasoning_edges_creator_type",
+        ),
+        CheckConstraint("source_node_id <> target_node_id", name="ck_reasoning_edges_self"),
+        ForeignKeyConstraint(
+            ["run_id", "source_node_id"],
+            ["reasoning_nodes.run_id", "reasoning_nodes.id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "target_node_id"],
+            ["reasoning_nodes.run_id", "reasoning_nodes.id"],
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "run_id",
+            "source_node_id",
+            "target_node_id",
+            "relation_type",
+            name="uq_reasoning_edges_structure",
+        ),
+        UniqueConstraint("run_id", "id", name="uq_reasoning_edges_owner_id"),
+        Index("ix_reasoning_edges_run_source", "run_id", "source_node_id"),
+        Index("ix_reasoning_edges_run_target", "run_id", "target_node_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("reasoning_graphs.run_id", ondelete="CASCADE"), nullable=False
+    )
+    schema_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_node_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    target_node_id: Mapped[str] = mapped_column(String(ID_LENGTH), nullable=False)
+    relation_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    creator_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class ReasoningNodeEvidenceRecord(Base):
+    __tablename__ = "reasoning_node_evidence"
+    __table_args__ = (
+        CheckConstraint("ordinal >= 0", name="ck_reasoning_node_evidence_ordinal"),
+        ForeignKeyConstraint(
+            ["run_id", "node_id"],
+            ["reasoning_nodes.run_id", "reasoning_nodes.id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "evidence_id"],
+            ["evidence_ledger.run_id", "evidence_ledger.id"],
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
+            "run_id",
+            "node_id",
+            "ordinal",
+            name="uq_reasoning_node_evidence_ordinal",
+        ),
+    )
+
+    run_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    node_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    evidence_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class ReasoningEdgeEvidenceRecord(Base):
+    __tablename__ = "reasoning_edge_evidence"
+    __table_args__ = (
+        CheckConstraint("ordinal >= 0", name="ck_reasoning_edge_evidence_ordinal"),
+        ForeignKeyConstraint(
+            ["run_id", "edge_id"],
+            ["reasoning_edges.run_id", "reasoning_edges.id"],
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["run_id", "evidence_id"],
+            ["evidence_ledger.run_id", "evidence_ledger.id"],
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
+            "run_id",
+            "edge_id",
+            "ordinal",
+            name="uq_reasoning_edge_evidence_ordinal",
+        ),
+    )
+
+    run_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    edge_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    evidence_id: Mapped[str] = mapped_column(String(ID_LENGTH), primary_key=True)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
 class ContextCompilationRecord(Base):

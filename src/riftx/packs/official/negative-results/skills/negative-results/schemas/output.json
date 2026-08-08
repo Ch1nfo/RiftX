@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "required": ["negative_result_id", "action_signature", "reuse_scope"],
+  "properties": {
+    "negative_result_id": {"type": "string"},
+    "action_signature": {"type": "string"},
+    "reuse_scope": {"type": "object"}
+  }
+}

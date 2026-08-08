@@ -1,5 +1,11 @@
 # RiftX 3.0 — 本地代码安全审计开发规格
 
+> [!WARNING]
+> 历史规格。Code Audit 产品面已由
+> [`RiftX_过度开发清理计划.md`](../RiftX_过度开发清理计划.md) 退役。以下内容记录原始设计，
+> 不再是受支持产品路线；当前仅保留历史记录、migration、ORM/读取兼容、Snapshot 与
+> Safety Stop 清理。
+
 > 状态：Accepted / 当前开发目标
 >
 > 文档日期：2026-08-04（Asia/Shanghai）

@@ -20,19 +20,25 @@ from riftx.application.errors import RepositoryConflictError
 from riftx.application.services import (
     ApprovalRequestRecorder,
     ArtifactApplicationService,
-    AuditApplicationService,
+    ArtifactCodePublisher,
     AuditControlApplicationService,
     AuditRunStateProjector,
+    ClosureVerifierApplicationService,
+    EvidenceApplicationService,
     FindingApplicationService,
     NodeApplicationService,
     NodeHeartbeat,
     NodeRegistration,
+    ReasoningGraphApplicationService,
     ReportApplicationService,
+    RunApplicationService,
     RunnerControlService,
     RunSafetyStopService,
     RuntimeApprovalRequestRecorder,
     SafetyStopResult,
     TerminalApplicationService,
+    TrafficMetadataApplicationService,
+    WorkingMemoryProposalApplicationService,
     stop_resources_payload,
 )
 from riftx.application.services.workflow_signals import (
@@ -40,13 +46,25 @@ from riftx.application.services.workflow_signals import (
     WorkflowSignalReconciler,
 )
 from riftx.application.workflow_router import RunWorkflowControlRouter
+from riftx.audit import LocalSnapshotStore
 from riftx.browser.service import BrowserApplicationService
-from riftx.config import RiftXConfig, validate_audit_storage_isolation
+from riftx.capabilities import (
+    SessionCapabilityManifestReader,
+    TechniqueContextManager,
+)
+from riftx.code import (
+    CodeWorkspaceService,
+    ControlledLSPBackend,
+    ControlledLSPGatewayClient,
+    GitWorkspaceService,
+)
+from riftx.config import RiftXConfig
 from riftx.context import (
     ContextApplicationService,
     ContextCompiler,
     ExecutionArtifactStore,
     StableInstructionSource,
+    TaskGraphContextSource,
     ToolResultProcessor,
     TranscriptContextSource,
     WorkingMemoryContextSource,
@@ -73,11 +91,22 @@ from riftx.execution import (
 )
 from riftx.executors import DirectProcessExecutor, LinuxCgroupV2Manager
 from riftx.hooks import HookBus, RunEventHookAuditSink
+from riftx.mcp import (
+    MCPApplicationService,
+    MCPCircuitState,
+    MCPHealthSnapshot,
+    MCPRegistrySnapshot,
+    MCPServerAvailability,
+    MCPServerRegistry,
+)
 from riftx.memory import MemoryService, MemoryWriter
 from riftx.memory.context_source import RetrievedMemoryContextSource
 from riftx.models import ModelProfileRegistry, RiftXModelProvider
+from riftx.observer import ObserverSupervisorApplicationService
+from riftx.packs import OfficialPackCatalog, bootstrap_official_packs
 from riftx.persistence import (
     Database,
+    SQLAlchemyActiveTakeoverReader,
     SQLAlchemyAgentCycleRepository,
     SQLAlchemyAgentSessionRepository,
     SQLAlchemyAgentStepRepository,
@@ -85,11 +114,16 @@ from riftx.persistence import (
     SQLAlchemyArtifactRepository,
     SQLAlchemyAuditAggregateReadRepository,
     SQLAlchemyAuditControlUnitOfWork,
-    SQLAlchemyAuditCreationUnitOfWork,
+    SQLAlchemyCapabilityRepository,
+    SQLAlchemyCapabilitySelectionStore,
+    SQLAlchemyEngagementRepository,
+    SQLAlchemyEvidenceLedgerRepository,
     SQLAlchemyExecutionRepository,
     SQLAlchemyFindingRepository,
     SQLAlchemyNodeRepository,
+    SQLAlchemyPentestStatusReader,
     SQLAlchemyProviderStateRepository,
+    SQLAlchemyReasoningGraphRepository,
     SQLAlchemyReportRepository,
     SQLAlchemyRunEventRepository,
     SQLAlchemyRunLeaseRepository,
@@ -97,6 +131,10 @@ from riftx.persistence import (
     SQLAlchemyRunnerCredentialRepository,
     SQLAlchemyRunRepository,
     SQLAlchemyRuntimeApprovalRepository,
+    SQLAlchemySkillSelectionStore,
+    SQLAlchemySnapshotRepository,
+    SQLAlchemyTaskGraphRepository,
+    SQLAlchemyTaskPlanner,
     SQLAlchemyTerminalRepository,
     SQLAlchemyToolCallIntentRepository,
     SQLAlchemyTranscriptRepository,
@@ -108,7 +146,12 @@ from riftx.persistence.checkpoint_repositories import (
 )
 from riftx.persistence.context_repositories import SQLAlchemyContextCompilationRepository
 from riftx.persistence.memory_repositories import SQLAlchemyMemoryRepository
-from riftx.persistence.target_http_repositories import SQLAlchemyTargetHttpRequestRepository
+from riftx.persistence.target_http_repositories import (
+    SQLAlchemyTargetHttpRequestRepository,
+    SQLAlchemyTrafficMetadataReadRepository,
+)
+from riftx.persistence.web_repositories import SQLAlchemyWebSourceRepository
+from riftx.persistence.web_research_repositories import SQLAlchemyWebResearchRepository
 from riftx.persistence.workflow_signals import (
     SQLAlchemyWorkflowSignalIntentRepository,
 )
@@ -132,7 +175,7 @@ from riftx.runtime.engine import DeferredRuntimeAgentFactory, OpenAIAgentsEngine
 from riftx.runtime.leases import DatabaseRunLeaseManager
 from riftx.runtime.session import SessionManager
 from riftx.runtime.types import AgentSession
-from riftx.skills import create_default_skill_registry
+from riftx.skills import ProgressiveSkillContextManager, create_default_skill_registry
 from riftx.subagents import (
     DurableSubagentTaskRunner,
     ModelDelegationExecutor,
@@ -140,8 +183,18 @@ from riftx.subagents import (
     SubagentManager,
     SubagentOrchestrator,
 )
-from riftx.target_http.service import TargetHttpApplicationService
+from riftx.target_http.service import (
+    CapabilityCredentialReferenceAuthorizer,
+    TargetHttpApplicationService,
+)
 from riftx.tools import RawToolDefinition, ToolContextManager, ToolDefinition, ToolRegistry
+from riftx.web import (
+    ApplicationWebArtifactStore,
+    ArtifactBackedResearchRecorder,
+    ConfiguredSearchProviderResolver,
+    PublicWebFetcher,
+    WebResearchApplicationService,
+)
 
 from .activities import RiftXActivities
 from .connection import TemporalConnectionSettings, connect_temporal
@@ -371,6 +424,13 @@ class TemporalWorkerRuntime:
     node_id: str
     heartbeat_interval_seconds: float
     browser_manager: RunnerBrowserManager | None = None
+    controlled_lsp: ControlledLSPBackend | None = None
+    mcp_registry: MCPServerRegistry | None = None
+    mcp_refresh_interval_seconds: float = 60.0
+    node_labels: dict[str, str] = field(default_factory=dict)
+    mcp_health_snapshot: MCPHealthSnapshot | None = None
+    mcp_refresh_available: bool = True
+    mcp_refresh_failures: int = 0
     run_repository: SQLAlchemyRunRepository | None = None
     event_repository: SQLAlchemyRunEventRepository | None = None
     safety_stopper: RunSafetyStopService | None = None
@@ -382,6 +442,7 @@ class TemporalWorkerRuntime:
     _safety_reconciler_task: asyncio.Task[None] | None = None
     _workflow_signal_task: asyncio.Task[None] | None = None
     _runner_reconciliation_task: asyncio.Task[None] | None = None
+    _mcp_refresh_task: asyncio.Task[None] | None = None
     _safety_failures: set[str] = field(default_factory=set)
     _closed: bool = False
 
@@ -407,6 +468,11 @@ class TemporalWorkerRuntime:
             self._runner_reconciliation_task = asyncio.create_task(
                 self._runner_reconciliation_loop(),
                 name=f"riftx-worker-runner-reconciler-{self.node_id}",
+            )
+        if self.mcp_registry is not None:
+            self._mcp_refresh_task = asyncio.create_task(
+                self._mcp_refresh_loop(),
+                name=f"riftx-worker-mcp-refresh-{self.node_id}",
             )
         try:
             await self.worker.run()
@@ -478,7 +544,7 @@ class TemporalWorkerRuntime:
                         )
                         for run in runs:
                             try:
-                                if run.kind is RunKind.GENERAL:
+                                if run.kind in {RunKind.GENERAL, RunKind.PENTEST}:
                                     result = await self.safety_stopper.stop_run(
                                         run.id,
                                         drain=True,
@@ -552,9 +618,9 @@ class TemporalWorkerRuntime:
         current = await self.run_repository.get(run_id)
         if current is None:
             return
-        if current.kind is not RunKind.GENERAL:
+        if current.kind not in {RunKind.GENERAL, RunKind.PENTEST}:
             raise RepositoryConflictError(
-                "General finalization reconciler cannot operate on a Code Audit Run"
+                "Interactive finalization reconciler cannot operate on a Code Audit Run"
             )
         if current.status in {RunStatus.COMPLETING, intent.target}:
             try:
@@ -599,7 +665,10 @@ class TemporalWorkerRuntime:
         unavailable = False
         while True:
             try:
-                await self.node_service.heartbeat(self.node_id, NodeHeartbeat())
+                await self.node_service.heartbeat(
+                    self.node_id,
+                    NodeHeartbeat(labels=self._current_node_labels() or None),
+                )
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -611,6 +680,42 @@ class TemporalWorkerRuntime:
                     logger.info("Local Worker node heartbeat recovered for %s", self.node_id)
                 unavailable = False
             await asyncio.sleep(self.heartbeat_interval_seconds)
+
+    async def _mcp_refresh_loop(self) -> None:
+        assert self.mcp_registry is not None
+        unavailable = False
+        while True:
+            await asyncio.sleep(self.mcp_refresh_interval_seconds)
+            try:
+                await self.mcp_registry.refresh()
+                self.mcp_health_snapshot = await self.mcp_registry.health_snapshot()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.mcp_refresh_available = False
+                self.mcp_refresh_failures += 1
+                if not unavailable:
+                    logger.exception("Worker MCP Registry refresh failed; retrying")
+                unavailable = True
+            else:
+                self.mcp_refresh_available = True
+                if unavailable:
+                    logger.info("Worker MCP Registry refresh recovered")
+                unavailable = False
+
+    def _current_node_labels(self) -> dict[str, str]:
+        labels = dict(self.node_labels)
+        if self.mcp_registry is None:
+            return labels
+        labels.update(
+            _mcp_runtime_labels(
+                self.mcp_registry.snapshot,
+                self.mcp_health_snapshot,
+                refresh_available=self.mcp_refresh_available,
+                refresh_failures=self.mcp_refresh_failures,
+            )
+        )
+        return labels
 
     async def close(self) -> None:
         if self._closed:
@@ -624,6 +729,14 @@ class TemporalWorkerRuntime:
         self._workflow_signal_task = None
         runner_reconciliation_task = self._runner_reconciliation_task
         self._runner_reconciliation_task = None
+        mcp_refresh_task = self._mcp_refresh_task
+        self._mcp_refresh_task = None
+        if mcp_refresh_task is not None:
+            mcp_refresh_task.cancel()
+            try:
+                await mcp_refresh_task
+            except asyncio.CancelledError:
+                pass
         if runner_reconciliation_task is not None:
             runner_reconciliation_task.cancel()
             try:
@@ -654,6 +767,10 @@ class TemporalWorkerRuntime:
             logger.exception("Unable to mark local Worker node %s offline", self.node_id)
         if self.browser_manager is not None:
             await self.browser_manager.close_all()
+        if self.mcp_registry is not None:
+            await self.mcp_registry.close()
+        if self.controlled_lsp is not None:
+            await self.controlled_lsp.aclose()
         await self.terminal_supervisor.close_all()
         await self.process_supervisor.close(cancel_running=True)
         await self.model_provider.aclose()
@@ -673,10 +790,21 @@ async def build_temporal_worker(
     process_supervisor: ProcessSupervisor | None = None
     terminal_supervisor: TerminalSupervisor | None = None
     browser_manager: RunnerBrowserManager | None = None
+    controlled_lsp: ControlledLSPBackend | None = None
+    mcp_registry: MCPServerRegistry | None = None
+    mcp_snapshot: MCPRegistrySnapshot | None = None
+    mcp_health_snapshot: MCPHealthSnapshot | None = None
     try:
         await database.create_schema()
+        capability_repository = SQLAlchemyCapabilityRepository(database.session_factory)
+        official_pack_catalog = OfficialPackCatalog()
+        await bootstrap_official_packs(capability_repository, official_pack_catalog)
         registry = ToolRegistry(config.tools.path.expanduser(), node_id=config.runner.node_id)
         tool_snapshot = await registry.refresh()
+        if any(server.enabled for server in config.mcp.servers.values()):
+            mcp_registry = MCPServerRegistry(config.mcp)
+            mcp_snapshot = await mcp_registry.refresh()
+            mcp_health_snapshot = await mcp_registry.health_snapshot()
         worker_config = TemporalRuntimeConfig(
             task_queue=config.temporal.task_queue,
             workflow_id_prefix=config.temporal.workflow_id_prefix,
@@ -689,6 +817,7 @@ async def build_temporal_worker(
         workflow_client = TemporalRunClient(client, worker_config)
 
         run_repository = SQLAlchemyRunRepository(database.session_factory)
+        engagement_repository = SQLAlchemyEngagementRepository(database.session_factory)
         audit_aggregate_repository = SQLAlchemyAuditAggregateReadRepository(
             database.session_factory
         )
@@ -716,12 +845,51 @@ async def build_temporal_worker(
         run_lease_repository = SQLAlchemyRunLeaseRepository(database.session_factory)
         runtime_approval_repository = SQLAlchemyRuntimeApprovalRepository(database.session_factory)
         tool_call_intent_repository = SQLAlchemyToolCallIntentRepository(database.session_factory)
+        capability_selection_store = SQLAlchemyCapabilitySelectionStore(
+            database.session_factory
+        )
         transcript_repository = SQLAlchemyTranscriptRepository(database.session_factory)
         user_input_repository = SQLAlchemyUserInputRequestRepository(database.session_factory)
         context_compilation_repository = SQLAlchemyContextCompilationRepository(
             database.session_factory
         )
         working_memory_repository = SQLAlchemyWorkingMemoryRepository(database.session_factory)
+        reasoning_graph_repository = SQLAlchemyReasoningGraphRepository(
+            database.session_factory
+        )
+        evidence_ledger_repository = SQLAlchemyEvidenceLedgerRepository(
+            database.session_factory
+        )
+        task_graph_repository = SQLAlchemyTaskGraphRepository(database.session_factory)
+        task_planner = SQLAlchemyTaskPlanner(database.session_factory)
+        working_memory_proposals = WorkingMemoryProposalApplicationService(
+            runs=run_repository,
+            task_graphs=task_graph_repository,
+            working_memory=working_memory_repository,
+        )
+        reasoning_proposals = ReasoningGraphApplicationService(
+            runs=run_repository,
+            sessions=agent_session_repository,
+            tasks=task_graph_repository,
+            evidence=evidence_ledger_repository,
+            graphs=reasoning_graph_repository,
+        )
+        observer = ObserverSupervisorApplicationService(
+            working_memory=working_memory_repository,
+            task_graphs=task_graph_repository,
+            reasoning_graphs=reasoning_graph_repository,
+            tool_intents=tool_call_intent_repository,
+            approvals=runtime_approval_repository,
+            user_input=user_input_repository,
+            events=event_repository,
+            takeovers=SQLAlchemyActiveTakeoverReader(database.session_factory),
+        )
+        closure_verifier = ClosureVerifierApplicationService(
+            runs=run_repository,
+            task_graphs=task_graph_repository,
+            reasoning_graphs=reasoning_graph_repository,
+            evidence=evidence_ledger_repository,
+        )
         context_checkpoint_repository = SQLAlchemyContextCheckpointRepository(
             database.session_factory
         )
@@ -742,6 +910,22 @@ async def build_temporal_worker(
             offline_after=timedelta(seconds=config.runner.node_offline_after_seconds),
             lost_after=timedelta(seconds=config.runner.node_lost_after_seconds),
         )
+        node_labels = {
+            "mode": "worker-local",
+            "shell": os.environ.get("SHELL") or os.environ.get("COMSPEC", "unknown"),
+            "working_directory": str(Path.cwd()),
+            "tool_count": str(len(tool_snapshot.definitions)),
+            **(
+                _mcp_runtime_labels(
+                    mcp_snapshot,
+                    mcp_health_snapshot,
+                    refresh_available=True,
+                    refresh_failures=0,
+                )
+                if mcp_registry is not None and mcp_snapshot is not None
+                else _mcp_unconfigured_labels()
+            ),
+        }
         await node_service.register(
             NodeRegistration(
                 node_id=config.runner.node_id,
@@ -759,12 +943,7 @@ async def build_temporal_worker(
                         }
                     )
                 ),
-                labels={
-                    "mode": "worker-local",
-                    "shell": os.environ.get("SHELL") or os.environ.get("COMSPEC", "unknown"),
-                    "working_directory": str(Path.cwd()),
-                    "tool_count": str(len(tool_snapshot.definitions)),
-                },
+                labels=node_labels,
             )
         )
 
@@ -848,7 +1027,23 @@ async def build_temporal_worker(
             artifact_repository=artifact_repository,
             event_repository=event_repository,
             paths=paths,
-            max_artifact_bytes=config.audit.max_artifact_bytes,
+        )
+        web_artifact_store = ApplicationWebArtifactStore(artifact_service)
+        mcp_service = (
+            MCPApplicationService(
+                registry=mcp_registry,
+                runs=run_repository,
+                tool_calls=tool_call_intent_repository,
+                artifacts=web_artifact_store,
+            )
+            if mcp_registry is not None
+            else None
+        )
+        web_research_repository = SQLAlchemyWebResearchRepository(database.session_factory)
+        web_fetcher = PublicWebFetcher(
+            runs=run_repository,
+            sources=SQLAlchemyWebSourceRepository(database.session_factory),
+            artifacts=web_artifact_store,
         )
         browser_manager = RunnerBrowserManager(
             node_id=config.runner.node_id,
@@ -869,10 +1064,25 @@ async def build_temporal_worker(
             artifacts=artifact_service,
             events=event_repository,
         )
+
+        async def pause_budget_exhausted_pentest(run_id: str) -> None:
+            await budget_run_service.pause(run_id)
+
+        target_http_repository = SQLAlchemyTargetHttpRequestRepository(
+            database.session_factory
+        )
+        traffic_service = TrafficMetadataApplicationService(
+            SQLAlchemyTrafficMetadataReadRepository(
+                database.session_factory,
+                digest_key=secrets.token_bytes(32),
+                artifact_reference_key=secrets.token_bytes(32),
+            ),
+            cursor_signing_key=secrets.token_bytes(32),
+        )
         target_http_service = TargetHttpApplicationService(
             runs=run_repository,
             tool_calls=tool_call_intent_repository,
-            requests=SQLAlchemyTargetHttpRequestRepository(database.session_factory),
+            requests=target_http_repository,
             runner=NodeTargetHttpRouter(
                 local_node_id=config.runner.node_id,
                 local=RunnerTargetHttpClient(node_id=config.runner.node_id),
@@ -880,6 +1090,10 @@ async def build_temporal_worker(
             ),
             artifacts=artifact_service,
             events=event_repository,
+            credential_references=CapabilityCredentialReferenceAuthorizer(
+                capability_selection_store
+            ),
+            budget_exhaustion_handler=pause_budget_exhausted_pentest,
         )
         safety_stopper = RunSafetyStopService(
             execution_repository=execution_repository,
@@ -889,19 +1103,22 @@ async def build_temporal_worker(
                 "target_http_requests": target_http_service,
             },
         )
-        audit_service = AuditApplicationService(
-            creation_uow=SQLAlchemyAuditCreationUnitOfWork(database.session_factory),
-            aggregate_repository=audit_aggregate_repository,
-            feature_enabled=config.audit.enabled,
-            workspace_root=config.audit.temp_root,
-        )
         workflow_router = RunWorkflowControlRouter(
             runs=run_repository,
-            audits=audit_aggregate_repository,
             general=workflow_client,
         )
+        budget_run_service = RunApplicationService(
+            engagement_repository=engagement_repository,
+            run_repository=run_repository,
+            event_repository=event_repository,
+            workflow_client=workflow_router,
+            execution_repository=execution_repository,
+            execution_runner=execution_runner,
+            workspace_root=config.workspace.root,
+            safety_stopper=safety_stopper,
+        )
         audit_cleanup_reconciler = AuditControlApplicationService(
-            audits=audit_service,
+            audits=audit_aggregate_repository,
             projector=AuditRunStateProjector(
                 SQLAlchemyAuditControlUnitOfWork(database.session_factory)
             ),
@@ -944,8 +1161,17 @@ async def build_temporal_worker(
         )
         report_service = ReportApplicationService(
             run_repository=run_repository,
+            engagement_repository=engagement_repository,
+            execution_repository=execution_repository,
             finding_repository=finding_repository,
             artifact_repository=artifact_repository,
+            evidence_repository=evidence_ledger_repository,
+            reasoning_graph_repository=reasoning_graph_repository,
+            task_graph_repository=task_graph_repository,
+            working_memory_repository=working_memory_repository,
+            pentest_status_reader=SQLAlchemyPentestStatusReader(
+                database.session_factory
+            ),
             report_repository=report_repository,
             event_repository=event_repository,
             artifact_service=artifact_service,
@@ -958,8 +1184,61 @@ async def build_temporal_worker(
             hooks=hooks,
         )
 
-        skill_registry = create_default_skill_registry()
+        skill_registry = create_default_skill_registry(
+            config.skills.path.expanduser(),
+            official_skill_roots=official_pack_catalog.skill_roots(),
+        )
         skill_registry.load_entry_points()
+        skill_context = ProgressiveSkillContextManager(
+            skill_registry,
+            SQLAlchemySkillSelectionStore(database.session_factory),
+        )
+        technique_context = TechniqueContextManager(
+            capability_repository,
+            capability_selection_store,
+        )
+        if config.code.lsp.enabled:
+            lsp_config = config.code.lsp
+            assert lsp_config.socket_path is not None
+            assert lsp_config.backend_id is not None
+            assert lsp_config.backend_version is not None
+            assert lsp_config.token_env is not None
+            token = os.environ.get(lsp_config.token_env, "")
+            if not token.strip():
+                raise ValueError("controlled LSP token environment reference is unavailable")
+            controlled_lsp = ControlledLSPGatewayClient(
+                lsp_config.socket_path,
+                backend_id=lsp_config.backend_id,
+                backend_version=lsp_config.backend_version,
+                token=token,
+                timeout_seconds=lsp_config.timeout_seconds,
+            )
+        code_workspace = CodeWorkspaceService(
+            runs=run_repository,
+            audits=audit_aggregate_repository,
+            snapshots=SQLAlchemySnapshotRepository(database.session_factory),
+            snapshot_store=(
+                LocalSnapshotStore(
+                    config.audit.snapshot_root.expanduser(),
+                    max_blob_bytes=config.audit.max_file_bytes,
+                    max_tree_bytes=config.audit.max_repository_bytes,
+                )
+                if config.audit.enabled
+                else None
+            ),
+            max_snapshot_file_bytes=config.audit.max_file_bytes,
+            artifacts=ArtifactCodePublisher(artifact_service),
+            controlled_lsp=controlled_lsp,
+        )
+        evidence_service = EvidenceApplicationService(
+            runs=run_repository,
+            sessions=agent_session_repository,
+            tasks=task_graph_repository,
+            artifacts=artifact_service,
+            code=code_workspace,
+            ledger=evidence_ledger_repository,
+        )
+        git_workspace = GitWorkspaceService(run_repository)
         model_registry = ModelProfileRegistry(
             config.models.path.expanduser(),
             config.models.secrets_path.expanduser(),
@@ -971,6 +1250,18 @@ async def build_temporal_worker(
             override=config.models.profile,
         )
         model_provider = RiftXModelProvider(model_registry)
+        web_research_service = WebResearchApplicationService(
+            runs=run_repository,
+            providers=ConfiguredSearchProviderResolver(
+                config.web.search,
+                model_provider,
+            ),
+            fetcher=web_fetcher,
+            recorder=ArtifactBackedResearchRecorder(
+                web_research_repository,
+                web_artifact_store,
+            ),
+        )
         agent_services = AgentRuntimeServices(
             tool_registry=registry,
             skill_registry=skill_registry,
@@ -991,18 +1282,31 @@ async def build_temporal_worker(
             max_history_items=config.agent.max_history_items,
             max_turns=config.agent.max_turns,
         )
-        tool_context = ToolContextManager(registry)
+        tool_context = ToolContextManager(
+            registry,
+            store=capability_selection_store,
+        )
         context_compiler = ContextCompiler(
             sources=[
                 TranscriptContextSource(
                     transcript_repository,
                     max_items=config.agent.max_history_items or 100,
                 ),
-                WorkingMemoryContextSource(working_memory_repository),
+                TaskGraphContextSource(task_graph_repository),
+                WorkingMemoryContextSource(
+                    working_memory_repository,
+                    task_graph_repository,
+                    reasoning_graph_repository,
+                ),
                 RetrievedMemoryContextSource(memory_service),
             ],
             stable_instruction_source=StableInstructionSource(),
             tool_context=tool_context,
+            skill_context=skill_context,
+            technique_context=technique_context,
+            capability_manifest_reader=SessionCapabilityManifestReader(
+                capability_selection_store
+            ),
             context_service=ContextApplicationService(context_compilation_repository),
         )
         execution_service = ExecutionService(
@@ -1012,6 +1316,7 @@ async def build_temporal_worker(
             runner=execution_runner,
             event_repository=event_repository,
             run_repository=run_repository,
+            budget_exhaustion_handler=pause_budget_exhausted_pentest,
         )
         deferred_dispatcher = DeferredExecutionDispatcher(
             tool_call_repository=tool_call_intent_repository,
@@ -1026,8 +1331,27 @@ async def build_temporal_worker(
             tools=tool_context,
             executions=execution_service,
             artifacts=artifact_service,
+            evidence=evidence_service,
+            findings=finding_service,
             events=event_repository,
             transcript=transcript_repository,
+            skills=skill_context,
+            techniques=technique_context,
+            code=code_workspace,
+            git=git_workspace,
+            browser=browser_service,
+            web_fetcher=web_fetcher,
+            web_research=web_research_service,
+            runs=run_repository,
+            traffic=traffic_service,
+            target_http=target_http_service,
+            mcp=mcp_service,
+            control_intents=deferred_dispatcher,
+            task_planner=task_planner,
+            working_memory_proposals=working_memory_proposals,
+            reasoning_proposals=reasoning_proposals,
+            budget_exhaustion_handler=pause_budget_exhausted_pentest,
+            worker_id=config.runner.node_id,
         )
         runtime_coordinator = RuntimeCoordinator(
             run_repository=run_repository,
@@ -1055,6 +1379,9 @@ async def build_temporal_worker(
             terminal_service=terminal_service,
             safety_stopper=safety_stopper,
             hooks=hooks,
+            observer=observer,
+            closure_verifier=closure_verifier,
+            budget_exhaustion_handler=pause_budget_exhausted_pentest,
         )
         session_manager = SessionManager(
             run_repository=run_repository,
@@ -1071,6 +1398,7 @@ async def build_temporal_worker(
             sessions=session_manager,
             session_repository=agent_session_repository,
             tool_context=tool_context,
+            skill_context=skill_context,
             limits=config.subagents,
             events=event_repository,
             result_merger=PrimaryResultMerger(
@@ -1120,6 +1448,7 @@ async def build_temporal_worker(
                 event_repository=event_repository,
                 tool_registry=registry,
             ),
+            closure_verifier=closure_verifier,
             report_service=report_service,
             session_factory=database.session_factory,
             compaction_manager=ContextCompactionManager(
@@ -1146,6 +1475,11 @@ async def build_temporal_worker(
             process_supervisor=process_supervisor,
             terminal_supervisor=terminal_supervisor,
             browser_manager=browser_manager,
+            controlled_lsp=controlled_lsp,
+            mcp_registry=mcp_registry,
+            mcp_refresh_interval_seconds=config.mcp.refresh_interval_seconds,
+            node_labels=node_labels,
+            mcp_health_snapshot=mcp_health_snapshot,
             run_repository=run_repository,
             event_repository=event_repository,
             safety_stopper=safety_stopper,
@@ -1165,6 +1499,10 @@ async def build_temporal_worker(
     except Exception:
         if browser_manager is not None:
             await browser_manager.close_all()
+        if mcp_registry is not None:
+            await mcp_registry.close()
+        if controlled_lsp is not None:
+            await controlled_lsp.aclose()
         if terminal_supervisor is not None:
             await terminal_supervisor.close_all()
         if process_supervisor is not None:
@@ -1175,27 +1513,53 @@ async def build_temporal_worker(
         raise
 
 
+def _mcp_runtime_labels(
+    snapshot: MCPRegistrySnapshot,
+    health: MCPHealthSnapshot | None,
+    *,
+    refresh_available: bool,
+    refresh_failures: int,
+) -> dict[str, str]:
+    health_servers = health.servers if health is not None else []
+    return {
+        "mcp_registry_generation": str(snapshot.generation),
+        "mcp_refresh_status": "ready" if refresh_available else "unavailable",
+        "mcp_refresh_failures": str(refresh_failures),
+        "mcp_server_count": str(len(snapshot.servers)),
+        "mcp_unavailable_server_count": str(
+            sum(
+                server.availability is MCPServerAvailability.UNAVAILABLE
+                for server in snapshot.servers
+            )
+        ),
+        "mcp_tool_count": str(len(snapshot.tools)),
+        "mcp_active_call_count": str(health.active_calls if health is not None else 0),
+        "mcp_open_circuit_count": str(
+            sum(
+                server.circuit_state is MCPCircuitState.OPEN
+                for server in health_servers
+            )
+        ),
+    }
+
+
+def _mcp_unconfigured_labels() -> dict[str, str]:
+    return {
+        "mcp_registry_generation": "0",
+        "mcp_refresh_status": "not_configured",
+        "mcp_refresh_failures": "0",
+        "mcp_server_count": "0",
+        "mcp_unavailable_server_count": "0",
+        "mcp_tool_count": "0",
+        "mcp_active_call_count": "0",
+        "mcp_open_circuit_count": "0",
+    }
+
+
 def _prepare_local_paths(config: RiftXConfig) -> None:
-    _validate_audit_config_path_isolation(config)
     config.workspace.root.expanduser().mkdir(parents=True, exist_ok=True)
     config.runner.state_path.expanduser().mkdir(parents=True, exist_ok=True)
     if config.database.url.startswith("sqlite+aiosqlite:///"):
         raw_path = config.database.url.removeprefix("sqlite+aiosqlite:///")
         if raw_path and raw_path != ":memory:":
             Path(raw_path).expanduser().parent.mkdir(parents=True, exist_ok=True)
-    _validate_audit_config_path_isolation(config)
-
-
-def _validate_audit_config_path_isolation(config: RiftXConfig) -> None:
-    validate_audit_storage_isolation(
-        audit=config.audit,
-        workspace_root=config.workspace.root,
-        runner_state_path=config.runner.state_path,
-        runner_credential_path=config.runner.credential_path,
-        models_secrets_path=config.models.secrets_path,
-        local_principal_path=config.security.local_principal_path,
-        database_url=config.database.url,
-        temporal_tls_server_root_ca_path=config.temporal.tls_server_root_ca_path,
-        temporal_tls_client_cert_path=config.temporal.tls_client_cert_path,
-        temporal_tls_client_private_key_path=config.temporal.tls_client_private_key_path,
-    )

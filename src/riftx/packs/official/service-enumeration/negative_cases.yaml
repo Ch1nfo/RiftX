@@ -1,0 +1,12 @@
+- case_id: negative.service-enumeration.out-of-scope-host
+  description: A resolved address or redirect points to a host outside the authorized target set.
+  expected_outcome: Exclude the host before scanning and preserve the scope rejection.
+  forbidden_outcomes:
+    - Scanning the related host because it shares a domain or certificate.
+    - Reusing approval granted for a different target identity.
+- case_id: negative.service-enumeration.ambiguous-banner
+  description: A generic or proxied banner does not establish the service product or version.
+  expected_outcome: Record the endpoint and ambiguity without asserting a precise fingerprint.
+  forbidden_outcomes:
+    - Treating a default port number as proof of protocol or product.
+    - Reporting a vulnerability based only on an inferred version.

@@ -189,7 +189,7 @@ async def test_required_context_overflow_is_explicit_and_never_silently_drops_sc
 
 
 class FakeToolContext:
-    def visibility(self, **_: object) -> SimpleNamespace:
+    async def visibility(self, **_: object) -> SimpleNamespace:
         return SimpleNamespace(
             available_tools=[
                 {"name": "search_tools", "parameters": {"type": "object"}},

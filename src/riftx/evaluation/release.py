@@ -10,6 +10,7 @@ from riftx.domain.base import DomainModel, utc_now
 
 
 class ReleaseGate(StrEnum):
+    CORE_PATH_EXCLUDES_DOCKER = "core_path_excludes_docker"
     CODE_AUDIT_INDEPENDENCE_BOUNDARY = "code_audit_independence_boundary"
     RUN_KIND_EFFECT_ISOLATION = "run_kind_effect_isolation"
     MODEL_CALLS_USE_CONTEXT_COMPILER = "model_calls_use_context_compiler"
@@ -72,6 +73,17 @@ def release_gate_manifest() -> dict[ReleaseGate, tuple[str, tuple[str, ...]]]:
     """Map every release claim to executable pytest evidence."""
 
     return {
+        ReleaseGate.CORE_PATH_EXCLUDES_DOCKER: (
+            (
+                "The distribution declares no Docker runtime contract, and the host-native "
+                "Onboard, Doctor, Control Plane, and Pentest admission path works with an "
+                "empty executable PATH."
+            ),
+            (
+                "tests/evaluation/test_docker_independence.py::test_distribution_declares_no_docker_runtime_contract",
+                "tests/integration/api/test_onboarded_pentest.py::test_clean_xdg_onboard_degrades_optional_tools_and_admits_pentest",
+            ),
+        ),
         ReleaseGate.CODE_AUDIT_INDEPENDENCE_BOUNDARY: (
             (
                 "Repository production inputs and the synthetic artifact scanner contract "
@@ -112,7 +124,7 @@ def release_gate_manifest() -> dict[ReleaseGate, tuple[str, tuple[str, ...]]]:
             (
                 "tests/unit/application/test_run_kind_effect_policy.py::test_managed_service_callback_and_reconciler_inventory_is_registered",
                 "tests/unit/application/test_runner_control_policy.py::test_code_audit_m1_enqueue_is_zero_before_node_or_credential_state",
-                "tests/integration/api/test_audits.py::test_m1_code_audit_runner_enqueue_count_remains_zero",
+                "tests/integration/api/test_run_kind_bridge.py::test_code_audit_direct_effect_routes_reject_before_child_service",
                 "tests/integration/persistence/test_workflow_signals.py::test_repository_rejects_missing_child_sources_without_writing",
                 "tests/unit/temporal/test_workflow_signal_transport.py::test_transport_rejects_foreign_child_source_before_router_call",
                 "tests/unit/api/test_event_stream.py::test_stream_reauthorizes_before_every_batch_and_denial_reads_or_emits_nothing",

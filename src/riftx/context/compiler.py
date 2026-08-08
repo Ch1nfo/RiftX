@@ -7,6 +7,10 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
+from riftx.capabilities import (
+    SessionCapabilityManifestReader,
+    TechniqueContextManager,
+)
 from riftx.runtime.lifecycle import (
     CompiledContext,
     ContextCompileRequest,
@@ -133,6 +137,8 @@ class ContextCompiler:
         budgeter: TokenBudgeter | None = None,
         tool_context: ToolContextManager | None = None,
         skill_context: ProgressiveSkillContextManager | None = None,
+        technique_context: TechniqueContextManager | None = None,
+        capability_manifest_reader: SessionCapabilityManifestReader | None = None,
         context_service: ContextApplicationService | None = None,
         runtime_contract: str = _RUNTIME_CONTRACT,
     ) -> None:
@@ -143,6 +149,8 @@ class ContextCompiler:
         self._budgeter = budgeter or TokenBudgeter()
         self._tool_context = tool_context
         self._skill_context = skill_context
+        self._technique_context = technique_context
+        self._capability_manifest_reader = capability_manifest_reader
         self._context_service = context_service
         self._runtime_contract = runtime_contract
 
@@ -152,7 +160,7 @@ class ContextCompiler:
             items.extend(await source.load(request))
         visibility_metadata: dict[str, object] = {}
         items.extend(self._request_input_items(request))
-        dynamic_items, dynamic_metadata = self._dynamic_items(request)
+        dynamic_items, dynamic_metadata = await self._dynamic_items(request)
         items.extend(dynamic_items)
         visibility_metadata.update(dynamic_metadata)
         _require_unique_item_ids(items)
@@ -279,22 +287,22 @@ class ContextCompiler:
             )
         return items
 
-    def _dynamic_items(
+    async def _dynamic_items(
         self,
         request: ContextCompileRequest,
     ) -> tuple[list[ContextItem], dict[str, object]]:
         items: list[ContextItem] = []
         metadata: dict[str, object] = {}
         if self._tool_context is not None:
-            visibility = self._tool_context.visibility(
+            tool_visibility = await self._tool_context.visibility(
                 run_id=request.run_id,
                 session_id=request.session_id,
                 agent_id=request.agent_id,
             )
-            metadata.update(visibility.manifest())
+            metadata.update(tool_visibility.manifest())
             if request.include_tool_schemas:
-                residents = set(visibility.always_visible_tools)
-                for sequence, schema in enumerate(visibility.available_tools, start=1):
+                residents = set(tool_visibility.always_visible_tools)
+                for sequence, schema in enumerate(tool_visibility.available_tools, start=1):
                     tool_id = str(schema.get("name") or schema.get("id") or sequence)
                     resident = tool_id in residents
                     items.append(
@@ -313,13 +321,13 @@ class ContextCompiler:
                         )
                     )
         if self._skill_context is not None:
-            visibility = self._skill_context.visibility(
+            skill_visibility = await self._skill_context.visibility(
                 run_id=request.run_id,
                 session_id=request.session_id,
                 agent_id=request.agent_id,
             )
-            metadata.update(visibility.manifest())
-            for sequence, summary in enumerate(visibility.available_skills, start=1):
+            metadata.update(skill_visibility.manifest())
+            for sequence, summary in enumerate(skill_visibility.available_skills, start=1):
                 items.append(
                     ContextItem(
                         id=f"skill-summary:{summary.id}",
@@ -332,7 +340,10 @@ class ContextCompiler:
                         metadata={"skill_payload": "summary"},
                     )
                 )
-            for sequence, document in enumerate(visibility.loaded_skill_documents, start=1):
+            for sequence, document in enumerate(
+                skill_visibility.loaded_skill_documents,
+                start=1,
+            ):
                 items.append(
                     ContextItem(
                         id=f"skill-document:{document.id}",
@@ -345,7 +356,10 @@ class ContextCompiler:
                         metadata={"skill_payload": "document"},
                     )
                 )
-            for sequence, reference in enumerate(visibility.loaded_skill_references, start=1):
+            for sequence, reference in enumerate(
+                skill_visibility.loaded_skill_references,
+                start=1,
+            ):
                 items.append(
                     ContextItem(
                         id=f"skill-reference:{reference.skill_id}",
@@ -358,6 +372,22 @@ class ContextCompiler:
                         metadata={"skill_payload": "reference"},
                     )
                 )
+        if self._technique_context is not None:
+            technique_visibility = await self._technique_context.visibility(
+                run_id=request.run_id,
+                session_id=request.session_id,
+                agent_id=request.agent_id,
+            )
+            metadata.update(technique_visibility.manifest())
+        if self._capability_manifest_reader is not None:
+            capability_manifest = await self._capability_manifest_reader.read(
+                run_id=request.run_id,
+                session_id=request.session_id,
+                agent_id=request.agent_id,
+            )
+            metadata["session_capability_manifest"] = capability_manifest.model_dump(
+                mode="json"
+            )
         return items, metadata
 
     def _normalize_estimate(self, item: ContextItem) -> ContextItem:

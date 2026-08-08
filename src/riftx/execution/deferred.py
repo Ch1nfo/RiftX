@@ -6,10 +6,12 @@ import hashlib
 import json
 import platform
 import shlex
+from collections.abc import Collection
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from riftx.application.errors import (
     ApplicationConflictError,
@@ -22,14 +24,24 @@ from riftx.application.ports import (
     ToolCallIntentExecutionClaim,
     ToolCallIntentRepository,
 )
-from riftx.domain import ApprovalLevel, Execution, ExecutorType, Run
+from riftx.domain import ApprovalLevel, Execution, ExecutorType, Run, RunKind
 from riftx.executors import EnvironmentMode, ShellKind
 from riftx.runner import TerminalLaunchRequest
 from riftx.runtime.engine import AgentEngineEvent
 from riftx.runtime.types import AgentCycle, AgentSession, AgentStep, ToolCallIntent, ToolCallStatus
-from riftx.tools import ExecutionPolicy, ToolContextManager, ToolRegistry
+from riftx.scope import ScopeGuard
+from riftx.tools import (
+    ExecutionPolicy,
+    PinnedToolSnapshot,
+    ToolContextManager,
+    ToolRegistry,
+)
+from riftx.tools.policy import (
+    AGENT_TOOL_POLICIES,
+    AgentToolAuthorization,
+)
 
-from .models import SubmitExecutionRequest
+from .models import SubmitExecutionRequest, build_execution_key
 from .service import ExecutionService
 
 
@@ -50,6 +62,20 @@ class DeferredExecutionSpec(BaseModel):
     env: dict[str, str | None] = Field(default_factory=dict)
     timeout_seconds: float | None = Field(default=None, gt=0)
     attempt_group: str = Field(default="initial", min_length=1, max_length=64)
+    target_summary: str | None = Field(default=None, min_length=1, max_length=8192)
+
+
+class _PortScanArguments(BaseModel):
+    """Structured port-scan arguments; raw argv is forbidden for Pentest targets."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tool_id: str | None = Field(default=None, min_length=1, max_length=256)
+    target: str = Field(min_length=1, max_length=8192)
+    ports: str | None = Field(default=None, min_length=1, max_length=2048)
+    service_detection: bool = False
+    timeout_seconds: float | None = Field(default=None, gt=0)
+    reason: str | None = Field(default=None, max_length=2000)
 
 
 class DeferredExecutionResolver(Protocol):
@@ -91,13 +117,15 @@ class RegistryDeferredExecutionResolver:
             operation="service.deferred_execution.prepare",
             effect="durable_write",
         )
+        pinned: PinnedToolSnapshot | None = None
+        tool_version: str | None
         if self._tool_context is not None:
             authorization_check = (
                 self._tool_context.assert_allowed
                 if tool_id == "run_shell"
                 else self._tool_context.assert_selected
             )
-            authorization_check(
+            pinned = await authorization_check(
                 tool_id,
                 run_id=session.run_id,
                 session_id=session.id,
@@ -130,19 +158,49 @@ class RegistryDeferredExecutionResolver:
                 timeout_seconds=_timeout(arguments),
             )
 
-        definition = self._registry.get_available(tool_id)
-        args = arguments.get("args")
-        argv = [str(item) for item in args] if isinstance(args, list) else []
-        timeout = _timeout(arguments) or definition.timeout_seconds
+        if self._tool_context is not None:
+            assert pinned is not None
+            definition = pinned.definition
+            resolved_command = pinned.resolved_command
+            tool_version = pinned.version
+        else:
+            definition = self._registry.get_available(tool_id)
+            state = self._registry.snapshot.states[tool_id]
+            resolved_command = state.resolved_command or definition.command[0]
+            tool_version = state.version
+        target_summary: str | None = None
+        if run.kind is RunKind.PENTEST and "port_scan" in definition.capabilities:
+            try:
+                scan = _PortScanArguments.model_validate(arguments)
+            except ValidationError as exc:
+                raise ApplicationConflictError(
+                    "invalid_tool_arguments",
+                    "Pentest port scans require structured target, ports, and "
+                    "service_detection arguments",
+                ) from exc
+            ScopeGuard(run.scope).require(scan.target)
+            argv = _port_scan_arguments(
+                definition.id,
+                target=scan.target,
+                ports=scan.ports,
+                service_detection=scan.service_detection,
+            )
+            timeout = scan.timeout_seconds or definition.timeout_seconds
+            target_summary = scan.target
+        else:
+            args = arguments.get("args")
+            argv = [str(item) for item in args] if isinstance(args, list) else []
+            timeout = _timeout(arguments) or definition.timeout_seconds
         return DeferredExecutionSpec(
             node_id=run.node_id,
             executor_type=definition.executor,
             cwd=cwd,
-            argv=[*definition.command, *argv],
-            tool_version=self._registry.snapshot.states[tool_id].version,
+            argv=[resolved_command, *definition.command[1:], *argv],
+            tool_version=tool_version,
             environment_mode=EnvironmentMode.INHERIT,
             env={**definition.environment, **_environment(arguments)},
             timeout_seconds=timeout,
+            target_summary=target_summary,
         )
 
 
@@ -181,6 +239,9 @@ class DeferredExecutionDispatcher:
         """Return unresolved intents in their durable model-emission order."""
 
         return await self._tool_calls.pending_for_session(session_id)
+
+    async def get_intent(self, intent_id: str) -> ToolCallIntent | None:
+        return await self._tool_calls.get(intent_id)
 
     async def prepare(
         self,
@@ -225,6 +286,153 @@ class DeferredExecutionDispatcher:
             spec=spec,
             status=status,
         )
+
+    async def prepare_control(
+        self,
+        *,
+        session: AgentSession,
+        cycle: AgentCycle,
+        step: AgentStep,
+        event: AgentEngineEvent,
+        status: ToolCallStatus = ToolCallStatus.WAITING_APPROVAL,
+    ) -> ToolCallIntent:
+        """Persist an SDK-resumable control mutation without a Runner spec."""
+
+        _require_deferred_parent_owners(session, cycle, step)
+        run = await self._require_run(session.run_id)
+        _require_deferred_effect_policy(
+            run,
+            operation="service.deferred_execution.prepare",
+            effect="durable_write",
+        )
+        call_id = _required_string(event.data, "call_id")
+        tool_id = _tool_id(event.data)
+        policy = AGENT_TOOL_POLICIES.get(tool_id)
+        if (
+            event.data.get("approval_policy") != "explicit"
+            or policy is None
+            or not policy.approval_required
+            or policy.authorization is not AgentToolAuthorization.DYNAMIC_APPROVAL
+        ):
+            raise ApplicationConflictError(
+                "control_tool_approval_policy_invalid",
+                "Control Tool is not authorized for explicit approval execution",
+            )
+        return await self._persist_intent(
+            session=session,
+            cycle=cycle,
+            step=step,
+            event=event,
+            call_id=call_id,
+            tool_id=tool_id,
+            spec=None,
+            status=status,
+        )
+
+    async def begin_control_intent(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        engine_call_id: str,
+        tool_name: str,
+        arguments: dict[str, object],
+        attempt_group: str = "control",
+        target_interaction_tool_ids: Collection[str] | None = None,
+    ) -> ToolCallIntent | None:
+        """Claim one approved provider-control mutation immediately before execution."""
+
+        intent = await self._control_intent(
+            run_id=run_id,
+            session_id=session_id,
+            engine_call_id=engine_call_id,
+        )
+        if intent is None:
+            return None
+        mismatched_fields: list[str] = []
+        if intent.tool_id != tool_name:
+            mismatched_fields.append("tool_id")
+        if _canonical_json(intent.arguments) != _canonical_json(arguments):
+            mismatched_fields.append("arguments")
+        if mismatched_fields:
+            raise ApplicationConflictError(
+                "control_tool_intent_mismatch",
+                "Control Tool invocation does not match its approved durable intent",
+                details={"mismatched_fields": mismatched_fields},
+            )
+        await self._require_resolved_intent_effect(
+            intent,
+            operation="service.deferred_execution.mutation",
+            effect="durable_write",
+        )
+        execution_key = build_execution_key(
+            run_id=run_id,
+            session_id=session_id,
+            tool_call_id=intent.id,
+            attempt_group=attempt_group,
+        )
+        claim = await self._tool_calls.claim_execution(
+            intent.id,
+            execution_key=execution_key,
+            attempt_group=attempt_group,
+            target_interaction_tool_ids=target_interaction_tool_ids,
+        )
+        if claim.newly_acquired:
+            return claim.intent
+        raise ApplicationConflictError(
+            "control_tool_approval_not_ready",
+            "Approved control Tool Call cannot claim exactly-once execution",
+        )
+
+    async def finish_control_intent(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        engine_call_id: str,
+        succeeded: bool,
+    ) -> None:
+        intent = await self._control_intent(
+            run_id=run_id,
+            session_id=session_id,
+            engine_call_id=engine_call_id,
+        )
+        if intent is None:
+            return
+        await self._require_resolved_intent_effect(
+            intent,
+            operation="service.deferred_execution.mutation",
+            effect="durable_write",
+        )
+        settled, changed = await self._tool_calls.compare_and_set_status(
+            intent.id,
+            expected={ToolCallStatus.EXECUTING},
+            target=ToolCallStatus.COMPLETED if succeeded else ToolCallStatus.FAILED,
+        )
+        if not changed and settled.status not in {
+            ToolCallStatus.COMPLETED,
+            ToolCallStatus.FAILED,
+        }:
+            raise ApplicationConflictError(
+                "control_tool_outcome_not_settled",
+                "Control Tool Call outcome could not be durably settled",
+            )
+
+    async def _control_intent(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        engine_call_id: str,
+    ) -> ToolCallIntent | None:
+        for intent in await self._tool_calls.pending_for_session(session_id):
+            if (
+                intent.run_id == run_id
+                and intent.engine_call_id == engine_call_id
+                and intent.execution_spec is None
+            ):
+                return intent
+        return None
 
     async def execute_intent(self, intent: ToolCallIntent) -> Execution:
         """Launch exactly the execution snapshot stored with an approved intent."""
@@ -559,7 +767,7 @@ class DeferredExecutionDispatcher:
         event: AgentEngineEvent,
         call_id: str,
         tool_id: str,
-        spec: DeferredExecutionSpec,
+        spec: DeferredExecutionSpec | None,
         status: ToolCallStatus,
     ) -> ToolCallIntent:
         intent = ToolCallIntent(
@@ -575,15 +783,22 @@ class DeferredExecutionDispatcher:
             step_id=step.id,
             tool_id=tool_id,
             arguments=_arguments(event.data),
-            command_preview=spec.command_text or shlex.join(spec.argv),
+            command_preview=(
+                spec.command_text or shlex.join(spec.argv) if spec is not None else tool_id
+            ),
             reason=str(event.data.get("reason") or ""),
-            target_summary=_optional_string(event.data.get("target_summary")),
+            target_summary=(
+                spec.target_summary
+                if spec is not None and spec.target_summary is not None
+                else _control_target_summary(tool_id, _arguments(event.data))
+                or _optional_string(event.data.get("target_summary"))
+            ),
             approval_level=ApprovalLevel(
                 str(event.data.get("approval_level") or ApprovalLevel.SENSITIVE.value)
             ),
             status=status,
             engine_call_id=call_id,
-            execution_spec=spec.model_dump(mode="json"),
+            execution_spec=(spec.model_dump(mode="json") if spec is not None else None),
         )
         existing = await self._tool_calls.get(intent.id)
         if existing is not None:
@@ -673,6 +888,24 @@ def _optional_string(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _control_target_summary(tool_id: str, arguments: dict[str, object]) -> str | None:
+    if tool_id != "target_http_request":
+        return None
+    url = arguments.get("url")
+    if not isinstance(url, str):
+        return None
+    try:
+        parsed = urlsplit(url)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return None
+    if parsed.scheme not in {"http", "https"} or hostname is None:
+        return None
+    host = f"[{hostname}]" if ":" in hostname else hostname
+    return f"{parsed.scheme}://{host}{f':{port}' if port is not None else ''}"
+
+
 def _bounded_cwd(workspace_path: str, requested: object) -> Path:
     workspace = Path(workspace_path).expanduser().resolve()
     if requested is None or not str(requested).strip():
@@ -699,6 +932,34 @@ def _environment(arguments: dict[str, object]) -> dict[str, str | None]:
 def _timeout(arguments: dict[str, object]) -> float | None:
     value = arguments.get("timeout_seconds")
     return float(value) if isinstance(value, int | float) and value > 0 else None
+
+
+def _port_scan_arguments(
+    tool_id: str,
+    *,
+    target: str,
+    ports: str | None,
+    service_detection: bool,
+) -> list[str]:
+    normalized = tool_id.lower()
+    if normalized == "nmap":
+        arguments = ["-oX", "-"]
+        if service_detection:
+            arguments.append("-sV")
+        if ports:
+            arguments.extend(["-p", ports])
+        arguments.append(target)
+        return arguments
+    if normalized == "masscan":
+        arguments = [target, "-oJ", "-"]
+        if ports:
+            arguments.extend(["-p", ports])
+        return arguments
+    arguments = []
+    if ports:
+        arguments.extend(["--ports", ports])
+    arguments.append(target)
+    return arguments
 
 
 def _default_shell_path(registry: ToolRegistry) -> str:

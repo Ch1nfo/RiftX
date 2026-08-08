@@ -21,12 +21,32 @@ from riftx.application.graphs import (
     GraphFindingSource,
     GraphHypothesisSource,
     GraphPlanItemSource,
+    GraphReasoningEdgeSource,
+    GraphReasoningNodeSource,
     GraphScope,
     GraphSessionSource,
     GraphUserDecisionSource,
     GraphViewKind,
 )
-from riftx.persistence import Database, GraphReadLimits, SQLAlchemyGraphReadRepository
+from riftx.evidence import (
+    Evidence,
+    EvidenceCreatorType,
+    EvidenceKind,
+    EvidenceRedactionStatus,
+    EvidenceReplayMetadata,
+    EvidenceReplayStrategy,
+    EvidenceScope,
+    EvidenceTrustClass,
+    SourceLocator,
+)
+from riftx.persistence import (
+    Database,
+    GraphReadLimits,
+    SQLAlchemyEvidenceLedgerRepository,
+    SQLAlchemyGraphReadRepository,
+    SQLAlchemyReasoningGraphRepository,
+    SQLAlchemyTaskGraphRepository,
+)
 from riftx.persistence.orm import (
     AgentCycleRecord,
     AgentRuntimeStepRecord,
@@ -43,6 +63,16 @@ from riftx.persistence.orm import (
     ToolCallIntentRecord,
     WorkingMemoryRecord,
 )
+from riftx.reasoning import (
+    ReasoningCreatorType,
+    ReasoningEdge,
+    ReasoningGraph,
+    ReasoningNode,
+    ReasoningNodeKind,
+    ReasoningNodeStatus,
+    ReasoningRelationType,
+)
+from riftx.tasks import Task, TaskDependency, TaskGraph
 
 NOW = datetime(2026, 8, 2, 12, tzinfo=UTC)
 SECRET_CANARIES = (
@@ -63,6 +93,30 @@ SECRET_CANARIES = (
 
 def _database(tmp_path: Path, name: str) -> Database:
     return Database(f"sqlite+aiosqlite:///{tmp_path / name}")
+
+
+def _reasoning_evidence() -> Evidence:
+    locator = SourceLocator(uri="evidence://graph-reasoning")
+    return Evidence(
+        id="reasoning-evidence",
+        kind=EvidenceKind.EXECUTION_OUTPUT,
+        source_uri=locator.source_uri,
+        digest="a" * 64,
+        run_id="run-graph",
+        creator_type=EvidenceCreatorType.TOOL,
+        created_by="test-tool",
+        trust_class=EvidenceTrustClass.UNTRUSTED_TOOL_OUTPUT,
+        scope=EvidenceScope(engagement_id="engagement-graph", run_id="run-graph"),
+        redaction_status=EvidenceRedactionStatus.METADATA_ONLY,
+        replay=EvidenceReplayMetadata(
+            strategy=EvidenceReplayStrategy.SOURCE_LOOKUP,
+            replayable=True,
+            expected_digest="a" * 64,
+            source_digest="a" * 64,
+            parameters_digest="b" * 64,
+        ),
+        locator=locator,
+    )
 
 
 async def _seed(
@@ -557,7 +611,7 @@ async def test_snapshot_uses_constant_selects_and_only_allowlisted_source_fields
         )
         source = loaded
 
-        assert len(statements) == 6
+        assert len(statements) == 7
         assert source.scope == scope
         assert source.run.id == "run-graph"
         assert source.run.engagement_id == "engagement-graph"
@@ -575,6 +629,7 @@ async def test_snapshot_uses_constant_selects_and_only_allowlisted_source_fields
         assert all(not hasattr(action, "plan_item_id") for action in source.actions)
         assert tuple(item.source for item in source.coverage) == (
             "plan_items",
+            "task_dependencies",
             "actions",
             "findings",
             "artifacts",
@@ -614,6 +669,78 @@ async def test_snapshot_uses_constant_selects_and_only_allowlisted_source_fields
         await database.dispose()
 
 
+async def test_task_graph_replaces_legacy_plan_and_projects_bounded_dependencies(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path, "graph-task-graph-source.db")
+    await database.create_schema()
+    try:
+        await _seed(database, action_count=1)
+        await SQLAlchemyTaskGraphRepository(database.session_factory).create(
+            TaskGraph(
+                run_id="run-graph",
+                tasks=[
+                    Task(
+                        id="task-discover",
+                        run_id="run-graph",
+                        sequence=1,
+                        title="Sensitive durable task title",
+                    ),
+                    Task(
+                        id="task-verify",
+                        run_id="run-graph",
+                        sequence=2,
+                        title="Sensitive durable verification title",
+                        status="blocked",
+                        blocked_reason="Sensitive blocker",
+                    ),
+                ],
+                dependencies=[
+                    TaskDependency(
+                        run_id="run-graph",
+                        task_id="task-verify",
+                        depends_on_task_id="task-discover",
+                    )
+                ],
+            )
+        )
+        repository = SQLAlchemyGraphReadRepository(database.session_factory)
+        scope = GraphScope(run_id="run-graph", engagement_id="engagement-graph")
+
+        loaded, statements = await _capture_selects(
+            database,
+            repository.load(scope, GraphViewKind.TASK),
+        )
+
+        assert len(statements) == 7
+        assert loaded.plan_items == (
+            GraphPlanItemSource(
+                id="task-discover",
+                run_id="run-graph",
+                sequence=1,
+                status="pending",
+                provenance="task_graph.tasks",
+            ),
+            GraphPlanItemSource(
+                id="task-verify",
+                run_id="run-graph",
+                sequence=2,
+                status="blocked",
+                dependency_ids=("task-discover",),
+                provenance="task_graph.tasks",
+            ),
+        )
+        assert all(item.id != "plan-item-1" for item in loaded.plan_items)
+        coverage = {item.source: item for item in loaded.coverage}
+        assert coverage["task_dependencies"].scanned == 1
+        assert coverage["task_dependencies"].truncated is False
+        rendered = repr(loaded)
+        assert "Sensitive durable task title" not in rendered
+        assert "Sensitive blocker" not in rendered
+    finally:
+        await database.dispose()
+
+
 async def test_evidence_and_operation_sources_are_explicit_same_run_metadata_only(
     tmp_path: Path,
 ) -> None:
@@ -636,7 +763,7 @@ async def test_evidence_and_operation_sources_are_explicit_same_run_metadata_onl
             parameters=query_parameters,
         )
 
-        assert len(evidence_statements) == 15
+        assert len(evidence_statements) == 16
         assert len(operation_statements) == 4
         assert tuple(item.source for item in evidence.coverage) == (
             "facts",
@@ -799,6 +926,112 @@ async def test_evidence_and_operation_sources_are_explicit_same_run_metadata_onl
         await database.dispose()
 
 
+async def test_reasoning_graph_projection_source_is_authoritative_and_metadata_only(
+    tmp_path: Path,
+) -> None:
+    database = _database(tmp_path, "graph-reasoning-source.db")
+    await database.create_schema()
+    try:
+        await _seed(database, action_count=1)
+        await SQLAlchemyEvidenceLedgerRepository(database.session_factory).create(
+            _reasoning_evidence()
+        )
+        candidate = ReasoningNode(
+            id="reasoning-candidate",
+            run_id="run-graph",
+            kind=ReasoningNodeKind.FACT_CANDIDATE,
+            status=ReasoningNodeStatus.PROMOTED,
+            claim="reasoning-claim-secret-candidate",
+            structured_data={"secret": "reasoning-structured-secret"},
+            evidence_ids=("reasoning-evidence",),
+            creator_type=ReasoningCreatorType.PARSER,
+            created_by="parser",
+        )
+        fact = ReasoningNode(
+            id="reasoning-fact",
+            run_id="run-graph",
+            kind=ReasoningNodeKind.CONFIRMED_FACT,
+            status=ReasoningNodeStatus.CONFIRMED,
+            claim="reasoning-claim-secret-fact",
+            evidence_ids=("reasoning-evidence",),
+            creator_type=ReasoningCreatorType.REDUCER,
+            created_by="reasoning-reducer",
+        )
+        await SQLAlchemyReasoningGraphRepository(database.session_factory).create(
+            ReasoningGraph(
+                run_id="run-graph",
+                nodes=[candidate, fact],
+                edges=[
+                    ReasoningEdge(
+                        id="reasoning-derived",
+                        run_id="run-graph",
+                        source_node_id=candidate.id,
+                        target_node_id=fact.id,
+                        relation_type=ReasoningRelationType.DERIVED_FROM,
+                        evidence_ids=("reasoning-evidence",),
+                        creator_type=ReasoningCreatorType.REDUCER,
+                        created_by="reasoning-reducer",
+                    )
+                ],
+            )
+        )
+        repository = SQLAlchemyGraphReadRepository(database.session_factory)
+        scope = GraphScope(run_id="run-graph", engagement_id="engagement-graph")
+
+        loaded, statements = await _capture_selects(
+            database,
+            repository.load(scope, GraphViewKind.EVIDENCE),
+        )
+
+        assert loaded.reasoning_graph_version == 1
+        assert loaded.reasoning_nodes == (
+            GraphReasoningNodeSource(
+                node_id="reasoning-candidate",
+                run_id="run-graph",
+                kind="fact_candidate",
+                status="promoted",
+                evidence_ids=("reasoning-evidence",),
+            ),
+            GraphReasoningNodeSource(
+                node_id="reasoning-fact",
+                run_id="run-graph",
+                kind="confirmed_fact",
+                status="confirmed",
+                evidence_ids=("reasoning-evidence",),
+            ),
+        )
+        assert loaded.reasoning_edges == (
+            GraphReasoningEdgeSource(
+                edge_id="reasoning-derived",
+                run_id="run-graph",
+                source_node_id="reasoning-candidate",
+                target_node_id="reasoning-fact",
+                relation_type="derived_from",
+                evidence_ids=("reasoning-evidence",),
+            ),
+        )
+        assert loaded.facts == ()
+        assert loaded.hypotheses == ()
+        assert loaded.findings == ()
+        rendered = repr(loaded)
+        rendered_sql = "\n".join(statements).lower()
+        for canary in (
+            "reasoning-claim-secret-candidate",
+            "reasoning-claim-secret-fact",
+            "reasoning-structured-secret",
+        ):
+            assert canary not in rendered
+            assert canary not in rendered_sql
+        for forbidden_sql_fragment in (
+            "reasoning_nodes.claim",
+            "reasoning_nodes.structured_data_json",
+            "reasoning_nodes.reproduction_contract_json",
+        ):
+            assert forbidden_sql_fragment not in rendered_sql
+    finally:
+        await database.dispose()
+
+
 @pytest.mark.parametrize("relation_count", [1, 5])
 async def test_evidence_select_count_does_not_grow_with_fact_relations(
     tmp_path: Path,
@@ -816,7 +1049,7 @@ async def test_evidence_select_count_does_not_grow_with_fact_relations(
             repository.load(scope, GraphViewKind.EVIDENCE),
         )
 
-        assert len(statements) == 15
+        assert len(statements) == 16
         assert len(loaded.fact_relations) == relation_count
     finally:
         await database.dispose()

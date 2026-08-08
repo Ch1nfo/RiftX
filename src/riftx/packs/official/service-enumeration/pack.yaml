@@ -1,0 +1,95 @@
+schema_version: riftx.official-pack-source/v1
+pack_id: service-enumeration
+version: 1.1.0
+title: Service Enumeration
+description: Approval-gated network service discovery with raw artifacts and endpoint-level conclusions.
+authored_by: RiftX Security Team
+authored_at: 2026-08-06T00:00:00Z
+tool_requirements:
+  - port_scan
+  - run_registered_tool
+  - read_artifact
+  - register_artifact_evidence
+  - query_reasoning_graph
+  - record_observation
+  - propose_hypothesis
+  - record_negative_result
+evidence_contract: &pack_evidence
+  required_refs: [scope, endpoint, raw_artifact, service_observation]
+  minimum_independent_sources: 1
+  confirmation_policy: explicit_verification
+skill_ids: [service-enumeration]
+capabilities:
+  - capability_id: service-enumeration
+    kind: skill
+    title: Service Enumeration Procedure
+    description: Discover and characterize authorized network services without inferring unsupported versions or exposure.
+    domains: [pentest, network, enumeration]
+    triggers: [host discovery, open port, service fingerprint]
+    dependencies:
+      - {kind: tool, reference: port_scan}
+      - {kind: tool, reference: run_registered_tool}
+      - {kind: tool, reference: read_artifact}
+      - {kind: tool, reference: register_artifact_evidence}
+      - {kind: tool, reference: query_reasoning_graph}
+      - {kind: tool, reference: record_observation}
+      - {kind: tool, reference: propose_hypothesis}
+      - {kind: tool, reference: record_negative_result}
+    permission:
+      effect_class: target_interaction
+      approval_level: sensitive
+      requires_scope: true
+    input_schema:
+      type: object
+      required: [targets, scope]
+      properties:
+        targets: {type: array, items: {type: string}}
+        scope: {type: object}
+    output_schema:
+      type: object
+      required: [endpoints, artifacts, negative_results]
+      properties:
+        endpoints: {type: array, items: {type: object}}
+        artifacts: {type: array, items: {type: string}}
+        negative_results: {type: array, items: {type: string}}
+    evidence_contract: *pack_evidence
+    evaluation_case_ids: [eval.service-enumeration.baseline]
+  - capability_id: service-enumeration.technique
+    kind: technique
+    title: Bounded Service Fingerprinting
+    description: Progress from minimal port discovery to protocol-aware checks while preserving raw output and uncertainty.
+    domains: [pentest, network, fingerprinting]
+    triggers: [reachable host, exposed port, uncertain service]
+    dependencies:
+      - {kind: tool, reference: port_scan}
+      - {kind: tool, reference: run_registered_tool}
+      - {kind: tool, reference: read_artifact}
+      - {kind: tool, reference: register_artifact_evidence}
+      - {kind: tool, reference: query_reasoning_graph}
+      - {kind: tool, reference: record_observation}
+      - {kind: tool, reference: propose_hypothesis}
+      - {kind: tool, reference: record_negative_result}
+    permission:
+      effect_class: target_interaction
+      approval_level: sensitive
+      requires_scope: true
+    input_schema: {type: object}
+    output_schema: {type: object}
+    evidence_contract: *pack_evidence
+    evaluation_case_ids: [eval.service-enumeration.baseline]
+  - capability_id: eval.service-enumeration.baseline
+    kind: eval_case
+    title: Service Enumeration Baseline Case
+    description: Checks target bounds, raw artifact capture, uncertain fingerprints, and closed-port negatives.
+    domains: [pentest, network, evaluation]
+    triggers: [pack validation]
+    permission:
+      effect_class: read_only
+      approval_level: never
+      requires_scope: false
+    input_schema: {type: object}
+    output_schema: {type: object}
+    evidence_contract:
+      required_refs: [evaluation_result]
+      minimum_independent_sources: 1
+      confirmation_policy: manual_review

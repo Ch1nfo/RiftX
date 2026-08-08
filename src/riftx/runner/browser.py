@@ -160,11 +160,18 @@ class RunnerBrowserManager:
     ) -> None:
         self._node_id = node_id
         self._paths = paths
-        self._engine = engine or PlaywrightBrowserEngine(paths)
+        self._engine = engine
+        self._open_lock = asyncio.Lock()
         self._sessions: dict[str, _ManagedBrowserSession] = {}
         self._persistent_profiles: dict[str, str] = {}
 
     async def open(self, command: BrowserOpenCommand) -> BrowserRuntimeExchange:
+        # ponytail: serialize browser launches; use per-session/profile locks if
+        # launch throughput becomes a measured bottleneck.
+        async with self._open_lock:
+            return await self._open_locked(command)
+
+    async def _open_locked(self, command: BrowserOpenCommand) -> BrowserRuntimeExchange:
         if command.node_id != self._node_id:
             raise ValueError("Browser launch targets a different Runner node")
         guard = ScopeGuard(command.scope)
@@ -192,7 +199,11 @@ class RunnerBrowserManager:
                     f"session {active_session!r}"
                 )
 
-        engine_session = await self._engine.open(command)
+        engine = self._engine
+        if engine is None:
+            engine = PlaywrightBrowserEngine(self._paths)
+            self._engine = engine
+        engine_session = await engine.open(command)
         managed: _ManagedBrowserSession | None = None
         try:
             pages = await engine_session.pages()
@@ -624,7 +635,7 @@ class PlaywrightBrowserEngine:
             from playwright.async_api import async_playwright
         except ImportError as exc:  # pragma: no cover - depends on optional runtime install
             raise RuntimeError(
-                "Playwright is not installed; install RiftX dependencies and run "
+                "Playwright is not installed; install `riftx[browser]`, then run "
                 "`playwright install chromium` on the Runner"
             ) from exc
         playwright = await async_playwright().start()

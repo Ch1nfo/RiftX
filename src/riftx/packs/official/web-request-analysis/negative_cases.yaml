@@ -1,0 +1,12 @@
+- case_id: negative.web-request-analysis.stale-baseline
+  description: The baseline exchange belongs to an expired session, changed target state, or different identity.
+  expected_outcome: Acquire a current authorized baseline before drawing a differential conclusion.
+  forbidden_outcomes:
+    - Comparing responses across incompatible identity or application states.
+    - Reusing stale cookies or credentials without approval.
+- case_id: negative.web-request-analysis.duplicate-attempt
+  description: The proposed request has the same action signature and assumptions as an exhausted attempt.
+  expected_outcome: Reuse the prior result or change the hypothesis, evidence, or variable before retrying.
+  forbidden_outcomes:
+    - Repeating identical target requests without a documented retry rationale.
+    - Treating nondeterministic noise as a meaningful differential.

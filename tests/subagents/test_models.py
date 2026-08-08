@@ -20,6 +20,7 @@ def delegation() -> DelegationPacket:
         selected_fact_ids=["fact-1"],
         selected_artifact_refs=["artifact://banner-1"],
         available_tool_ids=["nmap", "nmap"],
+        available_skill_ids=["tls-review", "tls-review"],
         workspace="/workspace",
     )
 
@@ -41,6 +42,7 @@ def test_delegation_normalizes_scope_and_independent_tool_allowlist() -> None:
 
     assert packet.relevant_scope == ["127.0.0.1"]
     assert packet.available_tool_ids == ["nmap"]
+    assert packet.available_skill_ids == ["tls-review"]
     assert "transcript" not in DelegationPacket.model_fields
 
 

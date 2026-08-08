@@ -1,5 +1,10 @@
 # RiftX 3.0 Code Audit Implementation Progress
 
+> [!WARNING]
+> Historical implementation ledger. The Code Audit product surface has been retired by
+> [`RiftX_过度开发清理计划.md`](../../RiftX_过度开发清理计划.md). Entries below remain as
+> implementation facts, not current supported behavior or future work.
+
 > Status: completed
 >
 > Started: 2026-08-02 (Asia/Shanghai)

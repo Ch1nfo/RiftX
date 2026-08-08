@@ -18,13 +18,12 @@ from riftx.application.services.runs import (
 from riftx.domain import RunKind, RunStatus
 
 from ..dependencies import (
-    AuditObjectAuthorizerDependency,
-    AuditServiceDependency,
     AuthorizedRunReadDependency,
     LocalPrincipalDependency,
     RunServiceDependency,
     ToolServiceDependency,
 )
+from ..errors import APIError
 from ..schemas import (
     CompactRunRequest,
     CreateRunRequest,
@@ -35,11 +34,16 @@ from ..schemas import (
     RunResponse,
     SwitchRunModelRequest,
 )
-from ..schemas.runs import RunReadResponse, run_read_response_from_domain
+from ..schemas.runs import (
+    RunReadResponse,
+    interactive_run_response_from_domain,
+    run_read_response_from_domain,
+)
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
 _ERROR_RESPONSES = {
+    410: {"model": ErrorResponse},
     404: {"model": ErrorResponse},
     409: {"model": ErrorResponse},
     422: {"model": ErrorResponse},
@@ -76,39 +80,23 @@ async def create_run(
 @router.get("", response_model=RunListResponse, responses=_ERROR_RESPONSES)
 async def list_runs(
     run_service: RunServiceDependency,
-    audit_service: AuditServiceDependency,
-    principal: LocalPrincipalDependency,
-    audit_authorizer: AuditObjectAuthorizerDependency,
     run_status: Annotated[RunStatus | None, Query(alias="status")] = None,
     run_kind: Annotated[RunKind, Query(alias="kind")] = RunKind.GENERAL,
     limit: Annotated[int, Query(ge=1, le=1000)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> RunListResponse:
     if run_kind is RunKind.CODE_AUDIT:
-        runs = []
-        page_offset = offset
-        remaining = limit
-        while remaining:
-            page_limit = min(remaining, 200)
-            aggregates = await audit_service.list_authorized(
-                principal=principal,
-                authorizer=audit_authorizer,
-                run_status=run_status,
-                limit=page_limit,
-                offset=page_offset,
-            )
-            runs.extend(aggregate.run for aggregate in aggregates)
-            if len(aggregates) < page_limit:
-                break
-            remaining -= len(aggregates)
-            page_offset += len(aggregates)
-    else:
-        runs = await run_service.list_runs(
-            status=run_status,
-            kind=run_kind,
-            limit=limit,
-            offset=offset,
+        raise APIError(
+            status.HTTP_410_GONE,
+            "code_audit_retired",
+            "Code Audit history is retired from the API",
         )
+    runs = await run_service.list_runs(
+        status=run_status,
+        kind=run_kind,
+        limit=limit,
+        offset=offset,
+    )
     return RunListResponse(
         items=[run_read_response_from_domain(run) for run in runs],
         limit=limit,
@@ -137,7 +125,9 @@ async def pause_run(run_id: str, run_service: RunServiceDependency) -> RunAction
         effect=OperationEffect.WORKFLOW_CONTROL,
         mode=EffectMode.NORMAL,
     )
-    return RunActionResponse(run=RunResponse.from_domain(await run_service.pause(run_id)))
+    return RunActionResponse(
+        run=interactive_run_response_from_domain(await run_service.pause(run_id))
+    )
 
 
 @router.post(
@@ -154,7 +144,9 @@ async def resume_run(run_id: str, run_service: RunServiceDependency) -> RunActio
         effect=OperationEffect.WORKFLOW_CONTROL,
         mode=EffectMode.NORMAL,
     )
-    return RunActionResponse(run=RunResponse.from_domain(await run_service.resume(run_id)))
+    return RunActionResponse(
+        run=interactive_run_response_from_domain(await run_service.resume(run_id))
+    )
 
 
 @router.post(
@@ -171,7 +163,9 @@ async def cancel_run(run_id: str, run_service: RunServiceDependency) -> RunActio
         effect=OperationEffect.WORKFLOW_CONTROL,
         mode=EffectMode.NORMAL,
     )
-    return RunActionResponse(run=RunResponse.from_domain(await run_service.cancel(run_id)))
+    return RunActionResponse(
+        run=interactive_run_response_from_domain(await run_service.cancel(run_id))
+    )
 
 
 @router.post(
@@ -193,7 +187,7 @@ async def compact_run(
         mode=EffectMode.NORMAL,
     )
     return RunActionResponse(
-        run=RunResponse.from_domain(
+        run=interactive_run_response_from_domain(
             await run_service.compact(run_id, max_history_items=request.max_history_items)
         )
     )
@@ -218,7 +212,9 @@ async def switch_run_model(
         mode=EffectMode.NORMAL,
     )
     return RunActionResponse(
-        run=RunResponse.from_domain(await run_service.switch_model(run_id, request.model_profile))
+        run=interactive_run_response_from_domain(
+            await run_service.switch_model(run_id, request.model_profile)
+        )
     )
 
 
@@ -240,7 +236,9 @@ async def cancel_current_execution(
         mode=EffectMode.NORMAL,
     )
     return RunActionResponse(
-        run=RunResponse.from_domain(await run_service.cancel_current_execution(run_id))
+        run=interactive_run_response_from_domain(
+            await run_service.cancel_current_execution(run_id)
+        )
     )
 
 
@@ -263,7 +261,7 @@ async def append_message(
         mode=EffectMode.NORMAL,
     )
     return RunActionResponse(
-        run=RunResponse.from_domain(
+        run=interactive_run_response_from_domain(
             await run_service.append_user_message(
                 run_id,
                 request.message,

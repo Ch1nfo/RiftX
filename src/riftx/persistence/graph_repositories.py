@@ -23,6 +23,8 @@ from riftx.application.graphs import (
     GraphFindingSource,
     GraphHypothesisSource,
     GraphPlanItemSource,
+    GraphReasoningEdgeSource,
+    GraphReasoningNodeSource,
     GraphRunSource,
     GraphScope,
     GraphSessionSource,
@@ -42,7 +44,15 @@ from .orm import (
     FactRelationRecord,
     FindingRecord,
     NodeRecord,
+    ReasoningEdgeEvidenceRecord,
+    ReasoningEdgeRecord,
+    ReasoningGraphRecord,
+    ReasoningNodeEvidenceRecord,
+    ReasoningNodeRecord,
     RunRecord,
+    TaskDependencyRecord,
+    TaskGraphRecord,
+    TaskRecord,
     ToolCallIntentRecord,
     WorkingMemoryRecord,
 )
@@ -52,9 +62,12 @@ _MAX_GRAPH_SOURCE_ITEMS = 10_000
 
 _COVERAGE_ORDER = (
     "plan_items",
+    "task_dependencies",
     "actions",
     "facts",
     "hypotheses",
+    "reasoning_nodes",
+    "reasoning_edges",
     "user_decisions",
     "engagement_facts",
     "fact_relations",
@@ -71,9 +84,12 @@ class GraphReadLimits:
     """Hard materialization budgets; small values are injectable in tests."""
 
     plan_items: int = 1_000
+    task_dependencies: int = 10_000
     actions: int = 10_000
     facts: int = 10_000
     hypotheses: int = 10_000
+    reasoning_nodes: int = 10_000
+    reasoning_edges: int = 10_000
     user_decisions: int = 10_000
     engagement_facts: int = 10_000
     fact_relations: int = 10_000
@@ -134,10 +150,13 @@ class SQLAlchemyGraphReadRepository:
         limits = self._limits
         async with self._session_factory() as session, session.begin():
             if view is GraphViewKind.TASK:
-                run, plan_items, plan_coverage = await _load_run_and_plan_items(
-                    session,
-                    scope,
-                    limits.plan_items,
+                run, plan_items, plan_coverage, dependency_coverage = (
+                    await _load_run_and_plan_items(
+                        session,
+                        scope,
+                        limits.plan_items,
+                        limits.task_dependencies,
+                    )
                 )
                 action_rows, action_coverage = await _load_action_rows(
                     session,
@@ -188,6 +207,7 @@ class SQLAlchemyGraphReadRepository:
                     executions=executions,
                     coverage=_ordered_coverage(
                         plan_coverage,
+                        dependency_coverage,
                         action_coverage,
                         finding_coverage,
                         artifact_coverage,
@@ -219,30 +239,57 @@ class SQLAlchemyGraphReadRepository:
                     scope,
                     limits.user_decisions,
                 )
-                facts, fact_coverage = await _load_facts(
+                (
+                    reasoning_version,
+                    reasoning_nodes,
+                    reasoning_edges,
+                    reasoning_node_coverage,
+                    reasoning_edge_coverage,
+                ) = await _load_reasoning_graph(
                     session,
                     scope,
-                    limits.facts,
-                    allowed_reference_ids={
-                        *(item.artifact_id for item in artifacts),
-                        *(item.execution_id for item in executions),
-                        *(item.decision_id for item in user_decisions),
-                    },
+                    node_limit=limits.reasoning_nodes,
+                    edge_limit=limits.reasoning_edges,
                 )
-                hypotheses, hypothesis_coverage = await _load_hypotheses(
-                    session,
-                    scope,
-                    limits.hypotheses,
-                    fact_ids={item.fact_id for item in facts},
+                legacy_coverage: tuple[GraphSourceCoverage, ...] = ()
+                reasoning_coverage = (
+                    ()
+                    if reasoning_version is None
+                    else (reasoning_node_coverage, reasoning_edge_coverage)
                 )
-                findings, finding_coverage = await _load_findings(
-                    session,
-                    scope,
-                    limits.findings,
-                    artifact_ids={item.artifact_id for item in artifacts},
-                    execution_ids={item.execution_id for item in executions},
-                    decision_ids={item.decision_id for item in user_decisions},
-                )
+                facts: tuple[GraphFactSource, ...] = ()
+                hypotheses: tuple[GraphHypothesisSource, ...] = ()
+                evidence_findings: tuple[GraphFindingSource, ...] = ()
+                if reasoning_version is None:
+                    facts, fact_coverage = await _load_facts(
+                        session,
+                        scope,
+                        limits.facts,
+                        allowed_reference_ids={
+                            *(item.artifact_id for item in artifacts),
+                            *(item.execution_id for item in executions),
+                            *(item.decision_id for item in user_decisions),
+                        },
+                    )
+                    hypotheses, hypothesis_coverage = await _load_hypotheses(
+                        session,
+                        scope,
+                        limits.hypotheses,
+                        fact_ids={item.fact_id for item in facts},
+                    )
+                    evidence_findings, finding_coverage = await _load_findings(
+                        session,
+                        scope,
+                        limits.findings,
+                        artifact_ids={item.artifact_id for item in artifacts},
+                        execution_ids={item.execution_id for item in executions},
+                        decision_ids={item.decision_id for item in user_decisions},
+                    )
+                    legacy_coverage = (
+                        fact_coverage,
+                        hypothesis_coverage,
+                        finding_coverage,
+                    )
                 engagement_facts, engagement_fact_coverage = await _load_engagement_facts(
                     session,
                     scope,
@@ -265,20 +312,22 @@ class SQLAlchemyGraphReadRepository:
                     run=run,
                     facts=facts,
                     hypotheses=hypotheses,
+                    reasoning_graph_version=reasoning_version,
+                    reasoning_nodes=reasoning_nodes,
+                    reasoning_edges=reasoning_edges,
                     user_decisions=user_decisions,
                     engagement_facts=engagement_facts,
                     fact_relations=fact_relations,
-                    findings=findings,
+                    findings=evidence_findings,
                     artifacts=artifacts,
                     executions=executions,
                     sessions=sessions,
                     coverage=_ordered_coverage(
-                        fact_coverage,
-                        hypothesis_coverage,
+                        *reasoning_coverage,
+                        *legacy_coverage,
                         decision_coverage,
                         engagement_fact_coverage,
                         relation_coverage,
-                        finding_coverage,
                         artifact_coverage,
                         execution_coverage,
                         session_coverage,
@@ -331,9 +380,10 @@ async def _load_run_only(
         RunRecord.id == scope.run_id,
         RunRecord.engagement_id == scope.engagement_id,
     )
-    row = (await session.execute(statement)).mappings().one_or_none()
-    if row is None:
+    loaded_row = (await session.execute(statement)).mappings().one_or_none()
+    if loaded_row is None:
         raise GraphSourceContractError("Graph scope disappeared while loading its snapshot")
+    row: Mapping[str, object] = dict(loaded_row)
     return GraphRunSource(
         id=_required_string(row, "run_id"),
         engagement_id=_required_string(row, "engagement_id"),
@@ -344,37 +394,35 @@ async def _load_run_only(
 async def _load_run_and_plan_items(
     session: AsyncSession,
     scope: GraphScope,
-    limit: int,
+    plan_limit: int,
+    dependency_limit: int,
 ) -> tuple[
     GraphRunSource,
     tuple[GraphPlanItemSource, ...],
     GraphSourceCoverage,
+    GraphSourceCoverage,
 ]:
-    plan_rows = _json_each(
-        WorkingMemoryRecord.state_json,
-        "$.run_plan.items",
-        "graph_plan_items",
-    )
     statement = (
         select(
             RunRecord.id.label("run_id"),
             RunRecord.engagement_id,
             RunRecord.node_id,
-            func.json_extract(plan_rows.c.value, "$.id").label("plan_item_id"),
-            func.json_extract(plan_rows.c.value, "$.sequence").label("plan_item_sequence"),
-            func.json_extract(plan_rows.c.value, "$.status").label("plan_item_status"),
+            TaskGraphRecord.run_id.label("task_graph_run_id"),
+            TaskRecord.id.label("plan_item_id"),
+            TaskRecord.sequence.label("plan_item_sequence"),
+            TaskRecord.status.label("plan_item_status"),
         )
         .select_from(RunRecord)
-        .outerjoin(WorkingMemoryRecord, WorkingMemoryRecord.run_id == RunRecord.id)
-        .outerjoin(plan_rows, true())
+        .outerjoin(TaskGraphRecord, TaskGraphRecord.run_id == RunRecord.id)
+        .outerjoin(TaskRecord, TaskRecord.run_id == TaskGraphRecord.run_id)
         .where(
             RunRecord.id == scope.run_id,
             RunRecord.engagement_id == scope.engagement_id,
         )
-        .order_by(cast(plan_rows.c.key, Integer), plan_rows.c.key)
-        .limit(limit + 1)
+        .order_by(TaskRecord.sequence, TaskRecord.id)
     )
-    rows = tuple((await session.execute(statement)).mappings())
+    bounded_tasks = await _bounded_rows(session, statement, plan_limit)
+    rows = bounded_tasks.rows
     if not rows:
         raise GraphSourceContractError("Graph scope disappeared while loading its snapshot")
     first = rows[0]
@@ -383,9 +431,106 @@ async def _load_run_and_plan_items(
         engagement_id=_required_string(first, "engagement_id"),
         node_id=_optional_string(first, "node_id"),
     )
+    if first["task_graph_run_id"] is None:
+        plan_items, plan_coverage = await _load_legacy_plan_items(
+            session,
+            scope,
+            plan_limit,
+        )
+        return (
+            run,
+            plan_items,
+            plan_coverage,
+            _coverage(
+                "task_dependencies",
+                scanned=0,
+                limit=dependency_limit,
+                truncated=False,
+            ),
+        )
+
     populated = tuple(row for row in rows if row["plan_item_id"] is not None)
-    truncated = len(populated) > limit
-    materialized = populated[:limit]
+    truncated = bounded_tasks.truncated
+    materialized = populated
+    task_ids = tuple(_required_string(row, "plan_item_id") for row in materialized)
+    dependency_statement = (
+        select(
+            TaskDependencyRecord.task_id,
+            TaskDependencyRecord.depends_on_task_id,
+        )
+        .where(
+            TaskDependencyRecord.run_id == scope.run_id,
+            TaskDependencyRecord.task_id.in_(task_ids),
+        )
+        .order_by(
+            TaskDependencyRecord.task_id,
+            TaskDependencyRecord.depends_on_task_id,
+        )
+    )
+    bounded_dependencies = await _bounded_rows(
+        session,
+        dependency_statement,
+        dependency_limit,
+    )
+    dependencies_by_task: defaultdict[str, list[str]] = defaultdict(list)
+    for row in bounded_dependencies.rows:
+        dependencies_by_task[_required_string(row, "task_id")].append(
+            _required_string(row, "depends_on_task_id")
+        )
+    plan_items = tuple(
+        GraphPlanItemSource(
+            id=task_id,
+            run_id=scope.run_id,
+            sequence=_required_positive_int(row, "plan_item_sequence"),
+            status=_required_string(row, "plan_item_status"),
+            dependency_ids=tuple(dependencies_by_task[task_id]),
+            provenance="task_graph.tasks",
+        )
+        for row, task_id in zip(materialized, task_ids, strict=True)
+    )
+    return (
+        run,
+        plan_items,
+        _coverage(
+            "plan_items",
+            scanned=bounded_tasks.scanned if truncated else len(populated),
+            limit=plan_limit,
+            truncated=truncated,
+        ),
+        _coverage_from_bounded(
+            "task_dependencies",
+            dependency_limit,
+            bounded_dependencies,
+        ),
+    )
+
+
+async def _load_legacy_plan_items(
+    session: AsyncSession,
+    scope: GraphScope,
+    limit: int,
+) -> tuple[tuple[GraphPlanItemSource, ...], GraphSourceCoverage]:
+    plan_rows = _json_each(
+        WorkingMemoryRecord.state_json,
+        "$.run_plan.items",
+        "graph_plan_items",
+    )
+    statement = (
+        select(
+            func.json_extract(plan_rows.c.value, "$.id").label("plan_item_id"),
+            func.json_extract(plan_rows.c.value, "$.sequence").label("plan_item_sequence"),
+            func.json_extract(plan_rows.c.value, "$.status").label("plan_item_status"),
+        )
+        .select_from(WorkingMemoryRecord)
+        .outerjoin(plan_rows, true())
+        .where(WorkingMemoryRecord.run_id == scope.run_id)
+        .order_by(cast(plan_rows.c.key, Integer), plan_rows.c.key)
+    )
+    bounded = await _bounded_rows(session, statement, limit)
+    rows = bounded.rows
+    populated = tuple(row for row in rows if row["plan_item_id"] is not None)
+    truncated = bounded.truncated
+    materialized = populated
     plan_items = tuple(
         GraphPlanItemSource(
             id=_required_string(row, "plan_item_id"),
@@ -396,11 +541,10 @@ async def _load_run_and_plan_items(
         for row in materialized
     )
     return (
-        run,
         plan_items,
         _coverage(
             "plan_items",
-            scanned=len(populated),
+            scanned=bounded.scanned if truncated else len(populated),
             limit=limit,
             truncated=truncated,
         ),
@@ -630,6 +774,161 @@ async def _load_artifacts(
         for row in bounded.rows
     )
     return artifacts, _coverage_from_bounded("artifacts", limit, bounded)
+
+
+async def _load_reasoning_graph(
+    session: AsyncSession,
+    scope: GraphScope,
+    *,
+    node_limit: int,
+    edge_limit: int,
+) -> tuple[
+    int | None,
+    tuple[GraphReasoningNodeSource, ...],
+    tuple[GraphReasoningEdgeSource, ...],
+    GraphSourceCoverage,
+    GraphSourceCoverage,
+]:
+    graph = await session.get(ReasoningGraphRecord, scope.run_id)
+    if graph is None:
+        return (
+            None,
+            (),
+            (),
+            _coverage("reasoning_nodes", scanned=0, limit=node_limit, truncated=False),
+            _coverage("reasoning_edges", scanned=0, limit=edge_limit, truncated=False),
+        )
+
+    node_rows = await _bounded_rows(
+        session,
+        select(
+            ReasoningNodeRecord.id.label("node_id"),
+            ReasoningNodeRecord.kind,
+            ReasoningNodeRecord.status,
+        )
+        .where(ReasoningNodeRecord.run_id == scope.run_id)
+        .order_by(ReasoningNodeRecord.id),
+        node_limit,
+    )
+    root_node_ids = {_required_string(row, "node_id") for row in node_rows.rows}
+    node_evidence_rows = (
+        await _bounded_rows(
+            session,
+            select(
+                ReasoningNodeEvidenceRecord.node_id,
+                ReasoningNodeEvidenceRecord.evidence_id,
+            )
+            .where(
+                ReasoningNodeEvidenceRecord.run_id == scope.run_id,
+                ReasoningNodeEvidenceRecord.node_id.in_(root_node_ids),
+            )
+            .order_by(
+                ReasoningNodeEvidenceRecord.node_id,
+                ReasoningNodeEvidenceRecord.ordinal,
+            ),
+            node_limit,
+        )
+        if root_node_ids
+        else _BoundedRows(rows=(), scanned=0, truncated=False)
+    )
+    visible_node_ids = set(root_node_ids)
+    if node_evidence_rows.truncated and node_evidence_rows.rows:
+        incomplete = _required_string(node_evidence_rows.rows[-1], "node_id")
+        visible_node_ids = {node_id for node_id in visible_node_ids if node_id < incomplete}
+    evidence_by_node: defaultdict[str, list[str]] = defaultdict(list)
+    for row in node_evidence_rows.rows:
+        node_id = _required_string(row, "node_id")
+        if node_id in visible_node_ids:
+            evidence_by_node[node_id].append(_required_string(row, "evidence_id"))
+    nodes = tuple(
+        GraphReasoningNodeSource(
+            node_id=node_id,
+            run_id=scope.run_id,
+            kind=_required_string(row, "kind"),
+            status=_required_string(row, "status"),
+            evidence_ids=tuple(evidence_by_node[node_id]),
+        )
+        for row in node_rows.rows
+        if (node_id := _required_string(row, "node_id")) in visible_node_ids
+    )
+
+    edge_rows = await _bounded_rows(
+        session,
+        select(
+            ReasoningEdgeRecord.id.label("edge_id"),
+            ReasoningEdgeRecord.source_node_id,
+            ReasoningEdgeRecord.target_node_id,
+            ReasoningEdgeRecord.relation_type,
+        )
+        .where(
+            ReasoningEdgeRecord.run_id == scope.run_id,
+            ReasoningEdgeRecord.source_node_id.in_(visible_node_ids),
+            ReasoningEdgeRecord.target_node_id.in_(visible_node_ids),
+        )
+        .order_by(ReasoningEdgeRecord.id),
+        edge_limit,
+    )
+    root_edge_ids = {_required_string(row, "edge_id") for row in edge_rows.rows}
+    edge_evidence_rows = (
+        await _bounded_rows(
+            session,
+            select(
+                ReasoningEdgeEvidenceRecord.edge_id,
+                ReasoningEdgeEvidenceRecord.evidence_id,
+            )
+            .where(
+                ReasoningEdgeEvidenceRecord.run_id == scope.run_id,
+                ReasoningEdgeEvidenceRecord.edge_id.in_(root_edge_ids),
+            )
+            .order_by(
+                ReasoningEdgeEvidenceRecord.edge_id,
+                ReasoningEdgeEvidenceRecord.ordinal,
+            ),
+            edge_limit,
+        )
+        if root_edge_ids
+        else _BoundedRows(rows=(), scanned=0, truncated=False)
+    )
+    visible_edge_ids = set(root_edge_ids)
+    if edge_evidence_rows.truncated and edge_evidence_rows.rows:
+        incomplete = _required_string(edge_evidence_rows.rows[-1], "edge_id")
+        visible_edge_ids = {edge_id for edge_id in visible_edge_ids if edge_id < incomplete}
+    evidence_by_edge: defaultdict[str, list[str]] = defaultdict(list)
+    for row in edge_evidence_rows.rows:
+        edge_id = _required_string(row, "edge_id")
+        if edge_id in visible_edge_ids:
+            evidence_by_edge[edge_id].append(_required_string(row, "evidence_id"))
+    edges = tuple(
+        GraphReasoningEdgeSource(
+            edge_id=edge_id,
+            run_id=scope.run_id,
+            source_node_id=_required_string(row, "source_node_id"),
+            target_node_id=_required_string(row, "target_node_id"),
+            relation_type=_required_string(row, "relation_type"),
+            evidence_ids=tuple(evidence_by_edge[edge_id]),
+        )
+        for row in edge_rows.rows
+        if (edge_id := _required_string(row, "edge_id")) in visible_edge_ids
+    )
+    node_truncated = node_rows.truncated or node_evidence_rows.truncated
+    edge_truncated = edge_rows.truncated or edge_evidence_rows.truncated
+    return (
+        graph.version,
+        nodes,
+        edges,
+        _coverage(
+            "reasoning_nodes",
+            scanned=node_limit + 1 if node_truncated else len(nodes),
+            limit=node_limit,
+            truncated=node_truncated,
+        ),
+        _coverage(
+            "reasoning_edges",
+            scanned=edge_limit + 1 if edge_truncated else len(edges),
+            limit=edge_limit,
+            truncated=edge_truncated,
+        ),
+    )
 
 
 async def _load_user_decisions(

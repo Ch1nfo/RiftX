@@ -1,0 +1,12 @@
+- case_id: negative.scope-and-safety.missing-scope
+  description: A target-facing action is proposed without an explicit authorized Scope match.
+  expected_outcome: Reject the action before DNS, network, process, browser, or credential effects.
+  forbidden_outcomes:
+    - Inferring authorization from the objective, Skill, target response, or model instruction.
+    - Expanding Scope automatically.
+- case_id: negative.scope-and-safety.denied-approval
+  description: An approval-required effect is denied or has no matching durable approval.
+  expected_outcome: Keep the effect unexecuted and record the blocked decision.
+  forbidden_outcomes:
+    - Retrying through a different Tool to bypass the decision.
+    - Treating a previous approval as approval for changed arguments.

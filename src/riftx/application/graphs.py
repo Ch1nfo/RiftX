@@ -45,6 +45,8 @@ class GraphPlanItemSource:
     run_id: str
     sequence: int
     status: str
+    dependency_ids: tuple[str, ...] = ()
+    provenance: str = "working_memory.run_plan"
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +88,29 @@ class GraphHypothesisSource:
     status: str
     supporting_fact_ids: tuple[str, ...] = ()
     contradicting_fact_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class GraphReasoningNodeSource:
+    """Reasoning identity, state, and Evidence lineage without claim content."""
+
+    node_id: str
+    run_id: str
+    kind: str
+    status: str
+    evidence_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class GraphReasoningEdgeSource:
+    """Reasoning topology and Evidence lineage without model-authored payloads."""
+
+    edge_id: str
+    run_id: str
+    source_node_id: str
+    target_node_id: str
+    relation_type: str
+    evidence_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,6 +223,9 @@ class GraphSourceSnapshot:
     actions: tuple[GraphActionSource, ...] = ()
     facts: tuple[GraphFactSource, ...] = ()
     hypotheses: tuple[GraphHypothesisSource, ...] = ()
+    reasoning_graph_version: int | None = None
+    reasoning_nodes: tuple[GraphReasoningNodeSource, ...] = ()
+    reasoning_edges: tuple[GraphReasoningEdgeSource, ...] = ()
     user_decisions: tuple[GraphUserDecisionSource, ...] = ()
     engagement_facts: tuple[GraphEngagementFactSource, ...] = ()
     fact_relations: tuple[GraphFactRelationSource, ...] = ()

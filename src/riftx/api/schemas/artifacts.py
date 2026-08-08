@@ -23,7 +23,6 @@ class ArtifactResponse(BaseModel):
 
     id: str
     run_id: str
-    audit_id: str | None
     execution_id: str | None
     name: str
     mime_type: str
@@ -38,16 +37,9 @@ class ArtifactResponse(BaseModel):
     @classmethod
     def from_domain(cls, artifact: Artifact) -> "ArtifactResponse":
         artifact_id = quote(artifact.id, safe="")
-        content_url = f"/api/v1/artifacts/{artifact_id}/content"
-        if artifact.audit_id is not None:
-            content_url = (
-                f"/api/v1/audits/{quote(artifact.audit_id, safe='')}/"
-                f"artifacts/{artifact_id}/content"
-            )
         return cls(
             id=artifact.id,
             run_id=artifact.run_id,
-            audit_id=artifact.audit_id,
             execution_id=artifact.execution_id,
             name=artifact.name,
             mime_type=artifact.mime_type,
@@ -57,7 +49,7 @@ class ArtifactResponse(BaseModel):
             access_class=artifact.access_class,
             content_trust=artifact.content_trust,
             created_at=artifact.created_at,
-            content_url=content_url,
+            content_url=f"/api/v1/artifacts/{artifact_id}/content",
         )
 
 

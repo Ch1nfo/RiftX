@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Query
 
 from riftx.application.services import CreateFinding, UpdateFinding
-from riftx.application.services.runs import require_general_run_operation
+from riftx.application.services.runs import require_interactive_run_operation
 from riftx.domain import Finding, FindingSeverity, FindingStatus
 
 from ..dependencies import (
@@ -38,7 +38,7 @@ async def create_finding(
     service: FindingServiceDependency,
     runs: RunServiceDependency,
 ) -> Finding:
-    require_general_run_operation(await runs.get_run(run_id))
+    require_interactive_run_operation(await runs.get_run(run_id))
     values = request.model_dump(exclude={"evidence"})
     return await service.create_finding(
         run_id,
@@ -60,7 +60,7 @@ async def list_findings(
     limit: Annotated[int, Query(ge=1, le=1000)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> FindingListResponse:
-    require_general_run_operation(authorized_run)
+    require_interactive_run_operation(authorized_run)
     findings = await service.list_findings(
         run_id,
         severity=severity,
@@ -83,7 +83,7 @@ async def get_finding(
 ) -> Finding:
     run_id = await service.resolve_run_id(finding_id)
     authorized_run = await authorizer.require(run_id)
-    require_general_run_operation(authorized_run)
+    require_interactive_run_operation(authorized_run)
     finding = await load_authorized_child(service.get_finding(finding_id))
     require_run_read_binding(run_id, finding.run_id)
     return finding
@@ -101,7 +101,7 @@ async def update_finding(
     runs: RunServiceDependency,
 ) -> Finding:
     current = await service.get_finding(finding_id)
-    require_general_run_operation(await runs.get_run(current.run_id))
+    require_interactive_run_operation(await runs.get_run(current.run_id))
     values = request.model_dump(exclude_unset=True, exclude={"evidence"})
     if "evidence" in request.model_fields_set:
         values["evidence"] = request.evidence

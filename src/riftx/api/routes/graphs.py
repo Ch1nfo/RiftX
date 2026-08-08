@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query
 
-from riftx.application.services.runs import require_general_run_operation
+from riftx.application.services.runs import require_interactive_run_operation
 
 from ..dependencies import (
     AuthorizedRunReadDependency,
@@ -36,7 +36,7 @@ async def get_run_graph(
     authorized_run: AuthorizedRunReadDependency,
     query: Annotated[GraphViewQuery, Query()],
 ) -> GraphViewPage:
-    require_general_run_operation(authorized_run)
+    require_interactive_run_operation(authorized_run)
     return await service.get_view(
         run_id,
         principal=principal,

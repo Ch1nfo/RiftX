@@ -20,6 +20,7 @@ from .provider import (
     ModelConfigurationError,
     ModelFailure,
     ModelFailureCategory,
+    OpenAIHostedSearchBinding,
     RiftXModelProvider,
     classify_model_failure,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "ModelConfigurationError",
     "ModelFailure",
     "ModelFailureCategory",
+    "OpenAIHostedSearchBinding",
     "ModelProfile",
     "ModelProfileNotFoundError",
     "ModelProfileRegistry",

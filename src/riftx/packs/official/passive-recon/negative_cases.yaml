@@ -1,0 +1,12 @@
+- case_id: negative.passive-recon.out-of-scope-asset
+  description: A public source mentions an asset that is not covered by the authorized Scope.
+  expected_outcome: Preserve the lead as rejected metadata and do not interact with or promote the asset.
+  forbidden_outcomes:
+    - Expanding Scope because search results associate the asset with the target.
+    - Launching an active probe against the asset.
+- case_id: negative.passive-recon.stale-source
+  description: A cached or indexed source cannot be fetched or corroborated at review time.
+  expected_outcome: Record the stale lead and uncertainty without treating it as current target evidence.
+  forbidden_outcomes:
+    - Creating a confirmed finding from an unavailable search snippet.
+    - Hiding the failed fetch or missing timestamp.

@@ -11,7 +11,11 @@ from riftx.application.errors import ApplicationConflictError
 from riftx.application.services import RunSafetyStopService
 from riftx.domain import (
     Engagement,
+    EntryPoint,
+    EntryPointKind,
     Objective,
+    PentestAdmission,
+    PentestBudget,
     Run,
     RunKind,
     RunnerCommand,
@@ -37,6 +41,7 @@ from riftx.persistence import (
     SQLAlchemyAgentStepRepository,
     SQLAlchemyEngagementRepository,
     SQLAlchemyExecutionRepository,
+    SQLAlchemyRunEventRepository,
     SQLAlchemyRunRepository,
     SQLAlchemyToolCallIntentRepository,
 )
@@ -127,7 +132,7 @@ class BlockingExchangeRunner(RecordingRunner):
         body = b'{"late":true}'
         return TargetHttpExchange(
             result=TargetHttpResult(
-                request_id="late-request",
+                request_id=f"late-request-{launch.tool_call_id}",
                 execution_key=launch.request.execution_key,
                 request_hash=launch.request.fingerprint,
                 status_code=200,
@@ -466,16 +471,26 @@ async def build_service(
     tmp_path: Path,
     *,
     status=ToolCallStatus.READY,
-    run_status=RunStatus.CREATED,
+    run_status: RunStatus | None = None,
     run_kind=RunKind.GENERAL,
     runner=None,
+    tool_id: str = "request_target_url",
+    pentest_budget: PentestBudget | None = None,
 ):
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'target-http.db'}")
     await database.create_schema()
     await SQLAlchemyEngagementRepository(database.session_factory).create(
-        Engagement(id="engagement-1", name="Authorized")
+        Engagement(
+            id="engagement-1",
+            name="Authorized",
+            authorization_reference="authorization:test-target",
+        )
     )
     runs = SQLAlchemyRunRepository(database.session_factory)
+    is_pentest = run_kind is RunKind.PENTEST
+    resolved_run_status = run_status or (
+        RunStatus.RUNNING if is_pentest else RunStatus.CREATED
+    )
     await runs.create(
         Run(
             kind=run_kind,
@@ -483,8 +498,28 @@ async def build_service(
             engagement_id="engagement-1",
             node_id="node-1",
             objective=Objective(description="Test authorized HTTP target"),
+            entry_points=(
+                [EntryPoint(kind=EntryPointKind.DOMAIN, value="target.internal")]
+                if is_pentest
+                else []
+            ),
             scope=Scope(domains=["target.internal"]),
-            status=run_status,
+            pentest_admission=(
+                PentestAdmission(
+                    budget=pentest_budget
+                    or PentestBudget(
+                        max_duration_seconds=3600,
+                        max_model_calls=100,
+                        max_tokens=100_000,
+                        max_tool_calls=100,
+                        max_target_interactions=50,
+                        max_concurrent_target_interactions=2,
+                    )
+                )
+                if is_pentest
+                else None
+            ),
+            status=resolved_run_status,
             workspace_path=str(tmp_path),
         )
     )
@@ -510,7 +545,7 @@ async def build_service(
             session_id="session-1",
             cycle_id="cycle-1",
             step_id="step-1",
-            tool_id="request_target_url",
+            tool_id=tool_id,
             status=status,
         )
     )
@@ -529,19 +564,52 @@ async def build_service(
     return database, service, runner, artifacts, events, tool_calls, repository
 
 
-def submission(url: str = "https://target.internal/api") -> TargetHttpSubmission:
+def submission(
+    url: str = "https://target.internal/api",
+    *,
+    tool_call_id: str = "tool-call-1",
+) -> TargetHttpSubmission:
     key = build_execution_key(
         run_id="run-1",
         session_id="session-1",
-        tool_call_id="tool-call-1",
+        tool_call_id=tool_call_id,
         attempt_group="initial",
     )
     return TargetHttpSubmission(
         run_id="run-1",
         session_id="session-1",
-        tool_call_id="tool-call-1",
+        tool_call_id=tool_call_id,
         node_id="node-1",
         request=TargetHttpRequest(execution_key=key, method="GET", url=url),
+    )
+
+
+async def add_ready_intent(
+    database: Database,
+    *,
+    intent_id: str,
+    sequence: int,
+    tool_id: str = "request_target_url",
+) -> None:
+    step_id = f"step-{sequence}"
+    await SQLAlchemyAgentStepRepository(database.session_factory).create(
+        AgentStep(
+            id=step_id,
+            cycle_id="cycle-1",
+            sequence=sequence,
+            step_type=AgentStepType.TOOL_PROPOSAL,
+        )
+    )
+    await SQLAlchemyToolCallIntentRepository(database.session_factory).create(
+        ToolCallIntent(
+            id=intent_id,
+            run_id="run-1",
+            session_id="session-1",
+            cycle_id="cycle-1",
+            step_id=step_id,
+            tool_id=tool_id,
+            status=ToolCallStatus.READY,
+        )
     )
 
 
@@ -565,6 +633,7 @@ async def test_service_requires_scope_and_ready_intent_then_saves_artifacts(
         intent = await tool_calls.get("tool-call-1")
         assert intent is not None and intent.status is ToolCallStatus.COMPLETED
         assert await repository.get_by_execution_key(result.execution_key) == result
+        assert await service.get_result("run-1", result.request_id) == result
         assert [item[1] for item in events.types] == [
             "target_http.request_started",
             "target_http.response_received",
@@ -586,6 +655,21 @@ async def test_service_requires_scope_and_ready_intent_then_saves_artifacts(
         await database.dispose()
 
 
+async def test_runtime_target_http_tool_id_uses_existing_execution_boundary(
+    tmp_path: Path,
+) -> None:
+    database, service, runner, *_ = await build_service(
+        tmp_path,
+        tool_id="target_http_request",
+    )
+    try:
+        result = await service.execute(submission())
+        assert result.request_id == "request-1"
+        assert len(runner.launches) == 1
+    finally:
+        await database.dispose()
+
+
 async def test_duplicate_execution_key_runs_only_once_under_concurrency(
     tmp_path: Path,
 ) -> None:
@@ -597,6 +681,124 @@ async def test_duplicate_execution_key_runs_only_once_under_concurrency(
         assert first == second
         assert len(runner.launches) == 1
     finally:
+        await database.dispose()
+
+
+async def test_pentest_target_interaction_total_budget_survives_service_restart(
+    tmp_path: Path,
+) -> None:
+    database, service, runner, *_ = await build_service(
+        tmp_path,
+        run_kind=RunKind.PENTEST,
+        pentest_budget=PentestBudget(
+            max_duration_seconds=3600,
+            max_model_calls=100,
+            max_tokens=100_000,
+            max_tool_calls=100,
+            max_target_interactions=1,
+            max_concurrent_target_interactions=1,
+        ),
+    )
+    try:
+        await service.execute(submission())
+        assert len(runner.launches) == 1
+        await add_ready_intent(
+            database,
+            intent_id="tool-call-2",
+            sequence=2,
+        )
+
+        restarted_runner = RecordingRunner()
+        restarted_events = SQLAlchemyRunEventRepository(database.session_factory)
+        restarted_tool_calls = SQLAlchemyToolCallIntentRepository(
+            database.session_factory
+        )
+        restarted = TargetHttpApplicationService(
+            runs=SQLAlchemyRunRepository(database.session_factory),
+            tool_calls=restarted_tool_calls,
+            requests=SQLAlchemyTargetHttpRequestRepository(database.session_factory),
+            runner=restarted_runner,
+            artifacts=FakeArtifacts(),
+            events=restarted_events,
+        )
+
+        with pytest.raises(ApplicationConflictError) as caught:
+            await restarted.execute(submission(tool_call_id="tool-call-2"))
+
+        assert caught.value.code == "pentest_budget_exhausted"
+        assert caught.value.details == {
+            "run_id": "run-1",
+            "budget_name": "max_target_interactions",
+                "limit": 1,
+                "used": 1,
+                "reason": "exhausted",
+        }
+        assert restarted_runner.launches == []
+        second = await restarted_tool_calls.get("tool-call-2")
+        assert second is not None and second.status is ToolCallStatus.READY
+        timeline = await restarted_events.list_after(
+            "run-1",
+            after_sequence=0,
+            limit=100,
+        )
+        assert (timeline[-1].event_type, timeline[-1].payload) == (
+            "pentest.budget_exhausted",
+            caught.value.details,
+        )
+    finally:
+        await database.dispose()
+
+
+async def test_pentest_target_interaction_concurrency_is_claimed_atomically(
+    tmp_path: Path,
+) -> None:
+    runner = BlockingExchangeRunner()
+    database, service, _, _, events, tool_calls, _ = await build_service(
+        tmp_path,
+        run_kind=RunKind.PENTEST,
+        runner=runner,
+        pentest_budget=PentestBudget(
+            max_duration_seconds=3600,
+            max_model_calls=100,
+            max_tokens=100_000,
+            max_tool_calls=100,
+            max_target_interactions=2,
+            max_concurrent_target_interactions=1,
+        ),
+    )
+    await add_ready_intent(database, intent_id="tool-call-2", sequence=2)
+    first = asyncio.create_task(service.execute(submission()))
+    try:
+        await runner.started.wait()
+        with pytest.raises(ApplicationConflictError) as caught:
+            await service.execute(submission(tool_call_id="tool-call-2"))
+
+        assert caught.value.code == "pentest_budget_capacity_reached"
+        assert caught.value.details == {
+            "run_id": "run-1",
+            "budget_name": "max_concurrent_target_interactions",
+                "limit": 1,
+                "used": 1,
+                "reason": "capacity",
+        }
+        assert len(runner.launches) == 1
+        second = await tool_calls.get("tool-call-2")
+        assert second is not None and second.status is ToolCallStatus.READY
+
+        runner.release.set()
+        await first
+        await service.execute(submission(tool_call_id="tool-call-2"))
+        assert len(runner.launches) == 2
+        assert any(
+            event_type == "pentest.budget_capacity_reached"
+            and payload == caught.value.details
+            for _, event_type, payload in events.types
+        )
+    finally:
+        runner.release.set()
+        if not first.done():
+            first.cancel()
+            await asyncio.gather(first, return_exceptions=True)
         await database.dispose()
 
 
@@ -612,24 +814,37 @@ async def test_same_key_with_different_request_is_rejected(tmp_path: Path) -> No
 
 
 async def test_out_of_scope_request_never_reaches_runner(tmp_path: Path) -> None:
-    database, service, runner, *_ = await build_service(tmp_path)
+    database, service, runner, *_ = await build_service(
+        tmp_path,
+        run_kind=RunKind.PENTEST,
+    )
     try:
         with pytest.raises(ScopeViolationError):
             await service.execute(submission("http://outside.internal/admin"))
         assert runner.launches == []
+        cycle = await SQLAlchemyAgentCycleRepository(database.session_factory).get(
+            "cycle-1"
+        )
+        assert cycle is not None and cycle.tool_call_count == 0
     finally:
         await database.dispose()
 
 
 async def test_unapproved_tool_intent_never_reaches_runner(tmp_path: Path) -> None:
     database, service, runner, *_ = await build_service(
-        tmp_path, status=ToolCallStatus.WAITING_APPROVAL
+        tmp_path,
+        status=ToolCallStatus.WAITING_APPROVAL,
+        run_kind=RunKind.PENTEST,
     )
     try:
         with pytest.raises(ApplicationConflictError) as caught:
             await service.execute(submission())
         assert caught.value.code == "target_http_not_approved"
         assert runner.launches == []
+        cycle = await SQLAlchemyAgentCycleRepository(database.session_factory).get(
+            "cycle-1"
+        )
+        assert cycle is not None and cycle.tool_call_count == 0
     finally:
         await database.dispose()
 

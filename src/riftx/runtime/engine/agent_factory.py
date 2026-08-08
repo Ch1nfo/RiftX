@@ -10,19 +10,15 @@ from typing import Any
 from agents import Agent, FunctionTool, ModelSettings
 
 from riftx.runtime.lifecycle import CompiledContext
+from riftx.tools import RESIDENT_TOOL_IDS
 from riftx.tools.policy import validate_runtime_tool_inventory
 
 from .types import AgentEngineRequest
 
-_CONTROL_TOOL_NAMES = {
-    "search_tools",
-    "list_tools",
-    "get_tool",
-    "get_execution",
-    "wait_execution",
-    "cancel_execution",
-    "read_artifact",
-    "complete_run",
+_CONTROL_TOOL_NAMES = set(RESIDENT_TOOL_IDS) - {
+    "run_registered_tool",
+    "run_shell",
+    "delegate",
 }
 
 _TERMINAL_CONTROL_TOOL_NAMES = {"complete_run"}
@@ -35,6 +31,7 @@ class RuntimeToolScope:
     run_id: str
     session_id: str
     agent_id: str
+    model_profile: str
 
 
 ControlToolHandler = Callable[[RuntimeToolScope, str, dict[str, object], str], Awaitable[object]]
@@ -105,6 +102,7 @@ class DeferredRuntimeAgentFactory:
         parameters = schema.get("parameters")
         params_json_schema = parameters if isinstance(parameters, dict) else {"type": "object"}
         is_control = name in _CONTROL_TOOL_NAMES
+        explicit_approval = _requires_explicit_approval(schema)
 
         async def invoke(context: object, arguments_json: str) -> object:
             arguments = json.loads(arguments_json or "{}")
@@ -125,6 +123,7 @@ class DeferredRuntimeAgentFactory:
             params_json_schema=params_json_schema,
             on_invoke_tool=invoke,
             strict_json_schema=False,
+            needs_approval=explicit_approval,
             _use_default_failure_error_function=not is_control,
         )
 
@@ -171,6 +170,11 @@ def _is_model_visible_schema(
     }
 
 
+def _requires_explicit_approval(schema: dict[str, object]) -> bool:
+    metadata = schema.get("x-riftx")
+    return isinstance(metadata, dict) and metadata.get("approval_policy") == "explicit"
+
+
 def _runtime_tool_scope(request: AgentEngineRequest) -> RuntimeToolScope:
     compiled = request.context
     if not isinstance(compiled, CompiledContext):
@@ -191,4 +195,5 @@ def _runtime_tool_scope(request: AgentEngineRequest) -> RuntimeToolScope:
         run_id=run_id,
         session_id=request.session_id,
         agent_id=agent_id,
+        model_profile=request.model,
     )

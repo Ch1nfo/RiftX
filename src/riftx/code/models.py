@@ -1,0 +1,349 @@
+"""Bounded model-facing results for native code navigation tools."""
+
+from __future__ import annotations
+
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+CodeSemanticBackend = Literal["builtin_static", "controlled_lsp"]
+CodeSemanticAnalysisMode = Literal["python_ast", "lexical", "lsp"]
+CodeSemanticFallbackReason = Literal[
+    "controlled_lsp_unconfigured",
+    "controlled_lsp_unavailable",
+    "controlled_lsp_untrusted",
+    "controlled_lsp_unsupported",
+    "controlled_lsp_invalid_response",
+]
+
+
+class CodeEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    type: Literal["file", "directory", "symlink", "special"]
+    size: int = Field(ge=0)
+    content_digest: str | None = None
+
+
+class CodeListResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["workspace", "audit_snapshot"]
+    source_digest: str | None = None
+    path: str
+    entries: list[CodeEntry]
+    truncated: bool = False
+
+
+class CodeReadResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["workspace", "audit_snapshot"]
+    source_digest: str | None = None
+    path: str
+    size: int = Field(ge=0)
+    offset: int = Field(ge=0)
+    next_offset: int = Field(ge=0)
+    eof: bool
+    encoding: Literal["utf-8", "utf-8-lossy", "base64"]
+    content: str
+    content_digest: str | None = None
+    artifact_id: str | None = None
+
+
+class CodeReadManyResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    files: list[CodeReadResult]
+    total_bytes: int = Field(ge=0)
+    truncated: bool = False
+
+
+class CodeGrepMatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    line_number: int = Field(ge=1)
+    line: str
+
+
+class CodeGrepResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["workspace", "audit_snapshot"]
+    source_digest: str | None = None
+    query: str
+    matches: list[CodeGrepMatch]
+    files_scanned: int = Field(ge=0)
+    bytes_scanned: int = Field(ge=0)
+    skipped_binary_files: int = Field(ge=0)
+    skipped_large_files: int = Field(ge=0)
+    truncated: bool = False
+
+
+class CodeSymbol(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=512)
+    qualified_name: str = Field(min_length=1, max_length=2048)
+    kind: Literal[
+        "function",
+        "method",
+        "class",
+        "interface",
+        "struct",
+        "enum",
+        "trait",
+        "module",
+        "namespace",
+        "type",
+        "constant",
+        "variable",
+    ]
+    language: str = Field(min_length=1, max_length=32)
+    path: str = Field(min_length=1, max_length=4096)
+    line_number: int = Field(ge=1)
+    column: int = Field(ge=0)
+    signature: str = Field(default="", max_length=500)
+
+
+class CodeSymbolSearchResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["workspace", "audit_snapshot"]
+    source_digest: str | None = None
+    backend: CodeSemanticBackend = "builtin_static"
+    backend_id: str | None = Field(default=None, min_length=1, max_length=64)
+    backend_version: str | None = Field(default=None, min_length=1, max_length=128)
+    analysis_input_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    fallback_reason: CodeSemanticFallbackReason | None = "controlled_lsp_unconfigured"
+    query: str = Field(min_length=1, max_length=1024)
+    symbols: list[CodeSymbol]
+    files_scanned: int = Field(ge=0)
+    bytes_scanned: int = Field(ge=0)
+    skipped_binary_files: int = Field(ge=0)
+    skipped_large_files: int = Field(ge=0)
+    skipped_unsupported_files: int = Field(ge=0)
+    parse_errors: int = Field(ge=0)
+    truncated: bool = False
+
+
+class CodeReference(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["definition", "reference"]
+    language: str = Field(min_length=1, max_length=32)
+    path: str = Field(min_length=1, max_length=4096)
+    line_number: int = Field(ge=1)
+    column: int = Field(ge=0)
+    excerpt: str = Field(default="", max_length=1000)
+
+
+class CodeReferenceSearchResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["workspace", "audit_snapshot"]
+    source_digest: str | None = None
+    backend: CodeSemanticBackend = "builtin_static"
+    backend_id: str | None = Field(default=None, min_length=1, max_length=64)
+    backend_version: str | None = Field(default=None, min_length=1, max_length=128)
+    analysis_input_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    fallback_reason: CodeSemanticFallbackReason | None = "controlled_lsp_unconfigured"
+    symbol: str = Field(min_length=1, max_length=512)
+    resolution: Literal["unresolved", "unique", "ambiguous", "indeterminate"]
+    definitions_found: int = Field(ge=0)
+    references: list[CodeReference]
+    files_scanned: int = Field(ge=0)
+    bytes_scanned: int = Field(ge=0)
+    skipped_binary_files: int = Field(ge=0)
+    skipped_large_files: int = Field(ge=0)
+    skipped_unsupported_files: int = Field(ge=0)
+    parse_errors: int = Field(ge=0)
+    truncated: bool = False
+
+
+class CodeCall(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    caller: str | None = Field(default=None, min_length=1, max_length=2048)
+    callee: str = Field(min_length=1, max_length=2048)
+    confidence: CodeSemanticAnalysisMode
+    language: str = Field(min_length=1, max_length=32)
+    path: str = Field(min_length=1, max_length=4096)
+    line_number: int = Field(ge=1)
+    column: int = Field(ge=0)
+    excerpt: str = Field(default="", max_length=1000)
+
+
+class CodeCallHierarchyResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["workspace", "audit_snapshot"]
+    source_digest: str | None = None
+    backend: CodeSemanticBackend = "builtin_static"
+    backend_id: str | None = Field(default=None, min_length=1, max_length=64)
+    backend_version: str | None = Field(default=None, min_length=1, max_length=128)
+    analysis_input_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    fallback_reason: CodeSemanticFallbackReason | None = "controlled_lsp_unconfigured"
+    symbol: str = Field(min_length=1, max_length=512)
+    direction: Literal["incoming", "outgoing", "both"]
+    resolution: Literal["unresolved", "unique", "ambiguous", "indeterminate"]
+    definitions_found: int = Field(ge=0)
+    analysis_modes: list[CodeSemanticAnalysisMode]
+    calls: list[CodeCall]
+    files_scanned: int = Field(ge=0)
+    bytes_scanned: int = Field(ge=0)
+    skipped_binary_files: int = Field(ge=0)
+    skipped_large_files: int = Field(ge=0)
+    skipped_unsupported_files: int = Field(ge=0)
+    parse_errors: int = Field(ge=0)
+    truncated: bool = False
+
+
+class CodeDiagnostic(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    severity: Literal["error", "warning"]
+    confidence: CodeSemanticAnalysisMode
+    code: str = Field(min_length=1, max_length=128)
+    message: str = Field(min_length=1, max_length=1000)
+    language: str = Field(min_length=1, max_length=32)
+    path: str = Field(min_length=1, max_length=4096)
+    line_number: int = Field(ge=1)
+    column: int = Field(ge=0)
+    end_line_number: int | None = Field(default=None, ge=1)
+    end_column: int | None = Field(default=None, ge=0)
+    excerpt: str = Field(default="", max_length=1000)
+
+
+class CodeDiagnosticsResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["workspace", "audit_snapshot"]
+    source_digest: str | None = None
+    backend: CodeSemanticBackend = "builtin_static"
+    backend_id: str | None = Field(default=None, min_length=1, max_length=64)
+    backend_version: str | None = Field(default=None, min_length=1, max_length=128)
+    analysis_input_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    fallback_reason: CodeSemanticFallbackReason | None = "controlled_lsp_unconfigured"
+    analysis_modes: list[CodeSemanticAnalysisMode]
+    diagnostics: list[CodeDiagnostic]
+    files_scanned: int = Field(ge=0)
+    bytes_scanned: int = Field(ge=0)
+    skipped_binary_files: int = Field(ge=0)
+    skipped_large_files: int = Field(ge=0)
+    skipped_unsupported_files: int = Field(ge=0)
+    parse_errors: int = Field(ge=0)
+    truncated: bool = False
+
+
+class CodePatchReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["riftx.code-patch-receipt/v1"] = (
+        "riftx.code-patch-receipt/v1"
+    )
+    run_id: str = Field(min_length=1, max_length=64)
+    operation: Literal["add", "update", "delete"]
+    path: str = Field(min_length=1, max_length=4096)
+    original_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    result_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    original_mode: int | None = Field(default=None, ge=0, le=0o7777)
+    original_content_base64: str | None = None
+    patch: str = Field(min_length=1, max_length=262_144)
+    patch_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class CodePatchResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["applied", "reverted"]
+    operation: Literal["add", "update", "delete"]
+    path: str = Field(min_length=1, max_length=4096)
+    original_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    result_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    receipt_artifact_id: str = Field(min_length=1)
+    diff: str
+    diff_truncated: bool = False
+
+
+class GitStatusEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    index_status: str = Field(min_length=1, max_length=1)
+    worktree_status: str = Field(min_length=1, max_length=1)
+    original_path: str | None = None
+
+
+class GitStatusResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    branch: str | None = None
+    entries: list[GitStatusEntry]
+    truncated: bool = False
+
+
+class GitDiffResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    staged: bool
+    path: str | None = None
+    content: str
+    bytes_returned: int = Field(ge=0)
+    truncated: bool = False
+
+
+class GitCommitSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    commit: str
+    parents: list[str]
+    authored_at: str
+    author: str
+    subject: str
+
+
+class GitLogResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str | None = None
+    commits: list[GitCommitSummary]
+    truncated: bool = False
+
+
+class GitWorktreeResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["created", "existing"]
+    name: str = Field(min_length=1, max_length=64)
+    path: str = Field(min_length=1, max_length=4096)
+    head_commit: str = Field(pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+    detached: Literal[True] = True
+
+
+__all__ = [
+    "CodeEntry",
+    "CodeCall",
+    "CodeCallHierarchyResult",
+    "CodeDiagnostic",
+    "CodeDiagnosticsResult",
+    "CodePatchReceipt",
+    "CodePatchResult",
+    "CodeGrepMatch",
+    "CodeGrepResult",
+    "CodeListResult",
+    "CodeReadManyResult",
+    "CodeReadResult",
+    "CodeReference",
+    "CodeReferenceSearchResult",
+    "CodeSymbol",
+    "CodeSymbolSearchResult",
+    "GitCommitSummary",
+    "GitDiffResult",
+    "GitLogResult",
+    "GitStatusEntry",
+    "GitStatusResult",
+    "GitWorktreeResult",
+]

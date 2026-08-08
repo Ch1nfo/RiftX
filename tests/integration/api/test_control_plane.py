@@ -50,14 +50,18 @@ from riftx.application.services import (
     ApprovalApplicationService,
     ApprovalRequestRecorder,
     ArtifactApplicationService,
-    AuditApplicationService,
-    AuditPreflightApplicationService,
+    ClosureVerifierApplicationService,
     EventApplicationService,
+    EvidenceApplicationService,
     ExecutionApplicationService,
     FindingApplicationService,
+    GenerateReports,
     ModelProfileApplicationService,
     NodeApplicationService,
     NodeRegistration,
+    PentestApplicationService,
+    PentestCapabilityResolver,
+    ReasoningGraphApplicationService,
     ReportApplicationService,
     ResourceStopDisposition,
     RunApplicationService,
@@ -69,22 +73,34 @@ from riftx.application.services import (
     WorkflowSignalObservation,
     WorkflowSignalObservationState,
     WorkflowSignalReconciler,
+    closure_event_id,
+    closure_event_payload,
 )
 from riftx.application.traffic import TrafficExchangeDetail, TrafficExchangePage
 from riftx.application.workflow_router import RunWorkflowControlRouter
 from riftx.browser.service import BrowserApplicationService
-from riftx.context import ContextApplicationService
+from riftx.capabilities import CapabilityKind, PackLockOwnerKind
+from riftx.context import (
+    ContextApplicationService,
+    ContextCompilation,
+    ContextManifest,
+    ExecutionArtifactStore,
+    ToolResultProcessor,
+    processed_tool_result_context_item,
+)
 from riftx.domain import (
     RUNNER_COMMAND_OWNERSHIP_CAPABILITY,
     RUNNER_STOP_ACK_EXECUTION_SCHEMA,
     RUNNER_STOP_ACK_TERMINAL_SCHEMA,
     Approval,
+    Engagement,
     Execution,
     ExecutionStatus,
     ExecutorType,
     Finding,
     FindingSeverity,
     Objective,
+    ReportFormat,
     Run,
     RunKind,
     RunnerCommandKind,
@@ -103,10 +119,28 @@ from riftx.domain import (
     runner_stop_ack_digest,
 )
 from riftx.domain.workflow_signal import WorkflowSignalIntent, WorkflowSignalKind
+from riftx.evidence import (
+    Evidence,
+    EvidenceCreatorType,
+    EvidenceKind,
+    EvidenceRedactionStatus,
+    EvidenceReplayMetadata,
+    EvidenceReplayStrategy,
+    EvidenceScope,
+    EvidenceTrustClass,
+    SourceLocator,
+)
+from riftx.execution import (
+    DeferredExecutionDispatcher,
+    ExecutionService,
+    RegistryDeferredExecutionResolver,
+    build_execution_key,
+)
 from riftx.executors import LinuxCgroupV2Manager
 from riftx.memory import MemoryService, MemoryWriter
 from riftx.models import ModelProfile, ModelProfileRegistry, ModelsConfig
 from riftx.observability import RuntimeMetricName, RuntimeObservabilityService
+from riftx.packs import OfficialPackCatalog, bootstrap_official_packs
 from riftx.persistence import (
     Database,
     SQLAlchemyActionReadRepository,
@@ -115,24 +149,31 @@ from riftx.persistence import (
     SQLAlchemyAgentStepRepository,
     SQLAlchemyApprovalRepository,
     SQLAlchemyArtifactRepository,
-    SQLAlchemyAuditAggregateReadRepository,
-    SQLAlchemyAuditCreationUnitOfWork,
     SQLAlchemyBrowserRepository,
+    SQLAlchemyCapabilityRepository,
+    SQLAlchemyCapabilitySelectionStore,
     SQLAlchemyEngagementRepository,
+    SQLAlchemyEvidenceLedgerRepository,
     SQLAlchemyExecutionRepository,
     SQLAlchemyFindingRepository,
     SQLAlchemyGraphReadRepository,
     SQLAlchemyNodeRepository,
+    SQLAlchemyPentestCreationUnitOfWork,
+    SQLAlchemyPentestStatusReader,
+    SQLAlchemyReasoningGraphRepository,
     SQLAlchemyReportRepository,
     SQLAlchemyRunEventRepository,
     SQLAlchemyRunnerCommandRepository,
     SQLAlchemyRunnerCredentialRepository,
     SQLAlchemyRunRepository,
     SQLAlchemyRuntimeApprovalRepository,
+    SQLAlchemyTaskGraphRepository,
     SQLAlchemyTerminalRepository,
     SQLAlchemyToolCallIntentRepository,
+    SQLAlchemyTranscriptRepository,
     SQLAlchemyWorkflowSignalIntentRepository,
 )
+from riftx.persistence.capability_records import CapabilityPackLockRecord
 from riftx.persistence.context_repositories import SQLAlchemyContextCompilationRepository
 from riftx.persistence.memory_repositories import SQLAlchemyMemoryRepository
 from riftx.persistence.observability_repository import (
@@ -150,6 +191,9 @@ from riftx.persistence.target_http_repositories import (
     SQLAlchemyTrafficMetadataReadRepository,
 )
 from riftx.persistence.workflow_signals import WorkflowSignalIntentRecord
+from riftx.persistence.working_memory_repositories import (
+    SQLAlchemyWorkingMemoryRepository,
+)
 from riftx.runner import (
     ExecutionLaunchRequest,
     ProcessSupervisor,
@@ -168,9 +212,17 @@ from riftx.runtime import (
     AgentSession,
     AgentStep,
     AgentStepType,
+    CycleStatus,
     RuntimeApprovalRequest,
+    SessionStatus,
     ToolCallIntent,
+    ToolCallStatus,
+    YieldReason,
 )
+from riftx.runtime.control_tools import RuntimeControlToolService
+from riftx.runtime.engine import AgentEngineEvent, AgentEngineEventType
+from riftx.runtime.engine.agent_factory import RuntimeToolScope
+from riftx.scope import ScopeViolationError
 from riftx.security import DeploymentProfileError, LocalObjectAuthorizer
 from riftx.skills import create_default_skill_registry
 from riftx.target_http.models import (
@@ -178,16 +230,87 @@ from riftx.target_http.models import (
     TargetHttpResult,
     TargetHttpSubmission,
 )
-from riftx.target_http.service import TargetHttpApplicationService
+from riftx.target_http.service import (
+    CapabilityCredentialReferenceAuthorizer,
+    TargetHttpApplicationService,
+)
 from riftx.temporal import RiftXRunWorkflow, WorkflowPhase
 from riftx.temporal.activities import RiftXActivities
 from riftx.temporal.runtime import TemporalRunClient, TemporalRuntimeConfig
 from riftx.temporal.workflow_signal_transport import RoutedWorkflowSignalTransport
-from riftx.tools import ToolRegistry
+from riftx.tools import ToolContextManager, ToolRegistry
 
 FAKE_TOOL_FIXTURE = Path(__file__).parents[2] / "tools" / "fixtures" / "fake_tool.py"
 PROCESS_TREE_FIXTURE = Path(__file__).parents[2] / "runner" / "fixtures" / "fake_process.py"
 RUNNER_BOOTSTRAP_TOKEN = "test-only-runner-bootstrap-token-0003"
+PENTEST_FOUNDATION_TOOLS = (
+    "list_ready_tasks",
+    "add_task",
+    "query_reasoning_graph",
+    "record_observation",
+    "record_negative_result",
+    "complete_task",
+    "complete_run",
+)
+WEB_REQUEST_ANALYSIS_TOOLS = (
+    "target_http_request",
+    "query_http_traffic",
+    "read_http_exchange",
+    "record_attempt",
+    "record_observation",
+    "record_negative_result",
+)
+SERVICE_ENUMERATION_TOOLS = (
+    "port_scan",
+    "run_registered_tool",
+    "read_artifact",
+    "register_artifact_evidence",
+    "query_reasoning_graph",
+    "record_observation",
+    "propose_hypothesis",
+    "record_negative_result",
+)
+VULNERABILITY_VERIFICATION_TOOLS = (
+    "target_http_request",
+    "act_browser",
+    "observe_browser",
+    "read_http_exchange",
+    "record_attempt",
+    "propose_finding",
+    "create_finding",
+    "record_negative_result",
+)
+
+
+async def _create_pentest_target_intent(
+    *,
+    cycle: RuntimeAgentCycle,
+    step_repository: SQLAlchemyAgentStepRepository,
+    intent_repository: SQLAlchemyToolCallIntentRepository,
+    run_id: str,
+    session_id: str,
+    index: int,
+    target: str,
+) -> ToolCallIntent:
+    step = AgentStep(
+        id=f"pentest-lifecycle-step-{index}",
+        cycle_id=cycle.id,
+        sequence=index,
+        step_type=AgentStepType.TOOL_PROPOSAL,
+    )
+    await step_repository.create(step)
+    intent = ToolCallIntent(
+        id=f"pentest-lifecycle-intent-{index}",
+        run_id=run_id,
+        session_id=session_id,
+        cycle_id=cycle.id,
+        step_id=step.id,
+        tool_id="target_http_request",
+        arguments={"method": "GET", "url": target},
+        target_summary=target,
+        status=ToolCallStatus.READY,
+    )
+    return await intent_repository.create(intent)
 
 
 def _runner_execution_callback_fields(command: dict[str, object]) -> dict[str, object]:
@@ -607,6 +730,9 @@ async def _build_runtime(
     db_path = database_path or (tmp_path / "riftx.db")
     database = Database(f"sqlite+aiosqlite:///{db_path}")
     await database.create_schema()
+    capability_repository = SQLAlchemyCapabilityRepository(database.session_factory)
+    official_pack_catalog = OfficialPackCatalog()
+    await bootstrap_official_packs(capability_repository, official_pack_catalog)
 
     tools_path = tmp_path / "tools.yaml"
     if not tools_path.exists():
@@ -622,10 +748,13 @@ tools:
         )
     registry = ToolRegistry(tools_path, node_id="local")
     await registry.refresh()
+    skill_registry = create_default_skill_registry(
+        tmp_path / "skills",
+        official_skill_roots=official_pack_catalog.skill_roots(),
+    )
 
     engagement_repository = SQLAlchemyEngagementRepository(database.session_factory)
     run_repository = SQLAlchemyRunRepository(database.session_factory)
-    audit_aggregate_repository = SQLAlchemyAuditAggregateReadRepository(database.session_factory)
     event_repository = SQLAlchemyRunEventRepository(database.session_factory)
     finding_repository = SQLAlchemyFindingRepository(database.session_factory)
     node_repository = SQLAlchemyNodeRepository(database.session_factory)
@@ -661,6 +790,7 @@ tools:
         local_principal_path=tmp_path / "secrets" / "local-principal.json",
         database_url=database.url,
         tools_config_path=tools_path,
+        skills_config_path=tmp_path / "skills",
         models_config_path=tmp_path / "models.yaml",
         model_secrets_path=tmp_path / "secrets" / "models.json",
         model_profile_override=model_profile_override,
@@ -716,6 +846,13 @@ tools:
         artifacts=artifact_service,
         events=event_repository,
     )
+
+    async def pause_budget_exhausted_pentest(run_id: str) -> None:
+        await run_service.pause(run_id)
+
+    capability_selection_store = SQLAlchemyCapabilitySelectionStore(
+        database.session_factory
+    )
     target_http_service = TargetHttpApplicationService(
         runs=run_repository,
         tool_calls=tool_call_intent_repository,
@@ -723,6 +860,10 @@ tools:
         runner=RunnerTargetHttpClient(node_id=settings.node_id),
         artifacts=artifact_service,
         events=event_repository,
+        credential_references=CapabilityCredentialReferenceAuthorizer(
+            capability_selection_store
+        ),
+        budget_exhaustion_handler=pause_budget_exhausted_pentest,
     )
     runner_control_service = RunnerControlService(
         credentials=runner_credential_repository,
@@ -755,7 +896,6 @@ tools:
     )
     workflow_router = RunWorkflowControlRouter(
         runs=run_repository,
-        audits=audit_aggregate_repository,
         general=workflow_client,
     )
     workflow_signal_transport = RoutedWorkflowSignalTransport(
@@ -775,32 +915,40 @@ tools:
         lease_owner=f"control-plane-test-probe:{uuid4()}",
         backoff=lambda attempt: timedelta(0),
     )
+    run_service = RunApplicationService(
+        engagement_repository=engagement_repository,
+        run_repository=run_repository,
+        event_repository=event_repository,
+        workflow_client=workflow_router,
+        execution_repository=execution_repository,
+        execution_runner=process_supervisor,
+        workspace_root=settings.workspace_root,
+        model_profiles=model_profile_service,
+        resource_stoppers={
+            "browser_sessions": browser_service,
+            "target_http_requests": target_http_service,
+        },
+        execution_cancel_timeout_seconds=0.2,
+        execution_cancel_poll_seconds=0.01,
+    )
     return RuntimeFixture(
         control_plane=ControlPlane(
             settings=settings,
             database=database,
-            run_service=RunApplicationService(
+            run_service=run_service,
+            pentest_service=PentestApplicationService(
+                creation_uow=SQLAlchemyPentestCreationUnitOfWork(database.session_factory),
                 engagement_repository=engagement_repository,
-                run_repository=run_repository,
                 event_repository=event_repository,
                 workflow_client=workflow_router,
-                execution_repository=execution_repository,
-                execution_runner=process_supervisor,
                 workspace_root=settings.workspace_root,
                 model_profiles=model_profile_service,
-                resource_stoppers={
-                    "browser_sessions": browser_service,
-                    "target_http_requests": target_http_service,
-                },
-                execution_cancel_timeout_seconds=0.2,
-                execution_cancel_poll_seconds=0.01,
-            ),
-            audit_service=AuditApplicationService(
-                creation_uow=SQLAlchemyAuditCreationUnitOfWork(database.session_factory),
-                aggregate_repository=audit_aggregate_repository,
-                feature_enabled=settings.audit.enabled,
-                workspace_root=settings.audit.temp_root,
-                legacy_draft_api_enabled=True,
+                capability_resolver=PentestCapabilityResolver(
+                    tools=registry,
+                    skills=skill_registry,
+                    capabilities=capability_repository,
+                    packs=official_pack_catalog,
+                ),
             ),
             action_service=ActionApplicationService(
                 SQLAlchemyActionReadRepository(database.session_factory),
@@ -829,8 +977,25 @@ tools:
             ),
             report_service=ReportApplicationService(
                 run_repository=run_repository,
+                engagement_repository=engagement_repository,
+                execution_repository=execution_repository,
                 finding_repository=finding_repository,
                 artifact_repository=artifact_repository,
+                evidence_repository=SQLAlchemyEvidenceLedgerRepository(
+                    database.session_factory
+                ),
+                reasoning_graph_repository=SQLAlchemyReasoningGraphRepository(
+                    database.session_factory
+                ),
+                task_graph_repository=SQLAlchemyTaskGraphRepository(
+                    database.session_factory
+                ),
+                working_memory_repository=SQLAlchemyWorkingMemoryRepository(
+                    database.session_factory
+                ),
+                pentest_status_reader=SQLAlchemyPentestStatusReader(
+                    database.session_factory
+                ),
                 report_repository=report_repository,
                 event_repository=event_repository,
                 artifact_service=artifact_service,
@@ -944,6 +1109,1907 @@ async def _create_run(client: httpx.AsyncClient) -> dict[str, object]:
     return response.json()
 
 
+def _pentest_request(
+    request_id: str,
+    *,
+    target: str = "http://127.0.0.1:8080",
+) -> dict[str, object]:
+    return {
+        "request_id": request_id,
+        "objective": "Assess the authorized local test service",
+        "model_profile": "fast",
+        "engagement": {
+            "name": "Authorized local Pentest",
+            "authorization_reference": "ticket://pentest-123",
+        },
+        "success_criteria": [
+            {"description": "Record supported service exposure", "required": True}
+        ],
+        "entry_points": [{"kind": "url", "value": target}],
+        "scope": {"ips": ["127.0.0.1"]},
+        "admission": {
+            "budget": {
+                "max_duration_seconds": 900,
+                "max_model_calls": 20,
+                "max_tokens": 100000,
+                "max_tool_calls": 50,
+                "max_target_interactions": 100,
+                "max_concurrent_target_interactions": 2,
+            }
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_pentest_create_is_dedicated_atomic_and_idempotent(tmp_path: Path) -> None:
+    runtime = await _build_runtime(tmp_path)
+    request_id = str(uuid4())
+    try:
+        async for client in _client(runtime.control_plane):
+            created = await client.post(
+                "/api/v1/pentests",
+                json=_pentest_request(request_id),
+            )
+            assert created.status_code == 201, created.text
+            run = created.json()
+            assert run["id"] == request_id
+            assert run["kind"] == "pentest"
+            assert run["status"] == "waiting_user"
+            assert run["model_profile"] == "fast"
+            assert run["temporal_workflow_id"] == f"riftx-pentest-{request_id}"
+            assert run["pentest_admission"]["budget"]["max_target_interactions"] == 100
+
+            session = await SQLAlchemyAgentSessionRepository(
+                runtime.control_plane.database.session_factory
+            ).get(f"{request_id}:primary")
+            assert session is not None
+            assert session.run_id == request_id
+            assert session.model_profile == "fast"
+
+            capability_store = SQLAlchemyCapabilitySelectionStore(
+                runtime.control_plane.database.session_factory
+            )
+            selections = await capability_store.list_selections(session.id)
+            assert [(item.kind, item.capability_id) for item in selections] == [
+                (CapabilityKind.SKILL, "pentest-foundation"),
+                (CapabilityKind.TECHNIQUE, "pentest-foundation.technique"),
+            ]
+            assert await capability_store.get_allowlist(
+                session.id, CapabilityKind.TOOL
+            ) == frozenset(PENTEST_FOUNDATION_TOOLS)
+            assert await capability_store.get_allowlist(
+                session.id, CapabilityKind.SKILL
+            ) == frozenset({"pentest-foundation"})
+            assert await capability_store.get_allowlist(
+                session.id, CapabilityKind.TECHNIQUE
+            ) == frozenset({"pentest-foundation.technique"})
+            async with runtime.control_plane.database.session_factory() as db_session:
+                locks = (
+                    await db_session.scalars(
+                        select(CapabilityPackLockRecord).where(
+                            CapabilityPackLockRecord.owner_kind
+                            == PackLockOwnerKind.RUN_SESSION.value,
+                            CapabilityPackLockRecord.owner_id == session.id,
+                        )
+                    )
+                ).all()
+            assert {lock.capability_id for lock in locks} == {
+                "pentest-foundation",
+                "pentest-foundation.technique",
+                "eval.pentest-foundation.baseline",
+            }
+
+            status_response = await client.get(f"/api/v1/pentests/{request_id}/status")
+            assert status_response.status_code == 200, status_response.text
+            pentest_status = status_response.json()
+            assert pentest_status["run"]["id"] == request_id
+            assert pentest_status["admission"] == run["pentest_admission"]
+            assert pentest_status["primary_session"] == {
+                "id": f"{request_id}:primary",
+                "agent_type": "primary",
+                "model_profile": "fast",
+                "status": "created",
+                "turn_count": 0,
+                "model_call_count": 0,
+                "tool_call_count": 0,
+                "created_at": run["created_at"],
+                "closed_at": None,
+            }
+            assert [
+                (item["kind"], item["capability_id"])
+                for item in pentest_status["capabilities"]["selections"]
+            ] == [
+                ("skill", "pentest-foundation"),
+                ("technique", "pentest-foundation.technique"),
+            ]
+            assert pentest_status["capabilities"]["allowlists"] == {
+                "tool": list(PENTEST_FOUNDATION_TOOLS),
+                "skill": ["pentest-foundation"],
+                "technique": ["pentest-foundation.technique"],
+            }
+            assert {
+                item["capability_id"]
+                for item in pentest_status["capabilities"]["pack_locks"]
+            } == {
+                "pentest-foundation",
+                "pentest-foundation.technique",
+                "eval.pentest-foundation.baseline",
+            }
+            assert pentest_status["budget"] | {"elapsed_seconds": 0} == {
+                "limits": run["pentest_admission"]["budget"],
+                "elapsed_seconds": 0,
+                "model_calls": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "tokens": 0,
+                "token_usage_complete": True,
+                "tool_calls": 0,
+                "observed_target_interactions": 0,
+                "active_target_interactions": 0,
+            }
+            assert pentest_status["workflow"] == {
+                "workflow_id": f"riftx-pentest-{request_id}",
+                "persisted_started": True,
+            }
+            assert pentest_status["runner"] == {
+                "execution_status_counts": {},
+                "node_ids": [],
+            }
+            assert pentest_status["stop"] == {
+                "latest_event_type": None,
+                "confirmed": False,
+                "workflow_synced": None,
+                "failed_resource_types": [],
+            }
+            assert pentest_status["attack_surface"]["declared_entry_points"] == run[
+                "entry_points"
+            ]
+            assert {
+                (item["kind"], item["value"], item["source_level"])
+                for item in pentest_status["attack_surface"]["nodes"]
+            } == {
+                ("asset", "127.0.0.1", "declared"),
+                ("service", "http://127.0.0.1:8080", "declared"),
+                ("endpoint", "http://127.0.0.1:8080/", "declared"),
+            }
+            assert pentest_status["attack_surface"]["truncated"] is False
+
+            events = await client.get(f"/api/v1/runs/{request_id}/events")
+            assert events.status_code == 200
+            items = events.json()["items"]
+            assert [item["event_type"] for item in items] == [
+                "run.created",
+                "conversation.context_ready",
+                "user.message_queued",
+                "workflow.started",
+            ]
+            message_event_id = items[2]["id"]
+            assert items[2]["payload"] == {
+                "message": "Assess the authorized local test service"
+            }
+            assert runtime.workflow.calls == [("message", request_id, message_event_id)]
+            assert runtime.workflow.workflow_ids == [
+                ("message", request_id, f"riftx-pentest-{request_id}")
+            ]
+
+            replay = await client.post(
+                "/api/v1/pentests",
+                json=_pentest_request(request_id),
+            )
+            assert replay.status_code == 201, replay.text
+            assert replay.json()["id"] == request_id
+            replay_events = await client.get(f"/api/v1/runs/{request_id}/events")
+            assert len(replay_events.json()["items"]) == 4
+            assert runtime.workflow.calls[-1] == ("message", request_id, message_event_id)
+
+            bypass = await client.post(
+                "/api/v1/runs",
+                json={"objective": "Bypass Pentest admission", "kind": "pentest"},
+            )
+            assert bypass.status_code == 422
+
+            general = await client.post(
+                "/api/v1/runs",
+                json={"objective": "General status type guard"},
+            )
+            assert general.status_code == 201, general.text
+            wrong_kind = await client.get(
+                f"/api/v1/pentests/{general.json()['id']}/status"
+            )
+            assert wrong_kind.status_code == 409
+            assert (
+                wrong_kind.json()["error"]["code"]
+                == "pentest_status_requires_pentest_run"
+            )
+            missing = await client.get("/api/v1/pentests/run-missing/status")
+            assert missing.status_code == 404
+            assert missing.json()["error"]["code"] == "resource_not_accessible"
+
+            stopped = await client.post(f"/api/v1/runs/{request_id}/cancel")
+            assert stopped.status_code == 202, stopped.text
+            assert stopped.json()["run"]["status"] == "cancelled"
+            stopped_status = await client.get(
+                f"/api/v1/pentests/{request_id}/status"
+            )
+            assert stopped_status.status_code == 200, stopped_status.text
+            assert stopped_status.json()["stop"] == {
+                "latest_event_type": "run.cancel_requested",
+                "confirmed": True,
+                "workflow_synced": True,
+                "failed_resource_types": [],
+            }
+    finally:
+        await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_pentest_status_is_rebuilt_after_control_plane_restart(
+    tmp_path: Path,
+) -> None:
+    request_id = str(uuid4())
+    first = await _build_runtime(tmp_path)
+    try:
+        async for client in _client(first.control_plane):
+            created = await client.post(
+                "/api/v1/pentests",
+                json=_pentest_request(request_id),
+            )
+            assert created.status_code == 201, created.text
+            observed_at = datetime.now(tz=UTC)
+            async with first.control_plane.database.session_factory() as session, session.begin():
+                session.add(
+                    TargetHttpRequestRecord(
+                        id="pentest-observed-request",
+                        execution_key=f"execution:v1:{'a' * 64}",
+                        run_id=request_id,
+                        session_id=f"{request_id}:primary",
+                        tool_call_id="pentest-observed-intent",
+                        node_id="node-local",
+                        method="GET",
+                        url="http://127.0.0.1:8080/login?secret=raw-value",
+                        request_json={
+                            "query": {"page": "1", "token": "raw-query-value"}
+                        },
+                        result_json={},
+                        request_artifact_id=None,
+                        response_artifact_id=None,
+                        created_at=observed_at,
+                    )
+                )
+            evidence_repository = SQLAlchemyEvidenceLedgerRepository(
+                first.control_plane.database.session_factory
+            )
+            for evidence_id, kind, target, digest in (
+                (
+                    "pentest-verified-evidence",
+                    EvidenceKind.HTTP_REQUEST_RESPONSE,
+                    "http://127.0.0.1:8080/login?token=verified-value",
+                    "b" * 64,
+                ),
+                (
+                    "pentest-scanner-signal",
+                    EvidenceKind.SCANNER_SIGNAL,
+                    "http://127.0.0.1:8080/login?scanner=unverified-value",
+                    "c" * 64,
+                ),
+            ):
+                locator = SourceLocator(uri=f"evidence-source://{evidence_id}")
+                await evidence_repository.create(
+                    Evidence(
+                        id=evidence_id,
+                        kind=kind,
+                        source_uri=locator.source_uri,
+                        digest=digest,
+                        run_id=request_id,
+                        session_id=f"{request_id}:primary",
+                        creator_type=EvidenceCreatorType.TOOL,
+                        created_by="pentest-test-tool",
+                        trust_class=EvidenceTrustClass.UNTRUSTED_TOOL_OUTPUT,
+                        scope=EvidenceScope(
+                            engagement_id=created.json()["engagement_id"],
+                            run_id=request_id,
+                            target_refs=(target,),
+                        ),
+                        redaction_status=EvidenceRedactionStatus.METADATA_ONLY,
+                        replay=EvidenceReplayMetadata(
+                            strategy=EvidenceReplayStrategy.NOT_REPLAYABLE,
+                            replayable=False,
+                            expected_digest=digest,
+                            reason="Integration projection fixture",
+                        ),
+                        locator=locator,
+                        created_at=observed_at,
+                    )
+                )
+    finally:
+        await first.control_plane.close()
+
+    restarted = await _build_runtime(tmp_path)
+    try:
+        async for client in _client(restarted.control_plane):
+            response = await client.get(f"/api/v1/pentests/{request_id}/status")
+            assert response.status_code == 200, response.text
+            payload = response.json()
+            assert payload["run"]["id"] == request_id
+            assert payload["primary_session"]["id"] == f"{request_id}:primary"
+            assert payload["workflow"] == {
+                "workflow_id": f"riftx-pentest-{request_id}",
+                "persisted_started": True,
+            }
+            assert payload["capabilities"]["allowlists"]["skill"] == [
+                "pentest-foundation"
+            ]
+            assert payload["attack_surface"]["declared_entry_points"] == [
+                {
+                    "kind": "url",
+                    "value": "http://127.0.0.1:8080",
+                    "metadata": {},
+                }
+            ]
+            nodes = {
+                (item["kind"], item["value"]): item
+                for item in payload["attack_surface"]["nodes"]
+            }
+            endpoint = nodes[("endpoint", "http://127.0.0.1:8080/login")]
+            token = nodes[("parameter", "http://127.0.0.1:8080/login?token=")]
+            assert endpoint["source_level"] == "verified"
+            assert endpoint["source_refs"] == [
+                "evidence:pentest-verified-evidence",
+                "target_http_request:pentest-observed-request",
+            ]
+            assert token["source_level"] == "verified"
+            assert nodes[("parameter", "http://127.0.0.1:8080/login?page=")][
+                "source_level"
+            ] == "observed"
+            assert nodes[("parameter", "http://127.0.0.1:8080/login?secret=")][
+                "source_level"
+            ] == "observed"
+            assert (
+                "parameter",
+                "http://127.0.0.1:8080/login?scanner=",
+            ) not in nodes
+            assert payload["attack_surface"]["truncated"] is False
+            serialized_nodes = json.dumps(payload["attack_surface"]["nodes"])
+            assert "raw-value" not in serialized_nodes
+            assert "raw-query-value" not in serialized_nodes
+            assert "verified-value" not in serialized_nodes
+            assert "unverified-value" not in serialized_nodes
+    finally:
+        await restarted.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_isolated_authorized_pentest_lifecycle_e2e(tmp_path: Path) -> None:
+    requests: list[str] = []
+
+    async def handle_target(
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        try:
+            headers = await reader.readuntil(b"\r\n\r\n")
+            request_line = headers.split(b"\r\n", maxsplit=1)[0].decode("ascii")
+            path = request_line.split(" ", maxsplit=2)[1]
+            requests.append(path)
+            if path.startswith("/fail"):
+                await reader.read()
+                return
+            body = b'{"service":"isolated-pentest-target"}'
+            writer.write(
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: application/json\r\n"
+                + f"Content-Length: {len(body)}\r\n".encode()
+                + b"Connection: close\r\n\r\n"
+                + body
+            )
+            await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    server = await asyncio.start_server(handle_target, "127.0.0.1", 0)
+    address = server.sockets[0].getsockname()
+    port = int(address[1])
+    database_path = tmp_path / "pentest-lifecycle.db"
+    run_id = str(uuid4())
+    session_id = f"{run_id}:primary"
+    target_base = f"http://127.0.0.1:{port}"
+    runtime = await _build_runtime(tmp_path, database_path=database_path)
+    try:
+        async for client in _client(runtime.control_plane):
+            missing_scope = _pentest_request(str(uuid4()), target=f"{target_base}/health")
+            missing_scope["scope"] = {"ips": []}
+            rejected_scope = await client.post("/api/v1/pentests", json=missing_scope)
+            assert rejected_scope.status_code == 409
+            assert rejected_scope.json()["error"]["code"] == "pentest_admission_invalid"
+
+            outside_admission = _pentest_request(
+                str(uuid4()),
+                target=f"http://127.0.0.2:{port}/health",
+            )
+            rejected_target = await client.post(
+                "/api/v1/pentests",
+                json=outside_admission,
+            )
+            assert rejected_target.status_code == 409
+            assert (
+                rejected_target.json()["error"]["code"]
+                == "pentest_entry_point_out_of_scope"
+            )
+            assert requests == []
+
+            admitted = _pentest_request(run_id, target=f"{target_base}/health")
+            admission = admitted["admission"]
+            assert isinstance(admission, dict)
+            budget = admission["budget"]
+            assert isinstance(budget, dict)
+            budget["max_target_interactions"] = 2
+            admitted["capabilities"] = {
+                "pack_ids": ["pentest-foundation", "web-request-analysis"]
+            }
+            created = await client.post("/api/v1/pentests", json=admitted)
+            assert created.status_code == 201, created.text
+            assert created.json()["kind"] == "pentest"
+            assert created.json()["temporal_workflow_id"] == f"riftx-pentest-{run_id}"
+            await SQLAlchemyRunRepository(
+                runtime.control_plane.database.session_factory
+            ).update_status(run_id, RunStatus.RUNNING)
+
+            status = await client.get(f"/api/v1/pentests/{run_id}/status")
+            assert status.status_code == 200, status.text
+            assert status.json()["capabilities"]["allowlists"]["tool"] == list(
+                dict.fromkeys((*PENTEST_FOUNDATION_TOOLS, *WEB_REQUEST_ANALYSIS_TOOLS))
+            )
+
+            cycle_repository = SQLAlchemyAgentCycleRepository(
+                runtime.control_plane.database.session_factory
+            )
+            step_repository = SQLAlchemyAgentStepRepository(
+                runtime.control_plane.database.session_factory
+            )
+            intent_repository = SQLAlchemyToolCallIntentRepository(
+                runtime.control_plane.database.session_factory
+            )
+            cycle = RuntimeAgentCycle(
+                id="pentest-lifecycle-cycle",
+                run_id=run_id,
+                session_id=session_id,
+                sequence=1,
+            )
+            await cycle_repository.create(cycle)
+
+            target_http = runtime.control_plane.target_http_service
+            assert target_http is not None
+            successful = await _create_pentest_target_intent(
+                cycle=cycle,
+                step_repository=step_repository,
+                intent_repository=intent_repository,
+                run_id=run_id,
+                session_id=session_id,
+                index=1,
+                target=f"{target_base}/health?token=private",
+            )
+            successful_result = await target_http.execute(
+                TargetHttpSubmission(
+                    run_id=run_id,
+                    session_id=session_id,
+                    tool_call_id=successful.id,
+                    node_id="local",
+                    request=TargetHttpRequest(
+                        execution_key=build_execution_key(
+                            run_id=run_id,
+                            session_id=session_id,
+                            tool_call_id=successful.id,
+                            attempt_group="initial",
+                        ),
+                        method="GET",
+                        url=f"{target_base}/health?token=private",
+                        query={"page": "1"},
+                    ),
+                )
+            )
+            assert successful_result.status_code == 200
+            assert successful_result.body_excerpt == '{"service":"isolated-pentest-target"}'
+
+            failed = await _create_pentest_target_intent(
+                cycle=cycle,
+                step_repository=step_repository,
+                intent_repository=intent_repository,
+                run_id=run_id,
+                session_id=session_id,
+                index=2,
+                target=f"{target_base}/fail",
+            )
+            with pytest.raises(TimeoutError):
+                await target_http.execute(
+                    TargetHttpSubmission(
+                        run_id=run_id,
+                        session_id=session_id,
+                        tool_call_id=failed.id,
+                        node_id="local",
+                        request=TargetHttpRequest(
+                            execution_key=build_execution_key(
+                                run_id=run_id,
+                                session_id=session_id,
+                                tool_call_id=failed.id,
+                                attempt_group="initial",
+                            ),
+                            method="GET",
+                            url=f"{target_base}/fail",
+                            timeout_seconds=0.1,
+                        ),
+                    )
+                )
+
+            outside = await _create_pentest_target_intent(
+                cycle=cycle,
+                step_repository=step_repository,
+                intent_repository=intent_repository,
+                run_id=run_id,
+                session_id=session_id,
+                index=3,
+                target=f"http://127.0.0.2:{port}/outside",
+            )
+            with pytest.raises(ScopeViolationError, match="outside authorized scope"):
+                await target_http.execute(
+                    TargetHttpSubmission(
+                        run_id=run_id,
+                        session_id=session_id,
+                        tool_call_id=outside.id,
+                        node_id="local",
+                        request=TargetHttpRequest(
+                            execution_key=build_execution_key(
+                                run_id=run_id,
+                                session_id=session_id,
+                                tool_call_id=outside.id,
+                                attempt_group="initial",
+                            ),
+                            method="GET",
+                            url=f"http://127.0.0.2:{port}/outside",
+                        ),
+                    )
+                )
+            assert requests == ["/health?token=private&page=1", "/fail"]
+
+            live_status = await client.get(f"/api/v1/pentests/{run_id}/status")
+            live_payload = live_status.json()
+            assert live_payload["budget"]["observed_target_interactions"] == 2
+            assert live_payload["budget"]["active_target_interactions"] == 0
+            nodes = {
+                (item["kind"], item["value"]): item
+                for item in live_payload["attack_surface"]["nodes"]
+            }
+            assert nodes[("endpoint", f"{target_base}/health")]["source_level"] == (
+                "observed"
+            )
+            assert ("parameter", f"{target_base}/health?token=") in nodes
+            assert ("parameter", f"{target_base}/health?page=") in nodes
+            assert "private" not in json.dumps(live_payload["attack_surface"])
+
+            exhausted = await _create_pentest_target_intent(
+                cycle=cycle,
+                step_repository=step_repository,
+                intent_repository=intent_repository,
+                run_id=run_id,
+                session_id=session_id,
+                index=4,
+                target=f"{target_base}/after-budget",
+            )
+            with pytest.raises(ApplicationConflictError) as exhausted_error:
+                await target_http.execute(
+                    TargetHttpSubmission(
+                        run_id=run_id,
+                        session_id=session_id,
+                        tool_call_id=exhausted.id,
+                        node_id="local",
+                        request=TargetHttpRequest(
+                            execution_key=build_execution_key(
+                                run_id=run_id,
+                                session_id=session_id,
+                                tool_call_id=exhausted.id,
+                                attempt_group="initial",
+                            ),
+                            method="GET",
+                            url=f"{target_base}/after-budget",
+                        ),
+                    )
+                )
+            assert exhausted_error.value.code == "pentest_budget_exhausted"
+            assert requests == ["/health?token=private&page=1", "/fail"]
+
+            events = await client.get(f"/api/v1/runs/{run_id}/events")
+            event_types = [item["event_type"] for item in events.json()["items"]]
+            assert "target_http.response_received" in event_types
+            assert "target_http.request_failed" in event_types
+            assert "pentest.budget_exhausted" in event_types
+            assert "run.pause_requested" in event_types
+
+            paused_status = await client.get(f"/api/v1/pentests/{run_id}/status")
+            assert paused_status.json()["run"]["status"] == "paused"
+            assert paused_status.json()["stop"] == {
+                "latest_event_type": "run.pause_requested",
+                "confirmed": True,
+                "workflow_synced": True,
+                "failed_resource_types": [],
+            }
+            assert paused_status.json()["budget"]["observed_target_interactions"] == 2
+    finally:
+        await runtime.control_plane.close()
+
+    restarted = await _build_runtime(tmp_path, database_path=database_path)
+    try:
+        async for client in _client(restarted.control_plane):
+            rebuilt = await client.get(f"/api/v1/pentests/{run_id}/status")
+            assert rebuilt.status_code == 200, rebuilt.text
+            assert rebuilt.json()["run"]["status"] == "paused"
+            assert rebuilt.json()["workflow"]["workflow_id"] == f"riftx-pentest-{run_id}"
+            assert rebuilt.json()["budget"]["observed_target_interactions"] == 2
+            assert any(
+                item["value"] == f"{target_base}/health"
+                and item["source_level"] == "observed"
+                for item in rebuilt.json()["attack_surface"]["nodes"]
+            )
+
+            resumed = await client.post(f"/api/v1/runs/{run_id}/resume")
+            assert resumed.status_code == 202, resumed.text
+            assert resumed.json()["run"]["status"] == "running"
+            stopped = await client.post(f"/api/v1/runs/{run_id}/cancel")
+            assert stopped.status_code == 202, stopped.text
+            assert stopped.json()["run"]["status"] == "cancelled"
+            stopped_status = await client.get(f"/api/v1/pentests/{run_id}/status")
+            assert stopped_status.json()["stop"] == {
+                "latest_event_type": "run.cancel_requested",
+                "confirmed": True,
+                "workflow_synced": True,
+                "failed_resource_types": [],
+            }
+    finally:
+        await restarted.control_plane.close()
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_service_enumeration_reaches_finding_and_precise_negative_result(
+    tmp_path: Path,
+) -> None:
+    requests: list[str] = []
+
+    async def handle_target(
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        try:
+            headers = await reader.readuntil(b"\r\n\r\n")
+            request_line = headers.split(b"\r\n", maxsplit=1)[0].decode("ascii")
+            requests.append(request_line)
+            method, path, _ = request_line.split(" ", maxsplit=2)
+            status = b"200 OK"
+            body = b""
+            if method == "GET" and path == "/diagnostics":
+                body = b'{"build":"fixture-1","environment":"test"}'
+            elif method == "GET" and path == "/missing":
+                status = b"404 Not Found"
+                body = b'{"error":"not_found"}'
+            writer.write(
+                b"HTTP/1.1 "
+                + status
+                + b"\r\nServer: RiftXFixture/1.0\r\nContent-Type: application/json\r\n"
+                + f"Content-Length: {len(body)}\r\n".encode()
+                + b"Connection: close\r\n\r\n"
+                + (body if method != "HEAD" else b"")
+            )
+            await writer.drain()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    server = await asyncio.start_server(handle_target, "127.0.0.1", 0)
+    port = int(server.sockets[0].getsockname()[1])
+    scanner = Path(__file__).parents[2] / "tools" / "fixtures" / "fake_nmap.py"
+    tools_path = tmp_path / "tools.yaml"
+    tools_path.write_text(
+        yaml.safe_dump(
+            {
+                "version": 1,
+                "execution_policy": "registered_only",
+                "tools": {
+                    "nmap": {
+                        "command": [sys.executable, str(scanner), "--fixture-probe"],
+                        "capabilities": ["port_scan", "service_detection"],
+                        "input_schema": {
+                            "type": "object",
+                            "required": ["target"],
+                            "properties": {
+                                "target": {"type": "string"},
+                                "ports": {"type": ["string", "null"]},
+                                "service_detection": {"type": "boolean"},
+                                "timeout_seconds": {"type": ["number", "null"]},
+                            },
+                            "additionalProperties": False,
+                        },
+                        "approval": "sensitive",
+                        "timeout": 5,
+                        "output": {"preferred": "xml"},
+                    }
+                },
+            },
+            sort_keys=False,
+        )
+    )
+    database_path = tmp_path / "service-enumeration.db"
+    run_id = str(uuid4())
+    session_id = f"{run_id}:primary"
+    runtime = await _build_runtime(tmp_path, database_path=database_path)
+    stdout_artifact_id = ""
+    evidence_id = ""
+    execution_id = ""
+    diagnostics_artifact_id = ""
+    diagnostics_evidence_id = ""
+    missing_artifact_id = ""
+    missing_evidence_id = ""
+    finding_id = ""
+    json_report_id = ""
+    json_report_artifact_id = ""
+    try:
+        registry = ToolRegistry(tools_path, node_id="local")
+        await registry.refresh()
+        session_repository = SQLAlchemyAgentSessionRepository(
+            runtime.control_plane.database.session_factory
+        )
+        intent_repository = SQLAlchemyToolCallIntentRepository(
+            runtime.control_plane.database.session_factory
+        )
+        cycle_repository = SQLAlchemyAgentCycleRepository(
+            runtime.control_plane.database.session_factory
+        )
+        step_repository = SQLAlchemyAgentStepRepository(
+            runtime.control_plane.database.session_factory
+        )
+        selection_store = SQLAlchemyCapabilitySelectionStore(
+            runtime.control_plane.database.session_factory
+        )
+
+        async for client in _client(runtime.control_plane):
+            request = _pentest_request(
+                run_id,
+                target=f"http://127.0.0.1:{port}",
+            )
+            admission = request["admission"]
+            assert isinstance(admission, dict)
+            budget = admission["budget"]
+            assert isinstance(budget, dict)
+            budget["max_target_interactions"] = 3
+            budget["max_concurrent_target_interactions"] = 1
+            request["capabilities"] = {
+                "pack_ids": [
+                    "pentest-foundation",
+                    "service-enumeration",
+                    "vulnerability-verification",
+                ],
+                "tool_ids": ["nmap"],
+            }
+            created = await client.post("/api/v1/pentests", json=request)
+            assert created.status_code == 201, created.text
+            await runtime.run_repository.update_status(run_id, RunStatus.RUNNING)
+
+            status = await client.get(f"/api/v1/pentests/{run_id}/status")
+            assert status.status_code == 200, status.text
+            assert status.json()["capabilities"]["allowlists"]["tool"] == list(
+                dict.fromkeys(
+                    (
+                        *PENTEST_FOUNDATION_TOOLS,
+                        *SERVICE_ENUMERATION_TOOLS,
+                        *VULNERABILITY_VERIFICATION_TOOLS,
+                        "nmap",
+                    )
+                )
+            )
+
+            session = await session_repository.get(session_id)
+            assert session is not None
+            tools = ToolContextManager(registry, store=selection_store)
+            execution_service = ExecutionService(
+                execution_repository=runtime.execution_repository,
+                session_repository=session_repository,
+                tool_call_repository=intent_repository,
+                runner=runtime.control_plane.process_supervisor,
+                event_repository=runtime.event_repository,
+                run_repository=runtime.run_repository,
+                budget_exhaustion_handler=runtime.control_plane.run_service.pause,
+            )
+            dispatcher = DeferredExecutionDispatcher(
+                tool_call_repository=intent_repository,
+                execution_service=execution_service,
+                resolver=RegistryDeferredExecutionResolver(
+                    runs=runtime.run_repository,
+                    registry=registry,
+                    tool_context=tools,
+                ),
+            )
+
+            async def prepare_scan(
+                *,
+                index: int,
+                target: str,
+                dispatcher: DeferredExecutionDispatcher = dispatcher,
+                session: AgentSession = session,
+            ) -> ToolCallIntent:
+                cycle = RuntimeAgentCycle(
+                    id=f"service-enumeration-cycle-{index}",
+                    run_id=run_id,
+                    session_id=session_id,
+                    sequence=index,
+                )
+                await cycle_repository.create(cycle)
+                step = AgentStep(
+                    id=f"service-enumeration-step-{index}",
+                    cycle_id=cycle.id,
+                    sequence=1,
+                    step_type=AgentStepType.TOOL_PROPOSAL,
+                )
+                await step_repository.create(step)
+                return await dispatcher.prepare(
+                    session=session,
+                    cycle=cycle,
+                    step=step,
+                    event=AgentEngineEvent(
+                        sequence=1,
+                        event_type=AgentEngineEventType.TOOL_CALL_READY,
+                        data={
+                            "call_id": f"service-enumeration-call-{index}",
+                            "tool_id": "run_registered_tool",
+                            "arguments": {
+                                "tool_id": "nmap",
+                                "target": target,
+                                "ports": str(port),
+                                "service_detection": True,
+                            },
+                            "approval_level": "sensitive",
+                            "approval_required": True,
+                        },
+                    ),
+                    status=ToolCallStatus.WAITING_APPROVAL,
+                )
+
+            async def prepare_http(
+                *,
+                index: int,
+                call_id: str,
+                arguments: dict[str, object],
+                dispatcher: DeferredExecutionDispatcher = dispatcher,
+                session: AgentSession = session,
+            ) -> ToolCallIntent:
+                cycle = RuntimeAgentCycle(
+                    id=f"service-verification-cycle-{index}",
+                    run_id=run_id,
+                    session_id=session_id,
+                    sequence=index,
+                )
+                await cycle_repository.create(cycle)
+                step = AgentStep(
+                    id=f"service-verification-step-{index}",
+                    cycle_id=cycle.id,
+                    sequence=1,
+                    step_type=AgentStepType.TOOL_PROPOSAL,
+                )
+                await step_repository.create(step)
+                return await dispatcher.prepare_control(
+                    session=session,
+                    cycle=cycle,
+                    step=step,
+                    event=AgentEngineEvent(
+                        sequence=1,
+                        event_type=AgentEngineEventType.TOOL_CALL_READY,
+                        data={
+                            "call_id": call_id,
+                            "tool_id": "target_http_request",
+                            "arguments": arguments,
+                            "approval_level": "always",
+                            "approval_policy": "explicit",
+                            "approval_required": True,
+                        },
+                    ),
+                )
+
+            with pytest.raises(ScopeViolationError, match="outside authorized scope"):
+                await prepare_scan(index=1, target="127.0.0.2")
+            assert requests == []
+            assert await runtime.execution_repository.list(run_id) == []
+
+            intent = await prepare_scan(index=2, target="127.0.0.1")
+            assert intent.status is ToolCallStatus.WAITING_APPROVAL
+            assert intent.target_summary == "127.0.0.1"
+            assert intent.execution_spec is not None
+            assert intent.execution_spec["argv"][-6:] == [
+                "-oX",
+                "-",
+                "-sV",
+                "-p",
+                str(port),
+                "127.0.0.1",
+            ]
+            assert requests == []
+
+            execution = await dispatcher.execute_approved_intent(intent.id)
+            completed = (await execution_service.wait(execution.id)).execution
+            execution_id = completed.id
+            assert completed.status is ExecutionStatus.COMPLETED
+            assert completed.exit_code == 0
+            assert requests == ["HEAD / HTTP/1.0"]
+
+            processed = await ToolResultProcessor(
+                ExecutionArtifactStore(runtime.control_plane.artifact_service)
+            ).process(completed, registry.snapshot.definitions["nmap"])
+            assert processed.parser == "nmap_xml"
+            assert processed.parser_error is None
+            assert processed.structured_result["open_port_count"] == 1
+            hosts = processed.structured_result["hosts"]
+            assert isinstance(hosts, list)
+            first_host = hosts[0]
+            assert isinstance(first_host, dict)
+            ports = first_host["ports"]
+            assert isinstance(ports, list)
+            assert ports[0] == {
+                "protocol": "tcp",
+                "port": port,
+                "state": "open",
+                "service": "http",
+                "product": "RiftX Fixture",
+                "version": "1.0",
+            }
+            stdout_artifact = next(
+                item for item in processed.raw_artifacts if item.stream.value == "stdout"
+            )
+            assert stdout_artifact.artifact_id is not None
+            stdout_artifact_id = stdout_artifact.artifact_id
+            context_item = processed_tool_result_context_item(processed)
+            assert context_item.content["artifact_ids"][stdout_artifact.uri] == (
+                stdout_artifact_id
+            )
+
+            evidence_ledger = SQLAlchemyEvidenceLedgerRepository(
+                runtime.control_plane.database.session_factory
+            )
+            reasoning_repository = SQLAlchemyReasoningGraphRepository(
+                runtime.control_plane.database.session_factory
+            )
+            evidence_service = EvidenceApplicationService(
+                runs=runtime.run_repository,
+                sessions=session_repository,
+                tasks=SQLAlchemyTaskGraphRepository(
+                    runtime.control_plane.database.session_factory
+                ),
+                artifacts=runtime.control_plane.artifact_service,
+                code=object(),  # type: ignore[arg-type]
+                ledger=evidence_ledger,
+            )
+            reasoning_service = ReasoningGraphApplicationService(
+                runs=runtime.run_repository,
+                sessions=session_repository,
+                tasks=SQLAlchemyTaskGraphRepository(
+                    runtime.control_plane.database.session_factory
+                ),
+                evidence=evidence_ledger,
+                graphs=reasoning_repository,
+            )
+            control_tools = RuntimeControlToolService(
+                tools=tools,
+                executions=execution_service,
+                artifacts=runtime.control_plane.artifact_service,
+                evidence=evidence_service,
+                events=runtime.event_repository,
+                transcript=SQLAlchemyTranscriptRepository(
+                    runtime.control_plane.database.session_factory
+                ),
+                runs=runtime.run_repository,
+                target_http=runtime.control_plane.target_http_service,
+                control_intents=dispatcher,
+                reasoning_proposals=reasoning_service,
+                findings=runtime.control_plane.finding_service,
+            )
+            scope = RuntimeToolScope(
+                run_id=run_id,
+                session_id=session_id,
+                agent_id="primary",
+                model_profile="fast",
+            )
+            registered = await control_tools(
+                scope,
+                "register_artifact_evidence",
+                {
+                    "artifact_id": stdout_artifact_id,
+                    "start_offset": 0,
+                    "end_offset": stdout_artifact.size,
+                },
+                "service-enumeration-evidence",
+            )
+            assert isinstance(registered, dict)
+            evidence_id = str(registered["evidence_id"])
+            observation = await control_tools(
+                scope,
+                "record_observation",
+                {
+                    "expected_graph_version": 0,
+                    "node_id": "service-endpoint-observation",
+                    "claim": f"127.0.0.1:{port}/tcp is reachable and reported as HTTP",
+                    "structured_data": {
+                        "target": "127.0.0.1",
+                        "port": port,
+                        "transport": "tcp",
+                        "state": "open",
+                        "service": "http",
+                        "product": "RiftX Fixture",
+                        "version": "1.0",
+                        "confidence": "scanner_reported",
+                    },
+                    "evidence_ids": [evidence_id],
+                },
+                "service-enumeration-observation",
+            )
+            assert isinstance(observation, dict)
+            hypothesis = await control_tools(
+                scope,
+                "propose_hypothesis",
+                {
+                    "expected_graph_version": observation["graph_version"],
+                    "node_id": "service-http-hypothesis",
+                    "claim": (
+                        f"The reachable service on 127.0.0.1:{port} likely speaks HTTP "
+                        "and requires a minimal protocol verification"
+                    ),
+                    "structured_data": {
+                        "verification": "minimal_http_request",
+                        "status": "not_yet_verified",
+                    },
+                    "evidence_ids": [evidence_id],
+                },
+                "service-enumeration-hypothesis",
+            )
+            assert isinstance(hypothesis, dict)
+            assert hypothesis["node"]["kind"] == "hypothesis"
+            assert hypothesis["node"]["status"] == "unverified"
+
+            diagnostics_arguments: dict[str, object] = {
+                "method": "GET",
+                "url": f"http://127.0.0.1:{port}/diagnostics",
+            }
+            diagnostics_intent = await prepare_http(
+                index=3,
+                call_id="diagnostics-http-call",
+                arguments=diagnostics_arguments,
+            )
+            assert diagnostics_intent.status is ToolCallStatus.WAITING_APPROVAL
+            assert requests == ["HEAD / HTTP/1.0"]
+            await dispatcher.approve_intent(diagnostics_intent.id)
+            assert requests == ["HEAD / HTTP/1.0"]
+            diagnostics_result = await control_tools(
+                scope,
+                "target_http_request",
+                diagnostics_arguments,
+                "diagnostics-http-call",
+            )
+            assert isinstance(diagnostics_result, dict)
+            assert diagnostics_result["status_code"] == 200
+            assert diagnostics_result["response_excerpt"] == (
+                '{"build":"fixture-1","environment":"test"}'
+            )
+            diagnostics_artifact_id = str(diagnostics_result["response_artifact_id"])
+            assert await runtime.artifact_repository.get(diagnostics_artifact_id) is None
+            diagnostics_artifact = (
+                await runtime.control_plane.artifact_service.get_target_http_for_evidence(
+                    diagnostics_artifact_id,
+                    expected_run_id=run_id,
+                )
+            )
+            diagnostics_registered = await control_tools(
+                scope,
+                "register_artifact_evidence",
+                {
+                    "artifact_id": diagnostics_artifact_id,
+                    "start_offset": 0,
+                    "end_offset": diagnostics_artifact.size,
+                },
+                "diagnostics-evidence-call",
+            )
+            assert isinstance(diagnostics_registered, dict)
+            diagnostics_evidence_id = str(diagnostics_registered["evidence_id"])
+            diagnostics_observation = await control_tools(
+                scope,
+                "record_observation",
+                {
+                    "expected_graph_version": hypothesis["graph_version"],
+                    "node_id": "diagnostics-disclosure-observation",
+                    "claim": ("GET /diagnostics returned deployment metadata without credentials"),
+                    "structured_data": {
+                        "path": "/diagnostics",
+                        "status_code": 200,
+                        "authentication": "not_required",
+                    },
+                    "evidence_ids": [diagnostics_evidence_id],
+                },
+                "diagnostics-observation-call",
+            )
+            assert isinstance(diagnostics_observation, dict)
+            candidate = await control_tools(
+                scope,
+                "propose_finding",
+                {
+                    "expected_graph_version": diagnostics_observation["graph_version"],
+                    "node_id": "diagnostics-disclosure-candidate",
+                    "claim": "Anonymous diagnostics disclose deployment metadata",
+                    "structured_data": {
+                        "path": "/diagnostics",
+                        "severity": "low",
+                    },
+                    "evidence_ids": [diagnostics_evidence_id],
+                },
+                "diagnostics-candidate-call",
+            )
+            assert isinstance(candidate, dict)
+            finding_arguments = {
+                "reasoning_node_id": "diagnostics-disclosure-candidate",
+                "title": "Anonymous diagnostics disclosure",
+                "severity": "low",
+                "affected_assets": [f"http://127.0.0.1:{port}/diagnostics"],
+                "description": (
+                    "The diagnostics endpoint returns deterministic deployment metadata "
+                    "without authentication."
+                ),
+                "evidence": [
+                    {
+                        "artifact_id": diagnostics_artifact_id,
+                        "description": "HTTP 200 diagnostics response",
+                        "location": f"http://127.0.0.1:{port}/diagnostics",
+                    }
+                ],
+                "reproduction_steps": [
+                    f"Send GET http://127.0.0.1:{port}/diagnostics without credentials"
+                ],
+                "impact": "An unauthenticated client can learn deployment metadata.",
+                "recommendation": "Remove the endpoint or require authentication.",
+            }
+            draft = await control_tools(
+                scope,
+                "create_finding",
+                finding_arguments,
+                "diagnostics-finding-call",
+            )
+            replayed_draft = await control_tools(
+                scope,
+                "create_finding",
+                finding_arguments,
+                "diagnostics-finding-call",
+            )
+            assert isinstance(draft, dict)
+            assert replayed_draft == draft
+            finding_id = str(draft["id"])
+            assert draft["status"] == "draft"
+            assert len(await runtime.finding_repository.list(run_id)) == 1
+
+            missing_hypothesis = await control_tools(
+                scope,
+                "propose_hypothesis",
+                {
+                    "expected_graph_version": candidate["graph_version"],
+                    "node_id": "missing-path-hypothesis",
+                    "claim": "The exact path /missing may expose another diagnostic response",
+                    "structured_data": {
+                        "path": "/missing",
+                        "expected_status": 200,
+                    },
+                    "evidence_ids": [evidence_id],
+                },
+                "missing-hypothesis-call",
+            )
+            assert isinstance(missing_hypothesis, dict)
+            missing_arguments: dict[str, object] = {
+                "method": "GET",
+                "url": f"http://127.0.0.1:{port}/missing",
+            }
+            missing_intent = await prepare_http(
+                index=4,
+                call_id="missing-http-call",
+                arguments=missing_arguments,
+            )
+            assert requests == [
+                "HEAD / HTTP/1.0",
+                "GET /diagnostics HTTP/1.1",
+            ]
+            await dispatcher.approve_intent(missing_intent.id)
+            missing_result = await control_tools(
+                scope,
+                "target_http_request",
+                missing_arguments,
+                "missing-http-call",
+            )
+            assert isinstance(missing_result, dict)
+            assert missing_result["status_code"] == 404
+            assert missing_result["response_excerpt"] == '{"error":"not_found"}'
+            missing_artifact_id = str(missing_result["response_artifact_id"])
+            assert await runtime.artifact_repository.get(missing_artifact_id) is None
+            missing_artifact = (
+                await runtime.control_plane.artifact_service.get_target_http_for_evidence(
+                    missing_artifact_id,
+                    expected_run_id=run_id,
+                )
+            )
+            missing_registered = await control_tools(
+                scope,
+                "register_artifact_evidence",
+                {
+                    "artifact_id": missing_artifact_id,
+                    "start_offset": 0,
+                    "end_offset": missing_artifact.size,
+                },
+                "missing-evidence-call",
+            )
+            assert isinstance(missing_registered, dict)
+            missing_evidence_id = str(missing_registered["evidence_id"])
+            negative = await control_tools(
+                scope,
+                "record_negative_result",
+                {
+                    "expected_graph_version": missing_hypothesis["graph_version"],
+                    "node_id": "missing-path-negative-result",
+                    "claim": "GET /missing returned 404 and disproved only that exact path guess",
+                    "structured_data": {
+                        "path": "/missing",
+                        "status_code": 404,
+                        "scope_of_conclusion": "exact_path_only",
+                    },
+                    "evidence_ids": [missing_evidence_id],
+                    "invalidated_node_id": "missing-path-hypothesis",
+                },
+                "missing-negative-call",
+            )
+            assert isinstance(negative, dict)
+            assert negative["node"]["kind"] == "negative_result"
+
+            live_status = await client.get(f"/api/v1/pentests/{run_id}/status")
+            assert live_status.status_code == 200, live_status.text
+            assert live_status.json()["budget"]["observed_target_interactions"] == 3
+
+            exhausted = await prepare_scan(index=5, target="127.0.0.1")
+            with pytest.raises(ApplicationConflictError) as captured:
+                await dispatcher.execute_approved_intent(exhausted.id)
+            assert captured.value.code == "pentest_budget_exhausted"
+            assert requests == [
+                "HEAD / HTTP/1.0",
+                "GET /diagnostics HTTP/1.1",
+                "GET /missing HTTP/1.1",
+            ]
+            paused = await client.get(f"/api/v1/pentests/{run_id}/status")
+            assert paused.json()["run"]["status"] == "paused"
+            assert paused.json()["budget"]["observed_target_interactions"] == 3
+            assert (await client.post(f"/api/v1/runs/{run_id}/resume")).status_code == 202
+    finally:
+        await runtime.control_plane.close()
+
+    restarted = await _build_runtime(tmp_path, database_path=database_path)
+    try:
+        assert await restarted.execution_repository.get(execution_id) is not None
+        artifact = await restarted.artifact_repository.get(stdout_artifact_id)
+        assert artifact is not None
+        evidence = await SQLAlchemyEvidenceLedgerRepository(
+            restarted.control_plane.database.session_factory
+        ).get(evidence_id)
+        assert evidence is not None
+        assert evidence.artifact_id == stdout_artifact_id
+        evidence_ledger = SQLAlchemyEvidenceLedgerRepository(
+            restarted.control_plane.database.session_factory
+        )
+        diagnostics_evidence = await evidence_ledger.get(diagnostics_evidence_id)
+        missing_evidence = await evidence_ledger.get(missing_evidence_id)
+        assert diagnostics_evidence is not None
+        assert diagnostics_evidence.artifact_id == diagnostics_artifact_id
+        assert missing_evidence is not None
+        assert missing_evidence.artifact_id == missing_artifact_id
+        assert await restarted.artifact_repository.get(diagnostics_artifact_id) is None
+        assert await restarted.artifact_repository.get(missing_artifact_id) is None
+        assert (
+            await restarted.control_plane.artifact_service.get_target_http_for_evidence(
+                diagnostics_artifact_id,
+                expected_run_id=run_id,
+            )
+        ).id == diagnostics_artifact_id
+        assert (
+            await restarted.control_plane.artifact_service.get_target_http_for_evidence(
+                missing_artifact_id,
+                expected_run_id=run_id,
+            )
+        ).id == missing_artifact_id
+        graph = await SQLAlchemyReasoningGraphRepository(
+            restarted.control_plane.database.session_factory
+        ).get(run_id)
+        assert graph is not None
+        assert [(node.id, node.kind.value, node.status.value) for node in graph.nodes] == [
+            ("service-endpoint-observation", "observation", "recorded"),
+            ("service-http-hypothesis", "hypothesis", "unverified"),
+            ("diagnostics-disclosure-observation", "observation", "recorded"),
+            (
+                "diagnostics-disclosure-candidate",
+                "vulnerability_candidate",
+                "candidate",
+            ),
+            ("missing-path-hypothesis", "hypothesis", "unverified"),
+            ("missing-path-negative-result", "negative_result", "recorded"),
+        ]
+        assert graph.nodes[0].evidence_ids == graph.nodes[1].evidence_ids == (evidence_id,)
+        assert (
+            graph.nodes[2].evidence_ids == graph.nodes[3].evidence_ids == (diagnostics_evidence_id,)
+        )
+        assert graph.nodes[4].evidence_ids == (evidence_id,)
+        assert graph.nodes[5].evidence_ids == (missing_evidence_id,)
+        assert [
+            (
+                edge.source_node_id,
+                edge.target_node_id,
+                edge.relation_type.value,
+            )
+            for edge in graph.edges
+        ] == [
+            (
+                "missing-path-negative-result",
+                "missing-path-hypothesis",
+                "invalidates",
+            )
+        ]
+        findings = await restarted.finding_repository.list(run_id)
+        assert len(findings) == 1
+        assert findings[0].id == finding_id
+        assert findings[0].status.value == "draft"
+        assert [item.artifact_id for item in findings[0].evidence] == [
+            diagnostics_artifact_id,
+            None,
+        ]
+        assert findings[0].evidence[-1].location == ("reasoning://diagnostics-disclosure-candidate")
+
+        current = await restarted.run_repository.get(run_id)
+        assert current is not None
+        if current.status is RunStatus.PAUSED:
+            await restarted.run_repository.update_status(run_id, RunStatus.RUNNING)
+        await restarted.run_repository.update_status(run_id, RunStatus.COMPLETING)
+        closure_verifier = ClosureVerifierApplicationService(
+            runs=restarted.run_repository,
+            task_graphs=SQLAlchemyTaskGraphRepository(
+                restarted.control_plane.database.session_factory
+            ),
+            reasoning_graphs=SQLAlchemyReasoningGraphRepository(
+                restarted.control_plane.database.session_factory
+            ),
+            evidence=evidence_ledger,
+        )
+        closure = await closure_verifier.verify(run_id)
+        await restarted.event_repository.append(
+            run_id,
+            "run.closure_evaluated",
+            closure_event_payload(closure),
+            event_id=closure_event_id(closure),
+        )
+        await restarted.run_repository.update_status(run_id, RunStatus.COMPLETED)
+
+        async for client in _client(restarted.control_plane):
+            generated = await client.post(
+                f"/api/v1/runs/{run_id}/reports",
+                json={"formats": ["json"]},
+            )
+            assert generated.status_code == 201, generated.text
+            report = generated.json()["items"][0]
+            json_report_id = str(report["id"])
+            json_report_artifact_id = str(report["artifact_id"])
+            content = await client.get(str(report["content_url"]))
+            assert content.status_code == 200, content.text
+            payload = content.json()
+            assert payload["schema_version"] == "riftx.report.v2"
+            source = payload["source"]
+            assert source["run_status"] == "completed"
+            assert source["closure_outcome"] == "partial"
+            assert set(source["closure_reason_codes"]) == {
+                "success_criterion_unmapped",
+                "task_graph_missing",
+            }
+            assert source["engagement"]["authorization_reference_present"] is True
+            assert source["engagement"]["authorization_reference_scheme"] == "ticket"
+            pentest = source["pentest"]
+            assert pentest["budget"]["limits"]["max_target_interactions"] == 3
+            assert pentest["budget"]["observed_target_interactions"] == 3
+            assert pentest["stop"] == {
+                "latest_event_type": "run.pause_requested",
+                "confirmed": True,
+                "workflow_synced": True,
+                "failed_resource_types": [],
+            }
+            budget_stop = next(
+                item
+                for item in source["key_events"]
+                if item["event_type"] == "pentest.budget_exhausted"
+            )
+            assert budget_stop["payload"] == {
+                "budget_name": "max_target_interactions",
+                "limit": 3,
+                "used": 3,
+                "reason": "exhausted",
+            }
+            assert pentest["executions"][0]["id"] == execution_id
+            assert pentest["executions"][0]["status"] == "completed"
+            assert {item["id"] for item in pentest["evidence"]} == {
+                evidence_id,
+                diagnostics_evidence_id,
+                missing_evidence_id,
+            }
+            assert [
+                (item["id"], item["kind"], item["status"]) for item in pentest["reasoning_nodes"]
+            ] == [
+                ("service-endpoint-observation", "observation", "recorded"),
+                ("service-http-hypothesis", "hypothesis", "unverified"),
+                ("diagnostics-disclosure-observation", "observation", "recorded"),
+                (
+                    "diagnostics-disclosure-candidate",
+                    "vulnerability_candidate",
+                    "candidate",
+                ),
+                ("missing-path-hypothesis", "hypothesis", "unverified"),
+                ("missing-path-negative-result", "negative_result", "recorded"),
+            ]
+            assert pentest["reasoning_edges"] == [
+                {
+                    "source_node_id": "missing-path-negative-result",
+                    "target_node_id": "missing-path-hypothesis",
+                    "relation_type": "invalidates",
+                    "evidence_ids": [missing_evidence_id],
+                }
+            ]
+            assert source["findings"][0]["id"] == finding_id
+            assert source["findings"][0]["status"] == "draft"
+            assert source["findings"][0]["evidence"][0]["content_url"] is None
+            assert diagnostics_artifact_id not in {item["id"] for item in source["artifacts"]}
+            assert missing_artifact_id not in {item["id"] for item in source["artifacts"]}
+            serialized = json.dumps(payload, sort_keys=True)
+            assert "ticket://pentest-123" not in serialized
+            assert '{"build":"fixture-1","environment":"test"}' not in serialized
+            assert '{"error":"not_found"}' not in serialized
+            assert str(tmp_path) not in serialized
+    finally:
+        await restarted.control_plane.close()
+
+    replayed = await _build_runtime(tmp_path, database_path=database_path)
+    try:
+        source = await replayed.control_plane.report_service.build_source(run_id)
+        assert source.pentest is not None
+        assert [item.id for item in source.findings] == [finding_id]
+        assert any(item.kind == "negative_result" for item in source.pentest.reasoning_nodes)
+        reused = await replayed.control_plane.report_service.generate(
+            run_id,
+            GenerateReports(formats=[ReportFormat.JSON], reuse_existing=True),
+        )
+        assert [(item.id, item.artifact_id) for item in reused] == [
+            (json_report_id, json_report_artifact_id)
+        ]
+        assert len(await replayed.finding_repository.list(run_id)) == 1
+    finally:
+        await replayed.control_plane.close()
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_pentest_status_projects_durable_usage_and_runner_state(
+    tmp_path: Path,
+) -> None:
+    runtime = await _build_runtime(tmp_path)
+    request_id = str(uuid4())
+    session_id = f"{request_id}:primary"
+    try:
+        async for client in _client(runtime.control_plane):
+            created = await client.post(
+                "/api/v1/pentests",
+                json=_pentest_request(request_id),
+            )
+            assert created.status_code == 201, created.text
+
+            database = runtime.control_plane.database
+            session_repository = SQLAlchemyAgentSessionRepository(database.session_factory)
+            primary = await session_repository.get(session_id)
+            assert primary is not None
+            await session_repository.save(
+                primary.model_copy(update={"model_call_count": 1, "tool_call_count": 1})
+            )
+            manifest = ContextManifest.empty(
+                run_id=request_id,
+                session_id=session_id,
+                agent_id="primary",
+                model_profile="fast",
+                purpose="pentest-cycle",
+            )
+            await SQLAlchemyContextCompilationRepository(database.session_factory).create(
+                ContextCompilation(
+                    id=f"{request_id}:context:1",
+                    run_id=request_id,
+                    session_id=session_id,
+                    agent_id="primary",
+                    model_profile="fast",
+                    purpose="pentest-cycle",
+                    manifest=manifest,
+                    actual_input_tokens=120,
+                    actual_output_tokens=30,
+                )
+            )
+            cycle_id = f"{request_id}:cycle:1"
+            step_id = f"{request_id}:step:1"
+            intent_id = f"{request_id}:intent:1"
+            await SQLAlchemyAgentCycleRepository(database.session_factory).create(
+                RuntimeAgentCycle(
+                    id=cycle_id,
+                    run_id=request_id,
+                    session_id=session_id,
+                    sequence=1,
+                )
+            )
+            await SQLAlchemyAgentStepRepository(database.session_factory).create(
+                AgentStep(
+                    id=step_id,
+                    cycle_id=cycle_id,
+                    sequence=1,
+                    step_type=AgentStepType.TOOL_EXECUTION,
+                )
+            )
+            await SQLAlchemyToolCallIntentRepository(database.session_factory).create(
+                ToolCallIntent(
+                    id=intent_id,
+                    run_id=request_id,
+                    session_id=session_id,
+                    cycle_id=cycle_id,
+                    step_id=step_id,
+                    tool_id="python",
+                    target_summary="url:http://127.0.0.1:8080",
+                    status=ToolCallStatus.EXECUTING,
+                )
+            )
+            await runtime.execution_repository.create_if_absent(
+                Execution(
+                    id=f"{request_id}:execution:1",
+                    execution_key=f"{request_id}:execution-key:1",
+                    run_id=request_id,
+                    session_id=session_id,
+                    tool_call_id=intent_id,
+                    node_id="local",
+                    executor_type=ExecutorType.PROCESS,
+                    argv=["python", "probe.py"],
+                    cwd=str(tmp_path),
+                    status=ExecutionStatus.RUNNING,
+                    started_at=datetime.now(UTC),
+                    stdout_path=str(tmp_path / "stdout.log"),
+                    stderr_path=str(tmp_path / "stderr.log"),
+                )
+            )
+
+            response = await client.get(f"/api/v1/pentests/{request_id}/status")
+            assert response.status_code == 200, response.text
+            payload = response.json()
+            assert payload["budget"] | {"elapsed_seconds": 0} == {
+                "limits": created.json()["pentest_admission"]["budget"],
+                "elapsed_seconds": 0,
+                "model_calls": 1,
+                "input_tokens": 120,
+                "output_tokens": 30,
+                "tokens": 150,
+                "token_usage_complete": True,
+                "tool_calls": 1,
+                "observed_target_interactions": 1,
+                "active_target_interactions": 1,
+            }
+            assert payload["runner"] == {
+                "execution_status_counts": {"running": 1},
+                "node_ids": ["local"],
+            }
+    finally:
+        await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_pentest_status_aggregates_active_failed_and_child_usage_after_restart(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "pentest-run-usage.db"
+    runtime = await _build_runtime(tmp_path, database_path=database_path)
+    request_id = str(uuid4())
+    primary_session_id = f"{request_id}:primary"
+    child_session_id = f"{request_id}:child"
+    try:
+        async for client in _client(runtime.control_plane):
+            created = await client.post(
+                "/api/v1/pentests",
+                json=_pentest_request(request_id),
+            )
+            assert created.status_code == 201, created.text
+
+            database = runtime.control_plane.database
+            sessions = SQLAlchemyAgentSessionRepository(database.session_factory)
+            cycles = SQLAlchemyAgentCycleRepository(database.session_factory)
+            contexts = SQLAlchemyContextCompilationRepository(database.session_factory)
+
+            primary = await sessions.get(primary_session_id)
+            assert primary is not None
+            await sessions.save(
+                primary.model_copy(update={"model_call_count": 1, "tool_call_count": 2})
+            )
+            await cycles.create(
+                RuntimeAgentCycle(
+                    id=f"{request_id}:primary:yielded",
+                    run_id=request_id,
+                    session_id=primary_session_id,
+                    sequence=1,
+                    status=CycleStatus.YIELDED,
+                    yield_reason=YieldReason.CYCLE_LIMIT_REACHED,
+                    model_call_count=1,
+                    tool_call_count=2,
+                )
+            )
+            await cycles.create(
+                RuntimeAgentCycle(
+                    id=f"{request_id}:primary:running",
+                    run_id=request_id,
+                    session_id=primary_session_id,
+                    sequence=2,
+                    status=CycleStatus.RUNNING,
+                    model_call_count=2,
+                    tool_call_count=1,
+                )
+            )
+            await sessions.create(
+                AgentSession(
+                    id=child_session_id,
+                    run_id=request_id,
+                    parent_session_id=primary_session_id,
+                    agent_type="specialist",
+                    model_profile="fast",
+                    status=SessionStatus.ACTIVE,
+                    model_call_count=3,
+                    tool_call_count=4,
+                )
+            )
+            await cycles.create(
+                RuntimeAgentCycle(
+                    id=f"{request_id}:child:yielded",
+                    run_id=request_id,
+                    session_id=child_session_id,
+                    sequence=1,
+                    status=CycleStatus.YIELDED,
+                    yield_reason=YieldReason.CYCLE_LIMIT_REACHED,
+                    model_call_count=3,
+                    tool_call_count=4,
+                )
+            )
+            await cycles.create(
+                RuntimeAgentCycle(
+                    id=f"{request_id}:child:failed",
+                    run_id=request_id,
+                    session_id=child_session_id,
+                    sequence=2,
+                    status=CycleStatus.FAILED,
+                    model_call_count=1,
+                    tool_call_count=2,
+                )
+            )
+
+            for index in range(7):
+                context_session_id = primary_session_id if index < 3 else child_session_id
+                manifest = ContextManifest.empty(
+                    run_id=request_id,
+                    session_id=context_session_id,
+                    agent_id="primary" if index < 3 else "specialist",
+                    model_profile="fast",
+                    purpose="pentest-cycle",
+                )
+                await contexts.create(
+                    ContextCompilation(
+                        id=f"{request_id}:context:{index}",
+                        run_id=request_id,
+                        session_id=context_session_id,
+                        agent_id="primary" if index < 3 else "specialist",
+                        model_profile="fast",
+                        purpose="pentest-cycle",
+                        manifest=manifest,
+                        actual_input_tokens=10,
+                        actual_output_tokens=2,
+                    )
+                )
+            incomplete_manifest = ContextManifest.empty(
+                run_id=request_id,
+                session_id=child_session_id,
+                agent_id="specialist",
+                model_profile="fast",
+                purpose="pentest-cycle",
+            )
+            await contexts.create(
+                ContextCompilation(
+                    id=f"{request_id}:context:incomplete",
+                    run_id=request_id,
+                    session_id=child_session_id,
+                    agent_id="specialist",
+                    model_profile="fast",
+                    purpose="pentest-cycle",
+                    manifest=incomplete_manifest,
+                    actual_input_tokens=5,
+                )
+            )
+
+            response = await client.get(f"/api/v1/pentests/{request_id}/status")
+            assert response.status_code == 200, response.text
+            payload = response.json()
+            assert payload["primary_session"]["model_call_count"] == 1
+            assert payload["primary_session"]["tool_call_count"] == 2
+            assert payload["budget"]["model_calls"] == 7
+            assert payload["budget"]["tool_calls"] == 9
+            assert payload["budget"]["input_tokens"] == 75
+            assert payload["budget"]["output_tokens"] == 14
+            assert payload["budget"]["token_usage_complete"] is False
+    finally:
+        await runtime.control_plane.close()
+
+    restarted = await _build_runtime(tmp_path, database_path=database_path)
+    try:
+        async for client in _client(restarted.control_plane):
+            response = await client.get(f"/api/v1/pentests/{request_id}/status")
+            assert response.status_code == 200, response.text
+            budget = response.json()["budget"]
+            assert budget["model_calls"] == 7
+            assert budget["tool_calls"] == 9
+            assert budget["input_tokens"] == 75
+            assert budget["output_tokens"] == 14
+            assert budget["token_usage_complete"] is False
+    finally:
+        await restarted.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_pentest_create_rejects_missing_authorization_and_out_of_scope_target(
+    tmp_path: Path,
+) -> None:
+    runtime = await _build_runtime(tmp_path)
+    try:
+        async for client in _client(runtime.control_plane):
+            missing_authorization = _pentest_request(str(uuid4()))
+            engagement = missing_authorization["engagement"]
+            assert isinstance(engagement, dict)
+            engagement["authorization_reference"] = "  "
+            response = await client.post(
+                "/api/v1/pentests",
+                json=missing_authorization,
+            )
+            assert response.status_code == 409
+            assert response.json()["error"]["code"] == "pentest_authorization_required"
+
+            unauthorized_engagement = Engagement(name="Missing authorization")
+            await SQLAlchemyEngagementRepository(
+                runtime.control_plane.database.session_factory
+            ).create(unauthorized_engagement)
+            existing_engagement_request = _pentest_request(str(uuid4()))
+            existing_engagement_request.pop("engagement")
+            existing_engagement_request["engagement_id"] = unauthorized_engagement.id
+            existing_response = await client.post(
+                "/api/v1/pentests",
+                json=existing_engagement_request,
+            )
+            assert existing_response.status_code == 409
+            assert (
+                existing_response.json()["error"]["code"]
+                == "pentest_authorization_required"
+            )
+
+            outside = await client.post(
+                "/api/v1/pentests",
+                json=_pentest_request(str(uuid4()), target="http://10.0.0.1"),
+            )
+            assert outside.status_code == 409
+            assert outside.json()["error"]["code"] == "pentest_entry_point_out_of_scope"
+
+            weakened_contract = _pentest_request(str(uuid4()))
+            admission = weakened_contract["admission"]
+            assert isinstance(admission, dict)
+            admission["prohibited_actions"] = ["denial_of_service"]
+            weakened = await client.post(
+                "/api/v1/pentests",
+                json=weakened_contract,
+            )
+            assert weakened.status_code == 422
+
+            unknown_pack_request = _pentest_request(str(uuid4()))
+            unknown_pack_request["capabilities"] = {"pack_ids": ["missing-pack"]}
+            unknown_pack = await client.post(
+                "/api/v1/pentests",
+                json=unknown_pack_request,
+            )
+            assert unknown_pack.status_code == 409
+            assert (
+                unknown_pack.json()["error"]["code"]
+                == "pentest_capability_pack_not_found"
+            )
+
+            listed = await client.get("/api/v1/runs", params={"kind": "pentest"})
+            assert listed.status_code == 200
+            assert listed.json()["items"] == []
+            assert runtime.workflow.calls == []
+    finally:
+        await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_pentest_create_pins_explicit_dynamic_tool(tmp_path: Path) -> None:
+    runtime = await _build_runtime(tmp_path)
+    request_id = str(uuid4())
+    try:
+        async for client in _client(runtime.control_plane):
+            request = _pentest_request(request_id)
+            request["capabilities"] = {"tool_ids": ["python"]}
+            response = await client.post("/api/v1/pentests", json=request)
+            assert response.status_code == 201, response.text
+
+            store = SQLAlchemyCapabilitySelectionStore(
+                runtime.control_plane.database.session_factory
+            )
+            session_id = f"{request_id}:primary"
+            tool = await store.get_selection(
+                session_id,
+                CapabilityKind.TOOL,
+                "python",
+            )
+            assert tool is not None
+            assert tool.snapshot["definition"]["id"] == "python"
+            assert await store.get_allowlist(
+                session_id,
+                CapabilityKind.TOOL,
+            ) == frozenset((*PENTEST_FOUNDATION_TOOLS, "python"))
+    finally:
+        await runtime.control_plane.close()
+
+
+@pytest.mark.asyncio
+async def test_pentest_create_retries_the_same_durable_instruction_after_temporal_outage(
+    tmp_path: Path,
+) -> None:
+    workflow = FakeWorkflowClient(fail=True)
+    runtime = await _build_runtime(tmp_path, workflow=workflow)
+    request_id = str(uuid4())
+    try:
+        async for client in _client(runtime.control_plane):
+            unavailable = await client.post(
+                "/api/v1/pentests",
+                json=_pentest_request(request_id),
+            )
+            assert unavailable.status_code == 409
+            error = unavailable.json()["error"]
+            assert error["code"] == "pentest_workflow_start_failed"
+            assert error["details"]["run_id"] == request_id
+            assert error["details"]["retry_same_request"] is True
+
+            persisted = await client.get(f"/api/v1/runs/{request_id}")
+            assert persisted.status_code == 200
+            events = await client.get(f"/api/v1/runs/{request_id}/events")
+            assert [item["event_type"] for item in events.json()["items"]] == [
+                "run.created",
+                "conversation.context_ready",
+                "user.message_queued",
+            ]
+
+            workflow.fail = False
+            recovered = await client.post(
+                "/api/v1/pentests",
+                json=_pentest_request(request_id),
+            )
+            assert recovered.status_code == 201, recovered.text
+            recovered_events = await client.get(f"/api/v1/runs/{request_id}/events")
+            assert [item["event_type"] for item in recovered_events.json()["items"]] == [
+                "run.created",
+                "conversation.context_ready",
+                "user.message_queued",
+                "workflow.started",
+            ]
+    finally:
+        await runtime.control_plane.close()
+
+
 @pytest.mark.asyncio
 async def test_run_crud_control_and_message_timeline(tmp_path: Path) -> None:
     runtime = await _build_runtime(tmp_path)
@@ -1019,17 +3085,15 @@ async def test_run_crud_control_and_message_timeline(tmp_path: Path) -> None:
                 "/api/v1/runs",
                 params={"kind": "code_audit"},
             )
-            assert listed_audits.status_code == 200
-            # A bare code_audit Run is not an authorized Audit aggregate and
-            # must never become visible through the generic Run projection.
-            assert listed_audits.json()["items"] == []
+            assert listed_audits.status_code == 410
+            assert listed_audits.json()["error"]["code"] == "code_audit_retired"
 
             combined_filter = await client.get(
                 "/api/v1/runs",
                 params={"kind": "code_audit", "status": "waiting_user"},
             )
-            assert combined_filter.status_code == 200
-            assert combined_filter.json()["items"] == []
+            assert combined_filter.status_code == 410
+            assert combined_filter.json()["error"]["code"] == "code_audit_retired"
 
             invalid_kind = await client.get(
                 "/api/v1/runs",
@@ -2113,8 +4177,13 @@ models:
     )
 
     runtime = await build_control_plane(settings)
-    assert isinstance(runtime.audit_service, AuditApplicationService)
-    assert isinstance(runtime.audit_preflight_service, AuditPreflightApplicationService)
+    assert not hasattr(runtime, "audit_service")
+    assert not hasattr(runtime, "local_audit_job_service")
+    assert not hasattr(runtime, "audit_preflight_service")
+    assert not hasattr(runtime, "audit_preflight_plan_service")
+    assert not hasattr(runtime, "audit_preflight_runner_service")
+    assert runtime.audit_control_service is not None
+    assert runtime.connector_service is None
     process_executor = runtime.process_supervisor._process_executor
     assert process_executor._require_containment is True
     assert runtime.terminal_supervisor._require_containment is True
@@ -2125,26 +4194,13 @@ models:
         assert cleanup_reconciler is not None and not cleanup_reconciler.done()
         assert connection_attempts == []
         async for client in _client(runtime):
-            disabled_preflight = await client.post(
-                "/api/v1/audits/preflight",
-                json={
-                    "repository_path": "/RIFTX-PREFLIGHT-CANARY",
-                    "unknown": "RIFTX-PREFLIGHT-CANARY",
-                },
+            retired_create = await client.post(
+                "/api/v1/audits",
+                json={"source_path": "/RIFTX-AUDIT-CANARY"},
             )
-            assert disabled_preflight.status_code == 503
-            assert disabled_preflight.json()["error"]["code"] == "audit_feature_disabled"
-            assert "RIFTX-PREFLIGHT-CANARY" not in disabled_preflight.text
-            missing_preflight = await client.get(
-                "/api/v1/audits/preflight/missing-preflight-job"
-            )
-            missing_preflight_cancel = await client.post(
-                "/api/v1/audits/preflight/missing-preflight-job/cancel"
-            )
-            assert missing_preflight.status_code == 404
-            assert missing_preflight_cancel.status_code == 404
-            assert missing_preflight.json()["error"]["code"] == "resource_not_accessible"
-            assert missing_preflight_cancel.json() == missing_preflight.json()
+            assert retired_create.status_code == 404
+            assert retired_create.json()["error"]["code"] == "route_not_found"
+            assert "RIFTX-AUDIT-CANARY" not in retired_create.text
 
             created = await client.post(
                 "/api/v1/runs",
@@ -6262,6 +8318,18 @@ async def test_complete_agent_runner_sse_finding_report_lifecycle(tmp_path: Path
                 event_repository=event_repository,
                 tool_registry=registry,
             ),
+            closure_verifier=ClosureVerifierApplicationService(
+                runs=runtime.run_repository,
+                task_graphs=SQLAlchemyTaskGraphRepository(
+                    runtime.control_plane.database.session_factory
+                ),
+                reasoning_graphs=SQLAlchemyReasoningGraphRepository(
+                    runtime.control_plane.database.session_factory
+                ),
+                evidence=SQLAlchemyEvidenceLedgerRepository(
+                    runtime.control_plane.database.session_factory
+                ),
+            ),
             report_service=runtime.control_plane.report_service,
             session_factory=runtime.control_plane.database.session_factory,
         )
@@ -6348,6 +8416,7 @@ async def test_complete_agent_runner_sse_finding_report_lifecycle(tmp_path: Path
                 markdown_report = next(item for item in reports if item["format"] == "markdown")
                 report_content = await client.get(markdown_report["content_url"])
                 assert "Deterministic test service exposure" in report_content.text
+                assert "Closure outcome:** `partial`" in report_content.text
 
                 events = events_response.json()["items"]
                 event_types = [item["event_type"] for item in events]
@@ -6358,11 +8427,20 @@ async def test_complete_agent_runner_sse_finding_report_lifecycle(tmp_path: Path
                     "finding.created",
                     "agent.completion_requested",
                     "agent.cycle_completed",
+                    "run.closure_evaluated",
                     "report.generated",
                     "run.cleaned_up",
                 ]
                 positions = [event_types.index(event_type) for event_type in ordered_types]
                 assert positions == sorted(positions)
+                closure_event = next(
+                    item for item in events if item["event_type"] == "run.closure_evaluated"
+                )
+                assert closure_event["payload"]["outcome"] == "partial"
+                assert closure_event["payload"]["reason_codes"] == [
+                    "success_criterion_unmapped",
+                    "task_graph_missing",
+                ]
                 assert sse_response.status_code == 200
                 sse_event_types = [
                     line.removeprefix("event: ")

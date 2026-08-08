@@ -2,14 +2,16 @@
 
 # RiftX
 
-### 面向授权安全工作的主机原生持久化 Agent 行动平台
+### 一个会随专业使用者持续变顺手的 Pentest-first Agent
 
-RiftX 将操作员定义的目标、范围、审批、执行、证据与停止决策，
-纳入同一套可观测、可恢复的控制协议。
+RiftX 将授权目标、Scope、审批、执行、证据、Finding、Report 与操作者维护的方法，
+纳入同一条可恢复的渗透测试工作流。
 
 <p>
+  <a href="https://github.com/Ch1nfo/RiftX/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Ch1nfo/RiftX/actions/workflows/ci.yml/badge.svg?branch=main"></a>
   <img alt="版本 2.0.0 Alpha" src="https://img.shields.io/badge/version-2.0.0--alpha.0-245dc7?style=flat-square">
   <img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white">
+  <img alt="宿主机原生，无需 Docker" src="https://img.shields.io/badge/runtime-host--native-2ea44f?style=flat-square">
   <img alt="本地单操作员" src="https://img.shields.io/badge/trust-local__single__operator-55d9ff?style=flat-square&labelColor=071632">
   <a href="./LICENSE"><img alt="Apache License 2.0" src="https://img.shields.io/badge/license-Apache--2.0-ffd45a?style=flat-square&labelColor=071632"></a>
 </p>
@@ -36,11 +38,105 @@ RiftX 将操作员定义的目标、范围、审批、执行、证据与停止�
 > 当前可信配置仅为 loopback 上的 `local_single_operator`。
 > 只能将 RiftX 用于已获得明确授权的资产，切勿把 Control Plane 暴露到局域网或公网。
 
+> [!NOTE]
+> Code Audit 产品面已退役。仓库只保留历史记录、migration、只读 Snapshot 兼容与
+> Safety Stop 清理；不再支持 Code Audit CLI、API、Worker、Runner、Demo 或 Web 工作流。
+
+## Pentest-first 快速开始
+
+这是从干净代码库到第一份证据化 Report 的正式支持路径。通用平台命令是可选项，
+不能代替真实授权 Pentest。
+
+### 1. 安装并 Onboard
+
+前置条件只有 Python `3.12` 和本地 Temporal CLI。可以使用任意标准 Python 虚拟环境；
+普通用户不需要 Conda，也不需要 Docker。Onboard、Control Plane、Worker、Runner 和
+安装包内置的 WebUI 均采用宿主机原生运行方式。
+发布门禁 `core_path_excludes_docker` 会检查分发依赖与部署资产，并在空 `PATH` 下验证
+Onboard、Doctor、Control Plane 和 Pentest Admission。
+
+```bash
+python -m pip install .
+riftx onboard
+```
+
+`onboard` 会交互式创建用户配置、Model Profile、Tool Registry、数据库和 Official Packs，
+不会覆盖已有配置。模型凭据可以通过所选 `RIFTX_MODEL_*` 环境变量或启动后的 WebUI 配置。
+缺少可选工具只会被报告为降级能力，不阻止基础 Pentest 路径启动；需要排障时运行
+`riftx doctor`。
+
+有状态 Browser Pentest 是可选能力。只在确实需要它的 Runner 上安装：
+
+```bash
+python -m pip install ".[browser]"
+playwright install chromium
+```
+
+Browser、MCP 与 Connector 都是可选扩展。缺失或未启用时只降级对应能力，不阻止
+基础 Pentest 路径。
+
+### 2. 启动本地服务
+
+使用一个前台命令启动完整本地栈：
+
+```bash
+riftx start
+```
+
+`start` 会复用已配置的 Temporal；当默认本地端口尚未启动时，它会自动调用 Temporal CLI，
+随后启动 Control Plane 与 Worker，并打开 WebUI。未预设 `RIFTX_ADMIN_TOKEN` 时会生成一个
+仅本次会话使用的 Token；按 `Ctrl+C` 即可停止由该命令启动的进程。使用 `--no-open` 可禁止
+自动打开浏览器。
+
+当前版本只支持本地单专业操作员，并要求 Control Plane 保持在 loopback。生产环境仍应
+分进程托管，部署、备份和升级说明见 [`docs/deployment.md`](docs/deployment.md)。
+
+### 3. 启动授权 Pentest
+
+请把示例目标、Scope 和授权引用替换为真实授权值：
+
+如果在另一个终端使用 CLI，请通过该终端的环境注入 `riftx start` 显示的同一个
+`RIFTX_ADMIN_TOKEN`。
+
+```bash
+riftx pentest start \
+  --objective "Assess the authorized staging service" \
+  --authorization "ticket://SEC-1234" \
+  --target "https://staging.example.test" \
+  --scope "https://staging.example.test" \
+  --model primary
+
+riftx pentest status RUN_ID
+riftx approvals RUN_ID
+riftx approve APPROVAL_ID
+```
+
+Scope、Approval、预算、Credential Reference 与停止检查始终是权威门禁；Skill 不能
+绕过这些检查，也不能加入未声明 Tool。
+
+### 4. 生成 Report
+
+当 Run 进入 `completed`、`failed` 或 `cancelled` 后：
+
+```bash
+riftx report generate RUN_ID \
+  --format markdown \
+  --format json
+
+riftx report list RUN_ID
+riftx report show REPORT_ID
+```
+
+专业用户可通过 `riftx skills` 添加并迭代本地方法，详见
+[`docs/operator-skill-lifecycle.md`](docs/operator-skill-lifecycle.md)。
+
 ## 为什么选择 RiftX
 
 RiftX 把每个 Run 视为持久化行动状态。WebUI 与 CLI 只是状态投影，
 可恢复工作流与节点本地效果所有者，让客户端断开后的工作依然可恢复、可归因。
 
+- **简单的宿主机原生安装** —— wheel 内置 WebUI，`riftx onboard` 创建本地状态，
+  `riftx start` 统一托管完整本地栈，不要求 Conda 或 Docker。
 - **会话优先** —— 创建 Run 只会把目标和边界保存为 `waiting_user`；
   只有操作员发送第一条具体指令后，模型和工具才会启动。
 - **可归因控制** —— 审批、终端接管与浏览器接管都绑定稳定身份和不可变决策。
@@ -48,23 +144,9 @@ RiftX 把每个 Run 视为持久化行动状态。WebUI 与 CLI 只是状态投�
 - **证据天然可追溯** —— Artifact、Finding、Report、流量元数据与确定性图谱投影都保留来源。
 - **停止必须被确认** —— RiftX 先围栏新效果，只有所有已知所有者返回明确停止证明后才报告 Run 已停止。
 
-## 体验独立 Demo
+## 高级：产品导览
 
-独立的 [`@riftx/demo`](apps/demo) 使用已脱敏的本地状态，
-不会连接 Control Plane、Temporal、模型服务、Runner、浏览器会话或目标系统。
-
-```bash
-conda run --no-capture-output -n agent pnpm install
-conda run --no-capture-output -n agent pnpm demo:dev
-# 打开 http://127.0.0.1:5174/?lang=zh-CN
-```
-
-使用 `?lang=en` 或 `?lang=zh-CN` 可固定演示语言。
-每个界面都会持续显示 **DEMO / SANITIZED**。
-
-## 产品导览
-
-12 个界面覆盖主要操作流程；点击图片可查看完整分辨率。
+这些界面展示已实现能力，不是默认 Quickstart。点击图片可查看完整分辨率。
 
 <table>
   <tbody>
@@ -118,30 +200,21 @@ conda run --no-capture-output -n agent pnpm demo:dev
         <p><strong>浏览器与连接器</strong><br>将 Managed Browser、Chrome 与 Burp 捕获接入同一证据链。</p>
       </td>
     </tr>
-    <tr>
-      <td width="50%" valign="top">
-        <a href="docs/assets/readme/zh/18-local-code-audit.webp"><img src="docs/assets/readme/zh/18-local-code-audit.webp" alt="启动 RiftX 只读本地代码审计" width="100%"></a>
-        <p><strong>本地代码审计</strong><br>选择同一台机器上的文件夹，扫描封存快照且不执行项目代码。</p>
-      </td>
-      <td width="50%" valign="top">
-        <a href="docs/assets/readme/zh/19-local-audit-findings.webp"><img src="docs/assets/readme/zh/19-local-audit-findings.webp" alt="查看 RiftX 本地代码审计发现项" width="100%"></a>
-        <p><strong>审计发现项</strong><br>查看严重性、置信度、相对位置、规则身份和脱敏证据。</p>
-      </td>
-    </tr>
   </tbody>
 </table>
 
-## 平台能力图谱
+## 高级：平台能力图谱
 
 | 领域 | 已实现能力 |
 | --- | --- |
+| 安装与本地运行 | 标准 Python wheel、内置生产 WebUI、可重复运行的 `riftx onboard`、单命令 `riftx start`、自动复用/启动本地 Temporal、会话级本地管理员 Token 与统一停止 |
 | 持久 Agent 运行时 | 有边界 Agent Cycle、动态 Tool 发现、渐进式 Skill、结构化 Working Memory、上下文编译与压缩、长期 Memory、Subagent、Hook、受治理的 MCP 集成、重试、重放与幂等执行身份 |
 | 主机执行 | 仅限已注册的 Process、Shell 与 PTY；节点本地 Runner；有界输出；取消/等待；Linux delegated cgroup v2 隔离；Runner 范围内的 Target HTTP |
 | 证据与可观测性 | 不可变 Artifact、证据支持的 Finding、Markdown/HTML/JSON Report、确定性 Task/Evidence/Operation 投影、可恢复 SSE、Raw Events、运行指标与逻辑 `artifact://` 引用 |
 | 浏览器与研究 | Runner 所有的 Playwright Chromium、稳定元素引用、脱敏观察、接管摘要、公开来源注册表、研究管线、Chrome DevTools 连接器与 Burp Montoya 连接器 |
 | 操作员配置 | 节点清单、可搜索 Tool Registry、OpenAI/OpenAI-compatible Model Profile、`chat_completions` 与 `responses` 请求模式、只写凭据、双语 WebUI/CLI 与持久深浅主题 |
 
-## 架构
+## 高级：架构
 
 ```mermaid
 flowchart LR
@@ -161,7 +234,7 @@ Control Plane、Temporal Worker 与 Runner 是彼此独立的职责边界。
 虽然出站 Runner 协议已经实现，但当前版本唯一可选的可信配置要求 Control Plane
 保持在 loopback，因此真正的远程 Runner 部署目前尚不可用。
 
-## 快速开始
+## 贡献者与旧平台入口
 
 ### 前置条件
 
@@ -213,7 +286,7 @@ conda run --no-capture-output -n agent riftx \
 托管 Temporal 的 TLS、认证、备份、升级与进程托管说明见
 [`docs/deployment.md`](docs/deployment.md)。
 
-### 创建会话优先的 Run
+### 创建高级通用 Run
 
 ```bash
 conda run --no-capture-output -n agent riftx run create \
@@ -259,11 +332,10 @@ conda run --no-capture-output -n agent pnpm --filter @riftx/web typecheck
 conda run --no-capture-output -n agent pnpm --filter @riftx/web test
 conda run --no-capture-output -n agent pnpm --filter @riftx/web build
 
-# 独立 Demo
-conda run --no-capture-output -n agent pnpm --filter @riftx/demo typecheck
-conda run --no-capture-output -n agent pnpm --filter @riftx/demo test
-conda run --no-capture-output -n agent pnpm --filter @riftx/demo build
 ```
+
+其中 Release Gate 包含 `core_path_excludes_docker`，用于阻止 Docker 运行时依赖、
+Docker/Compose 部署资产或宿主机原生核心路径回归。
 
 权威的“功能到证据”矩阵与发布命令位于
 [`docs/v2-completion-audit.md`](docs/v2-completion-audit.md)。
@@ -271,17 +343,20 @@ conda run --no-capture-output -n agent pnpm --filter @riftx/demo build
 
 ## 文档
 
+- [变更记录](CHANGELOG.md)
+- [贡献指南](CONTRIBUTING.md)
+- [安全策略](SECURITY.md)
 - [发布资格与实现覆盖](docs/v2-completion-audit.md)
 - [部署、可信边界、备份与停止验收](docs/deployment.md)
 - [Model Profile 与凭据安全加固](docs/model-profile-hardening.md)
 - [Chrome 连接器](apps/browser-extension/README.md)
 - [Burp 连接器](apps/burp-extension/README.md)
-- Demo：[产品契约](apps/demo/PRODUCT.md) · [设计系统](apps/demo/DESIGN.md)
 
 ## 参与贡献
 
 请说明变更影响的安全边界，并为新行为补充可执行证据。
 切勿提交凭据、真实目标详情、捕获流量或生成报告。
+提交 Pull Request 前请先阅读[贡献指南](CONTRIBUTING.md)。
 
 ## 许可证
 

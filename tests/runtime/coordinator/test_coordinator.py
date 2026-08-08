@@ -10,9 +10,25 @@ from riftx.application.errors import (
     EntityNotFoundError,
     RepositoryConflictError,
 )
-from riftx.application.services import ResourceStopDisposition, SafetyStopResult
+from riftx.application.services import (
+    ClosureVerifierApplicationService,
+    ResourceStopDisposition,
+    SafetyStopResult,
+)
 from riftx.context import ContextApplicationService, ManifestingContextCompiler
-from riftx.domain import DomainError, Engagement, Objective, Run, RunKind, RunStatus
+from riftx.domain import (
+    DomainError,
+    Engagement,
+    EntryPoint,
+    EntryPointKind,
+    Objective,
+    PentestAdmission,
+    PentestBudget,
+    Run,
+    RunKind,
+    RunStatus,
+    Scope,
+)
 from riftx.hooks import (
     HookBus,
     HookDecision,
@@ -22,16 +38,26 @@ from riftx.hooks import (
     HookResult,
     PythonHook,
 )
+from riftx.observer import (
+    SupervisorCheck,
+    SupervisorDisposition,
+    SupervisorReport,
+    SupervisorSeverity,
+    SupervisorSignal,
+)
 from riftx.persistence import (
     Database,
     SQLAlchemyAgentCycleRepository,
     SQLAlchemyAgentSessionRepository,
     SQLAlchemyAgentStepRepository,
     SQLAlchemyEngagementRepository,
+    SQLAlchemyEvidenceLedgerRepository,
     SQLAlchemyProviderStateRepository,
+    SQLAlchemyReasoningGraphRepository,
     SQLAlchemyRunEventRepository,
     SQLAlchemyRunLeaseRepository,
     SQLAlchemyRunRepository,
+    SQLAlchemyTaskGraphRepository,
 )
 from riftx.persistence.context_repositories import SQLAlchemyContextCompilationRepository
 from riftx.runtime.coordinator import RuntimeCoordinator
@@ -41,7 +67,13 @@ from riftx.runtime.engine import (
     AgentEngineState,
 )
 from riftx.runtime.leases import DatabaseRunLeaseManager
-from riftx.runtime.lifecycle import CycleLimits, MinimalContextCompiler, RunCycleRequest
+from riftx.runtime.lifecycle import (
+    CompiledContext,
+    ContextCompiler,
+    CycleLimits,
+    MinimalContextCompiler,
+    RunCycleRequest,
+)
 from riftx.runtime.types import AgentSession, CycleStatus, SessionStatus, YieldReason
 
 
@@ -105,11 +137,38 @@ class FakeSubagentBatchExecutor:
         self.calls.append((parent_session_id, requests))
 
 
+class CapabilityContextCompiler:
+    async def compile(self, request: object) -> CompiledContext:
+        return CompiledContext(
+            system_instructions="Observe compiled capabilities",
+            available_tools=[{"name": "tool-b"}, {"id": "tool-a"}],
+            available_skills=[{"id": "skill-b"}, {"name": "skill-a"}],
+        )
+
+
+class RecordingObserver:
+    def __init__(self, report: SupervisorReport) -> None:
+        self.report = report
+        self.calls: list[dict[str, object]] = []
+
+    async def inspect(self, **kwargs: object) -> SupervisorReport:
+        self.calls.append(kwargs)
+        return self.report
+
+
 class RecordingSafetyStopper:
-    def __init__(self, runs: SQLAlchemyRunRepository, *, confirmed: bool = True) -> None:
+    def __init__(
+        self,
+        runs: SQLAlchemyRunRepository,
+        events: SQLAlchemyRunEventRepository,
+        *,
+        confirmed: bool = True,
+    ) -> None:
         self._runs = runs
+        self._events = events
         self.confirmed = confirmed
         self.observed_statuses: list[RunStatus] = []
+        self.observed_closure_event_counts: list[int] = []
         self.calls: list[str] = []
 
     async def stop_run(self, run_id: str, *, drain: bool = True) -> SafetyStopResult:
@@ -118,6 +177,10 @@ class RecordingSafetyStopper:
         run = await self._runs.get(run_id)
         assert run is not None
         self.observed_statuses.append(run.status)
+        events = await self._events.list_after(run_id)
+        self.observed_closure_event_counts.append(
+            sum(event.event_type == "run.closure_evaluated" for event in events)
+        )
         failures = {} if self.confirmed else {"browser-1": "owner ACK pending"}
         return SafetyStopResult(
             resources={
@@ -134,6 +197,14 @@ class RecordingSafetyStopper:
         )
 
 
+class RecordingBudgetExhaustionHandler:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def __call__(self, run_id: str) -> None:
+        self.calls.append(run_id)
+
+
 def event(sequence: int, event_type: AgentEngineEventType, **data: object) -> AgentEngineEvent:
     return AgentEngineEvent(sequence=sequence, event_type=event_type, data=data)
 
@@ -148,16 +219,41 @@ async def build_runtime(
     observable_context: bool = False,
     workspace_path: Path | None = None,
     hooks: HookBus | None = None,
+    observer: object | None = None,
+    context_compiler: ContextCompiler | None = None,
     subagent_executor: object | None = None,
+    budget_exhaustion_handler: RecordingBudgetExhaustionHandler | None = None,
     with_safety_stopper: bool = True,
     run_kind: RunKind = RunKind.GENERAL,
+    pentest_budget: PentestBudget | None = None,
 ) -> tuple[Database, RuntimeCoordinator, FakeEngine, dict[str, object]]:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'runtime.db'}")
     await database.create_schema()
     await SQLAlchemyEngagementRepository(database.session_factory).create(
-        Engagement(id="engagement-1", name="Authorized")
+        Engagement(
+            id="engagement-1",
+            name="Authorized",
+            authorization_reference=(
+                "ticket://runtime-test" if run_kind is RunKind.PENTEST else None
+            ),
+        )
     )
     runs = SQLAlchemyRunRepository(database.session_factory)
+    admission = (
+        PentestAdmission(
+            budget=pentest_budget
+            or PentestBudget(
+                max_duration_seconds=600,
+                max_model_calls=10,
+                max_tokens=10_000,
+                max_tool_calls=10,
+                max_target_interactions=10,
+                max_concurrent_target_interactions=1,
+            )
+        )
+        if run_kind is RunKind.PENTEST
+        else None
+    )
     await runs.create(
         Run(
             kind=run_kind,
@@ -165,12 +261,22 @@ async def build_runtime(
             engagement_id="engagement-1",
             node_id="node-1",
             objective=Objective(description="Map the authorized target"),
+            entry_points=(
+                [EntryPoint(kind=EntryPointKind.IP, value="127.0.0.1")]
+                if run_kind is RunKind.PENTEST
+                else []
+            ),
+            scope=(Scope(ips=["127.0.0.1"]) if run_kind is RunKind.PENTEST else Scope()),
+            pentest_admission=admission,
             workspace_path=str(workspace_path or tmp_path / "workspace"),
         )
     )
     sessions = SQLAlchemyAgentSessionRepository(database.session_factory)
     await sessions.create(AgentSession(id="session-1", run_id="run-1", model_profile="fake-model"))
     engine = FakeEngine(events, start_error=start_error)
+    task_graphs = SQLAlchemyTaskGraphRepository(database.session_factory)
+    reasoning_graphs = SQLAlchemyReasoningGraphRepository(database.session_factory)
+    evidence = SQLAlchemyEvidenceLedgerRepository(database.session_factory)
     repos: dict[str, object] = {
         "runs": runs,
         "sessions": sessions,
@@ -179,15 +285,20 @@ async def build_runtime(
         "providers": SQLAlchemyProviderStateRepository(database.session_factory),
         "events": SQLAlchemyRunEventRepository(database.session_factory),
         "leases": SQLAlchemyRunLeaseRepository(database.session_factory),
+        "task_graphs": task_graphs,
+        "reasoning_graphs": reasoning_graphs,
+        "evidence": evidence,
     }
-    safety_stopper = RecordingSafetyStopper(runs)
+    event_repository = repos["events"]
+    assert isinstance(event_repository, SQLAlchemyRunEventRepository)
+    safety_stopper = RecordingSafetyStopper(runs, event_repository)
     repos["safety_stopper"] = safety_stopper
-    context_compiler = MinimalContextCompiler()
-    if observable_context:
+    resolved_context_compiler = context_compiler or MinimalContextCompiler()
+    if observable_context or run_kind is RunKind.PENTEST:
         context_repository = SQLAlchemyContextCompilationRepository(database.session_factory)
         repos["context"] = context_repository
-        context_compiler = ManifestingContextCompiler(
-            context_compiler,
+        resolved_context_compiler = ManifestingContextCompiler(
+            resolved_context_compiler,
             ContextApplicationService(context_repository),
         )
     coordinator = RuntimeCoordinator(
@@ -198,15 +309,86 @@ async def build_runtime(
         provider_state_repository=repos["providers"],
         event_repository=repos["events"],
         lease_manager=DatabaseRunLeaseManager(repos["leases"]),
-        context_compiler=context_compiler,
+        context_compiler=resolved_context_compiler,
         agent_engine=engine,
         hooks=hooks,
+        observer=observer,  # type: ignore[arg-type]
+        closure_verifier=ClosureVerifierApplicationService(
+            runs=runs,
+            task_graphs=task_graphs,
+            reasoning_graphs=reasoning_graphs,
+            evidence=evidence,
+        ),
         **({"safety_stopper": safety_stopper} if with_safety_stopper else {}),
         **({"subagent_executor": subagent_executor} if subagent_executor is not None else {}),
+        **(
+            {"budget_exhaustion_handler": budget_exhaustion_handler}
+            if budget_exhaustion_handler is not None
+            else {}
+        ),
         limits=limits,
         **({"clock": clock} if clock is not None else {}),
     )
     return database, coordinator, engine, repos
+
+
+async def test_observer_blocks_before_model_and_records_redacted_audit_event(
+    tmp_path: Path,
+) -> None:
+    signal = SupervisorSignal(
+        code="scope_boundary_rejected",
+        check=SupervisorCheck.SCOPE,
+        severity=SupervisorSeverity.BLOCKING,
+        summary="Sensitive scope detail must not enter the audit event",
+        refs=("event:scope-event",),
+    )
+    observer = RecordingObserver(
+        SupervisorReport(
+            run_id="run-1",
+            session_id="session-1",
+            cycle_id="cycle-observer",
+            disposition=SupervisorDisposition.BLOCK,
+            signals=(signal,),
+        )
+    )
+    database, coordinator, engine, repos = await build_runtime(
+        tmp_path,
+        [event(1, AgentEngineEventType.RUN_COMPLETED)],
+        observer=observer,
+        context_compiler=CapabilityContextCompiler(),
+    )
+
+    result = await coordinator.run_cycle(
+        RunCycleRequest(
+            run_id="run-1",
+            session_id="session-1",
+            worker_id="worker-1",
+            cycle_id="cycle-observer",
+        )
+    )
+
+    assert result.yield_reason is YieldReason.FATAL_FAILURE
+    assert engine.requests == []
+    assert observer.calls[0]["available_tool_ids"] == ("tool-a", "tool-b")
+    assert observer.calls[0]["available_skill_ids"] == ("skill-a", "skill-b")
+    events = await repos["events"].list_after("run-1")
+    audit = next(item for item in events if item.event_type == "runtime.observer_inspected")
+    assert audit.payload == {
+        "cycle_id": "cycle-observer",
+        "phase": "pre_model",
+        "disposition": "block",
+        "yield_reason": None,
+        "signals": [
+            {
+                "code": "scope_boundary_rejected",
+                "check": "scope",
+                "severity": "blocking",
+                "refs": ["event:scope-event"],
+            }
+        ],
+    }
+    assert "Sensitive scope detail" not in str(audit.payload)
+    await database.dispose()
 
 
 async def test_code_audit_runtime_cycle_denies_before_lease_event_state_and_model(
@@ -424,6 +606,59 @@ async def test_blocking_model_hook_fails_cycle_before_provider_call(tmp_path: Pa
     await database.dispose()
 
 
+async def test_pentest_model_budget_exhaustion_stops_before_provider_call(
+    tmp_path: Path,
+) -> None:
+    budget_handler = RecordingBudgetExhaustionHandler()
+    database, coordinator, engine, repos = await build_runtime(
+        tmp_path,
+        [event(1, AgentEngineEventType.RUN_COMPLETED)],
+        run_kind=RunKind.PENTEST,
+        pentest_budget=PentestBudget(
+            max_duration_seconds=600,
+            max_model_calls=1,
+            max_tokens=10_000,
+            max_tool_calls=10,
+            max_target_interactions=10,
+            max_concurrent_target_interactions=1,
+        ),
+        budget_exhaustion_handler=budget_handler,
+    )
+    sessions = repos["sessions"]
+    assert isinstance(sessions, SQLAlchemyAgentSessionRepository)
+    session = await sessions.get("session-1")
+    assert session is not None
+    session.model_call_count = 1
+    await sessions.save(session)
+
+    with pytest.raises(ApplicationConflictError) as exhausted:
+        await coordinator.run_cycle(
+            RunCycleRequest(
+                run_id="run-1",
+                session_id="session-1",
+                worker_id="worker-1",
+                cycle_id="pentest-budget-cycle",
+            )
+        )
+
+    assert exhausted.value.code == "pentest_budget_exhausted"
+    assert exhausted.value.details == {
+        "run_id": "run-1",
+        "budget_name": "max_model_calls",
+        "limit": 1,
+        "used": 1,
+        "reason": "exhausted",
+    }
+    assert engine.requests == []
+    assert engine.resume_requests == []
+    assert budget_handler.calls == ["run-1"]
+    events = await repos["events"].list_after("run-1")
+    assert any(item.event_type == "pentest.budget_exhausted" for item in events)
+    cycles = await repos["cycles"].list_by_session("session-1")
+    assert cycles[0].status is CycleStatus.FAILED
+    await database.dispose()
+
+
 async def test_usage_event_backfills_the_persisted_context_compilation(
     tmp_path: Path,
 ) -> None:
@@ -481,12 +716,15 @@ async def test_normal_cycle_completes_and_persists_step(tmp_path: Path) -> None:
     assert engine.requests
     session = await repos["sessions"].get("session-1")
     assert session.status is SessionStatus.ACTIVE
+    assert session.model_call_count == 1
+    assert session.tool_call_count == 0
     run = await SQLAlchemyRunRepository(database.session_factory).get("run-1")
     assert run is not None and run.status is RunStatus.COMPLETED
     stopper = repos["safety_stopper"]
     assert isinstance(stopper, RecordingSafetyStopper)
     assert stopper.calls == ["run-1"]
     assert stopper.observed_statuses == [RunStatus.COMPLETING]
+    assert stopper.observed_closure_event_counts == [1]
     await database.dispose()
 
 
@@ -515,6 +753,12 @@ async def test_non_deferred_cycle_without_safety_stopper_stays_fenced(
     assert result.yield_reason is YieldReason.RUN_COMPLETED
     assert run is not None and run.status is RunStatus.COMPLETING
     assert intent is not None and intent.target is RunStatus.COMPLETED
+    closure_events = [
+        event
+        for event in await repos["events"].list_after("run-1")
+        if event.event_type == "run.closure_evaluated"
+    ]
+    assert len(closure_events) == 1
     await database.dispose()
 
 
@@ -552,6 +796,13 @@ async def test_non_deferred_cycle_retry_resumes_stop_gate_without_rerunning_mode
     assert completed is not None and completed.status is RunStatus.COMPLETED
     assert len(engine.requests) == 1
     assert stopper.observed_statuses == [RunStatus.COMPLETING, RunStatus.COMPLETING]
+    assert stopper.observed_closure_event_counts == [1, 1]
+    closure_events = [
+        event
+        for event in await repos["events"].list_after("run-1")
+        if event.event_type == "run.closure_evaluated"
+    ]
+    assert len(closure_events) == 1
     await database.dispose()
 
 

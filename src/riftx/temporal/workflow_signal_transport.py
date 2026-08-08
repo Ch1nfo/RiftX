@@ -25,10 +25,7 @@ from riftx.application.services.workflow_signals import (
     WorkflowSignalTerminallyRejected,
     WorkflowSignalTransportReceipt,
 )
-from riftx.application.workflow_router import (
-    RunWorkflowControlRouter,
-    WorkflowDispatchDisposition,
-)
+from riftx.application.workflow_router import RunWorkflowControlRouter
 from riftx.domain import RunStatus
 from riftx.domain.workflow_signal import (
     WorkflowSignalIntent,
@@ -45,6 +42,12 @@ _APPROVAL_TERMINAL_RUN_STATUSES = frozenset(
         RunStatus.COMPLETED,
         RunStatus.FAILED,
         RunStatus.CANCELLED,
+    }
+)
+_INTERACTIVE_WORKFLOW_OWNERS = frozenset(
+    {
+        WorkflowSignalOwnerKind.GENERAL_RUN,
+        WorkflowSignalOwnerKind.PENTEST_RUN,
     }
 )
 
@@ -112,7 +115,7 @@ class RoutedWorkflowSignalTransport:
             raise WorkflowSignalTerminallyRejected(
                 "persisted_workflow_identity_mismatch"
             )
-        if intent.owner_kind is not WorkflowSignalOwnerKind.GENERAL_RUN:
+        if intent.owner_kind not in _INTERACTIVE_WORKFLOW_OWNERS:
             return
         if intent.signal_kind in {
             WorkflowSignalKind.APPROVE,
@@ -131,7 +134,7 @@ class RoutedWorkflowSignalTransport:
             _payload_id(intent, "execution_id")
 
     async def _dispatch(self, intent: WorkflowSignalIntent) -> None:
-        if intent.owner_kind is WorkflowSignalOwnerKind.GENERAL_RUN:
+        if intent.owner_kind in _INTERACTIVE_WORKFLOW_OWNERS:
             if intent.signal_kind is WorkflowSignalKind.APPROVE:
                 await self._router.approve(
                     intent.run_id,
@@ -171,33 +174,9 @@ class RoutedWorkflowSignalTransport:
                     workflow_id=intent.workflow_id,
                 )
                 return
-            raise WorkflowSignalTerminallyRejected("unsupported_general_signal_kind")
+            raise WorkflowSignalTerminallyRejected("unsupported_interactive_signal_kind")
 
-        audit_id = intent.audit_id
-        if audit_id is None or intent.workflow_id != f"riftx-code-audit-{audit_id}":
-            raise WorkflowSignalTerminallyRejected("audit_workflow_identity_mismatch")
-        if intent.signal_kind is WorkflowSignalKind.PAUSE:
-            disposition = await self._router.pause_audit(
-                audit_id=audit_id,
-                run_id=intent.run_id,
-                signal_identity_digest=intent.identity_digest,
-            )
-        elif intent.signal_kind is WorkflowSignalKind.RESUME:
-            disposition = await self._router.resume_audit(
-                audit_id=audit_id,
-                run_id=intent.run_id,
-                signal_identity_digest=intent.identity_digest,
-            )
-        elif intent.signal_kind is WorkflowSignalKind.CANCEL:
-            disposition = await self._router.cancel_audit(
-                audit_id=audit_id,
-                run_id=intent.run_id,
-                signal_identity_digest=intent.identity_digest,
-            )
-        else:
-            raise WorkflowSignalTerminallyRejected("unsupported_audit_signal_kind")
-        if disposition is WorkflowDispatchDisposition.NOT_STARTED:
-            raise WorkflowSignalTerminallyRejected("audit_workflow_not_started")
+        raise WorkflowSignalTerminallyRejected("unsupported_workflow_signal_owner")
 
 
 class TemporalWorkflowSignalOutcomeProbe:
@@ -221,8 +200,8 @@ class TemporalWorkflowSignalOutcomeProbe:
             }
         )
         if not correlatable:
-            # General controls retain their historical zero-argument wire
-            # contract, and undefined signal kinds have no correlation
+            # General/Pentest controls retain the zero-argument wire contract,
+            # and undefined signal kinds have no correlation
             # contract. A same-name history event cannot prove that this exact
             # durable intent was accepted.
             return _observation(

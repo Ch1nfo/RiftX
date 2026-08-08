@@ -4,6 +4,10 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  build: {
+    outDir: "../../src/riftx/_webui",
+    emptyOutDir: true,
+  },
   server: {
     host: "127.0.0.1",
     port: 5173,

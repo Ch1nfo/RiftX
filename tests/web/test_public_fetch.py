@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
 import pytest
 
+from riftx.application.errors import (
+    ApplicationConflictError,
+)
+from riftx.application.services.artifacts import RegisterArtifactContent
+from riftx.domain import ArtifactContentTrust, RunKind, RunStatus
 from riftx.web import (
+    ApplicationWebArtifactStore,
     FetchRequest,
     FetchResultStatus,
     PublicDestinationError,
@@ -15,6 +22,19 @@ from riftx.web import (
 )
 from riftx.web.fetch import normalize_public_url
 from riftx.web.models import SourceReference, WebDocument, WebDocumentChunk
+
+
+class MemoryRuns:
+    def __init__(
+        self,
+        kind: RunKind = RunKind.GENERAL,
+        status: RunStatus = RunStatus.RUNNING,
+    ) -> None:
+        self.kind = kind
+        self.status = status
+
+    async def get(self, run_id: str) -> SimpleNamespace:
+        return SimpleNamespace(id=run_id, kind=self.kind, status=self.status)
 
 
 class MemorySources:
@@ -76,12 +96,16 @@ async def public_resolver(_: str, __: int) -> list[str]:
 
 def fetcher(
     handler: httpx.MockTransport,
+    *,
+    kind: RunKind = RunKind.GENERAL,
+    status: RunStatus = RunStatus.RUNNING,
 ) -> tuple[PublicWebFetcher, MemorySources, MemoryArtifacts]:
     sources = MemorySources()
     artifacts = MemoryArtifacts()
     client = httpx.AsyncClient(transport=handler)
     return (
         PublicWebFetcher(
+            runs=MemoryRuns(kind, status),  # type: ignore[arg-type]
             sources=sources,
             artifacts=artifacts,
             client=client,
@@ -90,6 +114,63 @@ def fetcher(
         sources,
         artifacts,
     )
+
+
+async def test_public_fetch_rejects_retired_code_audit_before_network_io() -> None:
+    network_calls = 0
+
+    def handle(_: httpx.Request) -> httpx.Response:
+        nonlocal network_calls
+        network_calls += 1
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/plain"},
+            text="public audit advisory",
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        artifacts = MemoryArtifacts()
+        service = PublicWebFetcher(
+            runs=MemoryRuns(RunKind.CODE_AUDIT),  # type: ignore[arg-type]
+            sources=MemorySources(),
+            artifacts=artifacts,
+            client=client,
+            resolver=public_resolver,
+        )
+
+        with pytest.raises(ApplicationConflictError) as captured:
+            await service.fetch(
+                "audit-run",
+                FetchRequest(url="https://example.com/"),
+            )
+
+    assert captured.value.code == "run_kind_operation_unsupported"
+    assert artifacts.items == []
+    assert network_calls == 0
+
+
+async def test_public_fetch_rejects_paused_run_before_network_io() -> None:
+    network_calls = 0
+
+    def handle(_: httpx.Request) -> httpx.Response:
+        nonlocal network_calls
+        network_calls += 1
+        return httpx.Response(200, text="must not be fetched")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        service = PublicWebFetcher(
+            runs=MemoryRuns(RunKind.GENERAL, RunStatus.PAUSED),  # type: ignore[arg-type]
+            sources=MemorySources(),
+            artifacts=MemoryArtifacts(),
+            client=client,
+            resolver=public_resolver,
+        )
+
+        with pytest.raises(ApplicationConflictError) as captured:
+            await service.fetch("paused-run", FetchRequest(url="https://example.com/"))
+
+    assert captured.value.code == "run_web_fetch_blocked"
+    assert network_calls == 0
 
 
 async def test_static_html_becomes_canonical_source_and_cache_hit() -> None:
@@ -198,7 +279,9 @@ async def test_same_origin_redirect_is_followed() -> None:
             return httpx.Response(302, headers={"location": "/new"})
         return httpx.Response(200, headers={"content-type": "text/plain"}, text="final")
 
-    service, _, _ = fetcher(httpx.MockTransport(handle))
+    service, _, _ = fetcher(
+        httpx.MockTransport(handle),
+    )
     result = await service.fetch("run-1", FetchRequest(url="https://example.com/old"))
 
     assert result.status is FetchResultStatus.FETCHED
@@ -238,6 +321,7 @@ async def test_all_auto_redirect_revalidates_cross_origin_destination() -> None:
     sources = MemorySources()
     artifacts = MemoryArtifacts()
     service = PublicWebFetcher(
+        runs=MemoryRuns(),  # type: ignore[arg-type]
         sources=sources,
         artifacts=artifacts,
         client=httpx.AsyncClient(transport=httpx.MockTransport(handle)),
@@ -318,10 +402,42 @@ async def test_literal_private_address_is_rejected_before_transport() -> None:
         calls += 1
         return httpx.Response(200, text="should not run")
 
-    service, _, _ = fetcher(httpx.MockTransport(handle))
+    service, _, _ = fetcher(
+        httpx.MockTransport(handle),
+    )
     with pytest.raises(PublicDestinationError, match="non-public"):
         await service.fetch("run-1", FetchRequest(url="http://127.0.0.1/admin"))
     assert calls == 0
+
+
+class RecordingArtifactService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, RegisterArtifactContent]] = []
+
+    async def register_content(
+        self,
+        run_id: str,
+        command: RegisterArtifactContent,
+    ) -> SimpleNamespace:
+        self.calls.append((run_id, command))
+        return SimpleNamespace(id="artifact-general")
+
+
+async def test_application_web_artifact_store_registers_interactive_content() -> None:
+    service = RecordingArtifactService()
+    store = ApplicationWebArtifactStore(service)  # type: ignore[arg-type]
+
+    artifact_id = await store.save(
+        "audit-run",
+        name="public-source.txt",
+        mime_type="text/plain",
+        content=b"untrusted public source",
+        description="Public Web source",
+    )
+
+    assert artifact_id == "artifact-general"
+    assert service.calls[0][0] == "audit-run"
+    assert service.calls[0][1].content_trust is ArtifactContentTrust.UNTRUSTED_SOURCE
 
 
 def test_public_fetch_rejects_embedded_credentials() -> None:

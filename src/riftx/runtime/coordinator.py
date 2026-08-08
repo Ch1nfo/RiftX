@@ -5,17 +5,26 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
 from time import monotonic
-from typing import Protocol, cast
+from typing import NoReturn, Protocol, cast
 
-from riftx.application.errors import ApplicationConflictError, EntityNotFoundError
+from riftx.application.errors import (
+    ApplicationConflictError,
+    EntityNotFoundError,
+    PentestBudgetExceededError,
+    pentest_budget_exhaustion_details,
+)
 from riftx.application.ports import ApprovalRepository
 from riftx.application.services import (
+    CLOSURE_EVALUATED_EVENT_TYPE,
+    ClosureVerifierApplicationService,
     CreateTerminal,
     RunSafetyStopService,
     RuntimeApprovalRequestRecorder,
     TerminalApplicationService,
+    closure_event_id,
+    closure_event_payload,
     stop_resources_payload,
 )
 from riftx.domain import (
@@ -26,6 +35,7 @@ from riftx.domain import (
     MessageType,
     MessageVisibility,
     Run,
+    RunKind,
     RunStatus,
     TranscriptMessageDraft,
     requires_approval,
@@ -33,6 +43,7 @@ from riftx.domain import (
 from riftx.domain.base import new_id
 from riftx.execution import DeferredExecutionDispatcher, DeferredExecutionSpec
 from riftx.hooks import HookBus, HookDecision, HookPoint, HookRequest
+from riftx.observer import SupervisorDisposition, SupervisorReport
 from riftx.persistence.repositories import SQLAlchemyRunEventRepository, SQLAlchemyRunRepository
 from riftx.persistence.runtime_repositories import (
     SQLAlchemyAgentCycleRepository,
@@ -61,6 +72,7 @@ from riftx.runtime.events import (
     ENGINE_EVENT,
     LEASE_ACQUIRED,
     LEASE_RELEASED,
+    OBSERVER_INSPECTED,
     SESSION_ACTIVATED,
     STEP_COMPLETED,
     STEP_STARTED,
@@ -89,6 +101,10 @@ from riftx.runtime.types import (
     UserInputRequest,
     YieldReason,
 )
+from riftx.tools.policy import (
+    AGENT_TOOL_POLICIES,
+    AgentToolAuthorization,
+)
 
 _STEP_TYPES = {
     AgentEngineEventType.ASSISTANT_MESSAGE: AgentStepType.ASSISTANT_MESSAGE,
@@ -115,6 +131,23 @@ class SubagentBatchExecutor(Protocol):
     ) -> object: ...
 
 
+class BudgetExhaustionHandler(Protocol):
+    def __call__(self, run_id: str) -> Awaitable[object]: ...
+
+
+class RuntimeObserver(Protocol):
+    async def inspect(
+        self,
+        *,
+        session: AgentSession,
+        cycle: AgentCycle,
+        limits: CycleLimits,
+        elapsed_seconds: float,
+        available_tool_ids: Collection[str],
+        available_skill_ids: Collection[str] = (),
+    ) -> SupervisorReport: ...
+
+
 class RuntimeCoordinator:
     def __init__(
         self,
@@ -138,7 +171,10 @@ class RuntimeCoordinator:
         terminal_service: TerminalApplicationService | None = None,
         safety_stopper: RunSafetyStopService | None = None,
         hooks: HookBus | None = None,
+        observer: RuntimeObserver | None = None,
+        closure_verifier: ClosureVerifierApplicationService | None = None,
         subagent_executor: SubagentBatchExecutor | None = None,
+        budget_exhaustion_handler: BudgetExhaustionHandler | None = None,
         limits: CycleLimits | None = None,
         clock: Callable[[], float] = monotonic,
     ) -> None:
@@ -150,6 +186,7 @@ class RuntimeCoordinator:
         self._events = event_repository
         self._leases = lease_manager
         self._context_compiler = context_compiler
+        self._context_usage_recorder: _ContextUsageRecorder | None
         if context_usage_recorder is not None:
             self._context_usage_recorder = context_usage_recorder
         elif hasattr(context_compiler, "record_usage"):
@@ -166,7 +203,10 @@ class RuntimeCoordinator:
         self._terminal_service = terminal_service
         self._safety_stopper = safety_stopper
         self._hooks = hooks
+        self._observer = observer
+        self._closure_verifier = closure_verifier
         self._subagent_executor = subagent_executor
+        self._budget_exhaustion_handler = budget_exhaustion_handler
         self._limits = limits or CycleLimits()
         self._clock = clock
         self._state_machine = RuntimeStateMachine()
@@ -244,7 +284,6 @@ class RuntimeCoordinator:
                 request.latest_user_message_id is not None
                 or request.input_text is not None
                 or bool(request.input_items)
-                or request.approval_id is not None
             )
             persisted_tool_results = await self._persist_tool_result_inputs(
                 session,
@@ -270,14 +309,17 @@ class RuntimeCoordinator:
             self._state_machine.transition_cycle(cycle, CycleStatus.RUNNING)
             await self._cycles.save(cycle)
             await self._append(run.id, CYCLE_STARTED, {"cycle_id": cycle.id})
+            cycle_started_at = self._clock() if self._observer is not None else 0.0
 
+            provider_approval_item: dict[str, object] | None = None
             if request.approval_id is not None:
-                await self._resume_approval(
+                provider_approval_item = await self._resume_approval(
                     run,
                     session,
                     cycle,
                     request,
                 )
+                has_new_canonical_input |= provider_approval_item is None
 
             pending_result = await self._yield_for_next_pending_intent(
                 run,
@@ -381,6 +423,25 @@ class RuntimeCoordinator:
                     "context_manifest": compiled.context_manifest,
                 },
             )
+            observer_result = await self._inspect_observer(
+                session=session,
+                cycle=cycle,
+                elapsed_seconds=(
+                    self._clock() - cycle_started_at if self._observer is not None else 0.0
+                ),
+                available_tool_ids=_compiled_capability_ids(
+                    compiled.available_tools,
+                    keys=("name", "id"),
+                ),
+                available_skill_ids=_compiled_capability_ids(
+                    compiled.available_skills,
+                    keys=("id", "name"),
+                ),
+                phase="pre_model",
+                defer_run_completion=request.defer_run_completion,
+            )
+            if observer_result is not None:
+                return observer_result
             engine_request = AgentEngineRequest(
                 session_id=session.id,
                 model=session.model_profile,
@@ -400,15 +461,39 @@ class RuntimeCoordinator:
                 },
             )
             engine_request.input_items = _object_list(before_model.get("input_items"))
-            if isinstance(before_model.get("max_turns"), int):
-                engine_request.max_turns = int(before_model["max_turns"])
+            max_turns = before_model.get("max_turns")
+            if isinstance(max_turns, int):
+                engine_request.max_turns = max_turns
+            if run.kind is RunKind.PENTEST:
+                if compiled.compilation_id is None:
+                    raise ApplicationConflictError(
+                        "pentest_token_usage_unavailable",
+                        "Pentest model usage requires a durable Context Compilation",
+                        details={"run_id": run.id, "cycle_id": cycle.id},
+                    )
+                try:
+                    cycle = await self._cycles.claim_pentest_model_call(
+                        run_id=run.id,
+                        cycle_id=cycle.id,
+                        compilation_id=compiled.compilation_id,
+                    )
+                except PentestBudgetExceededError as exc:
+                    await self._raise_pentest_budget_exhausted(run.id, exc)
             if session.provider_state_id is not None and not has_new_canonical_input:
                 provider_state = await self._provider_states.get(session.provider_state_id)
                 if provider_state is None:
                     raise EntityNotFoundError("ProviderState", session.provider_state_id)
+                resume_input_items = [
+                    item
+                    for item in engine_request.input_items
+                    if item.get("type") != "approval_decision"
+                ]
+                if provider_approval_item is not None:
+                    resume_input_items.append(provider_approval_item)
                 engine_run = await self._agent_engine.resume(
                     AgentEngineResumeRequest(
-                        **engine_request.model_dump(),
+                        **engine_request.model_dump(exclude={"input_items"}),
+                        input_items=resume_input_items,
                         state=AgentEngineState.from_provider_state(provider_state),
                     )
                 )
@@ -434,7 +519,7 @@ class RuntimeCoordinator:
             subagent_requests: list[dict[str, object]] = []
             counted_tool_calls: set[str] = set()
 
-            async for event in engine_run.events():
+            async for event in cast(AsyncIterator[AgentEngineEvent], engine_run.events()):
                 await self._append_engine_event(run.id, cycle.id, event)
                 await self._persist_engine_transcript(
                     session,
@@ -452,8 +537,9 @@ class RuntimeCoordinator:
                         engine_run=engine_run,
                     )
                 if event.event_type is AgentEngineEventType.RUN_STARTED:
-                    cycle.model_call_count += 1
-                    await self._cycles.save(cycle)
+                    if run.kind is not RunKind.PENTEST:
+                        cycle.model_call_count += 1
+                        await self._cycles.save(cycle)
                     if cycle.model_call_count >= self._limits.max_model_calls:
                         return await self._yield_cycle(
                             run.id,
@@ -471,9 +557,11 @@ class RuntimeCoordinator:
                             compiled.compilation_id,
                             event.data,
                         )
-                    extra_calls = int(event.data.get("model_calls", 0) or 0)
-                    cycle.model_call_count += extra_calls
-                    await self._cycles.save(cycle)
+                    model_calls = event.data.get("model_calls", 0)
+                    extra_calls = model_calls if isinstance(model_calls, int) else 0
+                    if run.kind is not RunKind.PENTEST:
+                        cycle.model_call_count += extra_calls
+                        await self._cycles.save(cycle)
                     if cycle.model_call_count >= self._limits.max_model_calls:
                         return await self._yield_cycle(
                             run.id,
@@ -496,8 +584,9 @@ class RuntimeCoordinator:
                     )
                     if call_key not in counted_tool_calls:
                         counted_tool_calls.add(call_key)
-                        cycle.tool_call_count += 1
-                        await self._cycles.save(cycle)
+                        if run.kind is not RunKind.PENTEST:
+                            cycle.tool_call_count += 1
+                            await self._cycles.save(cycle)
                         if cycle.tool_call_count >= self._limits.max_tool_calls:
                             return await self._yield_cycle(
                                 run.id,
@@ -521,10 +610,13 @@ class RuntimeCoordinator:
                     event_requires_approval = bool(event.data.get("approval_required", False))
                     hook_requires_approval = bool(hook_result.pop("_hook_require_approval", False))
                     tool_id = _event_tool_id(event)
+                    explicit_control = _is_explicit_control_event(event)
                     approval_level = ApprovalLevel(
                         str(event.data.get("approval_level") or ApprovalLevel.SENSITIVE.value)
                     )
-                    if self._approvals is not None:
+                    if explicit_control:
+                        event_requires_approval = True
+                    elif self._approvals is not None:
                         granted = await self._approvals.is_granted(run.id, tool_id)
                         event_requires_approval = hook_requires_approval or requires_approval(
                             run.approval_mode,
@@ -535,16 +627,25 @@ class RuntimeCoordinator:
                         event_requires_approval = event_requires_approval or hook_requires_approval
                     approval_required = approval_required or event_requires_approval
                     if self._deferred_executions is not None and persisted_step is not None:
-                        intent = await self._deferred_executions.prepare(
-                            session=session,
-                            cycle=cycle,
-                            step=persisted_step,
-                            event=event,
-                            status=(
-                                ToolCallStatus.WAITING_APPROVAL
-                                if event_requires_approval
-                                else ToolCallStatus.READY
-                            ),
+                        intent = (
+                            await self._deferred_executions.prepare_control(
+                                session=session,
+                                cycle=cycle,
+                                step=persisted_step,
+                                event=event,
+                            )
+                            if explicit_control
+                            else await self._deferred_executions.prepare(
+                                session=session,
+                                cycle=cycle,
+                                step=persisted_step,
+                                event=event,
+                                status=(
+                                    ToolCallStatus.WAITING_APPROVAL
+                                    if event_requires_approval
+                                    else ToolCallStatus.READY
+                                ),
+                            )
                         )
                         if event_requires_approval:
                             await self._dispatch_hook(
@@ -575,6 +676,29 @@ class RuntimeCoordinator:
                                     compiled.context_manifest
                                 ),
                             )
+                        observer_result = await self._inspect_observer(
+                            session=session,
+                            cycle=cycle,
+                            elapsed_seconds=(
+                                self._clock() - cycle_started_at
+                                if self._observer is not None
+                                else 0.0
+                            ),
+                            available_tool_ids=_compiled_capability_ids(
+                                compiled.available_tools,
+                                keys=("name", "id"),
+                            ),
+                            available_skill_ids=_compiled_capability_ids(
+                                compiled.available_skills,
+                                keys=("id", "name"),
+                            ),
+                            phase="tool_intent",
+                            engine_run=engine_run,
+                            defer_run_completion=request.defer_run_completion,
+                        )
+                        if observer_result is not None:
+                            return observer_result
+                        if event_requires_approval:
                             continue
                 if event.event_type is AgentEngineEventType.SUBAGENT_REQUESTED:
                     subagent_requests.append(dict(event.data))
@@ -692,6 +816,16 @@ class RuntimeCoordinator:
                         defer_run_completion=request.defer_run_completion,
                     )
 
+            if pending_tool:
+                pending_result = await self._yield_for_next_pending_intent(
+                    run,
+                    session,
+                    cycle,
+                    engine_run=engine_run,
+                )
+                if pending_result is not None:
+                    return pending_result
+
             return await self._yield_cycle(
                 run.id,
                 session,
@@ -717,6 +851,68 @@ class RuntimeCoordinator:
                     LEASE_RELEASED,
                     {"owner_id": request.worker_id},
                 )
+
+    async def _inspect_observer(
+        self,
+        *,
+        session: AgentSession,
+        cycle: AgentCycle,
+        elapsed_seconds: float,
+        available_tool_ids: Collection[str],
+        available_skill_ids: Collection[str],
+        phase: str,
+        engine_run: AgentEngineRun | None = None,
+        defer_run_completion: bool = False,
+    ) -> RunCycleResult | None:
+        if self._observer is None:
+            return None
+        report = await self._observer.inspect(
+            session=session,
+            cycle=cycle,
+            limits=self._limits,
+            elapsed_seconds=elapsed_seconds,
+            available_tool_ids=available_tool_ids,
+            available_skill_ids=available_skill_ids,
+        )
+        await self._append(
+            session.run_id,
+            OBSERVER_INSPECTED,
+            {
+                "cycle_id": cycle.id,
+                "phase": phase,
+                "disposition": report.disposition.value,
+                "yield_reason": (
+                    report.yield_reason.value if report.yield_reason is not None else None
+                ),
+                "signals": [
+                    {
+                        "code": signal.code,
+                        "check": signal.check.value,
+                        "severity": signal.severity.value,
+                        "refs": list(signal.refs),
+                    }
+                    for signal in report.signals
+                ],
+            },
+        )
+        if report.disposition is SupervisorDisposition.CONTINUE:
+            return None
+        reason = (
+            YieldReason.FATAL_FAILURE
+            if report.disposition is SupervisorDisposition.BLOCK
+            else report.yield_reason
+        )
+        if reason is None:
+            raise DomainError("Observer yielded without a durable Yield Reason")
+        return await self._yield_cycle(
+            session.run_id,
+            session,
+            cycle,
+            reason,
+            engine_run=engine_run,
+            waiting_object_id=_observer_waiting_object_id(report),
+            defer_run_completion=defer_run_completion,
+        )
 
     async def _dispatch_hook(
         self,
@@ -858,6 +1054,14 @@ class RuntimeCoordinator:
             # without having to infer whether this Run meant COMPLETED or
             # FAILED from an in-memory cycle result.
             run = await self._runs.fence_finalization(run.id, target)
+        if target is RunStatus.COMPLETED and self._closure_verifier is not None:
+            report = await self._closure_verifier.verify(run.id)
+            await self._events.append(
+                run.id,
+                CLOSURE_EVALUATED_EVENT_TYPE,
+                closure_event_payload(report),
+                event_id=closure_event_id(report),
+            )
 
         # A coordinator assembled without every resource controller cannot
         # prove physical termination. COMPLETING is therefore the only safe
@@ -1051,8 +1255,8 @@ class RuntimeCoordinator:
             cycle_id=cycle.id,
             sequence=sequence,
             step_type=_STEP_TYPES[event.event_type],
-            input_refs=[str(value) for value in event.data.get("input_refs", [])],
-            output_refs=[str(value) for value in event.data.get("output_refs", [])],
+            input_refs=_reference_list(event.data.get("input_refs")),
+            output_refs=_reference_list(event.data.get("output_refs")),
         )
         await self._steps.create(step)
         self._state_machine.transition_step(step, StepStatus.RUNNING)
@@ -1110,7 +1314,6 @@ class RuntimeCoordinator:
                     visibility=MessageVisibility.INTERNAL_STATE,
                 ),
             )
-        await self._sessions.save(session)
         self._state_machine.transition_cycle(
             cycle,
             CycleStatus.YIELDED,
@@ -1118,7 +1321,7 @@ class RuntimeCoordinator:
         )
         cycle.waiting_object_id = waiting_object_id or waiting_execution_id
         cycle.checkpoint_id = provider_state_id or session.latest_checkpoint_id
-        await self._cycles.save(cycle)
+        await self._cycles.save_yield(session, cycle)
         if session.parent_session_id is None:
             await self._transition_run_for_yield(
                 run_id,
@@ -1219,8 +1422,13 @@ class RuntimeCoordinator:
                 ToolCallStatus.EXECUTING,
             }:
                 continue
+            if intent.execution_spec is None:
+                continue
             first_dispatch = intent.status is ToolCallStatus.READY
-            reason, execution_id = await self._execute_prepared_intent(run, intent)
+            try:
+                reason, execution_id = await self._execute_prepared_intent(run, intent)
+            except PentestBudgetExceededError as exc:
+                await self._raise_pentest_budget_exhausted(run.id, exc)
             if first_dispatch:
                 await self._dispatch_hook(
                     HookPoint.AFTER_TOOL_EXECUTION,
@@ -1252,7 +1460,7 @@ class RuntimeCoordinator:
         session: AgentSession,
         cycle: AgentCycle,
         request: RunCycleRequest,
-    ) -> None:
+    ) -> dict[str, object] | None:
         approval_id = request.approval_id
         if (
             approval_id is None
@@ -1265,16 +1473,23 @@ class RuntimeCoordinator:
             raise EntityNotFoundError("RuntimeApprovalRequest", approval_id)
         if approval.run_id != run.id or approval.session_id != session.id:
             raise DomainError("Runtime Approval does not belong to this Run and Session")
+        intent = await self._deferred_executions.get_intent(
+            approval.tool_call_intent_id
+        )
+        if intent is None:
+            raise EntityNotFoundError("ToolCallIntent", approval.tool_call_intent_id)
+        provider_control = intent.execution_spec is None
         item = await self._apply_approval_decision(
             run,
             session,
             cycle,
             approval.id,
         )
-        if self._transcript is None and not any(
+        if (provider_control or self._transcript is None) and not any(
             existing.get("approval_id") == approval.id for existing in request.input_items
         ):
             request.input_items.append(item)
+        return item if provider_control else None
 
     async def _apply_approval_decision(
         self,
@@ -1290,6 +1505,11 @@ class RuntimeCoordinator:
             raise EntityNotFoundError("RuntimeApprovalRequest", approval_id)
         if approval.run_id != run.id or approval.session_id != session.id:
             raise DomainError("Runtime Approval does not belong to this Run and Session")
+        intent = await self._deferred_executions.get_intent(
+            approval.tool_call_intent_id
+        )
+        if intent is None:
+            raise EntityNotFoundError("ToolCallIntent", approval.tool_call_intent_id)
         if approval.decision in {
             ApprovalDecision.APPROVE_ONCE,
             ApprovalDecision.APPROVE_TOOL_FOR_RUN,
@@ -1308,6 +1528,8 @@ class RuntimeCoordinator:
             "decision": approval.decision.value,
             "feedback": approval.feedback,
             "tool_call_intent_id": approval.tool_call_intent_id,
+            "engine_call_id": intent.engine_call_id,
+            "tool_id": intent.tool_id,
             "source_refs": [f"approval://{approval.id}"],
         }
         await self._persist_approval_decision(session, item)
@@ -1358,9 +1580,10 @@ class RuntimeCoordinator:
     ) -> tuple[YieldReason, str]:
         if self._deferred_executions is None:
             raise DomainError("Deferred execution dispatcher is unavailable")
+        deferred_executions = self._deferred_executions
         spec = DeferredExecutionSpec.model_validate(intent.execution_spec or {})
         if spec.executor_type is not ExecutorType.PTY:
-            execution = await self._deferred_executions.execute_intent(intent)
+            execution = await deferred_executions.execute_intent(intent)
             return YieldReason.TOOL_RUNNING, execution.id
         if self._terminal_service is None:
             raise DomainError("Terminal service is unavailable for an interactive Tool Call")
@@ -1390,14 +1613,14 @@ class RuntimeCoordinator:
             run.id,
             terminal_command,
         )
-        claim = await self._deferred_executions.claim_intent_execution(
+        claim = await deferred_executions.claim_intent_execution(
             intent,
             execution_key=execution_key,
             attempt_group=spec.attempt_group,
         )
 
         async def admission_guard() -> None:
-            await self._deferred_executions.require_current_intent_execution_claim(
+            await deferred_executions.require_current_intent_execution_claim(
                 intent.id,
                 execution_key=execution_key,
                 attempt_group=spec.attempt_group,
@@ -1420,6 +1643,21 @@ class RuntimeCoordinator:
             raise
         await self._deferred_executions.sync_intent_execution(claim.intent, view.execution)
         return YieldReason.TERMINAL_OPEN, view.execution.id
+
+    async def _raise_pentest_budget_exhausted(
+        self,
+        run_id: str,
+        error: PentestBudgetExceededError,
+    ) -> NoReturn:
+        details = pentest_budget_exhaustion_details(run_id, error)
+        await self._append(run_id, "pentest.budget_exhausted", details)
+        if self._budget_exhaustion_handler is not None:
+            await self._budget_exhaustion_handler(run_id)
+        raise ApplicationConflictError(
+            "pentest_budget_exhausted",
+            "Pentest execution budget is exhausted",
+            details=details,
+        ) from error
 
     async def _append_engine_event(
         self, run_id: str, cycle_id: str, event: AgentEngineEvent
@@ -1497,6 +1735,17 @@ def _event_tool_id(event: AgentEngineEvent) -> str:
     return value
 
 
+def _is_explicit_control_event(event: AgentEngineEvent) -> bool:
+    if event.data.get("approval_policy") != "explicit":
+        return False
+    policy = AGENT_TOOL_POLICIES.get(_event_tool_id(event))
+    return bool(
+        policy is not None
+        and policy.approval_required
+        and policy.authorization is AgentToolAuthorization.DYNAMIC_APPROVAL
+    )
+
+
 def _execution_id_from_tool_result_input(item: Mapping[str, object]) -> str | None:
     item_id = item.get("id")
     item_type = item.get("type")
@@ -1537,6 +1786,10 @@ def _object_list(value: object) -> list[dict[str, object]]:
     return [dict(item) for item in value if isinstance(item, dict)]
 
 
+def _reference_list(value: object) -> list[str]:
+    return [str(item) for item in value] if isinstance(value, list) else []
+
+
 def _string_list(value: object) -> list[str]:
     return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
 
@@ -1558,3 +1811,39 @@ def _working_memory_version(manifest: Mapping[str, object]) -> int | None:
             if separator and version.isdigit() and int(version) >= 1:
                 return int(version)
     return None
+
+
+def _compiled_capability_ids(
+    payloads: Collection[Mapping[str, object]],
+    *,
+    keys: tuple[str, ...],
+) -> tuple[str, ...]:
+    values: set[str] = set()
+    for payload in payloads:
+        for key in keys:
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                values.add(value)
+                break
+    return tuple(sorted(values))
+
+
+def _observer_waiting_object_id(report: SupervisorReport) -> str | None:
+    if report.yield_reason is None:
+        return None
+    prefix = {
+        YieldReason.APPROVAL_REQUIRED: "approval:",
+        YieldReason.USER_INPUT_REQUIRED: "user-input:",
+    }.get(report.yield_reason)
+    if prefix is None:
+        return None
+    return next(
+        (
+            ref.removeprefix(prefix)
+            for signal in report.signals
+            if signal.yield_reason is report.yield_reason
+            for ref in signal.refs
+            if ref.startswith(prefix)
+        ),
+        None,
+    )

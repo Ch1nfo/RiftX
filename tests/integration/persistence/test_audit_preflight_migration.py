@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+import uuid
 from pathlib import Path
 from runpy import run_path
 from types import SimpleNamespace
@@ -18,7 +19,6 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.engine import Engine
-from tests.integration.persistence.test_audit_preflight_repository import _pending_job
 from tests.integration.persistence.test_migrations import (
     _run_alembic_with_sqlite_foreign_keys,
     downgrade_alembic,
@@ -29,12 +29,11 @@ from tests.integration.persistence.test_mutation_clock_migration import _offline
 from tests.integration.persistence.test_runner_ownership_migration import _insert_node
 
 from riftx.persistence import Database
-from riftx.persistence.audit_preflight import SQLAlchemyAuditPreflightRepository
 from riftx.persistence.orm import Base
 
 BASE_REVISION = "4f9a6c1d2e30"
 PREFLIGHT_REVISION = "2b7d9e4a6c10"
-HEAD_REVISION = "6e4a2c9f1b30"
+HEAD_REVISION = "7b3d1e5f9a24"
 EARLIEST_REVISION = "2f14cbcea74b"
 PREFLIGHT_TABLES = {
     "audit_preflight_jobs",
@@ -46,6 +45,72 @@ PREFLIGHT_TABLES = {
 MIGRATION = run_path(
     str(Path(__file__).parents[3] / "migrations/versions/2b7d9e4a6c10_add_audit_preflight_jobs.py")
 )
+
+
+def _insert_pending_job(
+    database_path: Path,
+    job_id: str,
+    *,
+    plan_issuance_schema_version: str | None = None,
+) -> None:
+    created_at = "2026-08-04 12:00:00.000000"
+    request_digest = "1" * 64
+    with sqlite3.connect(database_path) as connection:
+        marker_column = (
+            ", plan_issuance_schema_version"
+            if plan_issuance_schema_version is not None
+            else ""
+        )
+        marker_value = ", ?" if plan_issuance_schema_version is not None else ""
+        values: tuple[object, ...] = (
+            job_id,
+            "riftx.audit-preflight-job/v1",
+            str(uuid.uuid5(uuid.NAMESPACE_URL, job_id)),
+            "operator-1",
+            "2" * 64,
+            "riftx.audit-preflight-request/v1",
+            request_digest,
+            "local",
+            "3" * 64,
+            "private_materialization",
+            "4" * 64,
+            "5" * 64,
+            "riftx.audit-empty-security-context/v1",
+            "6" * 64,
+            "pending",
+            "7" * 64,
+            0,
+            "2026-08-04 13:00:00.000000",
+            created_at,
+            created_at,
+            1,
+        )
+        if plan_issuance_schema_version is not None:
+            values += (plan_issuance_schema_version,)
+        connection.execute(
+            "INSERT INTO audit_preflight_jobs "
+            "(id, schema_version, client_request_id, operator_principal_id, "
+            "authorization_scope_digest, request_schema_version, request_digest, "
+            "source_node_id, source_root_identity_digest, backend_id, image_digest, "
+            "policy_digest, canonical_empty_context_id, canonical_empty_context_digest, "
+            "status, effect_owner_digest, attempt, expires_at, created_at, updated_at, "
+            f"state_version{marker_column}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+            f"?, ?, ?, ?, ?, ?, ?, ?, ?, ?{marker_value})",
+            values,
+        )
+        connection.execute(
+            "INSERT INTO audit_preflight_job_requests "
+            "(job_id, schema_version, canonical_json, request_digest, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                job_id,
+                "riftx.audit-preflight-request/v1",
+                "{}",
+                request_digest,
+                created_at,
+            ),
+        )
+        connection.commit()
 
 
 def test_preflight_upgrade_compiles_for_postgresql_offline() -> None:
@@ -171,15 +236,7 @@ def test_preflight_nonempty_downgrade_fails_before_ddl_and_preserves_facts(
     database_path = tmp_path / "preflight-nonempty.db"
     run_alembic(database_path, "head")
 
-    async def seed() -> None:
-        database = Database(f"sqlite+aiosqlite:///{database_path}")
-        try:
-            repository = SQLAlchemyAuditPreflightRepository(database.session_factory)
-            await repository.create(_pending_job(job_id="preflight-migration-job"))
-        finally:
-            await database.dispose()
-
-    asyncio.run(seed())
+    _insert_pending_job(database_path, "preflight-migration-job")
 
     ddl_statements: list[str] = []
 
@@ -221,15 +278,7 @@ def test_preflight_receipt_fact_blocks_downgrade_before_any_ddl(tmp_path: Path) 
     database_path = tmp_path / "preflight-receipt-downgrade.db"
     run_alembic(database_path, "head")
 
-    async def seed() -> None:
-        database = Database(f"sqlite+aiosqlite:///{database_path}")
-        try:
-            repository = SQLAlchemyAuditPreflightRepository(database.session_factory)
-            await repository.create(_pending_job(job_id="preflight-receipt-job"))
-        finally:
-            await database.dispose()
-
-    asyncio.run(seed())
+    _insert_pending_job(database_path, "preflight-receipt-job")
     with sqlite3.connect(database_path) as connection:
         connection.execute(
             "INSERT INTO audit_preflight_stop_receipts "
@@ -328,15 +377,7 @@ def test_migrated_schema_allows_unattempted_cancelling_but_rejects_active_proof(
     database_path = tmp_path / "preflight-constraints.db"
     run_alembic(database_path, "head")
 
-    async def seed() -> None:
-        database = Database(f"sqlite+aiosqlite:///{database_path}")
-        try:
-            repository = SQLAlchemyAuditPreflightRepository(database.session_factory)
-            await repository.create(_pending_job(job_id="preflight-constraints"))
-        finally:
-            await database.dispose()
-
-    asyncio.run(seed())
+    _insert_pending_job(database_path, "preflight-constraints")
 
     with sqlite3.connect(database_path) as connection:
         connection.execute(

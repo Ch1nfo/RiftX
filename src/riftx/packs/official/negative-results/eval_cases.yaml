@@ -1,0 +1,11 @@
+- case_id: eval.negative-results.baseline
+  capability_ids: [negative-results, negative-results.technique]
+  description: Record a disproven hypothesis, an inconclusive attempt, and a proposed duplicate retry.
+  scenario: builtin://eval/negative-results/baseline-v1
+  assertions:
+    - Negative results identify tested conditions, observed outcome, confidence, and reuse boundary.
+    - Inconclusive and blocked outcomes are not relabelled as disproven.
+    - Equivalent retries are suppressed unless their rationale changes the evidentiary value.
+  negative_case_ids:
+    - negative.negative-results.overgeneralized
+    - negative.negative-results.retry-without-change

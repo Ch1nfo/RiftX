@@ -9,36 +9,25 @@ from unittest.mock import AsyncMock, call
 
 import pytest
 from sqlalchemy import select, update
-from tests.integration.persistence.test_audit_repositories import (
-    _create_audit,
-    _create_engagement,
-    _project,
-    _snapshot,
-)
 
 from riftx.application.errors import (
     EntityNotFoundError,
     RepositoryConflictError,
     RepositoryIntegrityError,
 )
-from riftx.application.ports import AuditControlTransition
-from riftx.application.services.workflow_signals import (
-    WorkflowSignalDispatcher,
-    WorkflowSignalOutcomeUnknown,
-    WorkflowSignalTerminallyRejected,
-)
-from riftx.application.workflow_router import WorkflowDispatchDisposition
 from riftx.domain import (
-    AuditLifecycleStatus,
-    AuditPhase,
     Engagement,
+    EntryPoint,
+    EntryPointKind,
     Execution,
     ExecutionStatus,
     ExecutorType,
     Objective,
+    PentestAdmission,
+    PentestBudget,
     Run,
     RunKind,
-    RunStatus,
+    Scope,
 )
 from riftx.domain.workflow_signal import (
     WorkflowSignalDeliveryState,
@@ -48,17 +37,12 @@ from riftx.domain.workflow_signal import (
 )
 from riftx.persistence import (
     Database,
-    SQLAlchemyAuditControlUnitOfWork,
-    SQLAlchemyAuditProjectRepository,
     SQLAlchemyEngagementRepository,
     SQLAlchemyExecutionRepository,
     SQLAlchemyRunRepository,
-    SQLAlchemySnapshotRepository,
 )
 from riftx.persistence.orm import (
-    AuditScanRecord,
     ExecutionRecord,
-    RunEventRecord,
     RunRecord,
 )
 from riftx.persistence.workflow_signals import (
@@ -68,7 +52,6 @@ from riftx.persistence.workflow_signals import (
     _require_exact_owner_binding,
     _require_exact_source_binding,
 )
-from riftx.temporal.workflow_signal_transport import RoutedWorkflowSignalTransport
 
 NOW = datetime(2026, 8, 3, 12, tzinfo=UTC)
 
@@ -109,6 +92,41 @@ async def _general_database(tmp_path: Path) -> tuple[Database, Run]:
         expected={ExecutionStatus.RUNNING},
     )
     assert saved is True
+    return database, run
+
+
+async def _pentest_database(tmp_path: Path) -> tuple[Database, Run]:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'pentest-signals.db'}")
+    await database.create_schema()
+    await SQLAlchemyEngagementRepository(database.session_factory).create(
+        Engagement(
+            id="engagement-pentest",
+            name="Pentest",
+            authorization_reference="authorization://pentest-signals",
+        )
+    )
+    run = Run(
+        id="pentest-1",
+        engagement_id="engagement-pentest",
+        kind=RunKind.PENTEST,
+        node_id="local",
+        objective=Objective(description="Test Pentest durable signals"),
+        entry_points=[EntryPoint(kind=EntryPointKind.DOMAIN, value="example.test")],
+        scope=Scope(domains=["example.test"]),
+        pentest_admission=PentestAdmission(
+            budget=PentestBudget(
+                max_duration_seconds=3600,
+                max_model_calls=100,
+                max_tokens=100_000,
+                max_tool_calls=200,
+                max_target_interactions=50,
+                max_concurrent_target_interactions=2,
+            )
+        ),
+        workspace_path="/tmp/riftx/pentest-1",
+        temporal_workflow_id="riftx-pentest-pentest-1",
+    )
+    await SQLAlchemyRunRepository(database.session_factory).create(run)
     return database, run
 
 
@@ -175,70 +193,6 @@ async def _all_signal_records(database: Database) -> list[WorkflowSignalIntentRe
                 )
             )
         )
-
-
-async def _seed_started_audit_state(
-    database: Database,
-    *,
-    audit_id: str,
-    run_id: str,
-    audit_status: AuditLifecycleStatus,
-    run_status: RunStatus,
-    state_version: int = 2,
-) -> None:
-    async with database.session_factory() as session, session.begin():
-        scan_result = await session.execute(
-            update(AuditScanRecord)
-            .where(AuditScanRecord.id == audit_id)
-            .values(
-                lifecycle_status=audit_status.value,
-                current_phase=AuditPhase.MAP_SCOPE.value,
-                state_version=state_version,
-                started_at=NOW,
-            )
-        )
-        run_result = await session.execute(
-            update(RunRecord)
-            .where(RunRecord.id == run_id)
-            .values(status=run_status.value, started_at=NOW)
-        )
-        assert scan_result.rowcount == run_result.rowcount == 1  # type: ignore[attr-defined]
-
-
-async def _project_audit_control(
-    database: Database,
-    *,
-    audit_id: str,
-    run_id: str,
-    source_audit_status: AuditLifecycleStatus,
-    source_run_status: RunStatus,
-    target_audit_status: AuditLifecycleStatus,
-    target_run_status: RunStatus,
-    signal_kind: WorkflowSignalKind,
-    expected_state_version: int,
-    event_suffix: str,
-) -> None:
-    await SQLAlchemyAuditControlUnitOfWork(database.session_factory).transition(
-        AuditControlTransition(
-            audit_id=audit_id,
-            run_id=run_id,
-            expected_audit_state_version=expected_state_version,
-            expected_audit_lifecycle=source_audit_status,
-            expected_run_status=source_run_status,
-            target_audit_lifecycle=target_audit_status,
-            target_run_status=target_run_status,
-            operation=signal_kind.value,
-            reason_code={
-                WorkflowSignalKind.PAUSE: "audit_pause_requested",
-                WorkflowSignalKind.RESUME: "audit_resume_requested",
-                WorkflowSignalKind.CANCEL: "audit_cancel_requested",
-            }[signal_kind],
-            occurred_at=NOW + timedelta(minutes=1),
-            audit_event_id=f"audit-control-{event_suffix}",
-            run_event_id=f"run-control-{event_suffix}",
-            workflow_signal_kind=signal_kind,
-        )
-    )
 
 
 async def test_create_is_exactly_idempotent_and_payload_divergence_conflicts(
@@ -313,6 +267,47 @@ async def test_execution_terminal_transition_atomically_creates_one_signal_inten
     assert records[0].source_event_id == completed.id
     assert records[0].payload_json == '{"execution_id":"execution-terminal"}'
     assert records[0].delivery_state == "pending"
+    await database.dispose()
+
+
+async def test_pentest_execution_terminal_uses_distinct_workflow_owner(
+    tmp_path: Path,
+) -> None:
+    database, run = await _pentest_database(tmp_path)
+    repository = SQLAlchemyExecutionRepository(
+        database.session_factory,
+        emit_workflow_signal_intents=True,
+    )
+    running = await _persist_running_execution(
+        repository,
+        _execution(tmp_path, run, execution_id="execution-pentest"),
+    )
+    completed = running.model_copy(deep=True)
+    completed.transition_to(
+        ExecutionStatus.COMPLETED,
+        at=NOW + timedelta(seconds=3),
+        exit_code=0,
+    )
+
+    _, saved = await repository.save_if_status(
+        completed,
+        expected={ExecutionStatus.RUNNING},
+    )
+
+    assert saved is True
+    records = await _all_signal_records(database)
+    assert len(records) == 1
+    assert records[0].owner_kind == "pentest_run"
+    assert records[0].owner_identity == "pentest_run:pentest-1"
+    assert records[0].run_kind == "pentest"
+    assert records[0].workflow_protocol_version == "riftx.pentest-run-workflow/v1"
+    assert records[0].workflow_id == "riftx-pentest-pentest-1"
+    signal_repository = SQLAlchemyWorkflowSignalIntentRepository(
+        database.session_factory
+    )
+    stored = await signal_repository.get(records[0].id)
+    assert stored is not None
+    await signal_repository.validate_for_delivery(stored)
     await database.dispose()
 
 
@@ -772,600 +767,6 @@ async def test_superseded_intent_is_terminal_and_never_claimed_again(
         now=NOW + timedelta(days=1),
         lease_duration=timedelta(seconds=30),
     )
-    await database.dispose()
-
-
-async def test_code_audit_intent_requires_exact_scan_run_and_workflow_binding(
-    tmp_path: Path,
-) -> None:
-    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'audit-signals.db'}")
-    await database.create_schema()
-    await _create_engagement(database, "engagement-1")
-    await SQLAlchemyAuditProjectRepository(database.session_factory).create(_project())
-    await SQLAlchemySnapshotRepository(database.session_factory).create(_snapshot())
-    _, _, scan = await _create_audit(
-        database,
-        audit_id="audit-1",
-        run_id="run-audit",
-        queued=True,
-    )
-    await _seed_started_audit_state(
-        database,
-        audit_id=scan.id,
-        run_id=scan.run_id,
-        audit_status=AuditLifecycleStatus.RUNNING,
-        run_status=RunStatus.RUNNING,
-    )
-    await _project_audit_control(
-        database,
-        audit_id=scan.id,
-        run_id=scan.run_id,
-        source_audit_status=AuditLifecycleStatus.RUNNING,
-        source_run_status=RunStatus.RUNNING,
-        target_audit_status=AuditLifecycleStatus.CANCELLING,
-        target_run_status=RunStatus.CANCELLING,
-        signal_kind=WorkflowSignalKind.CANCEL,
-        expected_state_version=2,
-        event_suffix="cancel-1",
-    )
-    repository = SQLAlchemyWorkflowSignalIntentRepository(database.session_factory)
-    records = await _all_signal_records(database)
-    assert len(records) == 1
-    stored = await repository.get(records[0].id)
-    assert stored is not None
-    assert stored.audit_id == scan.id
-    await repository.validate_for_delivery(stored)
-
-    mismatched = WorkflowSignalIntent.code_audit(
-        audit_id=scan.id,
-        run_id="different-run",
-        workflow_id=scan.temporal_workflow_id,
-        signal_kind=WorkflowSignalKind.CANCEL,
-        source_event_kind=WorkflowSignalSourceKind.CONTROL_INTENT,
-        source_event_id="audit-control-cancel-1",
-        source_state_version=3,
-        payload={"audit_id": scan.id},
-        created_at=NOW,
-    )
-    with pytest.raises(EntityNotFoundError):
-        await repository.create(mismatched)
-    await database.dispose()
-
-
-@pytest.mark.parametrize(
-    (
-        "signal_kind",
-        "source_audit_status",
-        "source_run_status",
-        "target_audit_status",
-        "target_run_status",
-    ),
-    [
-        (
-            WorkflowSignalKind.PAUSE,
-            AuditLifecycleStatus.RUNNING,
-            RunStatus.RUNNING,
-            AuditLifecycleStatus.PAUSING,
-            RunStatus.PAUSING,
-        ),
-        (
-            WorkflowSignalKind.RESUME,
-            AuditLifecycleStatus.PAUSED,
-            RunStatus.PAUSED,
-            AuditLifecycleStatus.RUNNING,
-            RunStatus.RUNNING,
-        ),
-        (
-            WorkflowSignalKind.CANCEL,
-            AuditLifecycleStatus.RUNNING,
-            RunStatus.RUNNING,
-            AuditLifecycleStatus.CANCELLING,
-            RunStatus.CANCELLING,
-        ),
-    ],
-)
-async def test_started_audit_control_atomically_stages_one_owner_bound_intent(
-    tmp_path: Path,
-    signal_kind: WorkflowSignalKind,
-    source_audit_status: AuditLifecycleStatus,
-    source_run_status: RunStatus,
-    target_audit_status: AuditLifecycleStatus,
-    target_run_status: RunStatus,
-) -> None:
-    database = Database(
-        f"sqlite+aiosqlite:///{tmp_path / f'audit-{signal_kind.value}-atomic.db'}"
-    )
-    await database.create_schema()
-    await _create_engagement(database, "engagement-1")
-    await SQLAlchemyAuditProjectRepository(database.session_factory).create(_project())
-    await SQLAlchemySnapshotRepository(database.session_factory).create(_snapshot())
-    _, _, scan = await _create_audit(
-        database,
-        audit_id=f"audit-{signal_kind.value}",
-        run_id=f"run-{signal_kind.value}",
-        queued=True,
-    )
-    await _seed_started_audit_state(
-        database,
-        audit_id=scan.id,
-        run_id=scan.run_id,
-        audit_status=source_audit_status,
-        run_status=source_run_status,
-    )
-
-    await _project_audit_control(
-        database,
-        audit_id=scan.id,
-        run_id=scan.run_id,
-        source_audit_status=source_audit_status,
-        source_run_status=source_run_status,
-        target_audit_status=target_audit_status,
-        target_run_status=target_run_status,
-        signal_kind=signal_kind,
-        expected_state_version=2,
-        event_suffix=signal_kind.value,
-    )
-
-    records = await _all_signal_records(database)
-    assert len(records) == 1
-    intent = await SQLAlchemyWorkflowSignalIntentRepository(
-        database.session_factory
-    ).get(records[0].id)
-    assert intent is not None
-    assert intent.owner_kind.value == "code_audit"
-    assert intent.audit_id == scan.id
-    assert intent.run_id == scan.run_id
-    assert intent.signal_kind is signal_kind
-    assert intent.source_event_id == f"audit-control-{signal_kind.value}"
-    assert intent.source_state_version == 3
-    assert intent.payload == {"audit_id": scan.id}
-    async with database.session_factory() as session:
-        source_event = await session.get(RunEventRecord, intent.source_event_id)
-        durable_scan = await session.get(AuditScanRecord, scan.id)
-        durable_run = await session.get(RunRecord, scan.run_id)
-    assert source_event is not None
-    assert source_event.event_type == "audit.control_projected"
-    assert durable_scan is not None
-    assert durable_scan.lifecycle_status == target_audit_status.value
-    assert durable_run is not None
-    assert durable_run.status == target_run_status.value
-    await database.dispose()
-
-
-async def test_draft_audit_cancel_projects_fence_without_workflow_intent(
-    tmp_path: Path,
-) -> None:
-    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'audit-draft-cancel.db'}")
-    await database.create_schema()
-    await _create_engagement(database, "engagement-1")
-    await SQLAlchemyAuditProjectRepository(database.session_factory).create(_project())
-    await SQLAlchemySnapshotRepository(database.session_factory).create(_snapshot())
-    _, _, scan = await _create_audit(
-        database,
-        audit_id="audit-draft",
-        run_id="run-draft",
-    )
-
-    await _project_audit_control(
-        database,
-        audit_id=scan.id,
-        run_id=scan.run_id,
-        source_audit_status=AuditLifecycleStatus.DRAFT,
-        source_run_status=RunStatus.CREATED,
-        target_audit_status=AuditLifecycleStatus.CANCELLING,
-        target_run_status=RunStatus.CANCELLING,
-        signal_kind=WorkflowSignalKind.CANCEL,
-        expected_state_version=1,
-        event_suffix="draft-cancel",
-    )
-
-    assert await _all_signal_records(database) == []
-    async with database.session_factory() as session:
-        durable_scan = await session.get(AuditScanRecord, scan.id)
-        durable_run = await session.get(RunRecord, scan.run_id)
-        source_event = await session.get(RunEventRecord, "audit-control-draft-cancel")
-    assert durable_scan is not None
-    assert durable_scan.lifecycle_status == AuditLifecycleStatus.CANCELLING.value
-    assert durable_run is not None
-    assert durable_run.status == RunStatus.CANCELLING.value
-    assert source_event is not None
-    await database.dispose()
-
-
-async def test_audit_control_projection_rolls_back_state_and_events_if_intent_conflicts(
-    tmp_path: Path,
-) -> None:
-    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'audit-control-rollback.db'}")
-    await database.create_schema()
-    await _create_engagement(database, "engagement-1")
-    await SQLAlchemyAuditProjectRepository(database.session_factory).create(_project())
-    await SQLAlchemySnapshotRepository(database.session_factory).create(_snapshot())
-    _, _, scan = await _create_audit(
-        database,
-        audit_id="audit-rollback",
-        run_id="run-rollback",
-        queued=True,
-    )
-    await _seed_started_audit_state(
-        database,
-        audit_id=scan.id,
-        run_id=scan.run_id,
-        audit_status=AuditLifecycleStatus.RUNNING,
-        run_status=RunStatus.RUNNING,
-    )
-    conflicting = WorkflowSignalIntent.code_audit(
-        audit_id=scan.id,
-        run_id=scan.run_id,
-        workflow_id=scan.temporal_workflow_id,
-        signal_kind=WorkflowSignalKind.PAUSE,
-        source_event_kind=WorkflowSignalSourceKind.CONTROL_INTENT,
-        source_event_id="audit-control-rollback-pause",
-        source_state_version=3,
-        payload={"audit_id": scan.id, "conflicting": True},
-        created_at=NOW + timedelta(minutes=1),
-    )
-    async with database.session_factory() as session, session.begin():
-        session.add(_intent_to_record(conflicting))
-
-    with pytest.raises(RepositoryConflictError, match="different immutable facts"):
-        await _project_audit_control(
-            database,
-            audit_id=scan.id,
-            run_id=scan.run_id,
-            source_audit_status=AuditLifecycleStatus.RUNNING,
-            source_run_status=RunStatus.RUNNING,
-            target_audit_status=AuditLifecycleStatus.PAUSING,
-            target_run_status=RunStatus.PAUSING,
-            signal_kind=WorkflowSignalKind.PAUSE,
-            expected_state_version=2,
-            event_suffix="rollback-pause",
-        )
-
-    async with database.session_factory() as session:
-        durable_scan = await session.get(AuditScanRecord, scan.id)
-        durable_run = await session.get(RunRecord, scan.run_id)
-        control_event = await session.get(
-            RunEventRecord,
-            "audit-control-rollback-pause",
-        )
-        run_event = await session.get(RunEventRecord, "run-control-rollback-pause")
-    assert durable_scan is not None
-    assert durable_scan.lifecycle_status == AuditLifecycleStatus.RUNNING.value
-    assert durable_scan.state_version == 2
-    assert durable_run is not None
-    assert durable_run.status == RunStatus.RUNNING.value
-    assert control_event is run_event is None
-    records = await _all_signal_records(database)
-    assert len(records) == 1
-    assert records[0].payload_json == (
-        f'{{"audit_id":"{scan.id}","conflicting":true}}'
-    )
-    await database.dispose()
-
-
-async def test_audit_control_source_must_be_present_exact_and_same_run(
-    tmp_path: Path,
-) -> None:
-    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'audit-control-source.db'}")
-    await database.create_schema()
-    await _create_engagement(database, "engagement-1")
-    await SQLAlchemyAuditProjectRepository(database.session_factory).create(_project())
-    await SQLAlchemySnapshotRepository(database.session_factory).create(_snapshot())
-    _, _, scan = await _create_audit(
-        database,
-        audit_id="audit-source",
-        run_id="run-source",
-        queued=True,
-    )
-    await _seed_started_audit_state(
-        database,
-        audit_id=scan.id,
-        run_id=scan.run_id,
-        audit_status=AuditLifecycleStatus.RUNNING,
-        run_status=RunStatus.RUNNING,
-    )
-    await _project_audit_control(
-        database,
-        audit_id=scan.id,
-        run_id=scan.run_id,
-        source_audit_status=AuditLifecycleStatus.RUNNING,
-        source_run_status=RunStatus.RUNNING,
-        target_audit_status=AuditLifecycleStatus.PAUSING,
-        target_run_status=RunStatus.PAUSING,
-        signal_kind=WorkflowSignalKind.PAUSE,
-        expected_state_version=2,
-        event_suffix="source-pause",
-    )
-    repository = SQLAlchemyWorkflowSignalIntentRepository(database.session_factory)
-    baseline = await _all_signal_records(database)
-    assert len(baseline) == 1
-
-    def candidate(source_event_id: str) -> WorkflowSignalIntent:
-        return WorkflowSignalIntent.code_audit(
-            audit_id=scan.id,
-            run_id=scan.run_id,
-            workflow_id=scan.temporal_workflow_id,
-            signal_kind=WorkflowSignalKind.PAUSE,
-            source_event_kind=WorkflowSignalSourceKind.CONTROL_INTENT,
-            source_event_id=source_event_id,
-            source_state_version=3,
-            payload={"audit_id": scan.id},
-            created_at=NOW + timedelta(minutes=1),
-        )
-
-    with pytest.raises(EntityNotFoundError):
-        await repository.create(candidate("missing-control-source"))
-
-    foreign_run = Run(
-        id="run-foreign-control-source",
-        engagement_id="engagement-1",
-        kind=RunKind.GENERAL,
-        node_id="local",
-        objective=Objective(description="Foreign control event"),
-        workspace_path=str(tmp_path / "foreign-control-source"),
-        temporal_workflow_id="riftx-run-run-foreign-control-source",
-    )
-    await SQLAlchemyRunRepository(database.session_factory).create(foreign_run)
-    exact_payload = {
-        "audit_id": scan.id,
-        "operation": "pause",
-        "reason_code": "audit_pause_requested",
-        "from_audit_lifecycle": "running",
-        "to_audit_lifecycle": "pausing",
-        "from_run_status": "running",
-        "to_run_status": "pausing",
-        "audit_state_version": 3,
-    }
-    async with database.session_factory() as session, session.begin():
-        session.add(
-            RunEventRecord(
-                id="foreign-control-source",
-                run_id=foreign_run.id,
-                sequence=99,
-                event_type="audit.control_projected",
-                payload_json=exact_payload,
-                created_at=NOW + timedelta(minutes=1),
-            )
-        )
-        session.add(
-            RunEventRecord(
-                id="corrupt-control-source",
-                run_id=scan.run_id,
-                sequence=99,
-                event_type="audit.control_projected",
-                payload_json={**exact_payload, "operation": "cancel"},
-                created_at=NOW + timedelta(minutes=1),
-            )
-        )
-
-    with pytest.raises(RepositoryConflictError, match="Audit control source"):
-        await repository.create(candidate("foreign-control-source"))
-    with pytest.raises(RepositoryConflictError, match="Audit control source"):
-        await repository.create(candidate("corrupt-control-source"))
-    assert len(await _all_signal_records(database)) == 1
-    await database.dispose()
-
-
-async def test_concurrent_cancel_fence_supersedes_pending_audit_resume_before_router(
-    tmp_path: Path,
-) -> None:
-    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'audit-resume-cancel.db'}")
-    await database.create_schema()
-    await _create_engagement(database, "engagement-1")
-    await SQLAlchemyAuditProjectRepository(database.session_factory).create(_project())
-    await SQLAlchemySnapshotRepository(database.session_factory).create(_snapshot())
-    _, _, scan = await _create_audit(
-        database,
-        audit_id="audit-resume-cancel",
-        run_id="run-resume-cancel",
-        queued=True,
-    )
-    await _seed_started_audit_state(
-        database,
-        audit_id=scan.id,
-        run_id=scan.run_id,
-        audit_status=AuditLifecycleStatus.PAUSED,
-        run_status=RunStatus.PAUSED,
-    )
-    await _project_audit_control(
-        database,
-        audit_id=scan.id,
-        run_id=scan.run_id,
-        source_audit_status=AuditLifecycleStatus.PAUSED,
-        source_run_status=RunStatus.PAUSED,
-        target_audit_status=AuditLifecycleStatus.RUNNING,
-        target_run_status=RunStatus.RUNNING,
-        signal_kind=WorkflowSignalKind.RESUME,
-        expected_state_version=2,
-        event_suffix="pending-resume",
-    )
-    await _project_audit_control(
-        database,
-        audit_id=scan.id,
-        run_id=scan.run_id,
-        source_audit_status=AuditLifecycleStatus.RUNNING,
-        source_run_status=RunStatus.RUNNING,
-        target_audit_status=AuditLifecycleStatus.CANCELLING,
-        target_run_status=RunStatus.CANCELLING,
-        signal_kind=WorkflowSignalKind.CANCEL,
-        expected_state_version=3,
-        event_suffix="winning-cancel",
-    )
-    repository = SQLAlchemyWorkflowSignalIntentRepository(database.session_factory)
-    intents = [
-        item
-        for record in await _all_signal_records(database)
-        if (item := await repository.get(record.id)) is not None
-    ]
-    resume = next(
-        item for item in intents if item.signal_kind is WorkflowSignalKind.RESUME
-    )
-    router = SimpleNamespace(resume_audit=AsyncMock())
-    transport = RoutedWorkflowSignalTransport(
-        router,  # type: ignore[arg-type]
-        runs=SQLAlchemyRunRepository(database.session_factory),
-        sources=repository,
-    )
-
-    with pytest.raises(WorkflowSignalTerminallyRejected) as captured:
-        await transport.send(resume)
-
-    assert captured.value.error_code == "workflow_signal_rejected"
-    router.resume_audit.assert_not_awaited()
-    await database.dispose()
-
-
-async def test_audit_delivery_guard_linearizes_resume_rpc_before_competing_cancel(
-    tmp_path: Path,
-) -> None:
-    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'audit-dispatch-race.db'}")
-    await database.create_schema()
-    await _create_engagement(database, "engagement-1")
-    await SQLAlchemyAuditProjectRepository(database.session_factory).create(_project())
-    await SQLAlchemySnapshotRepository(database.session_factory).create(_snapshot())
-    _, _, scan = await _create_audit(
-        database,
-        audit_id="audit-dispatch-race",
-        run_id="run-dispatch-race",
-        queued=True,
-    )
-    await _seed_started_audit_state(
-        database,
-        audit_id=scan.id,
-        run_id=scan.run_id,
-        audit_status=AuditLifecycleStatus.PAUSED,
-        run_status=RunStatus.PAUSED,
-    )
-    await _project_audit_control(
-        database,
-        audit_id=scan.id,
-        run_id=scan.run_id,
-        source_audit_status=AuditLifecycleStatus.PAUSED,
-        source_run_status=RunStatus.PAUSED,
-        target_audit_status=AuditLifecycleStatus.RUNNING,
-        target_run_status=RunStatus.RUNNING,
-        signal_kind=WorkflowSignalKind.RESUME,
-        expected_state_version=2,
-        event_suffix="guarded-resume",
-    )
-    repository = SQLAlchemyWorkflowSignalIntentRepository(database.session_factory)
-    resume_record = (await _all_signal_records(database))[0]
-    resume = await repository.get(resume_record.id)
-    assert resume is not None
-    rpc_entered = asyncio.Event()
-    rpc_release = asyncio.Event()
-
-    async def resume_audit(**owner: str) -> WorkflowDispatchDisposition:
-        assert owner["audit_id"] == scan.id
-        rpc_entered.set()
-        await rpc_release.wait()
-        return WorkflowDispatchDisposition.DISPATCHED
-
-    transport = RoutedWorkflowSignalTransport(
-        SimpleNamespace(resume_audit=resume_audit),  # type: ignore[arg-type]
-        runs=SQLAlchemyRunRepository(database.session_factory),
-        sources=repository,
-    )
-    send_task = asyncio.create_task(transport.send(resume))
-    await asyncio.wait_for(rpc_entered.wait(), timeout=2)
-    cancel_started = asyncio.Event()
-
-    async def commit_cancel() -> None:
-        cancel_started.set()
-        await _project_audit_control(
-            database,
-            audit_id=scan.id,
-            run_id=scan.run_id,
-            source_audit_status=AuditLifecycleStatus.RUNNING,
-            source_run_status=RunStatus.RUNNING,
-            target_audit_status=AuditLifecycleStatus.CANCELLING,
-            target_run_status=RunStatus.CANCELLING,
-            signal_kind=WorkflowSignalKind.CANCEL,
-            expected_state_version=3,
-            event_suffix="guarded-cancel",
-        )
-
-    cancel_task = asyncio.create_task(commit_cancel())
-    await cancel_started.wait()
-    await asyncio.sleep(0.05)
-    try:
-        assert cancel_task.done() is False
-    finally:
-        rpc_release.set()
-    await asyncio.wait_for(send_task, timeout=2)
-    await asyncio.wait_for(cancel_task, timeout=2)
-
-    async with database.session_factory() as session:
-        durable_scan = await session.get(AuditScanRecord, scan.id)
-    assert durable_scan is not None
-    assert durable_scan.lifecycle_status == AuditLifecycleStatus.CANCELLING.value
-    await database.dispose()
-
-
-async def test_audit_signal_accepted_then_disconnected_stays_unknown_and_probeable(
-    tmp_path: Path,
-) -> None:
-    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'audit-signal-unknown.db'}")
-    await database.create_schema()
-    await _create_engagement(database, "engagement-1")
-    await SQLAlchemyAuditProjectRepository(database.session_factory).create(_project())
-    await SQLAlchemySnapshotRepository(database.session_factory).create(_snapshot())
-    _, _, scan = await _create_audit(
-        database,
-        audit_id="audit-unknown",
-        run_id="run-unknown",
-        queued=True,
-    )
-    await _seed_started_audit_state(
-        database,
-        audit_id=scan.id,
-        run_id=scan.run_id,
-        audit_status=AuditLifecycleStatus.RUNNING,
-        run_status=RunStatus.RUNNING,
-    )
-    await _project_audit_control(
-        database,
-        audit_id=scan.id,
-        run_id=scan.run_id,
-        source_audit_status=AuditLifecycleStatus.RUNNING,
-        source_run_status=RunStatus.RUNNING,
-        target_audit_status=AuditLifecycleStatus.PAUSING,
-        target_run_status=RunStatus.PAUSING,
-        signal_kind=WorkflowSignalKind.PAUSE,
-        expected_state_version=2,
-        event_suffix="unknown-pause",
-    )
-    repository = SQLAlchemyWorkflowSignalIntentRepository(database.session_factory)
-    transport = SimpleNamespace(
-        send=AsyncMock(
-            side_effect=WorkflowSignalOutcomeUnknown(
-                "accepted_then_disconnected"
-            )
-        )
-    )
-    dispatch_at = NOW + timedelta(minutes=2)
-    result = await WorkflowSignalDispatcher(
-        repository=repository,
-        transport=transport,  # type: ignore[arg-type]
-        lease_owner="audit-dispatcher",
-        clock=lambda: dispatch_at,
-    ).dispatch_batch()
-
-    assert result.claimed == result.outcome_unknown == 1
-    record = (await _all_signal_records(database))[0]
-    unknown = await repository.get(record.id)
-    assert unknown is not None
-    assert unknown.delivery_state is WorkflowSignalDeliveryState.OUTCOME_UNKNOWN
-    assert unknown.last_error_code == "accepted_then_disconnected"
-    assert unknown.attempt == 1
-    probes = await repository.claim_reconciliation_batch(
-        lease_owner="audit-probe",
-        now=dispatch_at + timedelta(seconds=3),
-        lease_duration=timedelta(seconds=30),
-        limit=10,
-    )
-    assert [item.id for item in probes] == [unknown.id]
-    transport.send.assert_awaited_once()
     await database.dispose()
 
 

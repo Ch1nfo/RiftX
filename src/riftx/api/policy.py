@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from enum import StrEnum
 from types import MappingProxyType
@@ -14,7 +15,6 @@ from fastapi.routing import APIRoute, APIWebSocketRoute
 
 from .dependencies import (
     authorize_admin,
-    authorize_audit_preflight_runner,
     authorize_local_operator,
     authorize_runner,
     authorize_runner_bootstrap,
@@ -85,15 +85,11 @@ _POLICY_GROUPS: tuple[tuple[RoutePolicy, frozenset[str]], ...] = (
             {
                 "list_runs",
                 "get_run",
-                "list_audits",
-                "get_audit",
-                "list_local_audit_findings",
-                "get_local_audit_finding",
-                "get_local_audit_report",
-                "get_audit_preflight",
+                "get_pentest_status",
                 "list_run_actions",
                 "get_run_action",
                 "get_run_graph",
+                "get_observer_projection",
                 "list_target_http_exchanges",
                 "get_target_http_exchange",
                 "list_nodes",
@@ -118,9 +114,6 @@ _POLICY_GROUPS: tuple[tuple[RoutePolicy, frozenset[str]], ...] = (
                 "list_artifacts",
                 "get_artifact",
                 "download_artifact",
-                "list_audit_artifacts",
-                "get_audit_artifact",
-                "download_audit_artifact",
                 "get_session_context",
                 "get_context_compilation",
                 "get_run_context",
@@ -130,6 +123,7 @@ _POLICY_GROUPS: tuple[tuple[RoutePolicy, frozenset[str]], ...] = (
                 "connector_events",
                 "connector_webui",
                 "get_security_profile",
+                "get_system_diagnostics",
                 "api_not_found",
             }
         ),
@@ -139,8 +133,7 @@ _POLICY_GROUPS: tuple[tuple[RoutePolicy, frozenset[str]], ...] = (
         frozenset(
             {
                 "create_run",
-                "create_audit",
-                "issue_audit_preflight_plan",
+                "create_pentest",
                 "create_finding",
                 "update_finding",
                 "create_memory",
@@ -158,9 +151,7 @@ _POLICY_GROUPS: tuple[tuple[RoutePolicy, frozenset[str]], ...] = (
         frozenset(
             {
                 "pause_run",
-                "pause_audit",
                 "resume_run",
-                "resume_audit",
                 "cancel_run",
                 "compact_run",
                 "switch_run_model",
@@ -177,8 +168,6 @@ _POLICY_GROUPS: tuple[tuple[RoutePolicy, frozenset[str]], ...] = (
         _policy(RouteAuthorization.LOCAL_OPERATOR, RouteEffect.HOST_EXECUTION),
         frozenset(
             {
-                "create_audit_preflight",
-                "start_audit",
                 "create_terminal",
                 "open_browser",
             }
@@ -189,8 +178,6 @@ _POLICY_GROUPS: tuple[tuple[RoutePolicy, frozenset[str]], ...] = (
         frozenset(
             {
                 "close_terminal",
-                "cancel_audit",
-                "cancel_audit_preflight",
                 "terminal_websocket",
                 "close_browser",
                 "act_browser",
@@ -236,11 +223,6 @@ _POLICY_GROUPS: tuple[tuple[RoutePolicy, frozenset[str]], ...] = (
         frozenset(
             {
                 "heartbeat_node",
-                "poll_audit_preflight_job",
-                "renew_audit_preflight_lease",
-                "start_audit_preflight_job",
-                "finish_audit_preflight_job",
-                "stop_audit_preflight_job",
                 "poll_runner_command",
                 "finish_legacy_runner_command",
                 "finish_runner_command",
@@ -273,7 +255,6 @@ _AUTHENTICATION_DEPENDENCIES = (
     authorize_local_operator,
     authorize_admin,
     authorize_runner_bootstrap,
-    authorize_audit_preflight_runner,
     authorize_runner,
     authorize_runner_node,
 )
@@ -288,14 +269,6 @@ def _expected_authentication_dependency(
     if authorization is RouteAuthorization.RUNNER_BOOTSTRAP_TOKEN:
         return authorize_runner_bootstrap
     if authorization is RouteAuthorization.RUNNER_TOKEN:
-        if route_name in {
-            "poll_audit_preflight_job",
-            "renew_audit_preflight_lease",
-            "start_audit_preflight_job",
-            "finish_audit_preflight_job",
-            "stop_audit_preflight_job",
-        }:
-            return authorize_audit_preflight_runner
         return authorize_runner_node if route_name == "heartbeat_node" else authorize_runner
     if authorization is RouteAuthorization.LOCAL_OPERATOR:
         return authorize_local_operator
@@ -323,7 +296,11 @@ def install_local_operator_dependencies(app: FastAPI) -> None:
         )
 
 
-def apply_route_policy_inventory(app: FastAPI) -> tuple[RoutePolicyRecord, ...]:
+def apply_route_policy_inventory(
+    app: FastAPI,
+    *,
+    disabled_route_names: Collection[str] = (),
+) -> tuple[RoutePolicyRecord, ...]:
     """Annotate all API routes and reject unclassified or stale policy entries."""
 
     records: list[RoutePolicyRecord] = []
@@ -399,11 +376,16 @@ def apply_route_policy_inventory(app: FastAPI) -> tuple[RoutePolicyRecord, ...]:
             )
         )
 
-    stale = sorted(ROUTE_POLICIES.keys() - seen_names)
+    disabled = set(disabled_route_names)
+    unknown_disabled = sorted(disabled - ROUTE_POLICIES.keys())
+    unexpectedly_present = sorted(disabled & seen_names)
+    stale = sorted(ROUTE_POLICIES.keys() - seen_names - disabled)
     if (
         unclassified
         or duplicate_names
         or stale
+        or unknown_disabled
+        or unexpectedly_present
         or missing_admin_dependency
         or authentication_dependency_mismatches
         or unsupported_operator_effects
@@ -412,6 +394,8 @@ def apply_route_policy_inventory(app: FastAPI) -> tuple[RoutePolicyRecord, ...]:
             "Control Plane route policy inventory validation failed: "
             f"unclassified={sorted(unclassified)}, "
             f"duplicate_names={sorted(duplicate_names)}, stale={stale}, "
+            f"unknown_disabled={unknown_disabled}, "
+            f"unexpectedly_present={unexpectedly_present}, "
             f"missing_admin_dependency={sorted(missing_admin_dependency)}, "
             "authentication_dependency_mismatches="
             f"{sorted(authentication_dependency_mismatches)}, "

@@ -18,6 +18,37 @@ class RepositoryConflictError(RepositoryError):
     """Raised when a database constraint rejects an operation."""
 
 
+class PentestBudgetExceededError(RepositoryConflictError):
+    """A serialized Pentest effect claim would exceed its durable budget."""
+
+    def __init__(
+        self,
+        budget_name: str,
+        *,
+        limit: int,
+        used: int,
+        reason: str = "exhausted",
+    ) -> None:
+        super().__init__(f"Pentest budget {budget_name!r} is exhausted")
+        self.budget_name = budget_name
+        self.limit = limit
+        self.used = used
+        self.reason = reason
+
+
+def pentest_budget_exhaustion_details(
+    run_id: str,
+    error: PentestBudgetExceededError,
+) -> dict[str, object]:
+    return {
+        "run_id": run_id,
+        "budget_name": error.budget_name,
+        "limit": error.limit,
+        "used": error.used,
+        "reason": error.reason,
+    }
+
+
 class RepositoryUnavailableError(RepositoryError):
     """A persistence operation failed without exposing driver diagnostics."""
 

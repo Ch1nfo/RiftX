@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import asyncio
+import sqlite3
 from pathlib import Path
 
 import pytest
 from sqlalchemy import ForeignKeyConstraint, create_engine, inspect
-from tests.integration.persistence.test_audit_static_effect_repository import _plan, _seed
 from tests.integration.persistence.test_migrations import (
     downgrade_alembic,
     run_alembic,
@@ -13,7 +12,6 @@ from tests.integration.persistence.test_migrations import (
 )
 from tests.integration.persistence.test_mutation_clock_migration import _offline_sql
 
-from riftx.persistence import Database, SQLAlchemyAuditStaticEffectAuthorityRepository
 from riftx.persistence.orm import Base
 
 BASE_REVISION = "8a1f3c5e7b90"
@@ -76,19 +74,37 @@ def test_empty_static_effect_upgrade_downgrades_cleanly(tmp_path: Path) -> None:
 
 def test_static_effect_fact_blocks_lossy_downgrade_before_any_ddl(tmp_path: Path) -> None:
     database_path = tmp_path / "static-effect-block.db"
-    run_alembic(database_path, STATIC_EFFECT_REVISION)
+    run_alembic(database_path, "head")
 
-    async def seed() -> None:
-        database = Database(f"sqlite+aiosqlite:///{database_path}")
-        try:
-            await _seed(database)
-            await SQLAlchemyAuditStaticEffectAuthorityRepository(
-                database.session_factory
-            ).create_plan(_plan())
-        finally:
-            await database.dispose()
-
-    asyncio.run(seed())
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "INSERT INTO audit_static_effect_plans "
+            "(id, schema_version, canonical_json, plan_digest, project_id, audit_id, "
+            "run_id, snapshot_id, snapshot_reference_role, snapshot_digest, "
+            "manifest_digest, operation_family, node_id, backend_id, backend_digest, "
+            "created_by_policy, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+            "?, ?, ?, ?, ?, ?)",
+            (
+                "historical-static-effect-plan",
+                "riftx.audit-static-effect-plan/v1",
+                "{}",
+                "1" * 64,
+                "historical-project",
+                "historical-audit",
+                "historical-run",
+                "historical-snapshot",
+                "primary",
+                "2" * 64,
+                "3" * 64,
+                "snapshot_mount",
+                "local",
+                "private_materialization",
+                "4" * 64,
+                "riftx_policy",
+                "2026-08-04 12:00:00.000000",
+            ),
+        )
+        connection.commit()
     with pytest.raises(
         RuntimeError,
         match="durable static effect authority facts exist",

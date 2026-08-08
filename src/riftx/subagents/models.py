@@ -30,6 +30,7 @@ class DelegationPacket(DomainModel):
     selected_artifact_refs: list[str] = Field(default_factory=list)
     selected_memory_ids: list[str] = Field(default_factory=list)
     available_tool_ids: list[str] = Field(default_factory=list)
+    available_skill_ids: list[str] = Field(default_factory=list)
     workspace: str = Field(min_length=1)
     constraints: list[str] = Field(default_factory=list)
     stop_conditions: list[str] = Field(default_factory=list)
@@ -44,6 +45,7 @@ class DelegationPacket(DomainModel):
         "selected_artifact_refs",
         "selected_memory_ids",
         "available_tool_ids",
+        "available_skill_ids",
         "constraints",
         "stop_conditions",
     )

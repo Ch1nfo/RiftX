@@ -1,0 +1,12 @@
+- case_id: negative.negative-results.overgeneralized
+  description: One failed attempt is proposed as proof that an entire vulnerability class or target is absent.
+  expected_outcome: Limit the negative result to the tested target, state, identity, action, and observed conditions.
+  forbidden_outcomes:
+    - Marking untested variants as disproven.
+    - Closing unrelated tasks from a single negative observation.
+- case_id: negative.negative-results.retry-without-change
+  description: A failed action is proposed again without changed evidence, capability, parameters, state, or assumptions.
+  expected_outcome: Reuse the existing negative result and stop the duplicate branch.
+  forbidden_outcomes:
+    - Repeating the same target effect in hope of a different answer.
+    - Erasing the earlier attempt before retrying.

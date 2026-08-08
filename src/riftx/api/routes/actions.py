@@ -4,7 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query
 
-from riftx.application.services.runs import require_general_run_operation
+from riftx.application.services.runs import require_interactive_run_operation
 
 from ..dependencies import (
     ActionServiceDependency,
@@ -45,7 +45,7 @@ async def list_run_actions(
         ),
     ] = _DEFAULT_SORT,
 ) -> RunActionListView:
-    require_general_run_operation(authorized_run)
+    require_interactive_run_operation(authorized_run)
     return await service.list(
         run_id,
         principal=principal,
@@ -67,7 +67,7 @@ async def get_run_action(
     principal: LocalPrincipalDependency,
     authorized_run: AuthorizedRunReadDependency,
 ) -> RunActionView:
-    require_general_run_operation(authorized_run)
+    require_interactive_run_operation(authorized_run)
     return await service.get(
         run_id,
         action_id,

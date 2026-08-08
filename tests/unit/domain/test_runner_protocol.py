@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from riftx.domain import (
     RUNNER_COMMAND_PROTOCOLS,
@@ -29,6 +30,30 @@ def test_runner_command_protocol_registry_covers_the_closed_command_enum() -> No
         assert (protocol.operation_family is RunnerOperationFamily.SAFETY_STOP) is (
             protocol.stop_ack_schema is not None
         )
+
+
+def test_pentest_runner_binding_retains_distinct_non_audit_owner() -> None:
+    general = _binding(RunnerCommandKind.EXECUTE)
+    pentest = general.model_copy(
+        update={
+            "id": "binding-pentest",
+            "run_id": "pentest-1",
+            "run_kind": RunKind.PENTEST,
+            "binding_digest": "",
+        }
+    )
+
+    validated = RunnerEffectBinding.model_validate(pentest.model_dump(mode="python"))
+
+    assert validated.run_kind is RunKind.PENTEST
+    assert validated.audit_id is None
+    assert validated.plan_digest is None
+    assert validated.binding_digest != general.binding_digest
+
+    payload = validated.model_dump(mode="python")
+    payload.update(audit_id="audit-1", plan_digest="a" * 64, binding_digest="")
+    with pytest.raises(ValidationError, match="Pentest Runner effect binding"):
+        RunnerEffectBinding.model_validate(payload)
 
 
 @pytest.mark.parametrize("kind", list(RunnerCommandKind))

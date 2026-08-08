@@ -387,6 +387,13 @@ class RunEventRepository(Protocol):
         limit: int = 100,
     ) -> Sequence[RunEvent]: ...
 
+    async def list_recent(
+        self,
+        run_id: str,
+        *,
+        limit: int = 100,
+    ) -> Sequence[RunEvent]: ...
+
 
 class ApprovalRepository(Protocol):
     async def create_request(
@@ -482,6 +489,13 @@ class ToolCallIntentRepository(Protocol):
 
     async def pending_for_session(self, session_id: str) -> list[ToolCallIntent]: ...
 
+    async def recent_for_session(
+        self,
+        session_id: str,
+        *,
+        limit: int = 100,
+    ) -> list[ToolCallIntent]: ...
+
     async def active_for_run(
         self,
         run_id: str,
@@ -503,6 +517,7 @@ class ToolCallIntentRepository(Protocol):
         *,
         execution_key: str,
         attempt_group: str,
+        target_interaction_tool_ids: Collection[str] | None = None,
     ) -> ToolCallIntentExecutionClaim: ...
 
     async def execution_claim_is_current(
@@ -618,6 +633,14 @@ class ArtifactRepository(Protocol):
         This method exists only to reconcile an ambiguous create outcome before
         deciding whether newly published bytes may be discarded.
         """
+        ...
+
+    async def get_target_http_for_evidence(
+        self,
+        artifact_id: str,
+        run_id: str,
+    ) -> Artifact | None:
+        """Load one Target HTTP Artifact only through its same-Run exchange binding."""
         ...
 
     async def resolve_owner(self, artifact_id: str) -> ArtifactOwnerBinding | None:

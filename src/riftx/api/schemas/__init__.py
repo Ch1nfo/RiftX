@@ -7,31 +7,6 @@ from .artifacts import (
     ArtifactResponse,
     RegisterArtifactRequest,
 )
-from .audit_preflight import (
-    AuditPreflightCreateResponse,
-    AuditPreflightJobResponse,
-    AuditPreflightPlanIssuanceResponse,
-    AuditPreflightPlanResponse,
-    AuditPreflightResultResponse,
-    CreateAuditPreflightRequest,
-)
-from .audit_preflight_runner import (
-    AuditPreflightRunnerPollResponse,
-    FinishAuditPreflightRequest,
-    RenewAuditPreflightLeaseRequest,
-    StartAuditPreflightRequest,
-    StopAuditPreflightRequest,
-)
-from .audits import (
-    AuditContractDraftRequest,
-    AuditDraftResponse,
-    AuditListQuery,
-    AuditListResponse,
-    AuditProjectSummaryResponse,
-    AuditResponse,
-    CreateAuditDraftRequest,
-    CreateAuditDraftRequestV2,
-)
 from .browser import (
     BrowserActionRequest,
     BrowserObserveRequest,
@@ -55,13 +30,6 @@ from .executions import (
 )
 from .findings import CreateFindingRequest, FindingListResponse, UpdateFindingRequest
 from .graphs import GraphViewPage, GraphViewQuery
-from .local_audits import (
-    CreateLocalAuditRequest,
-    LocalAuditFindingListResponse,
-    LocalAuditFindingResponse,
-    LocalAuditId,
-    LocalAuditJobResponse,
-)
 from .memories import (
     CreateMemoryRequest,
     MemoryListResponse,
@@ -84,6 +52,8 @@ from .nodes import (
     NodeResponse,
     RegisterNodeRequest,
 )
+from .observer import ObserverProjection, ObserverProjectionQuery
+from .pentests import CreatePentestRequest, PentestStatusResponse
 from .reports import GenerateReportsRequest, ReportListResponse, ReportResponse
 from .runner_control import (
     ExecutionOutputReportRequest,
@@ -103,6 +73,7 @@ from .runs import (
     CreateRunRequest,
     EngagementCreateRequest,
     EntryPointRequest,
+    PentestRunResponse,
     RunActionResponse,
     RunListResponse,
     RunMessageRequest,
@@ -133,18 +104,6 @@ __all__ = [
     "ApprovalResponse",
     "ArtifactListResponse",
     "ArtifactResponse",
-    "AuditContractDraftRequest",
-    "AuditDraftResponse",
-    "AuditPreflightCreateResponse",
-    "AuditPreflightJobResponse",
-    "AuditPreflightPlanIssuanceResponse",
-    "AuditPreflightPlanResponse",
-    "AuditPreflightResultResponse",
-    "AuditPreflightRunnerPollResponse",
-    "AuditListQuery",
-    "AuditListResponse",
-    "AuditProjectSummaryResponse",
-    "AuditResponse",
     "BrowserActionRequest",
     "BrowserObserveRequest",
     "BrowserSessionCreateRequest",
@@ -154,11 +113,9 @@ __all__ = [
     "ConnectorWebUIResponse",
     "CodeAuditExecutionResponse",
     "CreateRunRequest",
-    "CreateAuditPreflightRequest",
-    "CreateAuditDraftRequest",
-    "CreateAuditDraftRequestV2",
     "CreateMemoryRequest",
-    "CreateLocalAuditRequest",
+    "CreatePentestRequest",
+    "PentestStatusResponse",
     "CompactRunRequest",
     "CreateFindingRequest",
     "EngagementCreateRequest",
@@ -171,13 +128,8 @@ __all__ = [
     "ExecutionResponse",
     "ExecutionWaitResponse",
     "FindingListResponse",
-    "FinishAuditPreflightRequest",
     "GraphViewPage",
     "GraphViewQuery",
-    "LocalAuditFindingListResponse",
-    "LocalAuditFindingResponse",
-    "LocalAuditId",
-    "LocalAuditJobResponse",
     "MemoryListResponse",
     "MemoryResponse",
     "ModelProfileListResponse",
@@ -190,6 +142,9 @@ __all__ = [
     "NodeListResponse",
     "NodeRegistrationResponse",
     "NodeResponse",
+    "ObserverProjection",
+    "ObserverProjectionQuery",
+    "PentestRunResponse",
     "RegisterNodeRequest",
     "RegisteredToolResponse",
     "RegisteredToolSummaryResponse",
@@ -201,7 +156,6 @@ __all__ = [
     "LegacyFinishRunnerCommandRequest",
     "RenewRunnerCommandLeaseRequest",
     "RenewRunnerCommandLeaseResponse",
-    "RenewAuditPreflightLeaseRequest",
     "RunnerCommandResponse",
     "RunnerCommandOutputReportRequest",
     "RunnerPollResponse",
@@ -222,8 +176,6 @@ __all__ = [
     "SuccessCriterionRequest",
     "SetDefaultModelProfileRequest",
     "SwitchRunModelRequest",
-    "StartAuditPreflightRequest",
-    "StopAuditPreflightRequest",
     "ToolRegistryResponse",
     "ToolDefinitionSummaryResponse",
     "ToolRegistrySummaryResponse",

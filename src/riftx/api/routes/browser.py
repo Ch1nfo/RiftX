@@ -12,7 +12,7 @@ from riftx.application.errors import (
     EntityNotFoundError,
     resource_not_accessible,
 )
-from riftx.application.services.runs import require_general_run_operation
+from riftx.application.services.runs import require_interactive_run_operation
 from riftx.domain.errors import DomainError
 
 from ..auth import accept_local_operator_websocket
@@ -46,7 +46,7 @@ async def open_browser(
     service: BrowserServiceDependency,
     runs: RunServiceDependency,
 ) -> BrowserViewResponse:
-    require_general_run_operation(await runs.get_run(request.run_id))
+    require_interactive_run_operation(await runs.get_run(request.run_id))
     return BrowserViewResponse.from_view(await service.open(request.to_command()))
 
 
@@ -62,7 +62,7 @@ async def get_browser(
 ) -> BrowserViewResponse:
     run_id = await service.resolve_run_id(session_id)
     authorized_run = await authorizer.require(run_id)
-    require_general_run_operation(authorized_run)
+    require_interactive_run_operation(authorized_run)
     view = await load_authorized_child(
         service.get(session_id, expected_run_id=run_id)
     )
@@ -80,7 +80,7 @@ async def close_browser(
     service: BrowserServiceDependency,
     runs: RunServiceDependency,
 ) -> BrowserViewResponse:
-    await _require_general_session_operation(session_id, service, runs)
+    await _require_interactive_session_operation(session_id, service, runs)
     return BrowserViewResponse.from_view(await service.close(session_id))
 
 
@@ -95,7 +95,7 @@ async def observe_browser(
     service: BrowserServiceDependency,
     runs: RunServiceDependency,
 ) -> BrowserViewResponse:
-    await _require_general_session_operation(session_id, service, runs)
+    await _require_interactive_session_operation(session_id, service, runs)
     return BrowserViewResponse.from_view(await service.observe(session_id, **request.model_dump()))
 
 
@@ -110,7 +110,7 @@ async def act_browser(
     service: BrowserServiceDependency,
     runs: RunServiceDependency,
 ) -> BrowserViewResponse:
-    await _require_general_session_operation(session_id, service, runs)
+    await _require_interactive_session_operation(session_id, service, runs)
     return BrowserViewResponse.from_view(await service.act(session_id, request.to_command()))
 
 
@@ -124,7 +124,7 @@ async def takeover_browser(
     service: BrowserServiceDependency,
     runs: RunServiceDependency,
 ) -> BrowserViewResponse:
-    await _require_general_session_operation(session_id, service, runs)
+    await _require_interactive_session_operation(session_id, service, runs)
     return BrowserViewResponse.from_view(await service.takeover(session_id))
 
 
@@ -138,7 +138,7 @@ async def release_browser(
     service: BrowserServiceDependency,
     runs: RunServiceDependency,
 ) -> BrowserViewResponse:
-    await _require_general_session_operation(session_id, service, runs)
+    await _require_interactive_session_operation(session_id, service, runs)
     return BrowserViewResponse.from_view(await service.release(session_id))
 
 
@@ -156,7 +156,7 @@ async def stream_browser(session_id: str, websocket: WebSocket) -> None:
     try:
         run_id = await service.resolve_run_id(session_id)
         authorized_run = await authorizer.require(run_id)
-        require_general_run_operation(authorized_run)
+        require_interactive_run_operation(authorized_run)
         initial = await service.get(session_id, expected_run_id=run_id)
         require_run_read_binding(run_id, initial.session.run_id)
     except EntityNotFoundError:
@@ -281,10 +281,10 @@ async def stream_browser(session_id: str, websocket: WebSocket) -> None:
             await websocket.close()
 
 
-async def _require_general_session_operation(
+async def _require_interactive_session_operation(
     session_id: str,
     service: BrowserServiceDependency,
     runs: RunServiceDependency,
 ) -> None:
     current = await service.get(session_id)
-    require_general_run_operation(await runs.get_run(current.session.run_id))
+    require_interactive_run_operation(await runs.get_run(current.session.run_id))

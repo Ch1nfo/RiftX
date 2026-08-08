@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter
 
 from riftx.application.errors import resource_not_accessible
-from riftx.application.services.runs import require_general_run_operation
+from riftx.application.services.runs import require_interactive_run_operation
 from riftx.context import ContextCompilation
 
 from ..dependencies import (
@@ -39,7 +39,7 @@ async def get_session_context(
 ) -> ContextCompilation:
     compilation_id, run_id = await context_service.resolve_latest_for_session(session_id)
     authorized_run = await authorizer.require(run_id)
-    require_general_run_operation(authorized_run)
+    require_interactive_run_operation(authorized_run)
     compilation = await load_authorized_child(context_service.get(compilation_id))
     _require_context_binding(
         compilation,
@@ -62,7 +62,7 @@ async def get_context_compilation(
 ) -> ContextCompilation:
     run_id = await context_service.resolve_run_id(compilation_id)
     authorized_run = await authorizer.require(run_id)
-    require_general_run_operation(authorized_run)
+    require_interactive_run_operation(authorized_run)
     compilation = await load_authorized_child(context_service.get(compilation_id))
     _require_context_binding(
         compilation,
@@ -84,7 +84,7 @@ async def get_run_context(
 ) -> ContextCompilation:
     """CLI convenience endpoint for the latest Session compilation in a Run."""
 
-    require_general_run_operation(authorized_run)
+    require_interactive_run_operation(authorized_run)
     compilation = await load_authorized_child(context_service.latest_for_run(run_id))
     _require_context_binding(compilation, expected_run_id=run_id)
     return compilation

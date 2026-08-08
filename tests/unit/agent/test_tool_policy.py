@@ -45,6 +45,40 @@ def test_agent_tool_policy_inventory_covers_effect_and_authorization() -> None:
         AGENT_TOOL_POLICIES["send_terminal_input"].authorization
         is AgentToolAuthorization.RUN_TERMINAL
     )
+    assert AGENT_TOOL_POLICIES["open_browser"].approval_required is True
+    assert AGENT_TOOL_POLICIES["act_browser"].effect is AgentToolEffect.HOST_CONTROL
+    assert AGENT_TOOL_POLICIES["act_browser"].approval_required is True
+    assert AGENT_TOOL_POLICIES["observe_browser"].effect is AgentToolEffect.READ_ONLY
+    assert AGENT_TOOL_POLICIES["close_browser"].approval_required is False
+    assert AGENT_TOOL_POLICIES["web_fetch"].effect is AgentToolEffect.HOST_EXECUTION
+    assert AGENT_TOOL_POLICIES["web_fetch"].approval_required is True
+    assert AGENT_TOOL_POLICIES["web_search"].effect is AgentToolEffect.HOST_EXECUTION
+    assert AGENT_TOOL_POLICIES["web_search"].approval_required is True
+    assert AGENT_TOOL_POLICIES["web_research"].effect is AgentToolEffect.HOST_EXECUTION
+    assert AGENT_TOOL_POLICIES["web_research"].approval_required is True
+    assert AGENT_TOOL_POLICIES["query_http_traffic"].effect is AgentToolEffect.READ_ONLY
+    assert AGENT_TOOL_POLICIES["read_http_exchange"].approval_required is False
+    assert AGENT_TOOL_POLICIES["target_http_request"].effect is AgentToolEffect.HOST_EXECUTION
+    assert AGENT_TOOL_POLICIES["target_http_request"].approval_required is True
+    assert AGENT_TOOL_POLICIES["search_mcp_tools"].effect is AgentToolEffect.READ_ONLY
+    assert AGENT_TOOL_POLICIES["get_mcp_tool"].approval_required is False
+    assert AGENT_TOOL_POLICIES["call_mcp_tool"].effect is AgentToolEffect.HOST_EXECUTION
+    assert (
+        AGENT_TOOL_POLICIES["call_mcp_tool"].authorization
+        is AgentToolAuthorization.DYNAMIC_APPROVAL
+    )
+    assert AGENT_TOOL_POLICIES["call_mcp_tool"].approval_required is True
+    assert AGENT_TOOL_POLICIES["create_worktree"].effect is AgentToolEffect.DURABLE_WRITE
+    assert AGENT_TOOL_POLICIES["create_worktree"].approval_required is True
+    assert AGENT_TOOL_POLICIES["list_ready_tasks"].effect is AgentToolEffect.READ_ONLY
+    assert AGENT_TOOL_POLICIES["add_task"].effect is AgentToolEffect.DURABLE_WRITE
+    assert AGENT_TOOL_POLICIES["complete_task"].authorization is (
+        AgentToolAuthorization.RUN_CONTEXT
+    )
+    assert AGENT_TOOL_POLICIES["propose_finding"].effect is AgentToolEffect.DURABLE_WRITE
+    assert (
+        AGENT_TOOL_POLICIES["query_reasoning_graph"].effect is AgentToolEffect.READ_ONLY
+    )
     assert set(RESIDENT_TOOL_IDS) <= AGENT_TOOL_POLICIES.keys()
 
 

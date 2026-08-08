@@ -22,6 +22,8 @@ from riftx.application.graphs import (
     GraphHypothesisSource,
     GraphNode,
     GraphPlanItemSource,
+    GraphReasoningEdgeSource,
+    GraphReasoningNodeSource,
     GraphRunSource,
     GraphScope,
     GraphSessionSource,
@@ -756,6 +758,114 @@ async def test_working_memory_candidate_evidence_never_confirms_facts_or_hypothe
     assert all(edge.source in node_ids and edge.target in node_ids for edge in page.edges)
 
 
+async def test_reasoning_graph_is_authoritative_and_projects_only_safe_lineage() -> None:
+    snapshot = replace(
+        evidence_snapshot(),
+        reasoning_graph_version=7,
+        reasoning_nodes=(
+            GraphReasoningNodeSource(
+                node_id="candidate",
+                run_id="run-1",
+                kind="fact_candidate",
+                status="promoted",
+                evidence_ids=("evidence-1",),
+            ),
+            GraphReasoningNodeSource(
+                node_id="fact",
+                run_id="run-1",
+                kind="confirmed_fact",
+                status="confirmed",
+                evidence_ids=("evidence-1",),
+            ),
+            GraphReasoningNodeSource(
+                node_id="finding",
+                run_id="run-1",
+                kind="finding",
+                status="confirmed",
+                evidence_ids=("evidence-2",),
+            ),
+            GraphReasoningNodeSource(
+                node_id="proof",
+                run_id="run-1",
+                kind="proof",
+                status="validated",
+                evidence_ids=("evidence-2",),
+            ),
+        ),
+        reasoning_edges=(
+            GraphReasoningEdgeSource(
+                edge_id="derived",
+                run_id="run-1",
+                source_node_id="candidate",
+                target_node_id="fact",
+                relation_type="derived_from",
+                evidence_ids=("evidence-1",),
+            ),
+            GraphReasoningEdgeSource(
+                edge_id="validates",
+                run_id="run-1",
+                source_node_id="proof",
+                target_node_id="finding",
+                relation_type="validates",
+                evidence_ids=("evidence-2",),
+            ),
+        ),
+    )
+    service = GraphApplicationService(
+        SnapshotRepository(snapshot),
+        authorizer=RecordingAuthorizer(),
+        cursor_signing_key=CURSOR_SIGNING_KEY,
+    )
+
+    page = await service.get_view(
+        "run-1",
+        principal=PRINCIPAL,
+        view=GraphViewKind.EVIDENCE,
+    )
+    nodes = {node.domain_id: node for node in page.nodes}
+
+    assert nodes["fact"].status == "confirmed"
+    assert nodes["fact"].provenance_refs == (
+        "reasoning_nodes",
+        "evidence:evidence-1",
+    )
+    assert nodes["finding"].status == "confirmed"
+    assert "fact-artifact" not in nodes
+    assert "hypothesis-verified" not in nodes
+    assert "finding-verified" not in nodes
+    assert {
+        (edge.type, edge.source, edge.target, edge.provenance_refs)
+        for edge in page.edges
+        if edge.id.startswith("reasoning_edge:")
+    } == {
+        (
+            "derived_from",
+            "fact_candidate:run-1:candidate",
+            "fact:run-1:fact",
+            ("reasoning_edges", "evidence:evidence-1"),
+        ),
+        (
+            "validates",
+            "proof:run-1:proof",
+            "finding:run-1:finding",
+            ("reasoning_edges", "evidence:evidence-2"),
+        ),
+    }
+    assert "reasoning_nodes" in page.projection_sources
+    assert "reasoning_edges" in page.projection_sources
+    assert "run_facts" not in page.projection_sources
+    assert "findings" not in page.projection_sources
+
+    with pytest.raises(TypeError):
+        GraphReasoningNodeSource(  # type: ignore[call-arg]
+            node_id="unsafe",
+            run_id="run-1",
+            kind="observation",
+            status="recorded",
+            claim="SECRET CLAIM",
+        )
+
+
 async def test_working_memory_fact_lifecycle_statuses_survive_confirmation_downgrade() -> None:
     snapshot = replace(
         source_snapshot(),
@@ -1124,6 +1234,56 @@ async def test_task_findings_are_explicitly_unassigned_and_plan_gaps_are_partial
         "blocker_lineage_unavailable",
         "completion_evidence_unavailable",
     }
+
+
+async def test_task_graph_dependencies_are_explicit_without_guessing_blocker_lineage() -> None:
+    snapshot = replace(
+        source_snapshot(),
+        plan_items=(
+            GraphPlanItemSource(
+                id="task-discover",
+                run_id="run-1",
+                sequence=1,
+                status="completed",
+                provenance="task_graph.tasks",
+            ),
+            GraphPlanItemSource(
+                id="task-verify",
+                run_id="run-1",
+                sequence=2,
+                status="blocked",
+                dependency_ids=("task-discover",),
+                provenance="task_graph.tasks",
+            ),
+        ),
+    )
+    service = GraphApplicationService(
+        SnapshotRepository(snapshot),
+        authorizer=RecordingAuthorizer(),
+        cursor_signing_key=CURSOR_SIGNING_KEY,
+    )
+
+    page = await service.get_view(
+        "run-1",
+        principal=PRINCIPAL,
+        view=GraphViewKind.TASK,
+    )
+
+    dependency_edges = [edge for edge in page.edges if edge.type == "depends_on"]
+    assert [(edge.source, edge.target) for edge in dependency_edges] == [
+        (
+            "plan_item:run-1:task-verify",
+            "plan_item:run-1:task-discover",
+        )
+    ]
+    blocked = next(node for node in page.nodes if node.domain_id == "task-verify")
+    assert blocked.partial_reasons == ("blocker_lineage_unavailable",)
+    assert blocked.provenance_refs == ("task_graph.tasks",)
+    assert page.projection_sources[:2] == (
+        "task_graph.tasks",
+        "task_graph.dependencies",
+    )
+    assert "depends_on" in {item.type for item in page.type_metadata}
 
 
 async def test_task_exact_action_evidence_chain_is_traversable_without_plan_guessing() -> None:

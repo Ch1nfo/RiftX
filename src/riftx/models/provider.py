@@ -17,7 +17,7 @@ from agents import (
 )
 from openai import APITimeoutError, AsyncOpenAI
 
-from .config import ModelAPI, ModelProfile, ModelsConfig
+from .config import ModelAPI, ModelProfile, ModelProviderKind, ModelsConfig
 from .registry import ModelProfileRegistry
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
@@ -40,6 +40,13 @@ class ModelFailure:
     category: ModelFailureCategory
     retryable: bool
     status_code: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class OpenAIHostedSearchBinding:
+    client: AsyncOpenAI
+    model: str
+    profile_name: str
 
 
 class ModelConfigurationError(ValueError):
@@ -85,7 +92,9 @@ class RiftXModelProvider(ModelProvider):
                 f"model profile {profile_name!r} is not configured"
             ) from exc
 
-        client = self._build_client(profile_name, profile)
+        client = self._clients.get(profile_name)
+        if client is None:
+            client = self._build_client(profile_name, profile)
         if profile.api is ModelAPI.RESPONSES:
             model: Model = OpenAIResponsesModel(
                 model=profile.model,
@@ -99,6 +108,40 @@ class RiftXModelProvider(ModelProvider):
         self._clients[profile_name] = client
         self._models[profile_name] = model
         return model
+
+    def get_openai_hosted_search(
+        self,
+        model_name: str | None,
+    ) -> OpenAIHostedSearchBinding:
+        """Resolve one official OpenAI profile for the hosted web-search tool.
+
+        Provider labels and destinations are checked independently. An
+        OpenAI-compatible endpoint, or even an ``openai`` profile with a custom
+        base URL, must never inherit capabilities that only the official API
+        contract provides.
+        """
+
+        self._reload_if_changed()
+        profile_name = model_name or self.config.default_profile
+        try:
+            profile = self.config.models[profile_name]
+        except KeyError as exc:
+            raise ModelConfigurationError(
+                f"model profile {profile_name!r} is not configured"
+            ) from exc
+        if profile.provider is not ModelProviderKind.OPENAI or profile.base_url is not None:
+            raise ModelConfigurationError(
+                f"model profile {profile_name!r} is not eligible for OpenAI hosted search"
+            )
+        client = self._clients.get(profile_name)
+        if client is None:
+            client = self._build_client(profile_name, profile)
+            self._clients[profile_name] = client
+        return OpenAIHostedSearchBinding(
+            client=client,
+            model=profile.model,
+            profile_name=profile_name,
+        )
 
     async def aclose(self) -> None:
         clients = [*self._clients.values(), *self._stale_clients]

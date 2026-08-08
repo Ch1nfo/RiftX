@@ -16,7 +16,7 @@ from riftx.application.errors import (
     resource_not_accessible,
 )
 from riftx.application.ports import RunRepository
-from riftx.application.services.runs import require_general_run_operation
+from riftx.application.services.runs import require_interactive_run_operation
 from riftx.domain.base import utc_now
 
 from .models import (
@@ -108,10 +108,10 @@ class MemoryService:
                 "Memory content, Scope, source, or validity window is invalid",
                 details={"validation": exc.errors(include_url=False)},
             ) from exc
-        await self._require_general_run_scope(memory)
+        await self._require_interactive_run_scope(memory)
         if memory.supersedes is not None:
             superseded = await self.get(memory.supersedes)
-            await self._require_general_run_scope(superseded)
+            await self._require_interactive_run_scope(superseded)
             return await self._repository.supersede(memory)
         return await self._repository.create(memory)
 
@@ -133,7 +133,7 @@ class MemoryService:
         changes: Mapping[str, object],
     ) -> MemoryRecord:
         memory = await self.get(memory_id)
-        await self._require_general_run_scope(memory)
+        await self._require_interactive_run_scope(memory)
         if memory.status is not MemoryStatus.ACTIVE:
             raise ApplicationConflictError(
                 "memory_not_active",
@@ -156,12 +156,12 @@ class MemoryService:
                 "Memory update is invalid",
                 details={"validation": exc.errors(include_url=False)},
             ) from exc
-        await self._require_general_run_scope(candidate)
+        await self._require_interactive_run_scope(candidate)
         return await self._repository.save(candidate)
 
     async def delete(self, memory_id: str) -> MemoryRecord:
         memory = await self.get(memory_id)
-        await self._require_general_run_scope(memory)
+        await self._require_interactive_run_scope(memory)
         if memory.status is MemoryStatus.DELETED:
             return memory
         memory.status = MemoryStatus.DELETED
@@ -170,7 +170,7 @@ class MemoryService:
 
     async def pin(self, memory_id: str, *, pinned: bool = True) -> MemoryRecord:
         memory = await self.get(memory_id)
-        await self._require_general_run_scope(memory)
+        await self._require_interactive_run_scope(memory)
         if memory.status is not MemoryStatus.ACTIVE:
             raise ApplicationConflictError(
                 "memory_not_active",
@@ -180,7 +180,7 @@ class MemoryService:
         memory.pinned = pinned
         return await self._repository.save(memory)
 
-    async def _require_general_run_scope(self, memory: MemoryRecord) -> None:
+    async def _require_interactive_run_scope(self, memory: MemoryRecord) -> None:
         if memory.scope_type is not MemoryScopeType.RUN:
             return
         if self._runs is None:
@@ -191,7 +191,7 @@ class MemoryService:
         run = await self._runs.get(memory.scope_id)
         if run is None:
             raise EntityNotFoundError("Run", memory.scope_id)
-        require_general_run_operation(run)
+        require_interactive_run_operation(run)
 
     async def list(
         self,

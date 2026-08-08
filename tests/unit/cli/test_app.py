@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -11,11 +13,91 @@ import yaml
 from rich.console import Console
 from typer.testing import CliRunner
 
+import riftx.capability_management as capability_management_module
 import riftx.cli.app as cli_module
+import riftx.runner.daemon as runner_daemon_module
+import riftx.temporal.worker_runtime as worker_runtime_module
+from riftx.capability_management import (
+    CapabilityInventoryItem,
+    LocalCapabilityState,
+    PackInventoryItem,
+)
 from riftx.cli.client import RiftXAPIError
 from riftx.cli.render import render_error
+from riftx.doctor import (
+    DoctorCheck,
+    DoctorFix,
+    DoctorFixError,
+    DoctorReport,
+    DoctorStatus,
+)
 
 runner = CliRunner()
+
+
+class FakeLocalProcess:
+    def __init__(self, *, command: list[str], environment: dict[str, str]) -> None:
+        self.command = command
+        self.environment = environment
+        self.returncode: int | None = None
+        self.terminated = False
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.returncode = 0
+
+    def wait(self, *, timeout: float) -> int:
+        del timeout
+        self.returncode = 0
+        return 0
+
+    def kill(self) -> None:
+        self.returncode = -9
+
+
+def test_root_help_prioritizes_the_pentest_workflow() -> None:
+    result = runner.invoke(cli_module.app, ["--help"])
+    retired_interactive = runner.invoke(cli_module.app, ["interactive"])
+
+    assert result.exit_code == 0, result.output
+    assert "Pentest-first Agent for authorized security work." in result.output
+    panels = [
+        result.output.index("Getting started"),
+        result.output.index("Service operation"),
+        result.output.index("Pentest workflow"),
+        result.output.index("Advanced"),
+    ]
+    assert panels == sorted(panels)
+    for command in ("onboard", "start", "doctor", "model", "pentest", "report", "skills"):
+        assert command in result.output
+    assert "interactive   Enter the interactive RiftX session" not in result.output
+    assert retired_interactive.exit_code == 2
+    assert "No such command 'interactive'" in retired_interactive.output
+    assert "Retired code-audit history and cleanup controls" not in result.output
+
+
+def test_cli_import_does_not_eagerly_load_service_runtimes() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; import riftx.cli.app; "
+                "blocked=('riftx.api', 'riftx.runner.daemon', "
+                "'riftx.temporal.worker_runtime', 'riftx.demo', "
+                "'riftx.capability_management'); "
+                "assert not [name for name in blocked if name in sys.modules]"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 class FakeAPIClient:
@@ -23,7 +105,7 @@ class FakeAPIClient:
     fail = False
     unhealthy = False
 
-    def __init__(self, base_url: str) -> None:
+    def __init__(self, base_url: str, **_: object) -> None:
         self.base_url = base_url
         self.calls: list[tuple[str, object]] = []
         self.__class__.instances.append(self)
@@ -33,6 +115,27 @@ class FakeAPIClient:
 
     def __exit__(self, *_: object) -> None:
         return None
+
+    def health(self) -> dict[str, Any]:
+        self.calls.append(("health", None))
+        return {"status": "ok", "trust_profile": "local_trusted"}
+
+    def system_diagnostics(self) -> dict[str, Any]:
+        self.calls.append(("system_diagnostics", None))
+        return {
+            "database": {
+                "status": "ready",
+                "expected_revision": "head-1",
+                "current_revisions": ["head-1"],
+            },
+            "official_packs": {
+                "status": "ready",
+                "expected_pack_count": 22,
+                "installed_pack_count": 22,
+                "active_lock_count": 66,
+                "issues": [],
+            },
+        }
 
     def create_run(self, payload: dict[str, object]) -> dict[str, Any]:
         self.calls.append(("create_run", payload))
@@ -46,29 +149,13 @@ class FakeAPIClient:
             "temporal_workflow_id": "workflow-run-1",
         }
 
-    def create_local_audit(self, source_path: str) -> dict[str, Any]:
-        self.calls.append(("create_local_audit", source_path))
-        return {"audit_id": "audit-1", "status": "draft"}
+    def create_pentest(self, payload: dict[str, object]) -> dict[str, Any]:
+        self.calls.append(("create_pentest", payload))
+        return {"id": payload["request_id"], "kind": "pentest", "status": "waiting_user"}
 
-    def start_local_audit(self, audit_id: str) -> dict[str, Any]:
-        self.calls.append(("start_local_audit", audit_id))
-        return {"audit_id": audit_id, "status": "queued"}
-
-    def get_local_audit(self, audit_id: str) -> dict[str, Any]:
-        self.calls.append(("get_local_audit", audit_id))
-        return {"audit_id": audit_id, "status": "completed"}
-
-    def list_local_audit_findings(self, audit_id: str) -> dict[str, Any]:
-        self.calls.append(("list_local_audit_findings", audit_id))
-        return {"items": [], "total": 0, "limit": 100, "offset": 0}
-
-    def get_local_audit_report(self, audit_id: str, *, format: str = "json") -> str:
-        self.calls.append(("get_local_audit_report", (audit_id, format)))
-        return "# Local Audit\n" if format == "markdown" else '{"findings":[]}\n'
-
-    def cancel_local_audit(self, audit_id: str) -> dict[str, Any]:
-        self.calls.append(("cancel_local_audit", audit_id))
-        return {"audit_id": audit_id, "status": "cancelled"}
+    def get_pentest_status(self, run_id: str) -> dict[str, Any]:
+        self.calls.append(("get_pentest_status", run_id))
+        return self._pentest_status(run_id)
 
     def list_runs(self, **kwargs: object) -> dict[str, Any]:
         self.calls.append(("list_runs", kwargs))
@@ -83,6 +170,10 @@ class FakeAPIClient:
     def cancel_run(self, run_id: str) -> dict[str, Any]:
         self.calls.append(("cancel_run", run_id))
         return {"run": {"id": run_id, "status": "cancelled"}}
+
+    def resume_run(self, run_id: str) -> dict[str, Any]:
+        self.calls.append(("resume_run", run_id))
+        return {"run": {"id": run_id, "status": "waiting_user"}}
 
     def pause_run(self, run_id: str) -> dict[str, Any]:
         self.calls.append(("pause_run", run_id))
@@ -426,6 +517,78 @@ class FakeAPIClient:
             "content_url": f"/api/v1/artifacts/{artifact_id}/content",
         }
 
+    @staticmethod
+    def _pentest_status(run_id: str) -> dict[str, Any]:
+        return {
+            "run": {
+                "id": run_id,
+                "status": "waiting_user",
+                "objective": {"description": "Assess target"},
+            },
+            "primary_session": {"model_profile": "fast", "status": "created"},
+            "capabilities": {
+                "selections": [
+                    {
+                        "kind": "skill",
+                        "capability_id": "pentest-foundation",
+                        "version": "1.0.0",
+                        "source": "official",
+                        "active": True,
+                    }
+                ],
+                "allowlists": {
+                    "tool": [
+                        "list_ready_tasks",
+                        "add_task",
+                        "query_reasoning_graph",
+                        "record_observation",
+                        "record_negative_result",
+                        "complete_task",
+                        "complete_run",
+                    ],
+                    "skill": ["pentest-foundation"],
+                    "technique": [],
+                },
+                "pack_locks": [],
+            },
+            "budget": {
+                "limits": {
+                    "max_duration_seconds": 900,
+                    "max_model_calls": 20,
+                    "max_tokens": 100000,
+                    "max_tool_calls": 50,
+                    "max_target_interactions": 100,
+                },
+                "elapsed_seconds": 1,
+                "model_calls": 0,
+                "tokens": 0,
+                "tool_calls": 0,
+                "observed_target_interactions": 0,
+            },
+            "workflow": {
+                "workflow_id": f"riftx-pentest-{run_id}",
+                "persisted_started": True,
+            },
+            "runner": {"node_ids": ["local"], "execution_status_counts": {}},
+            "stop": {"latest_event_type": None, "confirmed": False},
+            "attack_surface": {
+                "declared_entry_points": [
+                    {"kind": "url", "value": "https://app.example.test"}
+                ],
+                "nodes": [
+                    {
+                        "kind": "endpoint",
+                        "value": "https://app.example.test/login",
+                        "source_level": "observed",
+                        "scope_allowed": True,
+                        "scope_reason": "target matches authorized scope",
+                        "source_refs": ["target_http_request:request-1"],
+                    }
+                ],
+                "truncated": False,
+            },
+        }
+
 
 @pytest.fixture(autouse=True)
 def fake_client(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -435,39 +598,154 @@ def fake_client(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli_module, "APIClient", FakeAPIClient)
 
 
-def test_local_audit_commands_delegate_to_minimal_api(
+def test_offline_security_demos_do_not_call_control_plane(tmp_path: Path) -> None:
+    tool_path = tmp_path / "tools.yaml"
+    tool_path.write_text(
+        yaml.safe_dump(
+            {
+                "version": 1,
+                "tools": {
+                    "nmap": {"enabled": False, "command": ["nmap"]},
+                    "nuclei": {"enabled": False, "command": ["nuclei"]},
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    config = cli_module.RiftXConfig.model_validate({"tools": {"path": str(tool_path)}})
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(cli_module, "load_riftx_config", lambda **_: config)
+        pentest = runner.invoke(cli_module.app, ["demo", "pentest"])
+        retired = runner.invoke(cli_module.app, ["demo", "code-audit"])
+
+    assert pentest.exit_code == 0, pentest.output
+    assert retired.exit_code == 2
+    assert "No such command 'code-audit'" in retired.output
+    assert "SANITIZED OFFLINE PENTEST DEMO" in pentest.output
+    assert "nmap, nuclei" in pentest.output
+    assert FakeAPIClient.instances == []
+
+
+def test_new_user_can_run_pentest_demo_after_onboard(
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-
-    scan = runner.invoke(cli_module.app, ["audit", str(project)])
-    status = runner.invoke(cli_module.app, ["audit", "status", "audit-1"])
-    findings = runner.invoke(cli_module.app, ["audit", "findings", "audit-1"])
-    report = runner.invoke(
-        cli_module.app,
-        ["audit", "report", "audit-1", "--format", "markdown"],
+    config_path = tmp_path / "config" / "riftx.yaml"
+    ready = DoctorReport(
+        checks=(
+            DoctorCheck(
+                id="database_migrations",
+                status=DoctorStatus.READY,
+                detail="database ready",
+            ),
+        )
     )
-    cancel = runner.invoke(cli_module.app, ["audit", "cancel", "audit-1"])
+    monkeypatch.setattr(cli_module, "run_local_doctor", lambda *_args, **_kwargs: ready)
+    monkeypatch.setattr(cli_module, "apply_local_doctor_fixes", lambda *_args, **_kwargs: ())
 
-    for result in (scan, status, findings, report, cancel):
+    onboard = runner.invoke(
+        cli_module.app,
+        [
+            "onboard",
+            "--non-interactive",
+            "--config-path",
+            str(config_path),
+            "--provider",
+            "openai_compatible",
+            "--model",
+            "qwen-local",
+            "--base-url",
+            "http://127.0.0.1:11434/v1",
+            "--no-api-key",
+        ],
+        env={
+            "XDG_CONFIG_HOME": str(tmp_path / "xdg-config"),
+            "XDG_STATE_HOME": str(tmp_path / "state"),
+            "XDG_DATA_HOME": str(tmp_path / "data"),
+            "PATH": "",
+        },
+    )
+    pentest = runner.invoke(
+        cli_module.app,
+        ["--config", str(config_path), "demo", "pentest"],
+    )
+    assert onboard.exit_code == 0, onboard.output
+    assert pentest.exit_code == 0, pentest.output
+    assert "Onboarding complete" in onboard.output
+    assert "SANITIZED OFFLINE PENTEST DEMO" in pentest.output
+    assert "Degradation path" in pentest.output
+    assert FakeAPIClient.instances == []
+
+
+def test_local_capability_inventory_commands_are_read_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = LocalCapabilityState(
+        capabilities=(
+            CapabilityInventoryItem(
+                capability_id="pentest-foundation",
+                version="1.0.0",
+                kind="skill",
+                source="official",
+                trust_tier="official",
+                status="active",
+                manifest_digest="a" * 64,
+            ),
+        ),
+        packs=(
+            PackInventoryItem(
+                pack_id="pentest-foundation",
+                version="1.0.0",
+                capability_count=3,
+                persistence_status="ready",
+                manifest_digest="b" * 64,
+            ),
+        ),
+        verification_status="ready",
+        issues=(),
+    )
+    monkeypatch.setattr(
+        capability_management_module,
+        "inspect_local_capability_state",
+        lambda *_args, **_kwargs: state,
+    )
+
+    capabilities = runner.invoke(cli_module.app, ["capabilities", "list"])
+    verified = runner.invoke(cli_module.app, ["capabilities", "verify"])
+    packs = runner.invoke(cli_module.app, ["packs", "list"])
+
+    for result in (capabilities, verified, packs):
         assert result.exit_code == 0, result.output
-    assert "queued" in scan.output
-    assert "completed" in status.output
-    assert "Local Audit" in report.output
-    assert "cancelled" in cancel.output
-    assert FakeAPIClient.instances[0].calls == [
-        ("create_local_audit", str(project.resolve())),
-        ("start_local_audit", "audit-1"),
-    ]
-    assert FakeAPIClient.instances[1].calls == [("get_local_audit", "audit-1")]
-    assert FakeAPIClient.instances[2].calls == [
-        ("list_local_audit_findings", "audit-1")
-    ]
-    assert FakeAPIClient.instances[3].calls == [
-        ("get_local_audit_report", ("audit-1", "markdown"))
-    ]
-    assert FakeAPIClient.instances[4].calls == [("cancel_local_audit", "audit-1")]
+    assert "pentest-foundation" in capabilities.output
+    assert "1 active capabilities" in capabilities.output
+    assert "ready" in verified.output
+    assert "pentest-foundation" in packs.output
+    assert "1 Official Packs" in packs.output
+    assert FakeAPIClient.instances == []
+
+
+def test_capability_verify_fails_closed_on_persistence_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        capability_management_module,
+        "inspect_local_capability_state",
+        lambda *_args, **_kwargs: LocalCapabilityState(
+            capabilities=(),
+            packs=(),
+            verification_status="drifted",
+            issues=("lock_set_drift:pentest-foundation",),
+        ),
+    )
+
+    result = runner.invoke(cli_module.app, ["capabilities", "verify"])
+
+    assert result.exit_code == 1
+    assert "drifted" in result.output
+    assert "lock_set_drift:pentest-foundation" in result.output
+    assert FakeAPIClient.instances == []
 
 
 def test_run_create_builds_api_payload() -> None:
@@ -512,6 +790,157 @@ def test_run_create_builds_api_payload() -> None:
             },
         )
     ]
+
+
+def test_pentest_start_builds_admission_payload_and_renders_status() -> None:
+    request_id = "00000000-0000-4000-8000-000000000123"
+    result = runner.invoke(
+        cli_module.app,
+        [
+            "pentest",
+            "start",
+            "--objective",
+            "Assess target",
+            "--authorization",
+            "ticket://authorized-123",
+            "--target",
+            "https://app.example.test/login",
+            "--scope",
+            "app.example.test",
+            "--exclude",
+            "https://app.example.test/admin/destructive",
+            "--mode",
+            "manual",
+            "--model",
+            "fast",
+            "--success",
+            "Verify authorization boundaries",
+            "--tool",
+            "python",
+            "--request-id",
+            request_id,
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Pentest Status" in result.output
+    assert "Pentest Budget" in result.output
+    assert "Attack Surface" in result.output
+    assert "https://app.example.test/login" in result.output
+    assert "observed" in result.output
+    assert "allowed" in result.output
+    assert "Pentest admitted and started." in result.output
+    assert FakeAPIClient.instances[0].calls == [
+        (
+            "create_pentest",
+            {
+                "request_id": request_id,
+                "objective": "Assess target",
+                "approval_mode": "manual",
+                "success_criteria": [
+                    {
+                        "description": "Verify authorization boundaries",
+                        "required": True,
+                    }
+                ],
+                "entry_points": [
+                    {"kind": "url", "value": "https://app.example.test/login"}
+                ],
+                "scope": {
+                    "cidrs": [],
+                    "ips": [],
+                    "domains": ["app.example.test"],
+                    "url_prefixes": [],
+                    "asset_tags": [],
+                    "exclusions": [
+                        "https://app.example.test/admin/destructive"
+                    ],
+                },
+                "admission": {
+                    "budget": {
+                        "max_duration_seconds": 900,
+                        "max_model_calls": 20,
+                        "max_tokens": 100000,
+                        "max_tool_calls": 50,
+                        "max_target_interactions": 100,
+                        "max_concurrent_target_interactions": 2,
+                    }
+                },
+                "engagement": {
+                    "name": "Pentest: https://app.example.test/login",
+                    "authorization_reference": "ticket://authorized-123",
+                },
+                "capabilities": {
+                    "pack_ids": ["pentest-foundation"],
+                    "tool_ids": ["python"],
+                    "skill_ids": [],
+                    "technique_ids": [],
+                },
+                "model_profile": "fast",
+            },
+        ),
+        ("get_pentest_status", request_id),
+    ]
+
+
+def test_pentest_commands_use_status_type_guard_and_shared_controls() -> None:
+    status = runner.invoke(cli_module.app, ["pentest", "status", "pentest-1"])
+    resume = runner.invoke(cli_module.app, ["pentest", "resume", "pentest-1"])
+    stop = runner.invoke(cli_module.app, ["pentest", "stop", "pentest-1"])
+
+    for result in (status, resume, stop):
+        assert result.exit_code == 0, result.output
+        assert "Pentest Status" in result.output
+    assert "Pentest resume requested." in resume.output
+    assert "Pentest stop confirmed." in stop.output
+    assert FakeAPIClient.instances[0].calls == [
+        ("get_pentest_status", "pentest-1")
+    ]
+    assert FakeAPIClient.instances[1].calls == [
+        ("get_pentest_status", "pentest-1"),
+        ("resume_run", "pentest-1"),
+        ("get_pentest_status", "pentest-1"),
+    ]
+    assert FakeAPIClient.instances[2].calls == [
+        ("get_pentest_status", "pentest-1"),
+        ("cancel_run", "pentest-1"),
+        ("get_pentest_status", "pentest-1"),
+    ]
+
+
+def test_pentest_start_rejects_missing_target_or_scope_before_api() -> None:
+    missing_target = runner.invoke(
+        cli_module.app,
+        [
+            "pentest",
+            "start",
+            "--objective",
+            "Assess target",
+            "--authorization",
+            "ticket://authorized-123",
+            "--scope",
+            "app.example.test",
+        ],
+    )
+    missing_scope = runner.invoke(
+        cli_module.app,
+        [
+            "pentest",
+            "start",
+            "--objective",
+            "Assess target",
+            "--authorization",
+            "ticket://authorized-123",
+            "--target",
+            "app.example.test",
+        ],
+    )
+
+    assert missing_target.exit_code == 2
+    assert "at least one target is required" in missing_target.output
+    assert missing_scope.exit_code == 2
+    assert "at least one Scope value is required" in missing_scope.output
+    assert FakeAPIClient.instances == []
 
 
 def test_run_list_forwards_status_and_kind_filters() -> None:
@@ -1006,6 +1435,337 @@ def test_tools_doctor_fails_for_enabled_unavailable_tool() -> None:
     assert result.exit_code == 1
 
 
+def test_top_level_doctor_renders_report_and_uses_failed_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = DoctorReport(
+        checks=(
+            DoctorCheck(
+                id="model_provider",
+                status=DoctorStatus.READY,
+                detail="primary is configured",
+            ),
+            DoctorCheck(
+                id="lsp",
+                status=DoctorStatus.FAILED,
+                detail="configured socket is missing",
+                remediation="Start the trusted LSP gateway.",
+            ),
+        )
+    )
+    monkeypatch.setattr(cli_module, "run_local_doctor", lambda *_args, **_kwargs: report)
+
+    result = runner.invoke(cli_module.app, ["doctor"])
+
+    assert result.exit_code == 1
+    assert "model_provider" in result.output
+    assert "lsp" in result.output
+    assert "trusted LSP" in result.output
+    assert "gateway." in result.output
+
+
+def test_top_level_doctor_allows_degraded_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = DoctorReport(
+        checks=(
+            DoctorCheck(
+                id="browser",
+                status=DoctorStatus.DEGRADED,
+                detail="live probe unavailable",
+                remediation="Start the Runner.",
+            ),
+        )
+    )
+    monkeypatch.setattr(cli_module, "run_local_doctor", lambda *_args, **_kwargs: report)
+
+    result = runner.invoke(cli_module.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "Overall: degraded" in result.output
+
+
+def test_top_level_doctor_passes_explicit_runtime_config_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "riftx.yaml"
+    config_path.write_text("{}\n", encoding="utf-8")
+    observed: list[Path | None] = []
+
+    def local_report(
+        *_args: object,
+        runtime_config_path: Path | None = None,
+        **_kwargs: object,
+    ) -> DoctorReport:
+        observed.append(runtime_config_path)
+        return DoctorReport(
+            checks=(
+                DoctorCheck(
+                    id="config_migrations",
+                    status=DoctorStatus.READY,
+                    detail="No migration required.",
+                ),
+            )
+        )
+
+    monkeypatch.setattr(cli_module, "run_local_doctor", local_report)
+
+    result = runner.invoke(
+        cli_module.app,
+        ["--config", str(config_path), "doctor"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert observed == [config_path]
+
+
+def test_doctor_selects_existing_default_user_config_only(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    user_config = tmp_path / "riftx.yaml"
+    state = cli_module.CLIState(
+        api_url="http://127.0.0.1:8787",
+        config=cli_module.RiftXConfig(),
+        config_path=None,
+        language="en",
+    )
+    monkeypatch.setattr(cli_module, "default_user_config_path", lambda: user_config)
+
+    assert cli_module._doctor_runtime_config_path(state) is None
+
+    user_config.write_text("{}\n", encoding="utf-8")
+
+    assert cli_module._doctor_runtime_config_path(state) == user_config
+
+
+def test_top_level_doctor_fix_applies_local_repairs_before_rechecking(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    reports = iter(
+        (
+            DoctorReport(
+                checks=(
+                    DoctorCheck(
+                        id="skills",
+                        status=DoctorStatus.DEGRADED,
+                        detail="operator Skill root is absent",
+                        fixable=True,
+                    ),
+                )
+            ),
+            DoctorReport(
+                checks=(
+                    DoctorCheck(
+                        id="skills",
+                        status=DoctorStatus.READY,
+                        detail="operator Skill root exists",
+                    ),
+                )
+            ),
+        )
+    )
+    fixed = tmp_path / "skills"
+    monkeypatch.setattr(cli_module, "run_local_doctor", lambda *_args, **_kwargs: next(reports))
+    monkeypatch.setattr(
+        cli_module,
+        "apply_local_doctor_fixes",
+        lambda *_args, **_kwargs: (
+            DoctorFix(check_id="skills", path=fixed),
+        ),
+    )
+
+    result = runner.invoke(cli_module.app, ["doctor", "--fix"])
+
+    assert result.exit_code == 0, result.output
+    assert "Fixed skills" in result.output
+    assert fixed.name in result.output
+    assert "Overall: ready" in result.output
+
+
+def test_top_level_doctor_fix_blocks_persistence_repair_while_api_is_reachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = DoctorReport(
+        checks=(
+            DoctorCheck(
+                id="pack_integrity",
+                status=DoctorStatus.FAILED,
+                detail="Official Pack locks drifted",
+                fixable=True,
+            ),
+        )
+    )
+    observed: list[bool] = []
+    monkeypatch.setattr(cli_module, "run_local_doctor", lambda *_args, **_kwargs: report)
+
+    def refuse_fix(
+        *_args: object,
+        allow_persistence_fix: bool,
+        **_kwargs: object,
+    ) -> tuple[DoctorFix, ...]:
+        observed.append(allow_persistence_fix)
+        raise DoctorFixError("Stop the reachable RiftX Control Plane")
+
+    monkeypatch.setattr(cli_module, "apply_local_doctor_fixes", refuse_fix)
+
+    result = runner.invoke(cli_module.app, ["doctor", "--fix"])
+
+    assert result.exit_code == 1
+    assert observed == [False]
+    assert "Stop the reachable RiftX Control Plane" in result.output
+    assert FakeAPIClient.instances[0].calls == [("health", None)]
+
+
+def test_onboard_noninteractive_creates_config_and_runs_registered_fixes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config" / "riftx.yaml"
+    reports = iter(
+        (
+            DoctorReport(
+                checks=(
+                    DoctorCheck(
+                        id="database_migrations",
+                        status=DoctorStatus.DEGRADED,
+                        detail="database missing",
+                        fixable=True,
+                    ),
+                )
+            ),
+            DoctorReport(
+                checks=(
+                    DoctorCheck(
+                        id="database_migrations",
+                        status=DoctorStatus.READY,
+                        detail="database ready",
+                    ),
+                )
+            ),
+        )
+    )
+    observed_paths: list[Path | None] = []
+    observed_persistence: list[bool] = []
+
+    def local_report(
+        *_args: object,
+        runtime_config_path: Path | None = None,
+        **_kwargs: object,
+    ) -> DoctorReport:
+        observed_paths.append(runtime_config_path)
+        return next(reports)
+
+    def apply_fixes(
+        *_args: object,
+        allow_persistence_fix: bool,
+        **_kwargs: object,
+    ) -> tuple[DoctorFix, ...]:
+        observed_persistence.append(allow_persistence_fix)
+        return ()
+
+    def offline_health(client: FakeAPIClient) -> dict[str, Any]:
+        client.calls.append(("health", None))
+        raise cli_module.httpx.ConnectError("offline")
+
+    monkeypatch.setattr(cli_module, "run_local_doctor", local_report)
+    monkeypatch.setattr(cli_module, "apply_local_doctor_fixes", apply_fixes)
+    monkeypatch.setattr(FakeAPIClient, "health", offline_health)
+
+    result = runner.invoke(
+        cli_module.app,
+        [
+            "onboard",
+            "--non-interactive",
+            "--config-path",
+            str(config_path),
+            "--provider",
+            "openai_compatible",
+            "--model",
+            "qwen-local",
+            "--base-url",
+            "http://127.0.0.1:11434/v1",
+            "--no-api-key",
+        ],
+        env={
+            "XDG_CONFIG_HOME": str(tmp_path / "callback-config"),
+            "XDG_STATE_HOME": str(tmp_path / "state"),
+            "XDG_DATA_HOME": str(tmp_path / "data"),
+            "PATH": "",
+        },
+    )
+
+    assert result.exit_code == 0, result.output
+    assert config_path.is_file()
+    assert (config_path.parent / "models.yaml").is_file()
+    assert (config_path.parent / "tools.yaml").is_file()
+    assert observed_paths == [config_path, config_path]
+    assert observed_persistence == [True]
+    assert "Onboarding complete" in result.output
+    assert "disabled because their executables were not found" in result.output
+
+
+def test_onboard_resumes_existing_config_without_overwriting_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config" / "riftx.yaml"
+    cli_module.initialize_local_onboarding(
+        config_path,
+        model_profile=cli_module.ModelProfile(
+            provider=cli_module.ModelProviderKind.OPENAI_COMPATIBLE,
+            model="qwen-local",
+            base_url="http://127.0.0.1:11434/v1",
+            api_key_env=None,
+            requires_api_key=False,
+        ),
+        environment={
+            "XDG_STATE_HOME": str(tmp_path / "state"),
+            "XDG_DATA_HOME": str(tmp_path / "data"),
+        },
+    )
+    original = {
+        path: path.read_bytes()
+        for path in (
+            config_path,
+            config_path.parent / "models.yaml",
+            config_path.parent / "tools.yaml",
+        )
+    }
+    report = DoctorReport(
+        checks=(
+            DoctorCheck(
+                id="config_migrations",
+                status=DoctorStatus.READY,
+                detail="ready",
+            ),
+        )
+    )
+    monkeypatch.setattr(cli_module, "run_local_doctor", lambda *_args, **_kwargs: report)
+    monkeypatch.setattr(
+        cli_module,
+        "apply_local_doctor_fixes",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "initialize_local_onboarding",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not overwrite")),
+    )
+
+    result = runner.invoke(
+        cli_module.app,
+        ["onboard", "--non-interactive", "--config-path", str(config_path)],
+        env={"XDG_CONFIG_HOME": str(tmp_path / "callback-config")},
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Using existing configuration without overwriting it" in result.output
+    assert {path: path.read_bytes() for path in original} == original
+
+
 def test_approval_commands_delegate_to_shared_http_client() -> None:
     listed = runner.invoke(cli_module.app, ["approvals", "run-1"])
     approved = runner.invoke(cli_module.app, ["approve", "approval-1", "--for-run"])
@@ -1225,6 +1985,102 @@ def test_serve_applies_cli_overrides_after_config(
     assert calls[0]["port"] == 9001
 
 
+def test_start_runs_the_local_stack_with_separated_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "riftx.yaml"
+    config_path.write_text(
+        "workspace:\n"
+        f"  root: {tmp_path / 'workspaces'}\n"
+        "security:\n"
+        "  trust_profile: local_single_operator\n"
+        f"  local_principal_path: {tmp_path / 'local-principal.json'}\n",
+        encoding="utf-8",
+    )
+    processes: list[FakeLocalProcess] = []
+    opened: list[str] = []
+    monkeypatch.setattr(
+        cli_module,
+        "run_local_doctor",
+        lambda *_args, **_kwargs: DoctorReport(
+            checks=(
+                DoctorCheck(id="database", status=DoctorStatus.READY, detail="ready"),
+            )
+        ),
+    )
+    monkeypatch.setattr(cli_module, "_port_is_open", lambda *_args: False)
+    monkeypatch.setattr(cli_module, "_wait_for_port", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli_module.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        cli_module.subprocess,
+        "Popen",
+        lambda command, **kwargs: processes.append(
+            FakeLocalProcess(command=list(command), environment=dict(kwargs["env"]))
+        )
+        or processes[-1],
+    )
+    monkeypatch.setattr(cli_module, "_monitor_local_services", lambda services: 0)
+    monkeypatch.setattr(cli_module.webbrowser, "open", opened.append)
+
+    result = runner.invoke(
+        cli_module.app,
+        ["--config", str(config_path), "start", "--no-open"],
+        env={"OPENAI_API_KEY": "model-key-canary"},
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(processes) == 3
+    temporal, control_plane, worker = processes
+    assert temporal.command[:3] == ["/usr/bin/temporal", "server", "start-dev"]
+    assert "RIFTX_ADMIN_TOKEN" not in temporal.environment
+    assert "OPENAI_API_KEY" not in temporal.environment
+    assert control_plane.command[-1] == "serve"
+    assert len(control_plane.environment["RIFTX_ADMIN_TOKEN"]) == 64
+    assert control_plane.environment["RIFTX_CONFIG"] == str(config_path)
+    assert worker.command[-1] == "worker"
+    assert "RIFTX_ADMIN_TOKEN" not in worker.environment
+    assert worker.environment["OPENAI_API_KEY"] == "model-key-canary"
+    assert worker.environment["RIFTX_CONFIG"] == str(config_path)
+    assert "Generated session-only local admin token" in result.output
+    assert "RiftX is ready" in result.output
+    assert opened == []
+    assert all(process.terminated for process in processes)
+
+
+def test_start_fails_cleanly_when_local_temporal_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "riftx.yaml"
+    config_path.write_text(
+        "security:\n"
+        "  trust_profile: local_single_operator\n"
+        f"  local_principal_path: {tmp_path / 'local-principal.json'}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "run_local_doctor",
+        lambda *_args, **_kwargs: DoctorReport(
+            checks=(
+                DoctorCheck(id="database", status=DoctorStatus.READY, detail="ready"),
+            )
+        ),
+    )
+    monkeypatch.setattr(cli_module, "_port_is_open", lambda *_args: False)
+    monkeypatch.setattr(cli_module.shutil, "which", lambda _name: None)
+
+    result = runner.invoke(
+        cli_module.app,
+        ["--config", str(config_path), "start", "--no-open"],
+    )
+
+    assert result.exit_code == 1
+    assert "Temporal is not running" in result.output
+    assert "temporal` CLI was not found" in result.output
+
+
 @pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.0.2.10", "control.test"])
 def test_serve_rejects_non_loopback_bind_without_trusted_proxy(
     host: str,
@@ -1334,7 +2190,7 @@ def test_worker_command_builds_and_runs_runtime(monkeypatch: pytest.MonkeyPatch)
         calls.append(config)
         return FakeRuntime()
 
-    monkeypatch.setattr(cli_module, "build_temporal_worker", fake_build)
+    monkeypatch.setattr(worker_runtime_module, "build_temporal_worker", fake_build)
 
     result = runner.invoke(cli_module.app, ["worker"])
 
@@ -1357,13 +2213,13 @@ def test_runner_command_help_omits_registration_token_option() -> None:
 def test_runner_command_rejects_registration_token_argv_without_echo(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[cli_module.RunnerDaemonConfig] = []
+    calls: list[runner_daemon_module.RunnerDaemonConfig] = []
     canary = "shared-cli-bootstrap-canary-never-log-0001"
 
-    async def fake_run(config: cli_module.RunnerDaemonConfig) -> None:
+    async def fake_run(config: runner_daemon_module.RunnerDaemonConfig) -> None:
         calls.append(config)
 
-    monkeypatch.setattr(cli_module, "run_runner_daemon", fake_run)
+    monkeypatch.setattr(runner_daemon_module, "run_runner_daemon", fake_run)
     result = runner.invoke(
         cli_module.app,
         ["runner", "--registration-token", canary],
@@ -1379,13 +2235,13 @@ def test_runner_command_applies_cli_overrides_and_environment_bootstrap_token(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[cli_module.RunnerDaemonConfig] = []
+    calls: list[runner_daemon_module.RunnerDaemonConfig] = []
     bootstrap_token = "test-only-runner-bootstrap-token-0004"
 
-    async def fake_run(config: cli_module.RunnerDaemonConfig) -> None:
+    async def fake_run(config: runner_daemon_module.RunnerDaemonConfig) -> None:
         calls.append(config)
 
-    monkeypatch.setattr(cli_module, "run_runner_daemon", fake_run)
+    monkeypatch.setattr(runner_daemon_module, "run_runner_daemon", fake_run)
     state_path = tmp_path / "runner-state"
     credential_path = tmp_path / "secrets" / "runner-credentials.json"
 
@@ -1409,7 +2265,7 @@ def test_runner_command_applies_cli_overrides_and_environment_bootstrap_token(
 
     assert result.exit_code == 0, result.output
     assert calls == [
-        cli_module.RunnerDaemonConfig(
+        runner_daemon_module.RunnerDaemonConfig(
             server_url="http://control.test:8787",
             node_id="node-7",
             name="Runner Seven",
@@ -1418,66 +2274,6 @@ def test_runner_command_applies_cli_overrides_and_environment_bootstrap_token(
             registration_token=bootstrap_token,
         )
     ]
-
-
-@pytest.mark.parametrize("option", ["--state-path", "--credential-path"])
-def test_runner_path_override_is_rejected_when_audit_sources_are_configured(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    option: str,
-) -> None:
-    calls: list[cli_module.RunnerDaemonConfig] = []
-
-    async def fake_run(config: cli_module.RunnerDaemonConfig) -> None:
-        calls.append(config)
-
-    monkeypatch.setattr(cli_module, "run_runner_daemon", fake_run)
-    source = tmp_path / "source"
-    source.mkdir()
-    state = tmp_path / "state"
-    state.mkdir()
-    config_path = tmp_path / "riftx.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "database": {
-                    "url": f"sqlite+aiosqlite:///{state / 'riftx.db'}",
-                },
-                "workspace": {"root": str(state / "workspaces")},
-                "runner": {
-                    "state_path": str(state / "runner"),
-                    "credential_path": str(state / "runner-credentials.json"),
-                },
-                "models": {"secrets_path": str(state / "models.json")},
-                "security": {"local_principal_path": str(state / "principal.json")},
-                "audit": {
-                    "source_roots": [str(source)],
-                    "snapshot_root": str(state / "snapshots"),
-                    "temp_root": str(state / "tmp"),
-                    "fix_root": str(state / "fixes"),
-                },
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
-    )
-
-    result = runner.invoke(
-        cli_module.app,
-        [
-            "--config",
-            str(config_path),
-            "runner",
-            option,
-            str(source / "forbidden-storage"),
-        ],
-    )
-
-    assert result.exit_code == 2
-    assert "deployment-owned when Audit source roots are configured" in result.output
-    assert str(source) not in result.output
-    assert calls == []
-
 
 def test_web_command_prints_and_optionally_opens_url(
     monkeypatch: pytest.MonkeyPatch,

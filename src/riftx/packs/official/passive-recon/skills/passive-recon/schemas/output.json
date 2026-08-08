@@ -1,0 +1,9 @@
+{
+  "type": "object",
+  "required": ["sources", "observations", "negative_results"],
+  "properties": {
+    "sources": {"type": "array", "items": {"type": "string"}},
+    "observations": {"type": "array", "items": {"type": "string"}},
+    "negative_results": {"type": "array", "items": {"type": "string"}}
+  }
+}

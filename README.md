@@ -2,14 +2,16 @@
 
 # RiftX
 
-### Durable, host-native Agent operations for authorized security work
+### A Pentest-first Agent that gets better with the operator
 
-RiftX turns operator-defined objectives, scope, approvals, execution, evidence, and stop
-decisions into one observable and recoverable control protocol.
+RiftX turns authorized objectives, scope, approvals, execution, evidence, findings,
+reports, and operator-maintained methods into one recoverable Pentest workflow.
 
 <p>
+  <a href="https://github.com/Ch1nfo/RiftX/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Ch1nfo/RiftX/actions/workflows/ci.yml/badge.svg?branch=main"></a>
   <img alt="Version 2.0.0 Alpha" src="https://img.shields.io/badge/version-2.0.0--alpha.0-245dc7?style=flat-square">
   <img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white">
+  <img alt="Host-native, no Docker required" src="https://img.shields.io/badge/runtime-host--native-2ea44f?style=flat-square">
   <img alt="Local single operator" src="https://img.shields.io/badge/trust-local__single__operator-55d9ff?style=flat-square&labelColor=071632">
   <a href="./LICENSE"><img alt="Apache License 2.0" src="https://img.shields.io/badge/license-Apache--2.0-ffd45a?style=flat-square&labelColor=071632"></a>
 </p>
@@ -37,12 +39,113 @@ decisions into one observable and recoverable control protocol.
 > assets for which you have explicit authorization, and never expose the Control Plane
 > to a LAN or the public Internet.
 
+> [!NOTE]
+> The Code Audit product surface is retired. Historical records, migrations, read-only
+> Snapshot compatibility, and Safety Stop cleanup remain; there is no supported Code
+> Audit CLI, API, Worker, Runner, Demo, or Web workflow.
+
+## Pentest-first quick start
+
+This is the supported path from a clean checkout to the first evidence-backed report.
+Generic platform commands are optional and are not substitutes for a real authorized
+Pentest.
+
+### 1. Install and onboard
+
+The only prerequisites are Python `3.12` and a local Temporal CLI. Use any standard
+Python virtual environment; regular users do not need Conda or Docker. Onboard, Control
+Plane, Worker, Runner, and the WebUI bundled in the Python package all run host-native.
+The `core_path_excludes_docker` release gate checks distribution dependencies and
+deployment assets, then verifies Onboard, Doctor, Control Plane, and Pentest admission
+with an empty executable `PATH`.
+
+```bash
+python -m pip install .
+riftx onboard
+```
+
+`onboard` interactively creates the user configuration, Model Profile, Tool Registry,
+database, and Official Packs without overwriting an existing setup. Configure model
+credentials through the selected `RIFTX_MODEL_*` environment variable or the WebUI after
+startup. Missing optional executables are reported as degraded capabilities and do not
+block the basic Pentest path; run `riftx doctor` when troubleshooting.
+
+Stateful browser Pentests are optional. Install them only on a Runner that needs them:
+
+```bash
+python -m pip install ".[browser]"
+playwright install chromium
+```
+
+Browser, MCP, and Connector integrations are optional extensions. Missing or disabled
+integrations degrade only their own capabilities and do not block the basic Pentest path.
+
+### 2. Start the local services
+
+Start the complete local stack with one foreground command:
+
+```bash
+riftx start
+```
+
+`start` reuses the configured Temporal service. When the default local endpoint is not
+running, it starts the Temporal CLI automatically, then launches the Control Plane and
+Worker and opens the WebUI. If `RIFTX_ADMIN_TOKEN` is not already set, it generates a
+session-only token. Press `Ctrl+C` to stop the processes owned by this command; pass
+`--no-open` to keep the browser closed.
+
+The current release supports one local professional operator and keeps the Control Plane
+on loopback. Production deployments should continue to supervise separate processes;
+deployment, backup, and upgrade details are in [`docs/deployment.md`](docs/deployment.md).
+
+### 3. Start an authorized Pentest
+
+Replace the example target, Scope, and authorization reference with real authorized
+values:
+
+When using the CLI from another terminal, inject the same `RIFTX_ADMIN_TOKEN` printed by
+`riftx start` into that terminal's environment.
+
+```bash
+riftx pentest start \
+  --objective "Assess the authorized staging service" \
+  --authorization "ticket://SEC-1234" \
+  --target "https://staging.example.test" \
+  --scope "https://staging.example.test" \
+  --model primary
+
+riftx pentest status RUN_ID
+riftx approvals RUN_ID
+riftx approve APPROVAL_ID
+```
+
+Scope, approval, budget, Credential Reference, and stop checks remain authoritative; a
+Skill cannot bypass them or add undeclared Tools.
+
+### 4. Generate the report
+
+After the Run reaches `completed`, `failed`, or `cancelled`:
+
+```bash
+riftx report generate RUN_ID \
+  --format markdown \
+  --format json
+
+riftx report list RUN_ID
+riftx report show REPORT_ID
+```
+
+Professional users can add and iterate local methods through `riftx skills`; see
+[`docs/operator-skill-lifecycle.md`](docs/operator-skill-lifecycle.md).
+
 ## Why RiftX
 
 RiftX treats every Run as durable operational state. WebUI and CLI are projections,
 while resumable workflows and node-local effect owners keep work recoverable and
 attributable after a client disconnects.
 
+- **Simple host-native setup** — the wheel bundles the WebUI, `riftx onboard` creates
+  local state, and `riftx start` supervises the complete local stack without Conda or Docker.
 - **Conversation first** — creating a Run stores its objective and boundaries in
   `waiting_user`; no model or tool starts until the operator sends a concrete instruction.
 - **Attributable control** — approvals, terminal takeover, and browser takeover bind to
@@ -54,23 +157,10 @@ attributable after a client disconnects.
 - **Stop means confirmed** — RiftX fences new effects first and reports a Run stopped
   only after every known owner returns affirmative stop evidence.
 
-## Explore the standalone Demo
+## Advanced: product tour
 
-The independent [`@riftx/demo`](apps/demo) uses sanitized local state and never contacts
-a Control Plane, Temporal, model provider, Runner, browser session, or target.
-
-```bash
-conda run --no-capture-output -n agent pnpm install
-conda run --no-capture-output -n agent pnpm demo:dev
-# Open http://127.0.0.1:5174/?lang=en
-```
-
-Use `?lang=en` or `?lang=zh-CN` to fix the presentation locale. Every screen remains
-visibly marked **DEMO / SANITIZED**.
-
-## Product tour
-
-Twelve screens cover the primary operator journey. Click any image for the full-resolution view.
+These screens illustrate implemented surfaces; they are not the default Quickstart. Click any
+image for the full-resolution view.
 
 <table>
   <tbody>
@@ -124,30 +214,21 @@ Twelve screens cover the primary operator journey. Click any image for the full-
         <p><strong>Browser and connectors</strong><br>Bring Managed Browser, Chrome, and Burp captures into one evidence chain.</p>
       </td>
     </tr>
-    <tr>
-      <td width="50%" valign="top">
-        <a href="docs/assets/readme/en/18-local-code-audit.webp"><img src="docs/assets/readme/en/18-local-code-audit.webp" alt="Start a read-only local RiftX code audit" width="100%"></a>
-        <p><strong>Local code audit</strong><br>Select a same-machine folder and scan a sealed snapshot without executing project code.</p>
-      </td>
-      <td width="50%" valign="top">
-        <a href="docs/assets/readme/en/19-local-audit-findings.webp"><img src="docs/assets/readme/en/19-local-audit-findings.webp" alt="Inspect RiftX local code audit findings" width="100%"></a>
-        <p><strong>Audit findings</strong><br>Inspect severity, confidence, relative location, rule identity, and redacted evidence.</p>
-      </td>
-    </tr>
   </tbody>
 </table>
 
-## Platform capability map
+## Advanced: platform capability map
 
 | Area | Implemented capabilities |
 | --- | --- |
+| Installation and local operation | Standard Python wheel, bundled production WebUI, repeatable `riftx onboard`, one-command `riftx start`, automatic local Temporal reuse/start, session-only local admin token, and coordinated shutdown |
 | Durable Agent runtime | Bounded Agent cycles, dynamic Tool discovery, progressive Skills, structured Working Memory, context compilation and compaction, long-term Memory, Subagents, Hooks, governed MCP integration, retry, replay, and idempotent execution identities |
 | Host execution | Registered-only Process, Shell, and PTY; node-local Runner; bounded output; cancel/wait; Linux delegated cgroup v2 containment; Runner-scoped Target HTTP |
 | Evidence and observability | Immutable Artifacts, evidence-backed Findings, Markdown/HTML/JSON Reports, deterministic Task/Evidence/Operation projections, resumable SSE, Raw Events, runtime metrics, and logical `artifact://` references |
 | Browser and research | Runner-owned Playwright Chromium, stable element references, sanitized observations, takeover summaries, public source registry, research pipeline, Chrome DevTools connector, and Burp Montoya connector |
 | Operator configuration | Node inventory, searchable Tool Registry, OpenAI/OpenAI-compatible Model Profiles, `chat_completions` and `responses` request modes, write-only credentials, bilingual WebUI/CLI, and persistent dark/light themes |
 
-## Architecture
+## Advanced: architecture
 
 ```mermaid
 flowchart LR
@@ -168,7 +249,7 @@ The outbound Runner protocol exists, but the only selectable trust profile in th
 release keeps the Control Plane on loopback; a true remote Runner deployment is not yet
 available.
 
-## Quick start
+## Contributor and legacy platform setup
 
 ### Prerequisites
 
@@ -222,7 +303,7 @@ Configure a Model Profile in the WebUI before sending a Run's first instruction.
 managed Temporal service, TLS, authentication, backup, upgrade, and supervised-service
 guidance, read [`docs/deployment.md`](docs/deployment.md).
 
-### Create a conversation-first Run
+### Create an advanced generic Run
 
 ```bash
 conda run --no-capture-output -n agent riftx run create \
@@ -271,11 +352,11 @@ conda run --no-capture-output -n agent pnpm --filter @riftx/web typecheck
 conda run --no-capture-output -n agent pnpm --filter @riftx/web test
 conda run --no-capture-output -n agent pnpm --filter @riftx/web build
 
-# Standalone Demo
-conda run --no-capture-output -n agent pnpm --filter @riftx/demo typecheck
-conda run --no-capture-output -n agent pnpm --filter @riftx/demo test
-conda run --no-capture-output -n agent pnpm --filter @riftx/demo build
 ```
+
+The Release Gate includes `core_path_excludes_docker` to prevent Docker runtime
+dependencies, Docker/Compose deployment assets, or regressions in the host-native core
+path.
 
 The authoritative feature-to-evidence matrix and release commands live in
 [`docs/v2-completion-audit.md`](docs/v2-completion-audit.md). Run them against the exact
@@ -283,17 +364,20 @@ commit being qualified; this README intentionally does not publish stale test co
 
 ## Documentation
 
+- [Changelog](CHANGELOG.md)
+- [Contributing guide](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
 - [Release qualification and implementation coverage](docs/v2-completion-audit.md)
 - [Deployment, trust boundaries, backup, and stop acceptance](docs/deployment.md)
 - [Model Profile and credential hardening](docs/model-profile-hardening.md)
 - [Chrome Connector](apps/browser-extension/README.md)
 - [Burp Connector](apps/burp-extension/README.md)
-- Demo: [product contract](apps/demo/PRODUCT.md) · [design system](apps/demo/DESIGN.md)
 
 ## Contributing
 
 Describe the affected safety boundary and add executable evidence for new behavior.
 Never commit credentials, real target details, captured traffic, or generated reports.
+See the [contributing guide](CONTRIBUTING.md) before opening a pull request.
 
 ## License
 

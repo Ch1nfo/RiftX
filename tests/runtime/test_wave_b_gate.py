@@ -135,14 +135,14 @@ async def test_wave_b_dynamic_discovery_deferred_execution_and_continuation(
     assert [schema["name"] for schema in initial.available_tools] == registered_residents
     assert len(initial.context_manifest["hidden_available_tools"]) == 80
 
-    search_results = tool_context.search_tools(
+    search_results = await tool_context.search_tools(
         run_id="run-1",
         session_id="session-1",
         agent_id="primary",
         request=ToolSearchRequest(query="SMB enumeration tools"),
     )
     assert search_results[0].tool.id == "netexec-smb"
-    selected_tool = tool_context.get_tool(
+    selected_tool = await tool_context.get_tool(
         "netexec-smb",
         run_id="run-1",
         session_id="session-1",

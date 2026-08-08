@@ -90,7 +90,7 @@ class CompilationRepository:
 
 
 class EightyToolContext:
-    def visibility(self, **_: object) -> SimpleNamespace:
+    async def visibility(self, **_: object) -> SimpleNamespace:
         residents = list(RESIDENT_TOOL_IDS)
         hidden = [f"catalog-tool-{index:02d}" for index in range(80 - len(residents))]
         return SimpleNamespace(
@@ -148,6 +148,19 @@ def _processed_result(index: int, raw_marker: str) -> ProcessedToolResult:
             )
         ],
     )
+
+
+def test_processed_tool_result_exposes_opaque_artifact_ids() -> None:
+    result = _processed_result(1, "bounded")
+    reference = result.raw_artifacts[0].model_copy(update={"artifact_id": "artifact-1"})
+
+    item = processed_tool_result_context_item(
+        result.model_copy(update={"raw_artifacts": [reference]})
+    )
+
+    assert isinstance(item.content, dict)
+    assert item.content["artifact_ids"] == {reference.uri: "artifact-1"}
+    assert item.content["artifact_refs"] == [reference.uri]
 
 
 async def test_wave_c_thirty_tool_call_context_gate(tmp_path: Path) -> None:
@@ -228,7 +241,11 @@ async def test_wave_c_thirty_tool_call_context_gate(tmp_path: Path) -> None:
             "item_count"
         ] == len(RESIDENT_TOOL_IDS)
     assert len(compiled_calls[-1].context_manifest["instruction_paths"]) == 4
-    assert len(compiled_calls[-1].context_manifest["selected_context_item_ids"]) < 50
+    selected_ids = compiled_calls[-1].context_manifest["selected_context_item_ids"]
+    non_tool_schema_ids = [
+        item_id for item_id in selected_ids if not item_id.startswith("tool-schema:")
+    ]
+    assert len(non_tool_schema_ids) < 22
 
     with pytest.raises(DuplicateAttemptError, match="already failed"):
         WorkingMemoryReducer().reduce(

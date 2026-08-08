@@ -1,9 +1,4 @@
-"""Strict mappings for the RiftX Code Audit persistence boundary.
-
-Database rows are not trusted merely because they passed database constraints.  Every
-read reconstructs the authoritative, frozen Pydantic domain model and turns malformed
-state into a redacted :class:`RepositoryIntegrityError`.
-"""
+"""Historical Code Audit mappers used by reads, snapshots, and Safety Stop."""
 
 from __future__ import annotations
 
@@ -19,22 +14,12 @@ from riftx.domain import (
     AuditLifecycleStatus,
     AuditMode,
     AuditPhase,
-    AuditPhaseRun,
-    AuditPhaseRunStatus,
     AuditProject,
     AuditPublicationStatus,
     AuditPurpose,
-    AuditRiskTier,
     AuditScan,
-    AuditScopeKind,
-    AuditScopeStatus,
-    AuditScopeUnit,
-    AuditStartIntent,
-    AuditStartIntentStatus,
     AuditTerminalOutcome,
     AuditVcsKind,
-    AuditWorkItem,
-    AuditWorkStatus,
     RunKind,
     RunStatus,
     SourceSnapshot,
@@ -47,24 +32,26 @@ from riftx.domain.audit_contract_v2 import AuditContractRecordV2
 
 from .orm import (
     AuditClientRequestRecord,
-    AuditPhaseRunRecord,
     AuditProjectRecord,
     AuditScanRecord,
-    AuditScopeUnitRecord,
-    AuditStartIntentRecord,
-    AuditWorkItemRecord,
     SourceSnapshotRecord,
 )
 from .orm import (
     AuditContractRecord as AuditContractORMRecord,
 )
 
-_INVALID_PERSISTED_STATE = "invalid_persisted_state"
-_CONTRACT_BINDING_MISMATCH = "contract_binding_mismatch"
-_OWNER_BINDING_MISMATCH = "owner_binding_mismatch"
-_UNSUPPORTED_PUBLICATION_FACTS = "unsupported_publication_facts"
-
 type DomainAuditContractRecordAny = DomainAuditContractRecord | AuditContractRecordV2
+
+_INVALID_PERSISTED_STATE = "invalid_persisted_state"
+
+
+_CONTRACT_BINDING_MISMATCH = "contract_binding_mismatch"
+
+
+_OWNER_BINDING_MISMATCH = "owner_binding_mismatch"
+
+
+_UNSUPPORTED_PUBLICATION_FACTS = "unsupported_publication_facts"
 
 
 class _VersionedRecord(Protocol):
@@ -118,12 +105,6 @@ def _validate_write_state_version(state_version: int) -> int:
     return state_version
 
 
-def _json_list(value: object) -> list[object]:
-    if not isinstance(value, list):
-        raise TypeError("persisted JSON collection must be a list")
-    return value
-
-
 def _reject_aud506_publication_facts(scan: AuditScan) -> None:
     """Keep distribution facts fenced until AUD-506 installs their owning table/FKs."""
 
@@ -134,25 +115,6 @@ def _reject_aud506_publication_facts(scan: AuditScan) -> None:
         or scan.publication_finished_at is not None
     ):
         raise ValueError("distribution publication facts require AUD-506")
-
-
-def audit_project_to_record(
-    project: AuditProject,
-    *,
-    state_version: int = 1,
-) -> AuditProjectRecord:
-    project = AuditProject.model_validate(project)
-    return AuditProjectRecord(
-        id=project.id,
-        engagement_id=project.engagement_id,
-        display_name=project.display_name,
-        vcs_kind=project.vcs_kind.value,
-        repository_identity_digest=project.repository_identity_digest,
-        default_branch=project.default_branch,
-        state_version=_validate_write_state_version(state_version),
-        created_at=project.created_at,
-        updated_at=project.updated_at,
-    )
 
 
 def audit_project_from_record(record: AuditProjectRecord) -> AuditProject:
@@ -173,31 +135,6 @@ def audit_project_from_record(record: AuditProjectRecord) -> AuditProject:
                 "updated_at": record.updated_at,
             }
         ),
-    )
-
-
-def audit_client_request_to_record(
-    request: AuditClientRequest,
-) -> AuditClientRequestRecord:
-    request = AuditClientRequest.model_validate(request)
-    return AuditClientRequestRecord(
-        client_request_id=request.client_request_id,
-        operation=request.operation.value,
-        request_schema_version=request.request_schema_version,
-        request_digest=request.request_digest,
-        preflight_plan_id=request.preflight_plan_id,
-        preflight_plan_digest=request.preflight_plan_digest,
-        security_context_id=request.security_context_id,
-        security_context_digest=request.security_context_digest,
-        contract_stage=request.contract_stage,
-        audit_id=request.audit_id,
-        run_id=request.run_id,
-        project_id=request.project_id,
-        engagement_id=request.engagement_id,
-        contract_id=request.contract_id,
-        contract_digest=request.contract_digest,
-        temporal_workflow_id=request.temporal_workflow_id,
-        created_at=request.created_at,
     )
 
 
@@ -289,46 +226,6 @@ def source_snapshot_from_record(record: SourceSnapshotRecord) -> SourceSnapshot:
                 "sealed_at": record.sealed_at,
             }
         ),
-    )
-
-
-def audit_contract_to_record(
-    contract: DomainAuditContractRecordAny,
-    *,
-    state_version: int = 1,
-) -> AuditContractORMRecord:
-    schema_version = getattr(contract, "schema_version", None)
-    if schema_version == "riftx.audit-contract/v2":
-        validated: DomainAuditContractRecordAny = AuditContractRecordV2.model_validate(contract)
-    else:
-        validated = DomainAuditContractRecord.model_validate(contract)
-    contract = validated
-    return AuditContractORMRecord(
-        contract_id=contract.contract_id,
-        audit_id=contract.audit_id,
-        schema_version=contract.schema_version,
-        canonical_contract_json=contract.canonical_contract_json,
-        contract_digest=contract.contract_digest,
-        source_target_digest=contract.source_target_digest,
-        source_node_id=contract.source_node_id,
-        source_ingest_backend_digest=contract.source_ingest_backend_digest,
-        source_prepare_proof_digest=contract.source_prepare_proof_digest,
-        selected_node_id=getattr(contract, "selected_node_id", None),
-        required_backend_id=getattr(contract, "required_backend_id", None),
-        snapshot_hydration_policy_digest=getattr(
-            contract, "snapshot_hydration_policy_digest", None
-        ),
-        preflight_plan_id=getattr(contract, "preflight_plan_id", None),
-        preflight_plan_digest=getattr(contract, "preflight_plan_digest", None),
-        security_context_bundle_id=getattr(
-            contract, "security_context_bundle_id", None
-        ),
-        security_context_bundle_digest=getattr(
-            contract, "security_context_bundle_digest", None
-        ),
-        state_version=_validate_write_state_version(state_version),
-        created_at=contract.created_at,
-        sealed_at=contract.sealed_at,
     )
 
 
@@ -566,272 +463,12 @@ def audit_scan_from_record(
     )
 
 
-def audit_start_intent_to_record(
-    intent: AuditStartIntent,
-    *,
-    state_version: int = 1,
-) -> AuditStartIntentRecord:
-    intent = AuditStartIntent.model_validate(intent)
-    return AuditStartIntentRecord(
-        intent_id=intent.id,
-        audit_id=intent.audit_id,
-        run_id=intent.run_id,
-        start_request_id=intent.start_request_id,
-        contract_digest=intent.contract_digest,
-        workflow_id=intent.workflow_id,
-        task_queue=intent.task_queue,
-        status=intent.status.value,
-        attempt=intent.attempt,
-        lease_owner=intent.lease_owner,
-        lease_expires_at=intent.lease_expires_at,
-        next_attempt_at=intent.next_attempt_at,
-        last_error_code=intent.last_error_code,
-        state_version=_validate_write_state_version(state_version),
-        created_at=intent.created_at,
-        updated_at=intent.updated_at,
-        started_at=intent.started_at,
-    )
-
-
-def audit_start_intent_from_record(record: AuditStartIntentRecord) -> AuditStartIntent:
-    entity_id = _opaque_id(record, "intent_id")
-    _state_version(record, entity="AuditStartIntent", entity_id=entity_id)
-    return _read_strict(
-        entity="AuditStartIntent",
-        entity_id=entity_id,
-        build=lambda: AuditStartIntent.model_validate(
-            {
-                "id": record.intent_id,
-                "audit_id": record.audit_id,
-                "run_id": record.run_id,
-                "start_request_id": record.start_request_id,
-                "contract_digest": record.contract_digest,
-                "workflow_id": record.workflow_id,
-                "task_queue": record.task_queue,
-                "status": AuditStartIntentStatus(record.status),
-                "attempt": record.attempt,
-                "lease_owner": record.lease_owner,
-                "lease_expires_at": record.lease_expires_at,
-                "next_attempt_at": record.next_attempt_at,
-                "last_error_code": record.last_error_code,
-                "created_at": record.created_at,
-                "updated_at": record.updated_at,
-                "started_at": record.started_at,
-            }
-        ),
-    )
-
-
-def audit_phase_run_to_record(
-    phase_run: AuditPhaseRun,
-    *,
-    state_version: int = 1,
-) -> AuditPhaseRunRecord:
-    phase_run = AuditPhaseRun.model_validate(phase_run)
-    return AuditPhaseRunRecord(
-        id=phase_run.id,
-        audit_id=phase_run.audit_id,
-        phase=phase_run.phase.value,
-        attempt=phase_run.attempt,
-        idempotency_key=phase_run.idempotency_key,
-        input_digest=phase_run.input_digest,
-        config_digest=phase_run.config_digest,
-        status=phase_run.status.value,
-        output_artifact_ids_json=list(phase_run.output_artifact_ids),
-        summary_counts_json=[count.model_dump(mode="json") for count in phase_run.summary_counts],
-        error_code=phase_run.error_code,
-        error_summary=phase_run.error_summary,
-        state_version=_validate_write_state_version(state_version),
-        created_at=phase_run.created_at,
-        updated_at=phase_run.updated_at,
-        started_at=phase_run.started_at,
-        finished_at=phase_run.finished_at,
-    )
-
-
-def audit_phase_run_from_record(record: AuditPhaseRunRecord) -> AuditPhaseRun:
-    entity_id = _opaque_id(record, "id")
-    _state_version(record, entity="AuditPhaseRun", entity_id=entity_id)
-
-    def build() -> AuditPhaseRun:
-        output_ids = _json_list(record.output_artifact_ids_json)
-        summary_counts = _json_list(record.summary_counts_json)
-        if any(not isinstance(value, dict) for value in summary_counts):
-            raise TypeError("summary count must be an object")
-        return AuditPhaseRun.model_validate(
-            {
-                "id": record.id,
-                "audit_id": record.audit_id,
-                "phase": AuditPhase(record.phase),
-                "attempt": record.attempt,
-                "idempotency_key": record.idempotency_key,
-                "input_digest": record.input_digest,
-                "config_digest": record.config_digest,
-                "status": AuditPhaseRunStatus(record.status),
-                "output_artifact_ids": tuple(output_ids),
-                "summary_counts": tuple(summary_counts),
-                "error_code": record.error_code,
-                "error_summary": record.error_summary,
-                "created_at": record.created_at,
-                "updated_at": record.updated_at,
-                "started_at": record.started_at,
-                "finished_at": record.finished_at,
-            }
-        )
-
-    return _read_strict(entity="AuditPhaseRun", entity_id=entity_id, build=build)
-
-
-def audit_scope_unit_to_record(
-    scope_unit: AuditScopeUnit,
-    *,
-    project_id: str,
-    state_version: int = 1,
-) -> AuditScopeUnitRecord:
-    scope_unit = AuditScopeUnit.model_validate(scope_unit)
-    return AuditScopeUnitRecord(
-        id=scope_unit.id,
-        audit_id=scope_unit.audit_id,
-        project_id=project_id,
-        snapshot_id=scope_unit.snapshot_id,
-        stable_key=scope_unit.stable_key,
-        kind=scope_unit.kind.value,
-        relative_path=scope_unit.relative_path,
-        blob_digest=scope_unit.blob_digest,
-        symbol_anchor=scope_unit.symbol_anchor,
-        risk_tier=scope_unit.risk_tier.value,
-        required_analyses_json=list(scope_unit.required_analyses),
-        status=scope_unit.status.value,
-        closure_code=scope_unit.closure_code,
-        closure_reason=scope_unit.closure_reason,
-        receipt_count=scope_unit.receipt_count,
-        state_version=_validate_write_state_version(state_version),
-        created_at=scope_unit.created_at,
-        updated_at=scope_unit.updated_at,
-    )
-
-
-def audit_scope_unit_from_record(
-    record: AuditScopeUnitRecord,
-    *,
-    project_id: str,
-) -> AuditScopeUnit:
-    entity_id = _opaque_id(record, "id")
-    _state_version(record, entity="AuditScopeUnit", entity_id=entity_id)
-
-    def build() -> AuditScopeUnit:
-        if record.project_id != project_id:
-            raise ValueError("owner binding mismatch")
-        required_analyses = _json_list(record.required_analyses_json)
-        return AuditScopeUnit.model_validate(
-            {
-                "id": record.id,
-                "audit_id": record.audit_id,
-                "snapshot_id": record.snapshot_id,
-                "kind": AuditScopeKind(record.kind),
-                "relative_path": record.relative_path,
-                "blob_digest": record.blob_digest,
-                "symbol_anchor": record.symbol_anchor,
-                "risk_tier": AuditRiskTier(record.risk_tier),
-                "required_analyses": tuple(required_analyses),
-                "status": AuditScopeStatus(record.status),
-                "closure_code": record.closure_code,
-                "closure_reason": record.closure_reason,
-                "receipt_count": record.receipt_count,
-                "stable_key": record.stable_key,
-                "created_at": record.created_at,
-                "updated_at": record.updated_at,
-            }
-        )
-
-    reason = (
-        _OWNER_BINDING_MISMATCH if record.project_id != project_id else _INVALID_PERSISTED_STATE
-    )
-    return _read_strict(
-        entity="AuditScopeUnit",
-        entity_id=entity_id,
-        build=build,
-        reason_code=reason,
-    )
-
-
-def audit_work_item_to_record(
-    work_item: AuditWorkItem,
-    *,
-    state_version: int = 1,
-) -> AuditWorkItemRecord:
-    work_item = AuditWorkItem.model_validate(work_item)
-    return AuditWorkItemRecord(
-        id=work_item.id,
-        audit_id=work_item.audit_id,
-        phase=work_item.phase.value,
-        epoch=work_item.epoch,
-        primary_scope_unit_id=work_item.primary_scope_unit_id,
-        strategy=work_item.strategy,
-        stable_key=work_item.stable_key,
-        risk_tier=work_item.risk_tier.value,
-        status=work_item.status.value,
-        lease_owner=work_item.lease_owner,
-        lease_expires_at=work_item.lease_expires_at,
-        attempt=work_item.attempt,
-        input_digest=work_item.input_digest,
-        required_coverage_plan_artifact_id=(work_item.required_coverage_plan_artifact_id),
-        required_coverage_plan_digest=work_item.required_coverage_plan_digest,
-        receipt_id=work_item.receipt_id,
-        state_version=_validate_write_state_version(state_version),
-        created_at=work_item.created_at,
-        updated_at=work_item.updated_at,
-    )
-
-
-def audit_work_item_from_record(record: AuditWorkItemRecord) -> AuditWorkItem:
-    entity_id = _opaque_id(record, "id")
-    _state_version(record, entity="AuditWorkItem", entity_id=entity_id)
-    return _read_strict(
-        entity="AuditWorkItem",
-        entity_id=entity_id,
-        build=lambda: AuditWorkItem.model_validate(
-            {
-                "id": record.id,
-                "audit_id": record.audit_id,
-                "phase": AuditPhase(record.phase),
-                "epoch": record.epoch,
-                "primary_scope_unit_id": record.primary_scope_unit_id,
-                "strategy": record.strategy,
-                "stable_key": record.stable_key,
-                "risk_tier": AuditRiskTier(record.risk_tier),
-                "status": AuditWorkStatus(record.status),
-                "lease_owner": record.lease_owner,
-                "lease_expires_at": record.lease_expires_at,
-                "attempt": record.attempt,
-                "input_digest": record.input_digest,
-                "required_coverage_plan_artifact_id": (record.required_coverage_plan_artifact_id),
-                "required_coverage_plan_digest": record.required_coverage_plan_digest,
-                "receipt_id": record.receipt_id,
-                "created_at": record.created_at,
-                "updated_at": record.updated_at,
-            }
-        ),
-    )
-
-
 __all__ = [
     "audit_client_request_from_record",
-    "audit_client_request_to_record",
     "audit_contract_from_record",
-    "audit_contract_to_record",
-    "audit_phase_run_from_record",
-    "audit_phase_run_to_record",
     "audit_project_from_record",
-    "audit_project_to_record",
     "audit_scan_from_record",
     "audit_scan_to_record",
-    "audit_scope_unit_from_record",
-    "audit_scope_unit_to_record",
-    "audit_start_intent_from_record",
-    "audit_start_intent_to_record",
-    "audit_work_item_from_record",
-    "audit_work_item_to_record",
     "source_snapshot_from_record",
     "source_snapshot_to_record",
 ]

@@ -33,7 +33,7 @@ def artifact_is_publicly_visible(
 def artifact_has_valid_owner(
     artifact: Any = ArtifactRecord,
 ) -> Any:
-    """Require General ownership or a complete Code Audit ownership chain."""
+    """Require interactive ownership or a complete Code Audit ownership chain."""
 
     return or_(
         and_(
@@ -41,7 +41,9 @@ def artifact_has_valid_owner(
             exists(
                 select(RunRecord.id).where(
                     RunRecord.id == artifact.run_id,
-                    RunRecord.kind == RunKind.GENERAL.value,
+                    RunRecord.kind.in_(
+                        (RunKind.GENERAL.value, RunKind.PENTEST.value)
+                    ),
                 )
             ),
         ),

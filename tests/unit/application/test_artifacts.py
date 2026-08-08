@@ -381,8 +381,9 @@ def _service(
     *,
     content_store: object | None = None,
     max_artifact_bytes: int = 1024,
+    run: Run | None = None,
 ) -> tuple[ArtifactApplicationService, _Events, RunnerPaths]:
-    run = _run(tmp_path)
+    run = run or _run(tmp_path)
     events = _Events()
     paths = RunnerPaths(tmp_path / "runner")
     service = ArtifactApplicationService(

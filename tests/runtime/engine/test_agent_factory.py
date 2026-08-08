@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from riftx.runtime.engine import AgentEngineRequest, DeferredRuntimeAgentFactory
+from riftx.runtime.engine.agent_factory import RuntimeToolScope
 from riftx.runtime.lifecycle import CompiledContext
 
 
@@ -138,6 +139,26 @@ async def test_factory_exposes_control_and_deferred_tools_with_distinct_yield_be
     )
     assert result == {"deferred": True}
     assert calls == [("scanner", {"args": ["-sV"]})]
+
+
+def test_factory_marks_explicit_control_mutation_for_sdk_approval() -> None:
+    factory = DeferredRuntimeAgentFactory(control_handler=lambda *args: None)  # type: ignore[arg-type]
+    tool = factory._tool(  # noqa: SLF001
+        {
+            "name": "apply_patch",
+            "description": "Apply an approved patch.",
+            "parameters": {"type": "object"},
+            "x-riftx": {"approval_policy": "explicit"},
+        },
+        scope=RuntimeToolScope(
+            run_id="run-1",
+            session_id="session-1",
+            agent_id="primary",
+            model_profile="test-profile",
+        ),
+    )
+
+    assert tool.needs_approval is True
 
 
 async def test_factory_rejects_stale_shell_for_registered_only_context() -> None:

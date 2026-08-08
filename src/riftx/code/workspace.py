@@ -1,0 +1,2106 @@
+"""Read-only code navigation over one Run workspace or immutable Audit Snapshot."""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import errno
+import fnmatch
+import hashlib
+import hmac
+import os
+import secrets
+import stat
+from collections import deque
+from collections.abc import Iterator, Sequence
+from contextlib import AbstractContextManager
+from dataclasses import dataclass, field, replace
+from pathlib import Path, PurePosixPath
+from typing import Literal, Protocol, Self, cast
+
+from riftx.application.errors import (
+    ApplicationConflictError,
+    EntityNotFoundError,
+)
+from riftx.application.ports import (
+    AuditAggregateReadRepository,
+    AuditAuthorizationBinding,
+    RunRepository,
+    SnapshotRepository,
+)
+from riftx.audit import (
+    LocalSnapshotView,
+    LocalSnapshotViewEntry,
+    LocalSnapshotViewError,
+    SnapshotBlobObjectType,
+    SnapshotCASBinding,
+    SnapshotStore,
+    open_local_snapshot_view,
+    parse_snapshot_content_storage_key,
+)
+from riftx.domain import RunKind
+
+from .lsp import (
+    ControlledLSPBackend,
+    ControlledLSPFile,
+    ControlledLSPRequest,
+    ControlledLSPResponse,
+)
+from .models import (
+    CodeCall,
+    CodeCallHierarchyResult,
+    CodeDiagnostic,
+    CodeDiagnosticsResult,
+    CodeEntry,
+    CodeGrepMatch,
+    CodeGrepResult,
+    CodeListResult,
+    CodePatchReceipt,
+    CodePatchResult,
+    CodeReadManyResult,
+    CodeReadResult,
+    CodeReference,
+    CodeReferenceSearchResult,
+    CodeSemanticFallbackReason,
+    CodeSymbol,
+    CodeSymbolSearchResult,
+)
+from .patch import (
+    PatchFileState,
+    parse_code_patch,
+    prepare_code_patch,
+    reverse_patch_diff,
+    validate_patch_receipt_content,
+)
+from .symbols import (
+    extract_call_graph,
+    extract_diagnostics,
+    extract_symbols,
+    find_identifier_occurrences,
+    is_identifier,
+    language_for_path,
+)
+
+_MAX_PATH_BYTES = 4096
+_MAX_LIST_ENTRIES = 1000
+_MAX_READ_BYTES = 64 * 1024
+_ARTIFACT_THRESHOLD_BYTES = _MAX_READ_BYTES
+_MAX_READ_MANY_FILES = 20
+_MAX_READ_MANY_BYTES = 128 * 1024
+_MAX_SCAN_ENTRIES = 20_000
+_MAX_GREP_MATCHES = 200
+_MAX_GREP_FILE_BYTES = 1024 * 1024
+_MAX_GREP_TOTAL_BYTES = 8 * 1024 * 1024
+_MAX_GREP_LINE_CHARS = 1000
+_MAX_SYMBOL_FILE_BYTES = 512 * 1024
+_MAX_SYMBOL_TOTAL_BYTES = 8 * 1024 * 1024
+_MAX_SYMBOLS_SCANNED = 20_000
+_MAX_SYMBOL_RESULTS = 200
+_MAX_CALLS_SCANNED = 20_000
+_MAX_CALL_RESULTS = 200
+_MAX_DIAGNOSTICS_SCANNED = 20_000
+_MAX_DIAGNOSTIC_RESULTS = 200
+_MAX_PATCH_FILE_BYTES = 1024 * 1024
+
+
+class _Source(Protocol):
+    kind: Literal["workspace", "audit_snapshot"]
+    digest: str | None
+    audit_id: str | None
+
+    def list_entries(
+        self,
+        path: str,
+        *,
+        recursive: bool,
+        max_entries: int,
+    ) -> tuple[list[CodeEntry], bool]: ...
+
+    def read_bytes(self, path: str, *, max_bytes: int) -> tuple[bytes, int, str | None]: ...
+
+
+class CodeArtifactPublisher(Protocol):
+    async def publish(
+        self,
+        run_id: str,
+        *,
+        path: str,
+        content: bytes,
+        source_digest: str | None,
+    ) -> str: ...
+
+    async def publish_patch_receipt(
+        self,
+        run_id: str,
+        receipt: CodePatchReceipt,
+    ) -> str: ...
+
+    async def load_patch_receipt(
+        self,
+        run_id: str,
+        artifact_id: str,
+    ) -> CodePatchReceipt: ...
+
+
+@dataclass(frozen=True, slots=True)
+class CodeLocationContent:
+    source: Literal["workspace", "audit_snapshot"]
+    source_digest: str | None
+    audit_id: str | None
+    path: str
+    content_digest: str
+    data: bytes
+
+
+@dataclass(slots=True)
+class _SemanticScan:
+    source: _Source
+    path: str
+    pattern: str | None
+    files_scanned: int = 0
+    bytes_scanned: int = 0
+    skipped_binary_files: int = 0
+    skipped_large_files: int = 0
+    skipped_unsupported_files: int = 0
+    truncated: bool = False
+
+    def files(self) -> Iterator[ControlledLSPFile]:
+        entries, scan_truncated = self.source.list_entries(
+            self.path,
+            recursive=True,
+            max_entries=_MAX_SCAN_ENTRIES,
+        )
+        self.truncated = scan_truncated
+        for entry in entries:
+            if entry.type != "file":
+                continue
+            relative = _relative_to(entry.path, self.path)
+            if self.pattern is not None and not fnmatch.fnmatchcase(relative, self.pattern):
+                continue
+            language = language_for_path(entry.path)
+            if language is None:
+                self.skipped_unsupported_files += 1
+                continue
+            if entry.size > _MAX_SYMBOL_FILE_BYTES:
+                self.skipped_large_files += 1
+                continue
+            if self.bytes_scanned + entry.size > _MAX_SYMBOL_TOTAL_BYTES:
+                self.truncated = True
+                break
+            data, _, _ = self.source.read_bytes(
+                entry.path,
+                max_bytes=_MAX_SYMBOL_FILE_BYTES,
+            )
+            if _looks_binary(data):
+                self.skipped_binary_files += 1
+                continue
+            self.files_scanned += 1
+            self.bytes_scanned += len(data)
+            content = data.decode("utf-8", errors="replace")
+            yield ControlledLSPFile(
+                path=entry.path,
+                language=language,
+                content_digest=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                content=content,
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class _SemanticBundle:
+    source: Literal["workspace", "audit_snapshot"]
+    source_digest: str | None
+    files: tuple[ControlledLSPFile, ...]
+    input_digest: str
+    files_scanned: int
+    bytes_scanned: int
+    skipped_binary_files: int
+    skipped_large_files: int
+    skipped_unsupported_files: int
+    truncated: bool
+
+
+class CodeWorkspaceService:
+    """Resolve and operate on the exact source tree owned by one Run."""
+
+    def __init__(
+        self,
+        *,
+        runs: RunRepository,
+        audits: AuditAggregateReadRepository,
+        snapshots: SnapshotRepository,
+        snapshot_store: SnapshotStore | None,
+        max_snapshot_file_bytes: int,
+        artifacts: CodeArtifactPublisher | None = None,
+        controlled_lsp: ControlledLSPBackend | None = None,
+    ) -> None:
+        if max_snapshot_file_bytes < 1:
+            raise ValueError("max_snapshot_file_bytes must be positive")
+        self._runs = runs
+        self._audits = audits
+        self._snapshots = snapshots
+        self._snapshot_store = snapshot_store
+        self._max_snapshot_file_bytes = max_snapshot_file_bytes
+        self._artifacts = artifacts
+        self._controlled_lsp = controlled_lsp
+
+    async def list_files(
+        self,
+        run_id: str,
+        *,
+        path: str = "",
+        recursive: bool = False,
+        max_entries: int = 200,
+    ) -> CodeListResult:
+        path = _relative_path(path, allow_empty=True)
+        _bounded(max_entries, maximum=_MAX_LIST_ENTRIES, label="max_entries")
+        source = await self._resolve(run_id)
+
+        def operation() -> CodeListResult:
+            with source as opened:
+                entries, truncated = opened.list_entries(
+                    path,
+                    recursive=recursive,
+                    max_entries=max_entries,
+                )
+                return CodeListResult(
+                    source=opened.kind,
+                    source_digest=opened.digest,
+                    path=path,
+                    entries=entries,
+                    truncated=truncated,
+                )
+
+        return await asyncio.to_thread(operation)
+
+    async def read_file(
+        self,
+        run_id: str,
+        *,
+        path: str,
+        offset: int = 0,
+        max_bytes: int = _MAX_READ_BYTES,
+    ) -> CodeReadResult:
+        path = _relative_path(path)
+        if offset < 0:
+            raise _conflict("code_read_invalid", "offset must not be negative")
+        _bounded(max_bytes, maximum=_MAX_READ_BYTES, label="max_bytes")
+        source = await self._resolve(run_id)
+
+        def operation() -> tuple[CodeReadResult, bytes, str | None]:
+            with source as opened:
+                data, size, digest = opened.read_bytes(
+                    path,
+                    max_bytes=self._max_snapshot_file_bytes,
+                )
+                if offset > size:
+                    raise _conflict("code_read_invalid", "offset is beyond file size")
+                preview = data[offset : offset + max_bytes]
+                encoding, content = _model_content(preview)
+                return (
+                    CodeReadResult(
+                        source=opened.kind,
+                        source_digest=opened.digest,
+                        path=path,
+                        size=size,
+                        offset=offset,
+                        next_offset=offset + len(preview),
+                        eof=offset + len(preview) >= size,
+                        encoding=encoding,
+                        content=content,
+                        content_digest=digest,
+                    ),
+                    data,
+                    opened.audit_id,
+                )
+
+        result, data, audit_id = await asyncio.to_thread(operation)
+        return await self._publish_partial(run_id, result, data, audit_id)
+
+    async def read_location(
+        self,
+        run_id: str,
+        *,
+        path: str,
+        start_line: int,
+        start_column: int,
+        end_line: int,
+        end_column: int,
+    ) -> CodeLocationContent:
+        path = _relative_path(path)
+        source = await self._resolve(run_id)
+
+        def operation() -> CodeLocationContent:
+            with source as opened:
+                data, _, content_digest = opened.read_bytes(
+                    path,
+                    max_bytes=self._max_snapshot_file_bytes,
+                )
+                if content_digest is None:
+                    raise _conflict(
+                        "code_location_digest_unavailable",
+                        "Code source content digest is unavailable",
+                    )
+                return CodeLocationContent(
+                    source=opened.kind,
+                    source_digest=opened.digest,
+                    audit_id=opened.audit_id,
+                    path=path,
+                    content_digest=content_digest,
+                    data=_slice_code_location(
+                        data,
+                        start_line=start_line,
+                        start_column=start_column,
+                        end_line=end_line,
+                        end_column=end_column,
+                    ),
+                )
+
+        return await asyncio.to_thread(operation)
+
+    async def read_many_files(
+        self,
+        run_id: str,
+        *,
+        paths: Sequence[str],
+        max_bytes_per_file: int = 32 * 1024,
+        max_total_bytes: int = _MAX_READ_MANY_BYTES,
+    ) -> CodeReadManyResult:
+        if not paths or len(paths) > _MAX_READ_MANY_FILES:
+            raise _conflict(
+                "code_read_invalid",
+                f"paths must contain between 1 and {_MAX_READ_MANY_FILES} entries",
+            )
+        normalized = [_relative_path(path) for path in paths]
+        if len(normalized) != len(set(normalized)):
+            raise _conflict("code_read_invalid", "paths must not contain duplicates")
+        _bounded(max_bytes_per_file, maximum=_MAX_READ_BYTES, label="max_bytes_per_file")
+        _bounded(max_total_bytes, maximum=_MAX_READ_MANY_BYTES, label="max_total_bytes")
+        results: list[CodeReadResult] = []
+        total = 0
+        for path in normalized:
+            remaining = max_total_bytes - total
+            if remaining <= 0:
+                break
+            result = await self.read_file(
+                run_id,
+                path=path,
+                max_bytes=min(max_bytes_per_file, remaining),
+            )
+            results.append(result)
+            total += result.next_offset
+        return CodeReadManyResult(
+            files=results,
+            total_bytes=total,
+            truncated=len(results) < len(normalized),
+        )
+
+    async def apply_patch(
+        self,
+        run_id: str,
+        *,
+        patch: str,
+        expected_sha256: str | None = None,
+    ) -> CodePatchResult:
+        if self._artifacts is None:
+            raise _conflict(
+                "code_patch_receipt_unavailable",
+                "Patch receipt storage is not configured",
+            )
+        parsed = parse_code_patch(patch)
+        parsed = replace(parsed, path=_writable_code_path(parsed.path))
+        source = await self._resolve_writable(run_id)
+        with source as opened:
+            original = await asyncio.to_thread(opened.patch_state, parsed.path)
+            prepared = prepare_code_patch(
+                parsed,
+                expected_sha256=expected_sha256,
+                original=original,
+            )
+            receipt = CodePatchReceipt(
+                run_id=run_id,
+                operation=prepared.operation,
+                path=prepared.path,
+                original_sha256=(
+                    prepared.original.sha256 if prepared.original is not None else None
+                ),
+                result_sha256=prepared.result_sha256,
+                original_mode=(
+                    prepared.original.mode if prepared.original is not None else None
+                ),
+                original_content_base64=(
+                    base64.b64encode(prepared.original.content).decode("ascii")
+                    if prepared.original is not None
+                    else None
+                ),
+                patch=prepared.patch,
+                patch_sha256=prepared.patch_sha256,
+            )
+            receipt_artifact_id = await self._artifacts.publish_patch_receipt(
+                run_id,
+                receipt,
+            )
+            await asyncio.to_thread(
+                opened.commit_patch,
+                prepared.path,
+                expected_sha256=(
+                    prepared.original.sha256 if prepared.original is not None else None
+                ),
+                content=prepared.result_content,
+                mode=(prepared.original.mode if prepared.original is not None else 0o644),
+            )
+        return CodePatchResult(
+            action="applied",
+            operation=prepared.operation,
+            path=prepared.path,
+            original_sha256=(
+                prepared.original.sha256 if prepared.original is not None else None
+            ),
+            result_sha256=prepared.result_sha256,
+            receipt_artifact_id=receipt_artifact_id,
+            diff=prepared.diff,
+            diff_truncated=prepared.diff_truncated,
+        )
+
+    async def revert_patch(
+        self,
+        run_id: str,
+        *,
+        receipt_artifact_id: str,
+    ) -> CodePatchResult:
+        if self._artifacts is None:
+            raise _conflict(
+                "code_patch_receipt_unavailable",
+                "Patch receipt storage is not configured",
+            )
+        receipt = await self._artifacts.load_patch_receipt(run_id, receipt_artifact_id)
+        path = _writable_code_path(receipt.path)
+        try:
+            restored = (
+                base64.b64decode(receipt.original_content_base64, validate=True)
+                if receipt.original_content_base64 is not None
+                else None
+            )
+        except ValueError:
+            raise _conflict(
+                "code_patch_receipt_invalid",
+                "Patch receipt original content is invalid",
+            ) from None
+        if restored is not None:
+            validate_patch_receipt_content(
+                content=restored,
+                expected_sha256=receipt.original_sha256,
+            )
+        source = await self._resolve_writable(run_id)
+        with source as opened:
+            current = await asyncio.to_thread(opened.patch_state, path)
+            if receipt.result_sha256 is None:
+                if current is not None:
+                    raise _conflict(
+                        "code_patch_revert_digest_mismatch",
+                        "Patch result path no longer matches the receipt",
+                    )
+            elif current is None or not hmac.compare_digest(
+                current.sha256,
+                receipt.result_sha256,
+            ):
+                raise _conflict(
+                    "code_patch_revert_digest_mismatch",
+                    "Patch result path no longer matches the receipt",
+                )
+            diff, diff_truncated = reverse_patch_diff(
+                path,
+                current=current.content if current is not None else None,
+                restored=restored,
+            )
+            await asyncio.to_thread(
+                opened.commit_patch,
+                path,
+                expected_sha256=(current.sha256 if current is not None else None),
+                content=restored,
+                mode=(
+                    receipt.original_mode
+                    if receipt.original_mode is not None
+                    else 0o644
+                ),
+            )
+        return CodePatchResult(
+            action="reverted",
+            operation=receipt.operation,
+            path=path,
+            original_sha256=(current.sha256 if current is not None else None),
+            result_sha256=receipt.original_sha256,
+            receipt_artifact_id=receipt_artifact_id,
+            diff=diff,
+            diff_truncated=diff_truncated,
+        )
+
+    async def _publish_partial(
+        self,
+        run_id: str,
+        result: CodeReadResult,
+        content: bytes,
+        audit_id: str | None,
+    ) -> CodeReadResult:
+        if (
+            self._artifacts is None
+            or audit_id is not None
+            or result.offset != 0
+            or result.eof
+            or result.size <= _ARTIFACT_THRESHOLD_BYTES
+        ):
+            return result
+        artifact_id = await self._artifacts.publish(
+            run_id,
+            path=result.path,
+            content=content,
+            source_digest=result.source_digest,
+        )
+        return result.model_copy(update={"artifact_id": artifact_id})
+
+    async def glob(
+        self,
+        run_id: str,
+        *,
+        pattern: str,
+        path: str = "",
+        max_results: int = 200,
+    ) -> CodeListResult:
+        pattern = _glob_pattern(pattern)
+        path = _relative_path(path, allow_empty=True)
+        _bounded(max_results, maximum=_MAX_LIST_ENTRIES, label="max_results")
+        source = await self._resolve(run_id)
+
+        def operation() -> CodeListResult:
+            with source as opened:
+                entries, scan_truncated = opened.list_entries(
+                    path,
+                    recursive=True,
+                    max_entries=_MAX_SCAN_ENTRIES,
+                )
+                matched = [
+                    entry
+                    for entry in entries
+                    if entry.type == "file"
+                    and fnmatch.fnmatchcase(_relative_to(entry.path, path), pattern)
+                ]
+                return CodeListResult(
+                    source=opened.kind,
+                    source_digest=opened.digest,
+                    path=path,
+                    entries=matched[:max_results],
+                    truncated=scan_truncated or len(matched) > max_results,
+                )
+
+        return await asyncio.to_thread(operation)
+
+    async def _semantic_bundle(
+        self,
+        run_id: str,
+        *,
+        path: str,
+        pattern: str | None,
+    ) -> _SemanticBundle:
+        source = await self._resolve(run_id)
+
+        def operation() -> _SemanticBundle:
+            with source as opened:
+                scan = _SemanticScan(opened, path, pattern)
+                files = tuple(scan.files())
+                digest = hashlib.sha256(b"riftx.controlled-lsp-input/v1\0")
+                digest.update(opened.kind.encode("ascii"))
+                digest.update(b"\0")
+                digest.update((opened.digest or "").encode("ascii"))
+                for item in files:
+                    digest.update(b"\0")
+                    digest.update(item.path.encode("utf-8"))
+                    digest.update(b"\0")
+                    digest.update(item.language.encode("ascii"))
+                    digest.update(b"\0")
+                    digest.update(item.content_digest.encode("ascii"))
+                return _SemanticBundle(
+                    source=opened.kind,
+                    source_digest=opened.digest,
+                    files=files,
+                    input_digest=digest.hexdigest(),
+                    files_scanned=scan.files_scanned,
+                    bytes_scanned=scan.bytes_scanned,
+                    skipped_binary_files=scan.skipped_binary_files,
+                    skipped_large_files=scan.skipped_large_files,
+                    skipped_unsupported_files=scan.skipped_unsupported_files,
+                    truncated=scan.truncated,
+                )
+
+        return await asyncio.to_thread(operation)
+
+    async def _controlled_lsp_response(
+        self,
+        request: ControlledLSPRequest,
+    ) -> tuple[ControlledLSPResponse | None, CodeSemanticFallbackReason | None]:
+        backend = self._controlled_lsp
+        if backend is None:
+            return None, "controlled_lsp_unconfigured"
+        if not request.files:
+            return None, "controlled_lsp_unsupported"
+        try:
+            raw_response = await backend.analyze(request)
+            response = ControlledLSPResponse.model_validate(
+                raw_response.model_dump(mode="python")
+            )
+        except ValueError:
+            return None, "controlled_lsp_invalid_response"
+        except Exception:
+            return None, "controlled_lsp_unavailable"
+        if (
+            response.backend_id != backend.backend_id
+            or response.backend_version != backend.backend_version
+        ):
+            return None, "controlled_lsp_untrusted"
+        if response.request_digest != request.request_digest():
+            return None, "controlled_lsp_invalid_response"
+        if response.status == "unsupported":
+            return None, "controlled_lsp_unsupported"
+        return response, None
+
+    @staticmethod
+    def _controlled_lsp_payload(
+        response: ControlledLSPResponse,
+        request: ControlledLSPRequest,
+        bundle: _SemanticBundle,
+        *,
+        authoritative: dict[str, object],
+    ) -> dict[str, object]:
+        payload = dict(response.result)
+        forbidden = {
+            "source",
+            "source_digest",
+            "backend",
+            "backend_id",
+            "backend_version",
+            "analysis_input_digest",
+            "fallback_reason",
+            "files_scanned",
+            "bytes_scanned",
+            "skipped_binary_files",
+            "skipped_large_files",
+            "skipped_unsupported_files",
+        }
+        if forbidden & payload.keys() or not isinstance(payload.get("truncated"), bool):
+            raise ValueError("controlled LSP result contains non-authoritative fields")
+        payload.update(
+            source=bundle.source,
+            source_digest=bundle.source_digest,
+            backend="controlled_lsp",
+            backend_id=response.backend_id,
+            backend_version=response.backend_version,
+            analysis_input_digest=request.input_digest,
+            fallback_reason=None,
+            files_scanned=bundle.files_scanned,
+            bytes_scanned=bundle.bytes_scanned,
+            skipped_binary_files=bundle.skipped_binary_files,
+            skipped_large_files=bundle.skipped_large_files,
+            skipped_unsupported_files=bundle.skipped_unsupported_files,
+            truncated=bool(payload["truncated"]) or bundle.truncated,
+            **authoritative,
+        )
+        return payload
+
+    @staticmethod
+    def _validate_controlled_paths(
+        bundle: _SemanticBundle,
+        paths: Iterator[str],
+    ) -> None:
+        allowed = {item.path for item in bundle.files}
+        if any(path not in allowed for path in paths):
+            raise ValueError("controlled LSP result references an unknown source path")
+
+    @staticmethod
+    def _validate_controlled_locations(
+        bundle: _SemanticBundle,
+        locations: Iterator[tuple[str, int, int]],
+    ) -> None:
+        files = {item.path: item for item in bundle.files}
+        for path, line_number, column in locations:
+            source_file = files.get(path)
+            if source_file is None:
+                raise ValueError("controlled LSP result references an unknown source path")
+            lines = source_file.content.splitlines()
+            if (
+                line_number > len(lines)
+                or column > len(lines[line_number - 1])
+            ):
+                raise ValueError("controlled LSP result location is outside source content")
+
+    async def symbol_search(
+        self,
+        run_id: str,
+        *,
+        query: str,
+        path: str = "",
+        file_glob: str | None = None,
+        case_sensitive: bool = False,
+        max_results: int = 100,
+    ) -> CodeSymbolSearchResult:
+        if (
+            not query.strip()
+            or any(character in query for character in "\x00\r\n")
+            or len(query.encode("utf-8")) > 1024
+        ):
+            raise _conflict("code_symbol_query_invalid", "query is empty or too large")
+        path = _relative_path(path, allow_empty=True)
+        pattern = _glob_pattern(file_glob) if file_glob is not None else None
+        _bounded(max_results, maximum=_MAX_SYMBOL_RESULTS, label="max_results")
+        bundle = await self._semantic_bundle(run_id, path=path, pattern=pattern)
+        request = ControlledLSPRequest(
+            operation="symbol_search",
+            source=bundle.source,
+            source_digest=bundle.source_digest,
+            input_digest=bundle.input_digest,
+            files=list(bundle.files),
+            query=query,
+            case_sensitive=case_sensitive,
+            max_results=max_results,
+        )
+        response, fallback_reason = await self._controlled_lsp_response(request)
+        if response is not None:
+            try:
+                result = CodeSymbolSearchResult.model_validate(
+                    self._controlled_lsp_payload(
+                        response,
+                        request,
+                        bundle,
+                        authoritative={"query": query},
+                    )
+                )
+                if len(result.symbols) > max_results:
+                    raise ValueError("controlled LSP returned too many symbols")
+                needle = query if case_sensitive else query.casefold()
+                if any(
+                    needle
+                    not in (
+                        f"{item.name}\n{item.qualified_name}"
+                        if case_sensitive
+                        else f"{item.name}\n{item.qualified_name}".casefold()
+                    )
+                    for item in result.symbols
+                ):
+                    raise ValueError("controlled LSP returned unrelated symbols")
+                self._validate_controlled_paths(
+                    bundle,
+                    (item.path for item in result.symbols),
+                )
+                self._validate_controlled_locations(
+                    bundle,
+                    (
+                        (item.path, item.line_number, item.column)
+                        for item in result.symbols
+                    ),
+                )
+                return result
+            except ValueError:
+                fallback_reason = "controlled_lsp_invalid_response"
+
+        def operation() -> CodeSymbolSearchResult:
+            matches: list[CodeSymbol] = []
+            parse_errors = 0
+            symbols_scanned = 0
+            truncated = False
+            needle = query if case_sensitive else query.casefold()
+            for source_file in bundle.files:
+                remaining_symbols = _MAX_SYMBOLS_SCANNED - symbols_scanned
+                if remaining_symbols <= 0:
+                    truncated = True
+                    break
+                symbols, file_truncated, parse_failed = extract_symbols(
+                    source_file.path,
+                    source_file.content,
+                    max_symbols=remaining_symbols,
+                )
+                parse_errors += int(parse_failed)
+                symbols_scanned += len(symbols)
+                truncated |= file_truncated
+                for symbol in symbols:
+                    haystack = (
+                        f"{symbol.name}\n{symbol.qualified_name}"
+                        if case_sensitive
+                        else f"{symbol.name}\n{symbol.qualified_name}".casefold()
+                    )
+                    if needle not in haystack:
+                        continue
+                    matches.append(symbol)
+                    if len(matches) >= max_results:
+                        truncated = True
+                        break
+                if len(matches) >= max_results or symbols_scanned >= _MAX_SYMBOLS_SCANNED:
+                    truncated = True
+                    break
+            return CodeSymbolSearchResult(
+                source=bundle.source,
+                source_digest=bundle.source_digest,
+                analysis_input_digest=bundle.input_digest,
+                fallback_reason=fallback_reason,
+                query=query,
+                symbols=matches,
+                files_scanned=bundle.files_scanned,
+                bytes_scanned=bundle.bytes_scanned,
+                skipped_binary_files=bundle.skipped_binary_files,
+                skipped_large_files=bundle.skipped_large_files,
+                skipped_unsupported_files=bundle.skipped_unsupported_files,
+                parse_errors=parse_errors,
+                truncated=truncated or bundle.truncated,
+            )
+
+        return await asyncio.to_thread(operation)
+
+    async def find_references(
+        self,
+        run_id: str,
+        *,
+        symbol: str,
+        path: str = "",
+        file_glob: str | None = None,
+        include_declarations: bool = True,
+        max_results: int = 100,
+    ) -> CodeReferenceSearchResult:
+        if (
+            not is_identifier(symbol)
+            or len(symbol.encode("utf-8")) > 512
+            or any(character in symbol for character in "\x00\r\n")
+        ):
+            raise _conflict(
+                "code_reference_symbol_invalid",
+                "symbol must be one bounded identifier",
+            )
+        path = _relative_path(path, allow_empty=True)
+        pattern = _glob_pattern(file_glob) if file_glob is not None else None
+        _bounded(max_results, maximum=_MAX_SYMBOL_RESULTS, label="max_results")
+        bundle = await self._semantic_bundle(run_id, path=path, pattern=pattern)
+        request = ControlledLSPRequest(
+            operation="find_references",
+            source=bundle.source,
+            source_digest=bundle.source_digest,
+            input_digest=bundle.input_digest,
+            files=list(bundle.files),
+            symbol=symbol,
+            include_declarations=include_declarations,
+            max_results=max_results,
+        )
+        response, fallback_reason = await self._controlled_lsp_response(request)
+        if response is not None:
+            try:
+                result = CodeReferenceSearchResult.model_validate(
+                    self._controlled_lsp_payload(
+                        response,
+                        request,
+                        bundle,
+                        authoritative={"symbol": symbol},
+                    )
+                )
+                if len(result.references) > max_results:
+                    raise ValueError("controlled LSP returned too many references")
+                if not include_declarations and any(
+                    item.kind == "definition" for item in result.references
+                ):
+                    raise ValueError("controlled LSP returned excluded declarations")
+                self._validate_controlled_paths(
+                    bundle,
+                    (item.path for item in result.references),
+                )
+                self._validate_controlled_locations(
+                    bundle,
+                    (
+                        (item.path, item.line_number, item.column)
+                        for item in result.references
+                    ),
+                )
+                return result
+            except ValueError:
+                fallback_reason = "controlled_lsp_invalid_response"
+
+        def operation() -> CodeReferenceSearchResult:
+            references: list[CodeReference] = []
+            definitions_found = 0
+            symbols_scanned = 0
+            parse_errors = 0
+            coverage_truncated = False
+            output_truncated = False
+            for source_file in bundle.files:
+                remaining_symbols = _MAX_SYMBOLS_SCANNED - symbols_scanned
+                definitions: set[tuple[int, int]] = set()
+                symbol_parse_failed = False
+                if remaining_symbols <= 0:
+                    coverage_truncated = True
+                else:
+                    extracted, file_truncated, symbol_parse_failed = extract_symbols(
+                        source_file.path,
+                        source_file.content,
+                        max_symbols=remaining_symbols,
+                    )
+                    symbols_scanned += len(extracted)
+                    coverage_truncated |= file_truncated
+                    definitions = {
+                        (item.line_number, item.column)
+                        for item in extracted
+                        if item.name == symbol
+                    }
+                    definitions_found += len(definitions)
+
+                occurrence_limit = max_results + 1
+                if not include_declarations:
+                    occurrence_limit += len(definitions)
+                occurrences, occurrence_truncated, lexical_parse_failed = (
+                    find_identifier_occurrences(
+                        source_file.path,
+                        source_file.content,
+                        identifier=symbol,
+                        max_occurrences=occurrence_limit,
+                    )
+                )
+                parse_errors += int(symbol_parse_failed or lexical_parse_failed)
+                coverage_truncated |= symbol_parse_failed or lexical_parse_failed
+                output_truncated |= occurrence_truncated
+                lines = source_file.content.splitlines()
+                for line_number, column in occurrences:
+                    kind: Literal["definition", "reference"] = (
+                        "definition"
+                        if (line_number, column) in definitions
+                        else "reference"
+                    )
+                    if kind == "definition" and not include_declarations:
+                        continue
+                    if len(references) >= max_results:
+                        output_truncated = True
+                        continue
+                    excerpt = (
+                        lines[line_number - 1][:_MAX_GREP_LINE_CHARS]
+                        if 0 < line_number <= len(lines)
+                        else ""
+                    )
+                    references.append(
+                        CodeReference(
+                            kind=kind,
+                            language=source_file.language,
+                            path=source_file.path,
+                            line_number=line_number,
+                            column=column,
+                            excerpt=excerpt,
+                        )
+                    )
+
+            coverage_truncated |= bundle.truncated
+            resolution: Literal["unresolved", "unique", "ambiguous", "indeterminate"]
+            if definitions_found > 1:
+                resolution = "ambiguous"
+            elif coverage_truncated:
+                resolution = "indeterminate"
+            elif definitions_found == 1:
+                resolution = "unique"
+            else:
+                resolution = "unresolved"
+            return CodeReferenceSearchResult(
+                source=bundle.source,
+                source_digest=bundle.source_digest,
+                analysis_input_digest=bundle.input_digest,
+                fallback_reason=fallback_reason,
+                symbol=symbol,
+                resolution=resolution,
+                definitions_found=definitions_found,
+                references=references,
+                files_scanned=bundle.files_scanned,
+                bytes_scanned=bundle.bytes_scanned,
+                skipped_binary_files=bundle.skipped_binary_files,
+                skipped_large_files=bundle.skipped_large_files,
+                skipped_unsupported_files=bundle.skipped_unsupported_files,
+                parse_errors=parse_errors,
+                truncated=coverage_truncated or output_truncated,
+            )
+
+        return await asyncio.to_thread(operation)
+
+    async def call_hierarchy(
+        self,
+        run_id: str,
+        *,
+        symbol: str,
+        direction: Literal["incoming", "outgoing", "both"] = "both",
+        path: str = "",
+        file_glob: str | None = None,
+        max_results: int = 100,
+    ) -> CodeCallHierarchyResult:
+        if (
+            not is_identifier(symbol)
+            or len(symbol.encode("utf-8")) > 512
+            or any(character in symbol for character in "\x00\r\n")
+        ):
+            raise _conflict(
+                "code_call_symbol_invalid",
+                "symbol must be one bounded identifier",
+            )
+        if direction not in {"incoming", "outgoing", "both"}:
+            raise _conflict("code_call_direction_invalid", "direction is invalid")
+        path = _relative_path(path, allow_empty=True)
+        pattern = _glob_pattern(file_glob) if file_glob is not None else None
+        _bounded(max_results, maximum=_MAX_CALL_RESULTS, label="max_results")
+        bundle = await self._semantic_bundle(run_id, path=path, pattern=pattern)
+        request = ControlledLSPRequest(
+            operation="call_hierarchy",
+            source=bundle.source,
+            source_digest=bundle.source_digest,
+            input_digest=bundle.input_digest,
+            files=list(bundle.files),
+            symbol=symbol,
+            direction=direction,
+            max_results=max_results,
+        )
+        response, fallback_reason = await self._controlled_lsp_response(request)
+        if response is not None:
+            try:
+                result = CodeCallHierarchyResult.model_validate(
+                    self._controlled_lsp_payload(
+                        response,
+                        request,
+                        bundle,
+                        authoritative={
+                            "symbol": symbol,
+                            "direction": direction,
+                            "analysis_modes": ["lsp"],
+                        },
+                    )
+                )
+                if len(result.calls) > max_results or any(
+                    item.confidence != "lsp" for item in result.calls
+                ):
+                    raise ValueError("controlled LSP returned invalid calls")
+                self._validate_controlled_paths(
+                    bundle,
+                    (item.path for item in result.calls),
+                )
+                self._validate_controlled_locations(
+                    bundle,
+                    (
+                        (item.path, item.line_number, item.column)
+                        for item in result.calls
+                    ),
+                )
+                return result
+            except ValueError:
+                fallback_reason = "controlled_lsp_invalid_response"
+
+        def operation() -> CodeCallHierarchyResult:
+            results: list[CodeCall] = []
+            modes: set[Literal["python_ast", "lexical"]] = set()
+            definitions_found = 0
+            symbols_scanned = 0
+            calls_scanned = 0
+            parse_errors = 0
+            coverage_truncated = False
+            output_truncated = False
+            for source_file in bundle.files:
+                remaining_symbols = _MAX_SYMBOLS_SCANNED - symbols_scanned
+                remaining_calls = _MAX_CALLS_SCANNED - calls_scanned
+                if remaining_symbols <= 0 or remaining_calls <= 0:
+                    coverage_truncated = True
+                    break
+                symbols, calls, file_truncated, parse_failed, mode = extract_call_graph(
+                    source_file.path,
+                    source_file.content,
+                    max_symbols=remaining_symbols,
+                    max_calls=remaining_calls,
+                )
+                modes.add(mode)
+                symbols_scanned += len(symbols)
+                calls_scanned += len(calls)
+                definitions_found += sum(item.name == symbol for item in symbols)
+                parse_errors += int(parse_failed)
+                coverage_truncated |= file_truncated or parse_failed
+                lines = source_file.content.splitlines()
+                for call in calls:
+                    incoming = call.callee.rsplit(".", 1)[-1] == symbol
+                    outgoing = (
+                        call.caller is not None
+                        and call.caller.rsplit(".", 1)[-1] == symbol
+                    )
+                    if not (
+                        (direction in {"incoming", "both"} and incoming)
+                        or (direction in {"outgoing", "both"} and outgoing)
+                    ):
+                        continue
+                    if len(results) >= max_results:
+                        output_truncated = True
+                        continue
+                    excerpt = (
+                        lines[call.line_number - 1][:_MAX_GREP_LINE_CHARS]
+                        if 0 < call.line_number <= len(lines)
+                        else ""
+                    )
+                    results.append(
+                        CodeCall(
+                            caller=call.caller,
+                            callee=call.callee,
+                            confidence=call.confidence,
+                            language=source_file.language,
+                            path=source_file.path,
+                            line_number=call.line_number,
+                            column=call.column,
+                            excerpt=excerpt,
+                        )
+                    )
+
+            coverage_truncated |= bundle.truncated
+            resolution: Literal["unresolved", "unique", "ambiguous", "indeterminate"]
+            if definitions_found > 1:
+                resolution = "ambiguous"
+            elif coverage_truncated:
+                resolution = "indeterminate"
+            elif definitions_found == 1:
+                resolution = "unique"
+            else:
+                resolution = "unresolved"
+            return CodeCallHierarchyResult(
+                source=bundle.source,
+                source_digest=bundle.source_digest,
+                analysis_input_digest=bundle.input_digest,
+                fallback_reason=fallback_reason,
+                symbol=symbol,
+                direction=direction,
+                resolution=resolution,
+                definitions_found=definitions_found,
+                analysis_modes=sorted(modes),
+                calls=results,
+                files_scanned=bundle.files_scanned,
+                bytes_scanned=bundle.bytes_scanned,
+                skipped_binary_files=bundle.skipped_binary_files,
+                skipped_large_files=bundle.skipped_large_files,
+                skipped_unsupported_files=bundle.skipped_unsupported_files,
+                parse_errors=parse_errors,
+                truncated=coverage_truncated or output_truncated,
+            )
+
+        return await asyncio.to_thread(operation)
+
+    async def diagnostics(
+        self,
+        run_id: str,
+        *,
+        path: str = "",
+        file_glob: str | None = None,
+        max_results: int = 100,
+    ) -> CodeDiagnosticsResult:
+        path = _relative_path(path, allow_empty=True)
+        pattern = _glob_pattern(file_glob) if file_glob is not None else None
+        _bounded(max_results, maximum=_MAX_DIAGNOSTIC_RESULTS, label="max_results")
+        bundle = await self._semantic_bundle(run_id, path=path, pattern=pattern)
+        request = ControlledLSPRequest(
+            operation="diagnostics",
+            source=bundle.source,
+            source_digest=bundle.source_digest,
+            input_digest=bundle.input_digest,
+            files=list(bundle.files),
+            max_results=max_results,
+        )
+        response, fallback_reason = await self._controlled_lsp_response(request)
+        if response is not None:
+            try:
+                result = CodeDiagnosticsResult.model_validate(
+                    self._controlled_lsp_payload(
+                        response,
+                        request,
+                        bundle,
+                        authoritative={"analysis_modes": ["lsp"]},
+                    )
+                )
+                if len(result.diagnostics) > max_results or any(
+                    item.confidence != "lsp" for item in result.diagnostics
+                ):
+                    raise ValueError("controlled LSP returned invalid diagnostics")
+                self._validate_controlled_paths(
+                    bundle,
+                    (item.path for item in result.diagnostics),
+                )
+                self._validate_controlled_locations(
+                    bundle,
+                    (
+                        (item.path, item.line_number, item.column)
+                        for item in result.diagnostics
+                    ),
+                )
+                return result
+            except ValueError:
+                fallback_reason = "controlled_lsp_invalid_response"
+
+        def operation() -> CodeDiagnosticsResult:
+            results: list[CodeDiagnostic] = []
+            modes: set[Literal["python_ast", "lexical"]] = set()
+            diagnostics_scanned = 0
+            parse_errors = 0
+            coverage_truncated = False
+            output_truncated = False
+            for source_file in bundle.files:
+                remaining = _MAX_DIAGNOSTICS_SCANNED - diagnostics_scanned
+                if remaining <= 0:
+                    coverage_truncated = True
+                    break
+                diagnostics, file_truncated, parse_failed, mode = extract_diagnostics(
+                    source_file.path,
+                    source_file.content,
+                    max_diagnostics=remaining,
+                )
+                modes.add(mode)
+                diagnostics_scanned += len(diagnostics)
+                parse_errors += int(parse_failed)
+                coverage_truncated |= file_truncated
+                lines = source_file.content.splitlines()
+                for diagnostic in diagnostics:
+                    if len(results) >= max_results:
+                        output_truncated = True
+                        continue
+                    excerpt = (
+                        lines[diagnostic.line_number - 1][:_MAX_GREP_LINE_CHARS]
+                        if 0 < diagnostic.line_number <= len(lines)
+                        else ""
+                    )
+                    results.append(
+                        CodeDiagnostic(
+                            severity=diagnostic.severity,
+                            confidence=diagnostic.confidence,
+                            code=diagnostic.code,
+                            message=diagnostic.message,
+                            language=source_file.language,
+                            path=source_file.path,
+                            line_number=diagnostic.line_number,
+                            column=diagnostic.column,
+                            end_line_number=diagnostic.end_line_number,
+                            end_column=diagnostic.end_column,
+                            excerpt=excerpt,
+                        )
+                    )
+
+            coverage_truncated |= bundle.truncated
+            return CodeDiagnosticsResult(
+                source=bundle.source,
+                source_digest=bundle.source_digest,
+                analysis_input_digest=bundle.input_digest,
+                fallback_reason=fallback_reason,
+                analysis_modes=sorted(modes),
+                diagnostics=results,
+                files_scanned=bundle.files_scanned,
+                bytes_scanned=bundle.bytes_scanned,
+                skipped_binary_files=bundle.skipped_binary_files,
+                skipped_large_files=bundle.skipped_large_files,
+                skipped_unsupported_files=bundle.skipped_unsupported_files,
+                parse_errors=parse_errors,
+                truncated=coverage_truncated or output_truncated,
+            )
+
+        return await asyncio.to_thread(operation)
+
+    async def grep(
+        self,
+        run_id: str,
+        *,
+        query: str,
+        path: str = "",
+        file_glob: str | None = None,
+        case_sensitive: bool = True,
+        max_matches: int = 100,
+    ) -> CodeGrepResult:
+        if not query or len(query.encode("utf-8")) > 4096:
+            raise _conflict("code_grep_invalid", "query is empty or too large")
+        path = _relative_path(path, allow_empty=True)
+        pattern = _glob_pattern(file_glob) if file_glob is not None else None
+        _bounded(max_matches, maximum=_MAX_GREP_MATCHES, label="max_matches")
+        source = await self._resolve(run_id)
+
+        def operation() -> CodeGrepResult:
+            matches: list[CodeGrepMatch] = []
+            files_scanned = bytes_scanned = skipped_binary = skipped_large = 0
+            truncated = False
+            needle = query if case_sensitive else query.casefold()
+            with source as opened:
+                entries, scan_truncated = opened.list_entries(
+                    path,
+                    recursive=True,
+                    max_entries=_MAX_SCAN_ENTRIES,
+                )
+                truncated = scan_truncated
+                for entry in entries:
+                    if entry.type != "file":
+                        continue
+                    relative = _relative_to(entry.path, path)
+                    if pattern is not None and not fnmatch.fnmatchcase(relative, pattern):
+                        continue
+                    if entry.size > _MAX_GREP_FILE_BYTES:
+                        skipped_large += 1
+                        continue
+                    if bytes_scanned + entry.size > _MAX_GREP_TOTAL_BYTES:
+                        truncated = True
+                        break
+                    data, _, _ = opened.read_bytes(
+                        entry.path,
+                        max_bytes=_MAX_GREP_FILE_BYTES,
+                    )
+                    if _looks_binary(data):
+                        skipped_binary += 1
+                        continue
+                    text = data.decode("utf-8", errors="replace")
+                    files_scanned += 1
+                    bytes_scanned += len(data)
+                    for line_number, line in enumerate(text.splitlines(), start=1):
+                        haystack = line if case_sensitive else line.casefold()
+                        if needle not in haystack:
+                            continue
+                        matches.append(
+                            CodeGrepMatch(
+                                path=entry.path,
+                                line_number=line_number,
+                                line=line[:_MAX_GREP_LINE_CHARS],
+                            )
+                        )
+                        if len(matches) >= max_matches:
+                            truncated = True
+                            break
+                    if len(matches) >= max_matches:
+                        break
+                return CodeGrepResult(
+                    source=opened.kind,
+                    source_digest=opened.digest,
+                    query=query,
+                    matches=matches,
+                    files_scanned=files_scanned,
+                    bytes_scanned=bytes_scanned,
+                    skipped_binary_files=skipped_binary,
+                    skipped_large_files=skipped_large,
+                    truncated=truncated,
+                )
+
+        return await asyncio.to_thread(operation)
+
+    async def _resolve(self, run_id: str) -> AbstractContextManager[_Source]:
+        run = await self._runs.get(run_id)
+        if run is None:
+            raise EntityNotFoundError("Run", run_id)
+        if run.kind in {RunKind.GENERAL, RunKind.PENTEST}:
+            if not run.workspace_path:
+                raise _conflict(
+                    "code_workspace_invalid",
+                    "Run workspace is not configured",
+                )
+            return cast(
+                AbstractContextManager[_Source],
+                _FilesystemSource(Path(run.workspace_path)),
+            )
+        if run.kind is not RunKind.CODE_AUDIT:
+            raise _conflict("code_source_unavailable", "Run kind has no code source")
+        if self._snapshot_store is None:
+            raise _conflict(
+                "code_source_unavailable",
+                "Code Audit Snapshot storage is not configured",
+            )
+
+        def authorize(binding: AuditAuthorizationBinding) -> None:
+            if (
+                binding.scan_run_id != run.id
+                or binding.run_id != run.id
+                or binding.run_kind != RunKind.CODE_AUDIT.value
+            ):
+                raise _conflict(
+                    "code_source_owner_mismatch",
+                    "Audit source does not belong to this Run",
+                )
+
+        aggregate = await self._audits.get_by_run_authorized(
+            run.id,
+            authorize=authorize,
+        )
+        if aggregate is None or aggregate.audit.value.snapshot_id is None:
+            raise _conflict(
+                "code_source_unavailable",
+                "Code Audit source Snapshot is not sealed",
+            )
+        snapshot = await self._snapshots.get(
+            aggregate.project.value.id,
+            aggregate.audit.value.snapshot_id,
+        )
+        if snapshot is None:
+            raise _conflict(
+                "code_source_unavailable",
+                "Code Audit source Snapshot is unavailable",
+            )
+        return cast(
+            AbstractContextManager[_Source],
+            _SnapshotSource(
+                store=self._snapshot_store,
+                audit_id=aggregate.audit.value.id,
+                project_id=snapshot.project_id,
+                snapshot_digest=snapshot.snapshot_digest,
+                manifest_digest=snapshot.manifest_digest,
+                content_storage_key=snapshot.content_storage_key,
+                max_file_bytes=self._max_snapshot_file_bytes,
+            ),
+        )
+
+    async def _resolve_writable(self, run_id: str) -> _FilesystemSource:
+        run = await self._runs.get(run_id)
+        if run is None:
+            raise EntityNotFoundError("Run", run_id)
+        if run.kind not in {RunKind.GENERAL, RunKind.PENTEST}:
+            raise _conflict(
+                "code_workspace_read_only",
+                "Native code mutation is available only to interactive Runs",
+            )
+        if not run.workspace_path:
+            raise _conflict("code_workspace_invalid", "Run workspace is not configured")
+        return _FilesystemSource(Path(run.workspace_path))
+
+
+class _FilesystemSource(AbstractContextManager["_FilesystemSource"]):
+    kind: Literal["workspace"] = "workspace"
+    digest = None
+    audit_id = None
+
+    def __init__(self, root: Path) -> None:
+        self._root = root
+        self._absolute: Path | None = None
+        self._fd = -1
+
+    @property
+    def absolute_path(self) -> Path:
+        if self._absolute is None or self._fd < 0:
+            raise RuntimeError("Workspace source is not open")
+        return self._absolute
+
+    def duplicate_root_fd(self) -> int:
+        if self._fd < 0:
+            raise RuntimeError("Workspace source is not open")
+        return os.dup(self._fd)
+
+    def verify_path_binding(self) -> None:
+        if self._absolute is None or self._fd < 0:
+            raise RuntimeError("Workspace source is not open")
+        try:
+            path_stat = os.stat(self._absolute, follow_symlinks=False)
+            descriptor_stat = os.fstat(self._fd)
+        except OSError as exc:
+            raise _path_error(exc, "Run workspace changed during operation") from None
+        if _fingerprint(path_stat) != _fingerprint(descriptor_stat):
+            raise _conflict(
+                "code_workspace_changed",
+                "Run workspace binding changed during operation",
+            )
+
+    def __enter__(self) -> Self:
+        if not self._root.is_absolute() or ".." in self._root.parts:
+            raise _conflict(
+                "code_workspace_invalid",
+                "Run workspace must be an absolute normalized path",
+            )
+        absolute = Path(os.path.normpath(os.fspath(self._root)))
+        descriptor = -1
+        try:
+            descriptor = os.open(
+                "/",
+                os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+            )
+            for part in absolute.parts[1:]:
+                next_descriptor = _open_at_directory(descriptor, part)
+                os.close(descriptor)
+                descriptor = next_descriptor
+            self._fd = descriptor
+            self._absolute = absolute
+            descriptor = -1
+        except ApplicationConflictError:
+            raise
+        except OSError as exc:
+            raise _path_error(exc, "Run workspace is unavailable") from None
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        if self._fd >= 0:
+            os.close(self._fd)
+            self._fd = -1
+        self._absolute = None
+
+    def list_entries(
+        self,
+        path: str,
+        *,
+        recursive: bool,
+        max_entries: int,
+    ) -> tuple[list[CodeEntry], bool]:
+        root_fd = self._open_directory(path)
+        try:
+            pending: deque[tuple[str, int]] = deque([(path, root_fd)])
+            root_fd = -1
+            entries: list[CodeEntry] = []
+            while pending:
+                current_path, current_fd = pending.popleft()
+                try:
+                    for name in sorted(os.listdir(current_fd)):
+                        relative = name if not current_path else f"{current_path}/{name}"
+                        try:
+                            metadata = os.stat(name, dir_fd=current_fd, follow_symlinks=False)
+                        except OSError as exc:
+                            raise _path_error(exc, "Workspace entry changed during read") from None
+                        entry = _filesystem_entry(relative, metadata)
+                        entries.append(entry)
+                        if len(entries) > max_entries:
+                            return entries[:max_entries], True
+                        if recursive and entry.type == "directory":
+                            child = _open_at_directory(current_fd, name)
+                            pending.append((relative, child))
+                finally:
+                    os.close(current_fd)
+            return entries, False
+        finally:
+            if root_fd >= 0:
+                os.close(root_fd)
+            for _, descriptor in pending:
+                os.close(descriptor)
+
+    def read_bytes(self, path: str, *, max_bytes: int) -> tuple[bytes, int, str | None]:
+        parent_fd, name = self._open_parent(path)
+        descriptor = -1
+        try:
+            descriptor = os.open(
+                name,
+                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
+                dir_fd=parent_fd,
+            )
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode):
+                raise _conflict(
+                    "code_entry_type_unsupported",
+                    "Code tools only read regular files",
+                )
+            if before.st_size > max_bytes:
+                raise _conflict(
+                    "code_file_too_large",
+                    "File exceeds the bounded source read limit",
+                )
+            content = bytearray()
+            while chunk := os.read(descriptor, min(64 * 1024, max_bytes - len(content) + 1)):
+                content.extend(chunk)
+                if len(content) > max_bytes:
+                    raise _conflict(
+                        "code_file_too_large",
+                        "File exceeds the bounded source read limit",
+                    )
+            after = os.fstat(descriptor)
+            if _fingerprint(before) != _fingerprint(after) or len(content) != before.st_size:
+                raise _conflict(
+                    "code_source_changed",
+                    "Workspace file changed during read",
+                )
+            data = bytes(content)
+            return data, before.st_size, hashlib.sha256(data).hexdigest()
+        except ApplicationConflictError:
+            raise
+        except OSError as exc:
+            raise _path_error(exc, "Workspace file is unavailable") from None
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            os.close(parent_fd)
+
+    def patch_state(self, path: str) -> PatchFileState | None:
+        parent_fd, name = self._open_parent(path)
+        try:
+            return _read_optional_patch_state(parent_fd, name)
+        finally:
+            os.close(parent_fd)
+
+    def commit_patch(
+        self,
+        path: str,
+        *,
+        expected_sha256: str | None,
+        content: bytes | None,
+        mode: int,
+    ) -> None:
+        self.verify_path_binding()
+        parent_fd, name = self._open_parent(path)
+        temp_name: str | None = None
+        try:
+            current = _read_optional_patch_state(parent_fd, name)
+            _require_patch_state(current, expected_sha256)
+            if content is None:
+                os.unlink(name, dir_fd=parent_fd)
+            else:
+                temp_name = _write_patch_temp(parent_fd, content, mode=mode)
+                latest = _read_optional_patch_state(parent_fd, name)
+                _require_patch_state(latest, expected_sha256)
+                if latest is None:
+                    os.link(
+                        temp_name,
+                        name,
+                        src_dir_fd=parent_fd,
+                        dst_dir_fd=parent_fd,
+                        follow_symlinks=False,
+                    )
+                    os.unlink(temp_name, dir_fd=parent_fd)
+                else:
+                    os.replace(
+                        temp_name,
+                        name,
+                        src_dir_fd=parent_fd,
+                        dst_dir_fd=parent_fd,
+                    )
+                temp_name = None
+            os.fsync(parent_fd)
+            committed = _read_optional_patch_state(parent_fd, name)
+            committed_sha256 = (
+                hashlib.sha256(content).hexdigest() if content is not None else None
+            )
+            _require_patch_state(committed, committed_sha256)
+            self.verify_path_binding()
+        except ApplicationConflictError:
+            raise
+        except OSError as exc:
+            raise _path_error(exc, "Workspace patch commit failed") from None
+        finally:
+            if temp_name is not None:
+                try:
+                    os.unlink(temp_name, dir_fd=parent_fd)
+                except OSError:
+                    pass
+            os.close(parent_fd)
+
+    def _open_directory(self, path: str) -> int:
+        descriptor = os.dup(self._fd)
+        try:
+            for part in _parts(path):
+                next_descriptor = _open_at_directory(descriptor, part)
+                os.close(descriptor)
+                descriptor = next_descriptor
+            return descriptor
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+    def _open_parent(self, path: str) -> tuple[int, str]:
+        parts = _parts(path)
+        descriptor = os.dup(self._fd)
+        try:
+            for part in parts[:-1]:
+                next_descriptor = _open_at_directory(descriptor, part)
+                os.close(descriptor)
+                descriptor = next_descriptor
+            return descriptor, parts[-1]
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+
+@dataclass(slots=True)
+class _SnapshotSource(AbstractContextManager["_SnapshotSource"]):
+    store: SnapshotStore
+    audit_id: str
+    project_id: str
+    snapshot_digest: str
+    manifest_digest: str
+    content_storage_key: str
+    max_file_bytes: int
+    kind: Literal["audit_snapshot"] = "audit_snapshot"
+    _view: LocalSnapshotView | None = None
+    _entries: dict[str, LocalSnapshotViewEntry] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+
+    @property
+    def digest(self) -> str:
+        return self.snapshot_digest
+
+    def __enter__(self) -> Self:
+        try:
+            self._view = open_local_snapshot_view(
+                self.store,
+                binding=SnapshotCASBinding(
+                    project_id=self.project_id,
+                    snapshot_digest=self.snapshot_digest,
+                    manifest_digest=self.manifest_digest,
+                ),
+                content_storage_key=self.content_storage_key,
+                expected_descriptor_digest=parse_snapshot_content_storage_key(
+                    self.content_storage_key
+                ),
+                max_file_read_bytes=self.max_file_bytes,
+                max_total_read_bytes=max(_MAX_GREP_TOTAL_BYTES, self.max_file_bytes),
+                max_text_characters=max(_MAX_GREP_TOTAL_BYTES, self.max_file_bytes),
+            )
+            self._entries = {
+                entry.relative_path: entry for entry in self._view.entries()
+            }
+        except (LocalSnapshotViewError, ValueError) as exc:
+            raise _conflict(
+                "code_snapshot_integrity",
+                "Code Audit source Snapshot failed verification",
+            ) from exc
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        if self._view is not None:
+            self._view.close()
+            self._view = None
+        self._entries.clear()
+
+    def list_entries(
+        self,
+        path: str,
+        *,
+        recursive: bool,
+        max_entries: int,
+    ) -> tuple[list[CodeEntry], bool]:
+        self._require_view()
+        prefix = f"{path}/" if path else ""
+        files = {
+            relative_path: entry
+            for relative_path, entry in self._entries.items()
+            if not path or entry.relative_path == path or entry.relative_path.startswith(prefix)
+        }
+        if path in files:
+            entry = files[path]
+            return [_snapshot_entry(entry)], False
+        directories: set[str] = set()
+        for relative in files:
+            parts = relative.split("/")
+            for index in range(1, len(parts)):
+                directories.add("/".join(parts[:index]))
+        if path and path not in directories:
+            raise _conflict("code_path_missing", "Code path does not exist")
+        results: list[CodeEntry] = []
+        for directory in sorted(directories):
+            if _is_child(directory, path, recursive=recursive):
+                results.append(CodeEntry(path=directory, type="directory", size=0))
+        for entry in files.values():
+            if _is_child(entry.relative_path, path, recursive=recursive):
+                results.append(_snapshot_entry(entry))
+        results.sort(key=lambda item: (item.path, item.type))
+        return results[:max_entries], len(results) > max_entries
+
+    def read_bytes(self, path: str, *, max_bytes: int) -> tuple[bytes, int, str | None]:
+        view = self._require_view()
+        entry = self._entries.get(path)
+        if entry is None:
+            raise _conflict("code_path_missing", "Code path does not exist")
+        if entry.object_type is not SnapshotBlobObjectType.REGULAR_FILE:
+            raise _conflict(
+                "code_entry_type_unsupported",
+                "Code tools only read regular files",
+            )
+        try:
+            content = view.read_bytes(path, max_bytes=max_bytes)
+        except LocalSnapshotViewError as exc:
+            raise _conflict(
+                "code_snapshot_read_failed",
+                "Code Audit source file failed bounded verification",
+            ) from exc
+        return content, entry.size, entry.content_digest
+
+    def _require_view(self) -> LocalSnapshotView:
+        if self._view is None:
+            raise RuntimeError("Snapshot source is not open")
+        return self._view
+
+
+def _relative_path(value: str, *, allow_empty: bool = False) -> str:
+    if not isinstance(value, str) or "\x00" in value or "\\" in value:
+        raise _conflict("code_path_invalid", "Code path is invalid")
+    if value == "":
+        if allow_empty:
+            return ""
+        raise _conflict("code_path_invalid", "Code path must not be empty")
+    if len(value.encode("utf-8")) > _MAX_PATH_BYTES:
+        raise _conflict("code_path_invalid", "Code path exceeds its byte limit")
+    if any(part in {"", ".", ".."} for part in value.split("/")):
+        raise _conflict("code_path_invalid", "Code path must be a normalized relative path")
+    candidate = PurePosixPath(value)
+    if candidate.is_absolute():
+        raise _conflict("code_path_invalid", "Code path must be a normalized relative path")
+    normalized = candidate.as_posix()
+    return normalized
+
+
+def _writable_code_path(value: str) -> str:
+    normalized = _relative_path(value)
+    if ".git" in PurePosixPath(normalized).parts:
+        raise _conflict(
+            "code_patch_git_admin_forbidden",
+            "Native code patches cannot modify Git administrative state",
+        )
+    return normalized
+
+
+def _glob_pattern(value: str | None) -> str:
+    if not isinstance(value, str) or not value or "\x00" in value or "\\" in value:
+        raise _conflict("code_glob_invalid", "Glob pattern is invalid")
+    if len(value.encode("utf-8")) > _MAX_PATH_BYTES:
+        raise _conflict("code_glob_invalid", "Glob pattern exceeds its byte limit")
+    if any(part in {"", ".", ".."} for part in value.split("/")):
+        raise _conflict("code_glob_invalid", "Glob pattern must be relative")
+    candidate = PurePosixPath(value)
+    if candidate.is_absolute():
+        raise _conflict("code_glob_invalid", "Glob pattern must be relative")
+    return value
+
+
+def _read_optional_patch_state(parent_fd: int, name: str) -> PatchFileState | None:
+    descriptor = -1
+    try:
+        try:
+            descriptor = os.open(
+                name,
+                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
+                dir_fd=parent_fd,
+            )
+        except FileNotFoundError:
+            return None
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise _conflict(
+                "code_entry_type_unsupported",
+                "Patch tools only mutate regular files",
+            )
+        if before.st_size > _MAX_PATCH_FILE_BYTES:
+            raise _conflict(
+                "code_patch_file_too_large",
+                "Patch target exceeds the bounded limit",
+            )
+        content = bytearray()
+        while chunk := os.read(
+            descriptor,
+            min(64 * 1024, _MAX_PATCH_FILE_BYTES - len(content) + 1),
+        ):
+            content.extend(chunk)
+            if len(content) > _MAX_PATCH_FILE_BYTES:
+                raise _conflict(
+                    "code_patch_file_too_large",
+                    "Patch target exceeds the bounded limit",
+                )
+        after = os.fstat(descriptor)
+        if _fingerprint(before) != _fingerprint(after) or len(content) != before.st_size:
+            raise _conflict("code_source_changed", "Patch target changed during read")
+        data = bytes(content)
+        return PatchFileState(
+            content=data,
+            sha256=hashlib.sha256(data).hexdigest(),
+            mode=stat.S_IMODE(before.st_mode),
+        )
+    except ApplicationConflictError:
+        raise
+    except OSError as exc:
+        raise _path_error(exc, "Workspace patch target is unavailable") from None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _require_patch_state(
+    state: PatchFileState | None,
+    expected_sha256: str | None,
+) -> None:
+    if expected_sha256 is None:
+        if state is not None:
+            raise _conflict("code_patch_target_exists", "Patch target unexpectedly exists")
+        return
+    if state is None or not hmac.compare_digest(state.sha256, expected_sha256):
+        raise _conflict(
+            "code_patch_digest_mismatch",
+            "Patch target changed after preview",
+        )
+
+
+def _write_patch_temp(parent_fd: int, content: bytes, *, mode: int) -> str:
+    for _ in range(16):
+        name = f".riftx-patch-{secrets.token_hex(12)}.tmp"
+        try:
+            descriptor = os.open(
+                name,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | os.O_CLOEXEC
+                | os.O_NOFOLLOW,
+                mode & 0o7777,
+                dir_fd=parent_fd,
+            )
+        except FileExistsError:
+            continue
+        try:
+            view = memoryview(content)
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:
+                    raise OSError(errno.EIO, "Patch temporary write made no progress")
+                view = view[written:]
+            os.fchmod(descriptor, mode & 0o7777)
+            os.fsync(descriptor)
+        except BaseException:
+            os.close(descriptor)
+            try:
+                os.unlink(name, dir_fd=parent_fd)
+            except OSError:
+                pass
+            raise
+        os.close(descriptor)
+        return name
+    raise _conflict(
+        "code_patch_temp_unavailable",
+        "Could not reserve a patch temporary file",
+    )
+
+
+def _bounded(value: int, *, maximum: int, label: str) -> None:
+    if type(value) is not int or not 1 <= value <= maximum:
+        raise _conflict(
+            "code_limit_invalid",
+            f"{label} must be between 1 and {maximum}",
+        )
+
+
+def _parts(path: str) -> tuple[str, ...]:
+    return tuple(PurePosixPath(path).parts)
+
+
+def _open_at_directory(parent_fd: int, name: str) -> int:
+    try:
+        return os.open(
+            name,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=parent_fd,
+        )
+    except OSError as exc:
+        raise _path_error(exc, "Workspace directory is unavailable") from None
+
+
+def _filesystem_entry(path: str, metadata: os.stat_result) -> CodeEntry:
+    mode = metadata.st_mode
+    entry_type: Literal["file", "directory", "symlink", "special"]
+    if stat.S_ISREG(mode):
+        entry_type = "file"
+    elif stat.S_ISDIR(mode):
+        entry_type = "directory"
+    elif stat.S_ISLNK(mode):
+        entry_type = "symlink"
+    else:
+        entry_type = "special"
+    return CodeEntry(path=path, type=entry_type, size=metadata.st_size)
+
+
+def _snapshot_entry(entry: LocalSnapshotViewEntry) -> CodeEntry:
+    return CodeEntry(
+        path=entry.relative_path,
+        type=(
+            "file"
+            if entry.object_type is SnapshotBlobObjectType.REGULAR_FILE
+            else "symlink"
+        ),
+        size=entry.size,
+        content_digest=entry.content_digest,
+    )
+
+
+def _is_child(candidate: str, parent: str, *, recursive: bool) -> bool:
+    if candidate == parent:
+        return False
+    relative = _relative_to(candidate, parent)
+    return recursive or "/" not in relative
+
+
+def _relative_to(candidate: str, parent: str) -> str:
+    if not parent:
+        return candidate
+    prefix = f"{parent}/"
+    if not candidate.startswith(prefix):
+        return candidate
+    return candidate.removeprefix(prefix)
+
+
+def _model_content(data: bytes) -> tuple[Literal["utf-8", "utf-8-lossy", "base64"], str]:
+    if _looks_binary(data):
+        return "base64", base64.b64encode(data).decode("ascii")
+    try:
+        return "utf-8", data.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return "utf-8-lossy", data.decode("utf-8", errors="replace")
+
+
+def _slice_code_location(
+    data: bytes,
+    *,
+    start_line: int,
+    start_column: int,
+    end_line: int,
+    end_column: int,
+) -> bytes:
+    if min(start_line, end_line) < 1 or min(start_column, end_column) < 0:
+        raise _conflict("code_location_invalid", "Code Location coordinates are invalid")
+    try:
+        text = data.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        raise _conflict(
+            "code_location_not_text",
+            "Code Location requires valid UTF-8 source text",
+        ) from None
+    lines = text.splitlines(keepends=True)
+    if not lines:
+        lines = [""]
+    elif text.endswith(("\n", "\r")):
+        lines.append("")
+    if max(start_line, end_line) > len(lines):
+        raise _conflict("code_location_invalid", "Code Location line is outside the file")
+
+    def line_offset(line_number: int, column: int) -> int:
+        line = lines[line_number - 1]
+        body = line.removesuffix("\n").removesuffix("\r")
+        if column > len(body):
+            raise _conflict(
+                "code_location_invalid",
+                "Code Location column is outside the line",
+            )
+        return sum(len(item) for item in lines[: line_number - 1]) + column
+
+    start = line_offset(start_line, start_column)
+    end = line_offset(end_line, end_column)
+    if end <= start:
+        raise _conflict(
+            "code_location_invalid",
+            "Code Location end must follow its start",
+        )
+    return text[start:end].encode("utf-8")
+
+
+def _looks_binary(data: bytes) -> bool:
+    return b"\x00" in data[:8192]
+
+
+def _fingerprint(value: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _path_error(exc: OSError, message: str) -> ApplicationConflictError:
+    code = (
+        "code_path_missing"
+        if exc.errno in {errno.ENOENT, errno.ENOTDIR}
+        else "code_path_unsafe"
+        if exc.errno in {errno.ELOOP, errno.EMLINK}
+        else "code_path_unavailable"
+    )
+    return _conflict(code, message)
+
+
+def _conflict(code: str, message: str) -> ApplicationConflictError:
+    return ApplicationConflictError(code, message)
+
+
+__all__ = ["CodeArtifactPublisher", "CodeWorkspaceService"]

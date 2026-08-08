@@ -249,7 +249,6 @@ async def test_context_inspector_api_and_cli_output(
         ),
         context_service=context_harness.service,
         run_service=_RunReads(),
-        audit_service=object(),
     )
     with TestClient(
         create_app(control_plane=control_plane),

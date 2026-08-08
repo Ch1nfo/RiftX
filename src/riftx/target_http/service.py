@@ -11,13 +11,21 @@ from typing import Protocol
 from riftx.application.errors import (
     ApplicationConflictError,
     EntityNotFoundError,
+    PentestBudgetExceededError,
+    pentest_budget_exhaustion_details,
 )
 from riftx.application.ports import RunEventRepository
 from riftx.application.services.artifacts import (
     ArtifactApplicationService,
     RegisterArtifactContent,
 )
-from riftx.application.services.runs import require_general_run_operation
+from riftx.application.services.runs import require_interactive_run_operation
+from riftx.capabilities import (
+    CapabilityKind,
+    CapabilitySelectionStore,
+    CapabilityVersion,
+    CapabilityVersionStatus,
+)
 from riftx.domain import ArtifactContentTrust, Run, RunStatus
 from riftx.execution import build_execution_key
 from riftx.persistence.repositories import SQLAlchemyRunRepository
@@ -39,8 +47,9 @@ from .models import (
 from .redaction import safe_url_metadata
 
 EffectGuard = Callable[[], Awaitable[None]]
+BudgetExhaustionHandler = Callable[[str], Awaitable[None]]
 
-_TARGET_HTTP_TOOL_IDS = frozenset({"request_target_url"})
+_TARGET_HTTP_TOOL_IDS = frozenset({"request_target_url", "target_http_request"})
 _ACTIVE_INTENT_STATUSES = frozenset(
     {
         ToolCallStatus.READY,
@@ -88,11 +97,86 @@ class TargetHttpRunner(Protocol):
 class TargetHttpRequestRepository(Protocol):
     async def get_by_execution_key(self, execution_key: str) -> TargetHttpResult | None: ...
 
+    async def get_for_run(
+        self,
+        run_id: str,
+        request_id: str,
+    ) -> TargetHttpResult | None: ...
+
     async def create(
         self,
         submission: TargetHttpSubmission,
         result: TargetHttpResult,
     ) -> TargetHttpResult: ...
+
+
+class TargetHttpCredentialReferenceAuthorizer(Protocol):
+    async def require_allowed(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        references: Sequence[str],
+    ) -> None: ...
+
+
+class CapabilityCredentialReferenceAuthorizer:
+    """Allow only references pinned in this Session's selected Techniques."""
+
+    def __init__(self, selections: CapabilitySelectionStore) -> None:
+        self._selections = selections
+
+    async def require_allowed(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        references: Sequence[str],
+    ) -> None:
+        requested = frozenset(references)
+        if not requested:
+            return
+        allowed: set[str] = set()
+        selections = await self._selections.list_selections(
+            session_id,
+            kind=CapabilityKind.TECHNIQUE,
+        )
+        for selection in selections:
+            if (
+                not selection.active
+                or selection.run_id != run_id
+                or selection.session_id != session_id
+            ):
+                continue
+            try:
+                version = CapabilityVersion.model_validate(
+                    selection.snapshot.get("capability_version")
+                )
+            except (TypeError, ValueError) as exc:
+                raise ApplicationConflictError(
+                    "target_http_credential_selection_invalid",
+                    "Target HTTP credential permission snapshot is invalid",
+                ) from exc
+            manifest = version.manifest
+            if (
+                version.status is not CapabilityVersionStatus.ACTIVE
+                or manifest.kind is not CapabilityKind.TECHNIQUE
+                or manifest.capability_id != selection.capability_id
+                or manifest.version != selection.version
+                or version.manifest_digest != selection.digest
+                or manifest.provenance.source is not selection.source
+            ):
+                raise ApplicationConflictError(
+                    "target_http_credential_selection_invalid",
+                    "Target HTTP credential permission snapshot failed integrity validation",
+                )
+            allowed.update(manifest.permission.credential_references)
+        if not requested <= allowed:
+            raise ApplicationConflictError(
+                "target_http_credential_reference_forbidden",
+                "Target HTTP credential reference is outside the Session Capability permission",
+                details={"forbidden_reference_count": len(requested - allowed)},
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +211,8 @@ class TargetHttpApplicationService:
         artifacts: ArtifactApplicationService,
         events: RunEventRepository | None = None,
         target_http_tool_ids: Sequence[str] = tuple(_TARGET_HTTP_TOOL_IDS),
+        credential_references: TargetHttpCredentialReferenceAuthorizer | None = None,
+        budget_exhaustion_handler: BudgetExhaustionHandler | None = None,
     ) -> None:
         if not target_http_tool_ids:
             raise ValueError("Target HTTP must own at least one Tool Call id")
@@ -137,6 +223,8 @@ class TargetHttpApplicationService:
         self._artifacts = artifacts
         self._events = events
         self._target_http_tool_ids = frozenset(target_http_tool_ids)
+        self._credential_references = credential_references
+        self._budget_exhaustion_handler = budget_exhaustion_handler
         self._locks: dict[str, asyncio.Lock] = {}
         self._lock_users: dict[str, int] = {}
 
@@ -160,7 +248,7 @@ class TargetHttpApplicationService:
                 # RunKind admission deliberately precedes idempotent replay.
                 # Generic execution results must never become an alternate
                 # read/mutation surface for Code Audit Runs.
-                run = require_general_run_operation(
+                run = require_interactive_run_operation(
                     await self._require_run(submission.run_id)
                 )
                 existing = await self._requests.get_by_execution_key(request.execution_key)
@@ -191,14 +279,70 @@ class TargetHttpApplicationService:
                         "Tool Call intent is not owned by the Target HTTP boundary",
                     )
                 self._raise_if_intent_inactive(intent)
-                if intent.status is ToolCallStatus.READY:
-                    intent, transitioned = await self._tool_calls.compare_and_set_status(
-                        intent.id,
-                        expected={ToolCallStatus.READY},
-                        target=ToolCallStatus.EXECUTING,
+                if request.credential_references:
+                    if self._credential_references is None:
+                        raise ApplicationConflictError(
+                            "target_http_credential_reference_unavailable",
+                            "Target HTTP credential references are not configured",
+                        )
+                    await self._credential_references.require_allowed(
+                        run_id=submission.run_id,
+                        session_id=submission.session_id,
+                        references=request.credential_references,
                     )
-                    if not transitioned and intent.status is not ToolCallStatus.EXECUTING:
-                        self._raise_if_intent_inactive(intent)
+                try:
+                    claim = await self._tool_calls.claim_execution(
+                        intent.id,
+                        execution_key=request.execution_key,
+                        attempt_group="initial",
+                        target_interaction_tool_ids=self._target_http_tool_ids,
+                    )
+                except PentestBudgetExceededError as exc:
+                    details = pentest_budget_exhaustion_details(
+                        submission.run_id,
+                        exc,
+                    )
+                    concurrency_limited = (
+                        exc.budget_name == "max_concurrent_target_interactions"
+                    )
+                    await self._event(
+                        submission.run_id,
+                        (
+                            "pentest.budget_capacity_reached"
+                            if concurrency_limited
+                            else "pentest.budget_exhausted"
+                        ),
+                        details,
+                    )
+                    if (
+                        not concurrency_limited
+                        and self._budget_exhaustion_handler is not None
+                    ):
+                        await self._budget_exhaustion_handler(submission.run_id)
+                    raise ApplicationConflictError(
+                        (
+                            "pentest_budget_capacity_reached"
+                            if concurrency_limited
+                            else "pentest_budget_exhausted"
+                        ),
+                        (
+                            "Pentest target interaction concurrency is at capacity"
+                            if concurrency_limited
+                            else "Pentest target interaction budget is exhausted"
+                        ),
+                        details=details,
+                    ) from exc
+                if not claim.acquired:
+                    raise ApplicationConflictError(
+                        "target_http_execution_claim_conflict",
+                        "Target HTTP Tool Call cannot claim this execution identity",
+                        details={
+                            "run_id": submission.run_id,
+                            "tool_call_id": intent.id,
+                            "status": claim.intent.status.value,
+                        },
+                    )
+                intent = claim.intent
 
                 async def effect_guard() -> None:
                     await self._require_effect_allowed(
@@ -313,6 +457,13 @@ class TargetHttpApplicationService:
                     self._lock_users.pop(request.execution_key, None)
                     self._locks.pop(request.execution_key, None)
 
+    async def get_result(self, run_id: str, request_id: str) -> TargetHttpResult:
+        require_interactive_run_operation(await self._require_run(run_id))
+        result = await self._requests.get_for_run(run_id, request_id)
+        if result is None or result.request_id != request_id:
+            raise EntityNotFoundError("TargetHttpResult", request_id)
+        return result
+
     async def stop_run(self, run_id: str) -> TargetHttpRunStopResult:
         """Stop every owned READY/EXECUTING intent without inventing remote ACKs."""
 
@@ -422,7 +573,7 @@ class TargetHttpApplicationService:
 
     async def _require_effect_allowed(self, run_id: str, intent_id: str) -> None:
         run = await self._require_run(run_id)
-        require_general_run_operation(run)
+        require_interactive_run_operation(run)
         if run.status in _EFFECT_BLOCKED_RUN_STATUSES:
             await self._cancel_intent_if_active(intent_id)
             raise self._run_effect_blocked_error(run)

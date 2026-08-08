@@ -10,6 +10,40 @@ import pytest
 from riftx.cli.client import APIClient, RiftXAPIError, parse_sse_lines
 
 
+def test_api_client_reads_control_plane_health() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"status": "ok", "trust_profile": "local_trusted"})
+
+    with APIClient(
+        "http://control-plane",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        health = client.health()
+
+    assert health["status"] == "ok"
+    assert requests[0].url.path == "/healthz"
+
+
+def test_api_client_reads_system_diagnostics() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"database": {}, "official_packs": {}})
+
+    with APIClient(
+        "http://control-plane",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        diagnostics = client.system_diagnostics()
+
+    assert "database" in diagnostics
+    assert requests[0].url.path == "/api/v1/system/diagnostics"
+
+
 def test_api_client_uses_shared_run_endpoints() -> None:
     requests: list[httpx.Request] = []
 
@@ -49,6 +83,32 @@ def test_api_client_uses_shared_run_endpoints() -> None:
     assert json.loads(requests[2].content) == {"max_history_items": 25}
 
 
+def test_api_client_uses_dedicated_pentest_admission_and_status_endpoints() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "POST":
+            return httpx.Response(201, json={"id": "pentest-1", "kind": "pentest"})
+        return httpx.Response(200, json={"run": {"id": "pentest-1"}})
+
+    payload = {"request_id": "pentest-1", "objective": "Assess target"}
+    with APIClient(
+        "http://control-plane",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        created = client.create_pentest(payload)
+        status = client.get_pentest_status("pentest-1")
+
+    assert created["kind"] == "pentest"
+    assert status["run"]["id"] == "pentest-1"
+    assert [(request.method, request.url.path) for request in requests] == [
+        ("POST", "/api/v1/pentests"),
+        ("GET", "/api/v1/pentests/pentest-1/status"),
+    ]
+    assert json.loads(requests[0].content) == payload
+
+
 def test_api_client_combines_run_status_and_kind_filters() -> None:
     requests: list[httpx.Request] = []
 
@@ -73,61 +133,6 @@ def test_api_client_combines_run_status_and_kind_filters() -> None:
         "status": "running",
         "kind": "code_audit",
     }
-
-
-def test_local_audit_client_uses_minimal_job_endpoints_and_text_report() -> None:
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        if request.url.path.endswith("/report"):
-            return httpx.Response(200, text="# Audit\n")
-        return httpx.Response(200, json={"audit_id": "audit-1", "items": []})
-
-    with APIClient(
-        "http://control-plane",
-        transport=httpx.MockTransport(handler),
-    ) as client:
-        client.create_local_audit(
-            "/workspace/project",
-            include_patterns=("src/**",),
-            exclude_patterns=("vendor/**",),
-        )
-        client.start_local_audit("audit-1")
-        client.get_local_audit("audit-1")
-        client.list_local_audit_findings(
-            "audit-1",
-            severity="high",
-            category="secret",
-            file="src/app.py",
-            limit=25,
-            offset=5,
-        )
-        report = client.get_local_audit_report("audit-1", format="markdown")
-        client.cancel_local_audit("audit-1")
-
-    assert report == "# Audit\n"
-    assert [(request.method, request.url.path) for request in requests] == [
-        ("POST", "/api/v1/audits"),
-        ("POST", "/api/v1/audits/audit-1/start"),
-        ("GET", "/api/v1/audits/audit-1"),
-        ("GET", "/api/v1/audits/audit-1/findings"),
-        ("GET", "/api/v1/audits/audit-1/report"),
-        ("POST", "/api/v1/audits/audit-1/cancel"),
-    ]
-    assert json.loads(requests[0].content) == {
-        "source_path": "/workspace/project",
-        "include_patterns": ["src/**"],
-        "exclude_patterns": ["vendor/**"],
-    }
-    assert dict(requests[3].url.params) == {
-        "limit": "25",
-        "offset": "5",
-        "severity": "high",
-        "category": "secret",
-        "file": "src/app.py",
-    }
-    assert requests[4].url.params["format"] == "markdown"
 
 
 def test_model_profile_client_uses_encoded_endpoints_and_admin_bearer() -> None:

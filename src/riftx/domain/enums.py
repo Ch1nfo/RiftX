@@ -5,7 +5,23 @@ from enum import StrEnum
 
 class RunKind(StrEnum):
     GENERAL = "general"
+    PENTEST = "pentest"
     CODE_AUDIT = "code_audit"
+
+
+class PentestProhibitedAction(StrEnum):
+    DENIAL_OF_SERVICE = "denial_of_service"
+    DESTRUCTIVE_DATA_MODIFICATION = "destructive_data_modification"
+    PERSISTENCE = "persistence"
+    OUT_OF_SCOPE_LATERAL_MOVEMENT = "out_of_scope_lateral_movement"
+
+
+class PentestStopCondition(StrEnum):
+    SCOPE_VIOLATION = "scope_violation"
+    SCOPE_WINDOW_EXPIRED = "scope_window_expired"
+    BUDGET_EXHAUSTED = "budget_exhausted"
+    OPERATOR_STOP = "operator_stop"
+    RUN_CANCELLED = "run_cancelled"
 
 
 class RunStatus(StrEnum):

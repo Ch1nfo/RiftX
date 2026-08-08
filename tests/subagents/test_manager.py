@@ -15,9 +15,11 @@ from riftx.persistence import (
     SQLAlchemyProviderStateRepository,
     SQLAlchemyRunEventRepository,
     SQLAlchemyRunRepository,
+    SQLAlchemySkillSelectionStore,
     SQLAlchemyTranscriptRepository,
 )
 from riftx.runtime.session import SessionManager
+from riftx.skills import ProgressiveSkillContextManager, SkillRegistry
 from riftx.subagents import (
     DelegationPacket,
     SubagentLimitError,
@@ -79,10 +81,42 @@ async def build_manager(
     )
     registry = ToolRegistry(tools_path, node_id="node-1")
     await registry.refresh()
+    skill_root = tmp_path / "skills"
+    for skill_id in ("recon-skill", "private-skill"):
+        directory = skill_root / skill_id
+        directory.mkdir(parents=True)
+        (directory / "SKILL.md").write_text(
+            f"""---
+name: {skill_id}
+description: Procedure for {skill_id}
+version: 1.0.0
+source: operator
+---
+## When to use
+Use when delegated.
+## Preconditions
+Authorized scope.
+## Procedure
+Collect evidence.
+## Decision points
+Choose a bounded probe.
+## Stop conditions
+Stop after evidence.
+## Expected output
+Evidence references.
+## Error handling
+Preserve errors.
+"""
+        )
+    skill_context = ProgressiveSkillContextManager(
+        SkillRegistry(skill_root),
+        SQLAlchemySkillSelectionStore(database.session_factory),
+    )
     manager = SubagentManager(
         sessions=sessions,
         session_repository=session_repository,
         tool_context=ToolContextManager(registry),
+        skill_context=skill_context,
         limits=limits,
         events=SQLAlchemyRunEventRepository(database.session_factory),
     )
@@ -97,6 +131,7 @@ def delegation(task_id: str) -> DelegationPacket:
         run_contract_summary="Authorized local assessment",
         relevant_scope=["127.0.0.1"],
         available_tool_ids=["probe"],
+        available_skill_ids=["recon-skill"],
         workspace="/workspace",
     )
 
@@ -105,6 +140,8 @@ async def test_subagent_uses_independent_session_and_primary_gets_only_merge_pac
     tmp_path: Path,
 ) -> None:
     database, sessions, manager, transcript = await build_manager(tmp_path)
+    skill_context = manager._skill_context  # noqa: SLF001
+    assert skill_context is not None
     await sessions.create_session(
         run_id="run-1", model_profile="test-model", session_id="primary"
     )
@@ -133,6 +170,7 @@ async def test_subagent_uses_independent_session_and_primary_gets_only_merge_pac
     assert handle.session.parent_session_id == "primary"
     assert [item.sequence for item in child_messages] == [1, 2]
     assert child_messages[0].structured_content["available_tool_ids"] == ["probe"]
+    assert child_messages[0].structured_content["available_skill_ids"] == ["recon-skill"]
     assert child_messages[1].structured_content["failed_approaches"] == ["UDP probe"]
     assert len(parent_messages) == 1
     assert parent_messages[0].structured_content == {
@@ -145,6 +183,17 @@ async def test_subagent_uses_independent_session_and_primary_gets_only_merge_pac
         "evidence_refs": [],
         "recommended_next_actions": ["Inspect TLS configuration"],
     }
+    assert [
+        item.id for item in await skill_context.list_skills(session_id="subagent-1")
+    ] == ["recon-skill"]
+    with pytest.raises(PermissionError, match="outside the Session allowlist"):
+        await skill_context.select_skill(
+            "private-skill",
+            run_id="run-1",
+            session_id="subagent-1",
+            agent_id="subagent:recon",
+            reason="not delegated",
+        )
     await database.dispose()
 
 

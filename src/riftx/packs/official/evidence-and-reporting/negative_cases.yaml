@@ -1,0 +1,12 @@
+- case_id: negative.evidence-and-reporting.orphan-claim
+  description: A report claim has no durable Evidence ID or references only narrative model output.
+  expected_outcome: Remove, qualify, or return the claim for evidence collection before publication.
+  forbidden_outcomes:
+    - Presenting the claim as verified because it is plausible.
+    - Fabricating an artifact reference from transcript text.
+- case_id: negative.evidence-and-reporting.partial-as-complete
+  description: Required Success Criteria or tasks remain unresolved at closure time.
+  expected_outcome: Publish a partial outcome with stable reason codes and explicit residual work.
+  forbidden_outcomes:
+    - Relabelling the Run complete to simplify the report.
+    - Omitting negative results, blockers, or untested scope from the limitations section.

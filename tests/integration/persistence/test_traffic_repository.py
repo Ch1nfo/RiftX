@@ -140,7 +140,10 @@ async def test_safe_metadata_projection_never_selects_or_returns_raw_payloads(
     database = await _database(tmp_path)
     writer = SQLAlchemyTargetHttpRequestRepository(database.session_factory)
     submission = _submission(0, method="POST")
-    await writer.create(submission, _result(submission, 0))
+    expected_result = _result(submission, 0)
+    await writer.create(submission, expected_result)
+    assert await writer.get_for_run("run-traffic", "exchange-000") == expected_result
+    assert await writer.get_for_run("run-other", "exchange-000") is None
     async with database.session_factory() as session, session.begin():
         session.add_all(
             [

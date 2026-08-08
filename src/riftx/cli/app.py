@@ -3,39 +3,64 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import math
+import os
 import platform
+import secrets
+import shutil
+import socket
+import subprocess
 import sys
+import time
 import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 from uuid import uuid4
 
 import httpx
 import typer
 import uvicorn
-from click import Command, Context
 from rich.console import Console
-from typer.core import TyperGroup
+from rich.table import Table
 
-from riftx.api import APISettings, create_app
-from riftx.config import RiftXConfig, RiftXConfigError, load_riftx_config
+from riftx.config import (
+    RiftXConfig,
+    RiftXConfigError,
+    default_user_config_path,
+    load_riftx_config,
+)
+from riftx.doctor import (
+    DoctorFixError,
+    DoctorReport,
+    apply_local_doctor_fixes,
+    run_live_doctor,
+    run_local_doctor,
+)
 from riftx.domain import ApprovalMode, EntryPointKind, RunKind, RunStatus, TerminalOwner
 from riftx.memory import MemoryScopeType, MemoryType
 from riftx.models import (
     MAX_MODEL_TIMEOUT_SECONDS,
     ModelAPI,
+    ModelProfile,
     ModelProviderKind,
     validate_provider_base_url,
     validate_remote_api_key_env,
     validate_remote_base_url,
 )
-from riftx.runner.daemon import RunnerDaemonConfig, run_runner_daemon
-from riftx.security import DeploymentProfileError, is_loopback_host
-from riftx.temporal.worker_runtime import build_temporal_worker
+from riftx.onboarding import (
+    OnboardError,
+    initialize_local_onboarding,
+    validate_existing_onboarding,
+)
+from riftx.security import (
+    DeploymentProfileError,
+    is_loopback_host,
+    validate_local_operator_credential,
+)
 
 from .client import APIClient, RiftXAPIError
 from .i18n import Language, normalize_language, set_language, tr
@@ -44,6 +69,7 @@ from .render import (
     render_approvals,
     render_artifact,
     render_artifacts,
+    render_doctor_report,
     render_error,
     render_event,
     render_execution,
@@ -55,6 +81,7 @@ from .render import (
     render_model_profiles,
     render_node,
     render_nodes,
+    render_pentest_status,
     render_report,
     render_reports,
     render_run,
@@ -65,31 +92,27 @@ from .render import (
 )
 from .terminal import attach_terminal
 
+if TYPE_CHECKING:
+    from riftx.capability_management import LocalCapabilityState
+
 console = Console()
 
 
-class _AuditGroup(TyperGroup):
-    """Route an unknown first token to the local folder scan command."""
-
-    def resolve_command(
-        self,
-        ctx: Context,
-        args: list[str],
-    ) -> tuple[str | None, Command | None, list[str]]:
-        if args and not args[0].startswith("-") and args[0] not in self.commands:
-            command = self.get_command(ctx, "scan")
-            return "scan", command, args
-        return super().resolve_command(ctx, args)
-
+_GETTING_STARTED_PANEL = "Getting started"
+_PENTEST_PANEL = "Pentest workflow"
+_SERVICE_PANEL = "Service operation"
+_ADVANCED_PANEL = "Advanced"
 
 app = typer.Typer(
     name="riftx",
-    help="Host-native durable agent execution platform.",
+    help="Pentest-first Agent for authorized security work.",
+    epilog="Start with `riftx onboard`, then run the local stack with `riftx start`.",
     no_args_is_help=False,
     invoke_without_command=True,
     rich_markup_mode="rich",
 )
 run_app = typer.Typer(help="Create, inspect, and control Runs.")
+pentest_app = typer.Typer(help="Start and control authorized Pentest Runs.")
 execution_app = typer.Typer(help="Inspect, wait for, and cancel durable Executions.")
 nodes_app = typer.Typer(help="Register and inspect execution nodes.")
 tools_app = typer.Typer(help="Inspect the node-local Tool Registry.")
@@ -98,20 +121,24 @@ artifact_app = typer.Typer(help="Register and inspect immutable Run artifacts.")
 report_app = typer.Typer(help="Generate and inspect structured Run reports.")
 memory_app = typer.Typer(help="Create and manage scope-aware long-term Memory.")
 model_app = typer.Typer(help="Configure model provider profiles.")
-audit_app = typer.Typer(
-    cls=_AuditGroup,
-    help="Audit a local folder with read-only static analysis.",
-)
-app.add_typer(run_app, name="run")
-app.add_typer(execution_app, name="execution")
-app.add_typer(nodes_app, name="node")
-app.add_typer(tools_app, name="tools")
-app.add_typer(terminal_app, name="terminal")
-app.add_typer(artifact_app, name="artifact")
-app.add_typer(report_app, name="report")
-app.add_typer(memory_app, name="memory")
-app.add_typer(model_app, name="model")
-app.add_typer(audit_app, name="audit")
+demo_app = typer.Typer(help="Run sanitized offline security demonstrations.")
+capabilities_app = typer.Typer(help="Inspect the local Capability catalog.")
+packs_app = typer.Typer(help="Inspect and manage local Capability Packs.")
+skills_app = typer.Typer(help="Validate and manage local Operator Skills.")
+app.add_typer(run_app, name="run", rich_help_panel=_ADVANCED_PANEL)
+app.add_typer(pentest_app, name="pentest", rich_help_panel=_PENTEST_PANEL)
+app.add_typer(execution_app, name="execution", rich_help_panel=_ADVANCED_PANEL)
+app.add_typer(nodes_app, name="node", rich_help_panel=_ADVANCED_PANEL)
+app.add_typer(tools_app, name="tools", rich_help_panel=_ADVANCED_PANEL)
+app.add_typer(terminal_app, name="terminal", rich_help_panel=_ADVANCED_PANEL)
+app.add_typer(artifact_app, name="artifact", rich_help_panel=_ADVANCED_PANEL)
+app.add_typer(report_app, name="report", rich_help_panel=_PENTEST_PANEL)
+app.add_typer(memory_app, name="memory", rich_help_panel=_ADVANCED_PANEL)
+app.add_typer(model_app, name="model", rich_help_panel=_GETTING_STARTED_PANEL)
+app.add_typer(demo_app, name="demo", rich_help_panel=_ADVANCED_PANEL)
+app.add_typer(capabilities_app, name="capabilities", rich_help_panel=_ADVANCED_PANEL)
+app.add_typer(packs_app, name="packs", rich_help_panel=_ADVANCED_PANEL)
+app.add_typer(skills_app, name="skills", rich_help_panel=_PENTEST_PANEL)
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,16 +202,441 @@ def main(
             run_interactive(client, console)
 
 
-@app.command()
-def interactive(context: typer.Context) -> None:
-    """Enter the interactive RiftX session explicitly."""
+@app.command(rich_help_panel=_GETTING_STARTED_PANEL)
+def onboard(
+    context: typer.Context,
+    non_interactive: Annotated[
+        bool,
+        typer.Option("--non-interactive", help="Use only command options and defaults."),
+    ] = False,
+    config_path: Annotated[
+        Path | None,
+        typer.Option("--config-path", help="User configuration file to create or resume."),
+    ] = None,
+    provider: Annotated[
+        ModelProviderKind,
+        typer.Option("--provider", case_sensitive=False),
+    ] = ModelProviderKind.OPENAI,
+    model_name: Annotated[
+        str,
+        typer.Option("--model", help="Primary model identifier."),
+    ] = "gpt-5.6",
+    request_mode: Annotated[
+        ModelAPI,
+        typer.Option("--request-mode", case_sensitive=False),
+    ] = ModelAPI.CHAT_COMPLETIONS,
+    base_url: Annotated[str | None, typer.Option("--base-url")] = None,
+    api_key_env: Annotated[
+        str | None,
+        typer.Option("--api-key-env", help="RIFTX_MODEL_* credential environment variable."),
+    ] = "RIFTX_MODEL_API_KEY",
+    requires_api_key: Annotated[
+        bool,
+        typer.Option("--api-key/--no-api-key"),
+    ] = True,
+    workspace_root: Annotated[
+        Path | None,
+        typer.Option("--workspace-root", help="Local workspace root."),
+    ] = None,
+) -> None:
+    """Create or resume a safe local RiftX setup."""
+
+    selected_path = (config_path or default_user_config_path()).expanduser()
+    target = Path(os.path.abspath(os.fspath(selected_path)))
+    created = False
+    disabled_tools: tuple[str, ...] = ()
+    if target.exists() or target.is_symlink():
+        try:
+            target = validate_existing_onboarding(target)
+            config = load_riftx_config(explicit_path=target)
+        except (OnboardError, RiftXConfigError) as exc:
+            console.print(f"[red]Onboarding failed:[/red] {exc}")
+            raise typer.Exit(1) from exc
+        console.print(f"Using existing configuration without overwriting it: {target}")
+    else:
+        if not non_interactive:
+            try:
+                provider = ModelProviderKind(
+                    typer.prompt("Model provider", default=provider.value).strip().lower()
+                )
+                model_name = typer.prompt("Primary model", default=model_name).strip()
+                request_mode = ModelAPI(
+                    typer.prompt("Model request mode", default=request_mode.value)
+                    .strip()
+                    .lower()
+                )
+            except ValueError as exc:
+                raise typer.BadParameter(str(exc)) from exc
+            if provider is ModelProviderKind.OPENAI_COMPATIBLE and base_url is None:
+                base_url = typer.prompt(
+                    "OpenAI-compatible base URL",
+                    default="http://127.0.0.1:11434/v1",
+                ).strip()
+            requires_api_key = typer.confirm(
+                "Does this model require an API key?",
+                default=requires_api_key,
+            )
+            if requires_api_key:
+                api_key_env = typer.prompt(
+                    "API key environment variable",
+                    default=api_key_env or "RIFTX_MODEL_API_KEY",
+                ).strip()
+            if not typer.confirm(f"Create local RiftX configuration at {target}?", default=True):
+                raise typer.Abort()
+        try:
+            normalized_base_url = validate_remote_base_url(base_url)
+            validate_provider_base_url(provider, normalized_base_url)
+            normalized_api_key_env = (
+                validate_remote_api_key_env(api_key_env) if requires_api_key else None
+            )
+            if requires_api_key and normalized_api_key_env is None:
+                raise ValueError("API-key-backed onboarding requires --api-key-env")
+            model_profile = ModelProfile(
+                provider=provider,
+                model=model_name,
+                api=request_mode,
+                base_url=normalized_base_url,
+                api_key_env=normalized_api_key_env,
+                requires_api_key=requires_api_key,
+            )
+            initialized = initialize_local_onboarding(
+                target,
+                model_profile=model_profile,
+                workspace_root=workspace_root,
+            )
+            config = load_riftx_config(explicit_path=initialized.config_path)
+        except (OnboardError, RiftXConfigError, ValueError) as exc:
+            console.print(f"[red]Onboarding failed:[/red] {exc}")
+            raise typer.Exit(1) from exc
+        target = initialized.config_path
+        disabled_tools = initialized.disabled_tools
+        created = True
+        console.print(f"Created runtime configuration: {initialized.config_path}")
+        console.print(f"Created model configuration: {initialized.models_path}")
+        console.print(f"Created Tool Registry configuration: {initialized.tools_path}")
+
+    if not is_loopback_host(config.server.host):
+        console.print(
+            "[red]Onboarding failed:[/red] local onboarding requires a loopback server host."
+        )
+        raise typer.Exit(1)
+    report = run_local_doctor(config, runtime_config_path=target)
+    persistence_fix = _requires_stopped_control_plane(report)
+    control_plane_reachable = False
+    if persistence_fix:
+        api_url = f"http://{config.server.host}:{config.server.port}"
+        with APIClient(api_url, timeout_seconds=3) as client:
+            control_plane_reachable = _control_plane_reachable(client)
+    try:
+        fixes = apply_local_doctor_fixes(
+            config,
+            report,
+            runtime_config_path=target,
+            allow_persistence_fix=not control_plane_reachable,
+        )
+    except DoctorFixError as exc:
+        console.print(f"[red]Onboarding bootstrap failed:[/red] {exc}")
+        console.print(f"Configuration was retained for recovery: {target}")
+        render_doctor_report(console, report)
+        raise typer.Exit(1) from exc
+    for applied in fixes:
+        console.print(f"Initialized {applied.check_id}: {applied.path}")
+    report = run_local_doctor(config, runtime_config_path=target)
+    if disabled_tools:
+        console.print(
+            "Optional tools disabled because their executables were not found: "
+            + ", ".join(disabled_tools)
+        )
+    if (
+        created
+        and requires_api_key
+        and normalized_api_key_env is not None
+        and normalized_api_key_env not in os.environ
+    ):
+        console.print(
+            f"Set {normalized_api_key_env} before starting model-backed tasks."
+        )
+    render_doctor_report(console, report)
+    console.print("[green]Onboarding complete.[/green]")
+    if target != default_user_config_path():
+        console.print(f"Use this setup with RIFTX_CONFIG={target}")
+    console.print("Next: run `riftx start`.")
+
+
+class _LocalStartError(RuntimeError):
+    pass
+
+
+@app.command("start", rich_help_panel=_GETTING_STARTED_PANEL)
+def start_local(
+    context: typer.Context,
+    open_browser: Annotated[
+        bool,
+        typer.Option("--open/--no-open", help="Open the RiftX WebUI when ready."),
+    ] = True,
+) -> None:
+    """Start the complete local RiftX stack in one foreground command."""
 
     state = _state(context)
-    with APIClient(state.api_url) as client:
-        run_interactive(client, console)
+    report = run_local_doctor(
+        state.config,
+        runtime_config_path=_doctor_runtime_config_path(state),
+    )
+    if report.failed:
+        render_doctor_report(console, report)
+        console.print("[red]Start failed:[/red] run `riftx doctor --fix` first.")
+        raise typer.Exit(1)
+    try:
+        status = _run_local_stack(state, open_browser=open_browser)
+    except _LocalStartError as exc:
+        console.print(f"[red]Start failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    if status:
+        raise typer.Exit(status)
 
 
-@app.command()
+def _run_local_stack(state: CLIState, *, open_browser: bool) -> int:
+    config = state.config
+    if not is_loopback_host(config.server.host):
+        raise _LocalStartError("the local stack requires a loopback Control Plane host")
+
+    base_environment = os.environ.copy()
+    control_environment = base_environment.copy()
+    worker_environment = base_environment.copy()
+    worker_environment.pop("RIFTX_ADMIN_TOKEN", None)
+    worker_environment.pop("RIFTX_RUNNER_REGISTRATION_TOKEN", None)
+    if state.config_path is not None:
+        config_path = str(state.config_path.expanduser())
+        control_environment["RIFTX_CONFIG"] = config_path
+        worker_environment["RIFTX_CONFIG"] = config_path
+
+    generated_token = "RIFTX_ADMIN_TOKEN" not in control_environment
+    operator_token = control_environment.get("RIFTX_ADMIN_TOKEN") or secrets.token_hex(32)
+    try:
+        validate_local_operator_credential(operator_token)
+    except DeploymentProfileError as exc:
+        raise _LocalStartError(str(exc)) from exc
+    control_environment["RIFTX_ADMIN_TOKEN"] = operator_token
+
+    temporal_host, temporal_port = _split_host_port(config.temporal.target)
+    services: list[tuple[str, subprocess.Popen[bytes]]] = []
+    try:
+        if not _port_is_open(temporal_host, temporal_port):
+            if config.temporal.tls_enabled or not is_loopback_host(temporal_host):
+                raise _LocalStartError(
+                    f"Temporal is not reachable at {config.temporal.target}"
+                )
+            temporal_executable = shutil.which("temporal")
+            if temporal_executable is None:
+                raise _LocalStartError(
+                    "Temporal is not running and the `temporal` CLI was not found on PATH"
+                )
+            temporal_db = config.workspace.root.expanduser().parent / "temporal.db"
+            temporal_db.parent.mkdir(parents=True, exist_ok=True)
+            from riftx.executors.environment import merge_environment
+
+            temporal_environment = merge_environment(host_environment=base_environment)
+            temporal_process = subprocess.Popen(
+                [
+                    temporal_executable,
+                    "server",
+                    "start-dev",
+                    "--ip",
+                    temporal_host,
+                    "--port",
+                    str(temporal_port),
+                    "--ui-port",
+                    "8233",
+                    "--db-filename",
+                    str(temporal_db),
+                ],
+                env=temporal_environment,
+            )
+            services.append(("Temporal", temporal_process))
+            _wait_for_port(
+                temporal_host,
+                temporal_port,
+                process=temporal_process,
+                label="Temporal",
+            )
+
+        if _port_is_open(config.server.host, config.server.port):
+            raise _LocalStartError(
+                f"Control Plane port {config.server.host}:{config.server.port} is already in use"
+            )
+        cli_command = [sys.executable, "-m", "riftx.cli.app"]
+        control_process = subprocess.Popen(
+            [*cli_command, "serve"],
+            env=control_environment,
+        )
+        services.append(("Control Plane", control_process))
+        _wait_for_port(
+            config.server.host,
+            config.server.port,
+            process=control_process,
+            label="Control Plane",
+        )
+
+        worker_process = subprocess.Popen(
+            [*cli_command, "worker"],
+            env=worker_environment,
+        )
+        services.append(("Worker", worker_process))
+        if generated_token:
+            console.print("[yellow]Generated session-only local admin token:[/yellow]")
+            console.print(operator_token, markup=False)
+        web_url = f"http://{config.server.host}:{config.server.port}/"
+        console.print(f"[green]RiftX is ready:[/green] {web_url}")
+        console.print("Press Ctrl+C to stop the local stack.")
+        if open_browser:
+            webbrowser.open(web_url)
+        return _monitor_local_services(services)
+    finally:
+        _stop_local_services(services)
+
+
+def _split_host_port(target: str) -> tuple[str, int]:
+    host, separator, raw_port = target.rpartition(":")
+    normalized_host = host.strip().strip("[]")
+    if not separator or not normalized_host:
+        raise _LocalStartError(f"Temporal target must use HOST:PORT: {target!r}")
+    try:
+        port = int(raw_port)
+    except ValueError as exc:
+        raise _LocalStartError(f"Temporal target has an invalid port: {target!r}") from exc
+    if not 1 <= port <= 65535:
+        raise _LocalStartError(f"Temporal target has an invalid port: {target!r}")
+    return normalized_host, port
+
+
+def _port_is_open(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=0.25):
+            return True
+    except OSError:
+        return False
+
+
+def _wait_for_port(
+    host: str,
+    port: int,
+    *,
+    process: subprocess.Popen[bytes],
+    label: str,
+    timeout_seconds: float = 20.0,
+) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        return_code = process.poll()
+        if return_code is not None:
+            raise _LocalStartError(f"{label} exited during startup with code {return_code}")
+        if _port_is_open(host, port):
+            return
+        time.sleep(0.1)
+    raise _LocalStartError(f"{label} did not become ready within {timeout_seconds:g} seconds")
+
+
+def _monitor_local_services(services: list[tuple[str, subprocess.Popen[bytes]]]) -> int:
+    try:
+        while True:
+            for label, process in services:
+                return_code = process.poll()
+                if return_code is not None:
+                    console.print(f"[red]{label} exited with code {return_code}.[/red]")
+                    return return_code or 1
+            time.sleep(0.25)
+    except KeyboardInterrupt:
+        console.print("\nStopping RiftX...")
+        return 0
+
+
+def _stop_local_services(services: list[tuple[str, subprocess.Popen[bytes]]]) -> None:
+    for _label, process in reversed(services):
+        if process.poll() is None:
+            process.terminate()
+    for _label, process in reversed(services):
+        if process.poll() is not None:
+            continue
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+
+
+@app.command(rich_help_panel=_GETTING_STARTED_PANEL)
+def doctor(
+    context: typer.Context,
+    fix: Annotated[
+        bool,
+        typer.Option("--fix", help="Apply registered offline-safe local repairs."),
+    ] = False,
+) -> None:
+    """Inspect RiftX readiness and optionally apply bounded local repairs."""
+
+    state = _state(context)
+    runtime_config_path = _doctor_runtime_config_path(state)
+    report = run_local_doctor(
+        state.config,
+        runtime_config_path=runtime_config_path,
+    )
+    with APIClient(state.api_url, timeout_seconds=3) as client:
+        if fix:
+            persistence_fix = _requires_stopped_control_plane(report)
+            control_plane_reachable = False
+            if persistence_fix:
+                control_plane_reachable = _control_plane_reachable(client)
+            try:
+                fixes = apply_local_doctor_fixes(
+                    state.config,
+                    report,
+                    runtime_config_path=runtime_config_path,
+                    allow_persistence_fix=not control_plane_reachable,
+                )
+            except DoctorFixError as exc:
+                console.print(f"[red]Doctor fix failed:[/red] {exc}")
+                render_doctor_report(console, report)
+                raise typer.Exit(1) from exc
+            for applied in fixes:
+                console.print(f"Fixed {applied.check_id}: repaired {applied.path}")
+                if applied.backup_path is not None:
+                    console.print(f"Backup retained: {applied.backup_path}")
+            report = run_local_doctor(
+                state.config,
+                runtime_config_path=runtime_config_path,
+            )
+        report = run_live_doctor(state.config, report, client)
+    render_doctor_report(console, report)
+    if report.failed:
+        raise typer.Exit(1)
+
+
+def _doctor_runtime_config_path(state: CLIState) -> Path | None:
+    if state.config_path is not None:
+        return state.config_path
+    user_path = default_user_config_path()
+    return user_path if user_path.exists() or user_path.is_symlink() else None
+
+
+def _requires_stopped_control_plane(report: DoctorReport) -> bool:
+    return any(
+        check.id in {"config_migrations", "database_migrations", "pack_integrity"}
+        and check.fixable
+        for check in report.checks
+    )
+
+
+def _control_plane_reachable(client: APIClient) -> bool:
+    try:
+        client.health()
+    except httpx.TransportError:
+        return False
+    except Exception:
+        return True
+    return True
+
+
+@app.command(rich_help_panel=_SERVICE_PANEL)
 def serve(
     context: typer.Context,
     host: Annotated[str | None, typer.Option(help="Listen address override.")] = None,
@@ -195,6 +647,8 @@ def serve(
     reload: Annotated[bool, typer.Option(help="Enable development auto-reload.")] = False,
 ) -> None:
     """Start the shared FastAPI Control Plane."""
+
+    from riftx.api import APISettings, create_app
 
     state = _state(context)
     server = state.config.server.model_copy(
@@ -221,7 +675,7 @@ def _is_loopback_listen_host(host: str) -> bool:
     return is_loopback_host(host)
 
 
-@app.command()
+@app.command(rich_help_panel=_SERVICE_PANEL)
 def worker(context: typer.Context) -> None:
     """Start the production Temporal Worker."""
 
@@ -229,7 +683,7 @@ def worker(context: typer.Context) -> None:
     asyncio.run(_run_temporal_worker(_state(context).config))
 
 
-@app.command("runner")
+@app.command("runner", rich_help_panel=_SERVICE_PANEL)
 def runner_daemon(
     context: typer.Context,
     server_url: Annotated[
@@ -258,12 +712,9 @@ def runner_daemon(
 ) -> None:
     """Start the outbound Runner daemon using the shared RiftX configuration."""
 
+    from riftx.runner.daemon import RunnerDaemonConfig, run_runner_daemon
+
     config = _state(context).config
-    if config.audit.source_roots and (state_path is not None or credential_path is not None):
-        raise typer.BadParameter(
-            "Runner storage paths are deployment-owned when Audit source roots are configured",
-            param_hint="--state-path/--credential-path",
-        )
     resolved_node_id = node_id or config.runner.node_id
     logging.basicConfig(level=logging.INFO)
     asyncio.run(
@@ -279,13 +730,12 @@ def runner_daemon(
                 require_containment=config.execution.require_containment,
                 payload_uid=config.execution.payload_uid,
                 payload_gid=config.execution.payload_gid,
-                audit=config.audit,
             )
         )
     )
 
 
-@app.command()
+@app.command(rich_help_panel=_SERVICE_PANEL)
 def web(
     context: typer.Context,
     open_browser: Annotated[
@@ -301,98 +751,263 @@ def web(
         webbrowser.open(url)
 
 
-@audit_app.command("scan")
-def scan_local_folder(
-    context: typer.Context,
-    folder: Annotated[Path, typer.Argument(help="Local folder to audit.")],
-) -> None:
-    """Create and start a read-only static audit for a local folder."""
+@demo_app.command("pentest")
+def demo_pentest(context: typer.Context) -> None:
+    """Play an offline authorized-pentest transcript without touching a target."""
+
+    from riftx.demo import DemoError, run_pentest_demo
 
     try:
-        source_path = folder.expanduser().resolve(strict=True)
-    except OSError as exc:
-        raise typer.BadParameter("folder does not exist", param_hint="folder") from exc
-    if not source_path.is_dir():
-        raise typer.BadParameter("folder must be a directory", param_hint="folder")
-
-    def operation(client: APIClient) -> None:
-        created = client.create_local_audit(str(source_path))
-        audit_id = str(created["audit_id"])
-        console.print_json(data=client.start_local_audit(audit_id))
-
-    _run_with_client(context, operation)
-
-
-@audit_app.command("status")
-def show_local_audit_status(
-    context: typer.Context,
-    audit_id: Annotated[str, typer.Argument(help="Local Audit ID.")],
-) -> None:
-    """Show local Audit status."""
-
-    _run_with_client(
-        context,
-        lambda client: console.print_json(data=client.get_local_audit(audit_id)),
-    )
-
-
-@audit_app.command("findings")
-def show_local_audit_findings(
-    context: typer.Context,
-    audit_id: Annotated[str, typer.Argument(help="Local Audit ID.")],
-) -> None:
-    """List local Audit Findings."""
-
-    _run_with_client(
-        context,
-        lambda client: console.print_json(
-            data=client.list_local_audit_findings(audit_id)
-        ),
-    )
-
-
-@audit_app.command("report")
-def show_local_audit_report(
-    context: typer.Context,
-    audit_id: Annotated[str, typer.Argument(help="Local Audit ID.")],
-    format: Annotated[
-        str,
-        typer.Option("--format", help="Report format: json or markdown."),
-    ] = "json",
-) -> None:
-    """Print a local Audit report."""
-
-    normalized = format.lower()
-    if normalized not in {"json", "markdown"}:
-        raise typer.BadParameter(
-            "format must be json or markdown",
-            param_hint="--format",
+        result = run_pentest_demo(_state(context).config)
+    except DemoError as exc:
+        console.print(f"[red]Pentest Demo failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    console.print("[bold]SANITIZED OFFLINE PENTEST DEMO[/bold]")
+    console.print(f"Target: {result.target} (reserved, never contacted)")
+    console.print("Official Packs: " + ", ".join(result.pack_ids))
+    for step in result.steps:
+        console.print(f"- {step.activity} [{step.pack_id}]: {step.evidence}", markup=False)
+    if result.available_optional_tools:
+        console.print(
+            "Optional tools available: " + ", ".join(result.available_optional_tools)
         )
-    _run_with_client(
+    if result.unavailable_optional_tools:
+        console.print(
+            "Optional tools unavailable: " + ", ".join(result.unavailable_optional_tools)
+        )
+        console.print("Degradation path: " + result.degradation_path)
+    if result.tool_config_issue:
+        console.print("Tool configuration note: " + result.tool_config_issue, markup=False)
+
+
+@capabilities_app.command("list")
+def list_capabilities(context: typer.Context) -> None:
+    """List active Capability versions from local authoritative persistence."""
+
+    state = _capability_state(context)
+    table = Table(title=f"{len(state.capabilities)} active capabilities", expand=True)
+    table.add_column("Capability")
+    table.add_column("Version")
+    table.add_column("Kind")
+    table.add_column("Source")
+    table.add_column("Trust")
+    for item in state.capabilities:
+        table.add_row(
+            item.capability_id,
+            item.version,
+            item.kind,
+            item.source,
+            item.trust_tier,
+        )
+    console.print(table)
+
+
+@capabilities_app.command("verify")
+def verify_capabilities(context: typer.Context) -> None:
+    """Verify Official Capability versions, Packs, installs, and active locks."""
+
+    state = _capability_state(context)
+    console.print(
+        f"Capability verification: {state.verification_status}; "
+        f"{len(state.capabilities)} active capabilities; {len(state.packs)} Official Packs."
+    )
+    for issue in state.issues:
+        console.print(f"- {issue}", markup=False)
+    if state.verification_status != "ready":
+        raise typer.Exit(1)
+
+
+@packs_app.command("list")
+def list_packs(context: typer.Context) -> None:
+    """List packaged Official Packs and their persisted status."""
+
+    state = _capability_state(context)
+    table = Table(title=f"{len(state.packs)} Official Packs", expand=True)
+    table.add_column("Pack")
+    table.add_column("Version")
+    table.add_column("Capabilities", justify="right")
+    table.add_column("Persistence")
+    for item in state.packs:
+        table.add_row(
+            item.pack_id,
+            item.version,
+            str(item.capability_count),
+            item.persistence_status,
+        )
+    console.print(table)
+
+
+@skills_app.command("validate")
+def validate_skills(
+    context: typer.Context,
+    skill_id: Annotated[
+        str | None,
+        typer.Argument(help="Optional Operator Skill ID."),
+    ] = None,
+) -> None:
+    """Validate Operator Skill packages without changing persistence."""
+
+    from riftx import capability_management
+
+    documents = _operator_skill_action(
         context,
-        lambda client: console.print(
-            client.get_local_audit_report(audit_id, format=normalized),
+        lambda config: capability_management.validate_operator_skills(config, skill_id),
+    )
+    console.print(f"Validated {len(documents)} Operator Skill package(s).")
+    for document in documents:
+        console.print(
+            f"- {document.id} {document.version} {document.digest[:12]}",
             markup=False,
-            highlight=False,
-            end="",
+        )
+
+
+@skills_app.command("register")
+def register_skill(
+    context: typer.Context,
+    skill_id: Annotated[str, typer.Argument(help="Operator Skill ID.")],
+) -> None:
+    """Register the current Operator Skill package as approved."""
+
+    from riftx import capability_management
+
+    version = _operator_skill_action(
+        context,
+        lambda config: capability_management.register_operator_skill(config, skill_id),
+    )
+    console.print(
+        f"Registered {skill_id} {version.manifest.version} as {version.status.value}; "
+        f"source digest {version.manifest.provenance.source_digest}.",
+        markup=False,
+    )
+
+
+@skills_app.command("activate")
+def activate_skill(
+    context: typer.Context,
+    skill_id: Annotated[str, typer.Argument(help="Operator Skill ID.")],
+    version: Annotated[str, typer.Argument(help="Registered Skill version.")],
+) -> None:
+    """Activate a registered Operator Skill for new Pentest Runs."""
+
+    from riftx import capability_management
+
+    activated = _operator_skill_action(
+        context,
+        lambda config: capability_management.activate_operator_skill(
+            config, skill_id, version
         ),
     )
-
-
-@audit_app.command("cancel")
-def cancel_local_audit(
-    context: typer.Context,
-    audit_id: Annotated[str, typer.Argument(help="Local Audit ID.")],
-) -> None:
-    """Cancel a local Audit."""
-
-    _run_with_client(
-        context,
-        lambda client: console.print_json(data=client.cancel_local_audit(audit_id)),
+    console.print(
+        f"Activated {skill_id} {activated.manifest.version}; new Pentest Runs may select it."
     )
 
 
-@app.command("approvals")
+@skills_app.command("disable")
+def disable_skill(
+    context: typer.Context,
+    skill_id: Annotated[str, typer.Argument(help="Operator Skill ID.")],
+    version: Annotated[
+        str | None,
+        typer.Argument(help="Version to disable; defaults to the active version."),
+    ] = None,
+) -> None:
+    """Disable an Operator Skill version for new Pentest Runs."""
+
+    from riftx import capability_management
+
+    disabled = _operator_skill_action(
+        context,
+        lambda config: capability_management.disable_operator_skill(
+            config, skill_id, version
+        ),
+    )
+    console.print(
+        f"Disabled {skill_id} {disabled.manifest.version}; existing Run snapshots are unchanged."
+    )
+
+
+@skills_app.command("rollback")
+def rollback_skill(
+    context: typer.Context,
+    skill_id: Annotated[str, typer.Argument(help="Operator Skill ID.")],
+    version: Annotated[str, typer.Argument(help="Restored registered Skill version.")],
+) -> None:
+    """Activate a restored old Operator Skill version."""
+
+    from riftx import capability_management
+
+    rolled_back = _operator_skill_action(
+        context,
+        lambda config: capability_management.rollback_operator_skill(
+            config, skill_id, version
+        ),
+    )
+    console.print(
+        f"Rolled back {skill_id} to {rolled_back.manifest.version}; "
+        "new Pentest Runs use the restored source package."
+    )
+
+
+@skills_app.command("list")
+def list_skills(
+    context: typer.Context,
+    skill_id: Annotated[
+        str | None,
+        typer.Argument(help="Optional Operator Skill ID."),
+    ] = None,
+) -> None:
+    """List local Operator Skill packages and registered versions."""
+
+    from riftx import capability_management
+
+    items = _operator_skill_action(
+        context,
+        lambda config: capability_management.inspect_operator_skills(config, skill_id),
+    )
+    table = Table(title=f"{len(items)} Operator Skill version(s)", expand=True)
+    table.add_column("Skill")
+    table.add_column("Version")
+    table.add_column("Capability")
+    table.add_column("Source")
+    table.add_column("Digest")
+    for item in items:
+        table.add_row(
+            item.skill_id,
+            item.version,
+            item.capability_status,
+            item.source_status,
+            item.source_digest[:12],
+        )
+    console.print(table)
+
+
+def _capability_state(context: typer.Context) -> LocalCapabilityState:
+    from riftx.capability_management import (
+        CapabilityManagementError,
+        inspect_local_capability_state,
+    )
+
+    try:
+        return inspect_local_capability_state(_state(context).config)
+    except CapabilityManagementError as exc:
+        console.print(f"[red]Capability inspection failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+
+def _operator_skill_action[T](
+    context: typer.Context,
+    action: Callable[[RiftXConfig], T],
+) -> T:
+    from riftx.capability_management import CapabilityManagementError
+
+    try:
+        return action(_state(context).config)
+    except CapabilityManagementError as exc:
+        console.print(f"[red]Operator Skill operation failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+
+@app.command("approvals", rich_help_panel=_PENTEST_PANEL)
 def list_approvals(
     context: typer.Context,
     run_id: Annotated[str, typer.Argument(help="Run ID.")],
@@ -408,7 +1023,7 @@ def list_approvals(
     )
 
 
-@app.command("approve")
+@app.command("approve", rich_help_panel=_PENTEST_PANEL)
 def approve(
     context: typer.Context,
     approval_id: Annotated[str, typer.Argument(help="Approval ID.")],
@@ -426,7 +1041,7 @@ def approve(
     console.print(f"[green]{tr('Approval saved and workflow signaled.')}[/green]")
 
 
-@app.command("reject")
+@app.command("reject", rich_help_panel=_PENTEST_PANEL)
 def reject(
     context: typer.Context,
     approval_id: Annotated[str, typer.Argument(help="Approval ID.")],
@@ -633,7 +1248,7 @@ def close_terminal(
     )
 
 
-@app.command("attach")
+@app.command("attach", rich_help_panel=_ADVANCED_PANEL)
 def attach(
     context: typer.Context,
     session_id: Annotated[str, typer.Argument(help="Terminal session ID.")],
@@ -829,6 +1444,210 @@ def remove_model_profile(
             client.delete_model_profile(profile_name),
         ),
     )
+
+
+@pentest_app.command("start")
+def start_pentest(
+    context: typer.Context,
+    objective: Annotated[
+        str,
+        typer.Option("--objective", help="Authorized Pentest objective."),
+    ],
+    authorization: Annotated[
+        str,
+        typer.Option("--authorization", help="Ticket, contract, or authorization reference."),
+    ],
+    target: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--target",
+            help="Repeatable target URL, domain, IP, CIDR, or explicit KIND=VALUE.",
+        ),
+    ] = None,
+    scope: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--scope",
+            help="Repeatable authorized URL prefix, domain, IP, or CIDR.",
+        ),
+    ] = None,
+    exclude: Annotated[
+        list[str] | None,
+        typer.Option("--exclude", help="Repeatable explicit Scope exclusion."),
+    ] = None,
+    engagement_name: Annotated[
+        str | None,
+        typer.Option("--engagement", help="Engagement display name."),
+    ] = None,
+    node_id: Annotated[str | None, typer.Option("--node", help="Execution node ID.")] = None,
+    workspace: Annotated[
+        str | None,
+        typer.Option("--workspace", help="Workspace path visible to the Worker."),
+    ] = None,
+    approval_mode: Annotated[
+        ApprovalMode,
+        typer.Option("--mode", case_sensitive=False, help="Approval mode."),
+    ] = ApprovalMode.BALANCED,
+    model_profile: Annotated[
+        str | None,
+        typer.Option("--model", help="Model profile for this Pentest."),
+    ] = None,
+    success: Annotated[
+        list[str] | None,
+        typer.Option("--success", help="Repeatable required success criterion."),
+    ] = None,
+    pack: Annotated[
+        list[str] | None,
+        typer.Option("--pack", help="Repeatable official Capability Pack ID."),
+    ] = None,
+    tool: Annotated[
+        list[str] | None,
+        typer.Option("--tool", help="Repeatable Tool capability ID."),
+    ] = None,
+    skill: Annotated[
+        list[str] | None,
+        typer.Option("--skill", help="Repeatable Skill capability ID."),
+    ] = None,
+    technique: Annotated[
+        list[str] | None,
+        typer.Option("--technique", help="Repeatable Technique capability ID."),
+    ] = None,
+    request_id: Annotated[
+        str | None,
+        typer.Option("--request-id", help="UUID reused for an explicit retry."),
+    ] = None,
+    max_duration_seconds: Annotated[
+        int,
+        typer.Option("--max-duration", min=1, help="Maximum elapsed seconds."),
+    ] = 900,
+    max_model_calls: Annotated[
+        int,
+        typer.Option("--max-model-calls", min=1),
+    ] = 20,
+    max_tokens: Annotated[int, typer.Option("--max-tokens", min=1)] = 100_000,
+    max_tool_calls: Annotated[
+        int,
+        typer.Option("--max-tool-calls", min=1),
+    ] = 50,
+    max_target_interactions: Annotated[
+        int,
+        typer.Option("--max-target-interactions", min=1),
+    ] = 100,
+    max_concurrent_target_interactions: Annotated[
+        int,
+        typer.Option("--max-target-concurrency", min=1),
+    ] = 2,
+) -> None:
+    """Admit and start one authorized Pentest Run."""
+
+    targets = target or []
+    scopes = scope or []
+    if not targets:
+        raise typer.BadParameter("at least one target is required", param_hint="--target")
+    if not scopes:
+        raise typer.BadParameter("at least one Scope value is required", param_hint="--scope")
+    authorization_reference = authorization.strip()
+    if not authorization_reference:
+        raise typer.BadParameter(
+            "authorization reference must not be blank",
+            param_hint="--authorization",
+        )
+    payload: dict[str, object] = {
+        "request_id": request_id or str(uuid4()),
+        "objective": objective,
+        "approval_mode": approval_mode.value,
+        "success_criteria": [
+            {"description": item, "required": True} for item in (success or [])
+        ],
+        "entry_points": [_parse_pentest_target(item) for item in targets],
+        "scope": _parse_pentest_scope(scopes, exclusions=exclude or []),
+        "admission": {
+            "budget": {
+                "max_duration_seconds": max_duration_seconds,
+                "max_model_calls": max_model_calls,
+                "max_tokens": max_tokens,
+                "max_tool_calls": max_tool_calls,
+                "max_target_interactions": max_target_interactions,
+                "max_concurrent_target_interactions": (
+                    max_concurrent_target_interactions
+                ),
+            }
+        },
+        "engagement": {
+            "name": engagement_name or f"Pentest: {targets[0]}",
+            "authorization_reference": authorization_reference,
+        },
+        "capabilities": {
+            "pack_ids": pack if pack is not None else ["pentest-foundation"],
+            "tool_ids": tool or [],
+            "skill_ids": skill or [],
+            "technique_ids": technique or [],
+        },
+    }
+    if node_id:
+        payload["node_id"] = node_id
+    if workspace:
+        payload["workspace_path"] = workspace
+    if model_profile:
+        payload["model_profile"] = model_profile
+
+    def operation(client: APIClient) -> None:
+        run = client.create_pentest(payload)
+        run_id = str(run.get("id") or "").strip()
+        if not run_id:
+            raise ValueError("Pentest creation response did not include a Run ID")
+        render_pentest_status(console, client.get_pentest_status(run_id))
+        console.print(f"[green]{tr('Pentest admitted and started.')}[/green]")
+
+    _run_with_client(context, operation)
+
+
+@pentest_app.command("status")
+def show_pentest_status(
+    context: typer.Context,
+    run_id: Annotated[str, typer.Argument(help="Pentest Run ID.")],
+) -> None:
+    """Show the durable Pentest admission, usage, execution, and stop state."""
+
+    _run_with_client(
+        context,
+        lambda client: render_pentest_status(
+            console,
+            client.get_pentest_status(run_id),
+        ),
+    )
+
+
+@pentest_app.command("resume")
+def resume_pentest(
+    context: typer.Context,
+    run_id: Annotated[str, typer.Argument(help="Pentest Run ID.")],
+) -> None:
+    """Resume an admitted Pentest Run through the shared Run control path."""
+
+    def operation(client: APIClient) -> None:
+        client.get_pentest_status(run_id)
+        client.resume_run(run_id)
+        render_pentest_status(console, client.get_pentest_status(run_id))
+        console.print(f"[green]{tr('Pentest resume requested.')}[/green]")
+
+    _run_with_client(context, operation)
+
+
+@pentest_app.command("stop")
+def stop_pentest(
+    context: typer.Context,
+    run_id: Annotated[str, typer.Argument(help="Pentest Run ID.")],
+) -> None:
+    """Cancel a Pentest Run and display its durable stop proof."""
+
+    def operation(client: APIClient) -> None:
+        client.get_pentest_status(run_id)
+        client.cancel_run(run_id)
+        render_pentest_status(console, client.get_pentest_status(run_id))
+        console.print(f"[green]{tr('Pentest stop confirmed.')}[/green]")
+
+    _run_with_client(context, operation)
 
 
 @run_app.command("create")
@@ -1391,6 +2210,8 @@ def doctor_tools(
 
 
 async def _run_temporal_worker(config: RiftXConfig) -> None:
+    from riftx.temporal.worker_runtime import build_temporal_worker
+
     runtime = await build_temporal_worker(config)
     await runtime.run()
 
@@ -1425,6 +2246,78 @@ def _parse_entry_point(value: str) -> dict[str, str]:
         choices = ", ".join(item.value for item in EntryPointKind)
         raise typer.BadParameter(f"entry point kind must be one of: {choices}") from exc
     return {"kind": parsed_kind.value, "value": entry_value.strip()}
+
+
+def _parse_pentest_target(value: str) -> dict[str, str]:
+    item = value.strip()
+    if not item:
+        raise typer.BadParameter("Pentest targets must not be blank")
+    if "=" in item:
+        parsed = _parse_entry_point(item)
+        if parsed["kind"] not in {
+            EntryPointKind.CIDR.value,
+            EntryPointKind.IP.value,
+            EntryPointKind.DOMAIN.value,
+            EntryPointKind.URL.value,
+        }:
+            raise typer.BadParameter("Pentest targets must be CIDR, IP, Domain, or URL")
+        return parsed
+    if "://" in item:
+        return {"kind": EntryPointKind.URL.value, "value": item}
+    try:
+        return {
+            "kind": EntryPointKind.IP.value,
+            "value": str(ipaddress.ip_address(item)),
+        }
+    except ValueError:
+        pass
+    if "/" in item:
+        try:
+            return {
+                "kind": EntryPointKind.CIDR.value,
+                "value": str(ipaddress.ip_network(item, strict=False)),
+            }
+        except ValueError as exc:
+            raise typer.BadParameter(f"invalid Pentest target: {item}") from exc
+    return {"kind": EntryPointKind.DOMAIN.value, "value": item}
+
+
+def _parse_pentest_scope(
+    values: list[str],
+    *,
+    exclusions: list[str],
+) -> dict[str, object]:
+    result: dict[str, list[str]] = {
+        "cidrs": [],
+        "ips": [],
+        "domains": [],
+        "url_prefixes": [],
+        "asset_tags": [],
+        "exclusions": list(dict.fromkeys(item.strip() for item in exclusions if item.strip())),
+    }
+    for raw in values:
+        item = raw.strip()
+        if not item:
+            raise typer.BadParameter("Scope values must not be blank", param_hint="--scope")
+        if "://" in item:
+            result["url_prefixes"].append(item)
+            continue
+        try:
+            result["ips"].append(str(ipaddress.ip_address(item)))
+            continue
+        except ValueError:
+            pass
+        if "/" in item:
+            try:
+                result["cidrs"].append(str(ipaddress.ip_network(item, strict=False)))
+                continue
+            except ValueError as exc:
+                raise typer.BadParameter(
+                    f"invalid Scope value: {item}",
+                    param_hint="--scope",
+                ) from exc
+        result["domains"].append(item)
+    return {key: list(dict.fromkeys(items)) for key, items in result.items()}
 
 
 if __name__ == "__main__":

@@ -5,9 +5,10 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import ForeignKeyConstraint, create_engine, inspect
-from tests.integration.persistence.test_audit_repositories import (
+from tests.integration.persistence._audit_compat import (
     _create_audit,
     _create_engagement,
+    _create_project,
     _project,
     _snapshot,
 )
@@ -21,7 +22,6 @@ from tests.integration.persistence.test_snapshot_references import _reference
 
 from riftx.persistence import (
     Database,
-    SQLAlchemyAuditProjectRepository,
     SQLAlchemySnapshotReferenceRepository,
     SQLAlchemySnapshotRepository,
 )
@@ -80,13 +80,13 @@ def test_empty_snapshot_reference_upgrade_downgrades_cleanly(tmp_path: Path) -> 
 
 def test_durable_snapshot_reference_blocks_lossy_downgrade(tmp_path: Path) -> None:
     database_path = tmp_path / "snapshot-reference-block.db"
-    run_alembic(database_path, REFERENCE_REVISION)
+    run_alembic(database_path, "head")
 
     async def seed() -> None:
         database = Database(f"sqlite+aiosqlite:///{database_path}")
         try:
             await _create_engagement(database, "engagement-1")
-            await SQLAlchemyAuditProjectRepository(database.session_factory).create(_project())
+            await _create_project(database, _project())
             await SQLAlchemySnapshotRepository(database.session_factory).create(_snapshot())
             await _create_audit(database)
             await SQLAlchemySnapshotReferenceRepository(database.session_factory).add(

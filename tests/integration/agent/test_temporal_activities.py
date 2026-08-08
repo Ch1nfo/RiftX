@@ -21,6 +21,7 @@ from riftx.agent import (
 from riftx.application.services import (
     ApprovalRequestRecorder,
     ArtifactApplicationService,
+    ClosureVerifierApplicationService,
     ReportApplicationService,
     RunSafetyStopService,
 )
@@ -33,17 +34,21 @@ from riftx.domain import (
     Objective,
     Run,
     RunStatus,
+    SuccessCriterion,
 )
 from riftx.persistence import (
     Database,
     SQLAlchemyApprovalRepository,
     SQLAlchemyArtifactRepository,
     SQLAlchemyEngagementRepository,
+    SQLAlchemyEvidenceLedgerRepository,
     SQLAlchemyExecutionRepository,
     SQLAlchemyFindingRepository,
+    SQLAlchemyReasoningGraphRepository,
     SQLAlchemyReportRepository,
     SQLAlchemyRunEventRepository,
     SQLAlchemyRunRepository,
+    SQLAlchemyTaskGraphRepository,
 )
 from riftx.runner import ProcessSupervisor, RunnerPaths
 from riftx.temporal import (
@@ -102,15 +107,28 @@ class EmptyRunResourceStopper:
 
 
 class MutableRunResourceStopper:
-    def __init__(self, runs: SQLAlchemyRunRepository, result: EmptyStopResult) -> None:
+    def __init__(
+        self,
+        runs: SQLAlchemyRunRepository,
+        result: EmptyStopResult,
+        *,
+        events: SQLAlchemyRunEventRepository | None = None,
+    ) -> None:
         self._runs = runs
+        self._events = events
         self.result = result
         self.observed_run_statuses: list[RunStatus] = []
+        self.observed_closure_event_counts: list[int] = []
 
     async def stop_run(self, run_id: str) -> EmptyStopResult:
         run = await self._runs.get(run_id)
         assert run is not None
         self.observed_run_statuses.append(run.status)
+        if self._events is not None:
+            events = await self._events.list_after(run_id)
+            self.observed_closure_event_counts.append(
+                sum(event.event_type == "run.closure_evaluated" for event in events)
+            )
         return self.result
 
 
@@ -133,6 +151,8 @@ class ToggleExecutionAckRunner:
 async def _runtime(
     tmp_path: Path,
     cycle: FakeAgentCycle,
+    *,
+    success_criteria: list[SuccessCriterion] | None = None,
 ) -> tuple[
     Database,
     SQLAlchemyRunRepository,
@@ -153,6 +173,7 @@ async def _runtime(
             engagement_id="engagement-1",
             node_id="node-1",
             objective=Objective(description="Temporal activity test"),
+            success_criteria=list(success_criteria or ()),
             workspace_path=str(tmp_path / "workspace" / "run-1"),
         )
     )
@@ -209,6 +230,12 @@ async def _runtime(
             approval_repository=approval_repository,
             event_repository=event_repository,
             tool_registry=registry,
+        ),
+        closure_verifier=ClosureVerifierApplicationService(
+            runs=run_repository,
+            task_graphs=SQLAlchemyTaskGraphRepository(database.session_factory),
+            reasoning_graphs=SQLAlchemyReasoningGraphRepository(database.session_factory),
+            evidence=SQLAlchemyEvidenceLedgerRepository(database.session_factory),
         ),
         report_service=ReportApplicationService(
             run_repository=run_repository,
@@ -489,6 +516,42 @@ async def test_initial_preparation_is_retryable_while_locally_paused(tmp_path: P
     await database.dispose()
 
 
+async def test_legacy_cycle_does_not_continue_when_effect_cancellation_is_unconfirmed(
+    tmp_path: Path,
+) -> None:
+    cycle = FakeAgentCycle(deque())
+    database, runs, _, activities, supervisor = await _runtime(tmp_path, cycle)
+    await activities.prepare_run_activity(PrepareRunInput(run_id="run-1"))
+    activities._safety_stopper._resource_stoppers[
+        "browser_sessions"
+    ] = MutableRunResourceStopper(
+        runs,
+        EmptyStopResult(
+            attempted_ids=("browser-1",),
+            node_ids={"browser-1": "node-1"},
+            observed_statuses={"browser-1": "active"},
+            failures={"browser-1": "owner ACK pending"},
+        ),
+    )
+    activities._safety_stopper._resource_stop_max_passes = 1
+
+    with pytest.raises(ApplicationError) as unconfirmed:
+        await activities.agent_cycle_activity(
+            AgentCycleActivityInput(
+                run_id="run-1",
+                agent_step_id="legacy-cancel",
+                cancel_current_execution=True,
+            )
+        )
+
+    assert unconfirmed.value.type == "execution_cancel_unconfirmed"
+    assert cycle.calls == []
+    run = await runs.get("run-1")
+    assert run is not None and run.status is RunStatus.RUNNING
+    await supervisor.close()
+    await database.dispose()
+
+
 async def test_temporal_activities_prepare_interrupt_resume_and_complete(tmp_path: Path) -> None:
     cycle = FakeAgentCycle(
         deque(
@@ -652,6 +715,7 @@ async def test_temporal_activity_defers_completion_until_workflow_cleanup(
         )
     )
     after_blocked_completion = await run_repository.get("run-1")
+    blocked_events = await events.list_after("run-1")
     completed_cleanup = await activities.cleanup_run_activity(
         CleanupRunInput(
             run_id="run-1",
@@ -673,12 +737,83 @@ async def test_temporal_activity_defers_completion_until_workflow_cleanup(
     assert blocked_completion.pending_user_message_ids == [late_message.id]
     assert after_blocked_completion is not None
     assert after_blocked_completion.status is RunStatus.RUNNING
+    assert all(event.event_type != "run.closure_evaluated" for event in blocked_events)
     assert completed_cleanup.cleaned is True
     assert completed is not None and completed.status is RunStatus.COMPLETED
     assert transitions[-2:] == [
         {"from": "running", "to": "completing"},
         {"from": "completing", "to": "completed"},
     ]
+    await supervisor.close()
+    await database.dispose()
+
+
+async def test_partial_closure_is_idempotent_and_precedes_the_physical_stop_gate(
+    tmp_path: Path,
+) -> None:
+    cycle = FakeAgentCycle(deque())
+    database, runs, events, activities, supervisor = await _runtime(
+        tmp_path,
+        cycle,
+        success_criteria=[SuccessCriterion(description="Preserve verified evidence")],
+    )
+    await activities.prepare_run_activity(PrepareRunInput(run_id="run-1"))
+    stopper = MutableRunResourceStopper(
+        runs,
+        EmptyStopResult(
+            attempted_ids=("browser-1",),
+            node_ids={"browser-1": "node-1"},
+            observed_statuses={"browser-1": "active"},
+            failures={"browser-1": "owner ACK pending"},
+        ),
+        events=events,
+    )
+    activities._safety_stopper._resource_stoppers["browser_sessions"] = stopper
+    activities._safety_stopper._resource_stop_max_passes = 1
+
+    with pytest.raises(ApplicationError) as unconfirmed:
+        await activities.cleanup_run_activity(
+            CleanupRunInput(run_id="run-1", final_status="completed")
+        )
+
+    fenced = await runs.get("run-1")
+    first_timeline = await events.list_after("run-1")
+    first_closure = [
+        event for event in first_timeline if event.event_type == "run.closure_evaluated"
+    ]
+    assert unconfirmed.value.type == "cleanup_stop_unconfirmed"
+    assert fenced is not None and fenced.status is RunStatus.COMPLETING
+    assert stopper.observed_closure_event_counts == [1]
+    assert len(first_closure) == 1
+    assert first_closure[0].payload["outcome"] == "partial"
+    assert first_closure[0].payload["reason_codes"] == [
+        "success_criterion_unmapped",
+        "task_graph_missing",
+    ]
+
+    stopper.result = EmptyStopResult(
+        attempted_ids=("browser-1",),
+        node_ids={"browser-1": "node-1"},
+        observed_statuses={"browser-1": "closed"},
+        confirmed_statuses={"browser-1": "closed"},
+    )
+    completed = await activities.cleanup_run_activity(
+        CleanupRunInput(run_id="run-1", final_status="completed")
+    )
+
+    run = await runs.get("run-1")
+    timeline = await events.list_after("run-1")
+    closure_events = [
+        event for event in timeline if event.event_type == "run.closure_evaluated"
+    ]
+    stop_confirmed = next(
+        event for event in timeline if event.event_type == "run.cleanup_stop_confirmed"
+    )
+    assert completed.cleaned is True
+    assert run is not None and run.status is RunStatus.COMPLETED
+    assert stopper.observed_closure_event_counts == [1, 1]
+    assert [event.id for event in closure_events] == [first_closure[0].id]
+    assert closure_events[0].sequence < stop_confirmed.sequence
     await supervisor.close()
     await database.dispose()
 

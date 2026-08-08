@@ -15,36 +15,44 @@ from .artifacts import (
     RegisterArtifactContent,
 )
 from .audit_controls import AuditControlApplicationService, AuditRunStateProjector
-from .audit_preflight import (
-    AuditPreflightApplicationService,
-    AuditPreflightAvailabilityCheck,
-    AuditPreflightCreationResult,
+from .closure import (
+    CLOSURE_EVALUATED_EVENT_TYPE,
+    ClosureOutcome,
+    ClosureReport,
+    ClosureVerifierApplicationService,
+    FindingClosure,
+    IncompleteTaskClosure,
+    SuccessCriterionClosure,
+    closure_event_id,
+    closure_event_payload,
+    closure_report_digest,
 )
-from .audit_preflight_plan import (
-    AuditPreflightPlanApplicationService,
-    AuditPreflightPlanClock,
-    AuditPreflightPlanIdFactory,
-    AuditPreflightPlanIssuanceResult,
-)
-from .audit_preflight_runner import AuditPreflightRunnerService
-from .audit_start import AuditStartApplicationService, StartAudit
-from .audits import (
-    AuditApplicationService,
-    AuditContractBlueprint,
-    AuditControlAction,
-    AuditControlDisposition,
-    AuditControlEffect,
-    AuditControlPlan,
-    AuditDraftResult,
-    AuditRunStateMappingPolicy,
-    CreateAuditDraft,
-    CreateAuditDraftV2,
-)
+from .code_artifacts import ArtifactCodePublisher
 from .events import EventApplicationService
+from .evidence import (
+    EvidenceApplicationService,
+    RegisterArtifactSpanEvidence,
+    RegisterCodeLocationEvidence,
+)
 from .executions import ExecutionApplicationService
 from .findings import CreateFinding, FindingApplicationService, UpdateFinding
 from .models import ModelProfileApplicationService, ModelProfilesView, ModelProfileView
 from .nodes import NodeApplicationService, NodeHeartbeat, NodeRegistration
+from .pentests import (
+    CreatePentest,
+    PentestApplicationService,
+    PentestCapabilityResolver,
+    PentestCapabilitySelection,
+    PentestStatusApplicationService,
+    PentestStatusProjection,
+    ResolvedPentestCapabilities,
+)
+from .reasoning import (
+    QueryReasoningGraph,
+    ReasoningGraphApplicationService,
+    ReasoningGraphQueryResult,
+    TransitionReasoningNode,
+)
 from .reports import (
     DeterministicReportComposer,
     GenerateReports,
@@ -85,6 +93,7 @@ from .workflow_signals import (
     WorkflowSignalTransport,
     WorkflowSignalTransportReceipt,
 )
+from .working_memory import WorkingMemoryProposalApplicationService
 
 __all__ = [
     "ActionApplicationService",
@@ -93,49 +102,49 @@ __all__ = [
     "ApprovalRequestRecorder",
     "RuntimeApprovalRequestRecorder",
     "ArtifactApplicationService",
+    "ArtifactCodePublisher",
     "ArtifactContentSlice",
-    "AuditApplicationService",
-    "AuditPreflightApplicationService",
-    "AuditPreflightAvailabilityCheck",
-    "AuditPreflightCreationResult",
-    "AuditPreflightPlanApplicationService",
-    "AuditPreflightPlanClock",
-    "AuditPreflightPlanIdFactory",
-    "AuditPreflightPlanIssuanceResult",
-    "AuditPreflightRunnerService",
-    "AuditStartApplicationService",
     "AuditControlApplicationService",
-    "AuditContractBlueprint",
-    "AuditControlAction",
-    "AuditControlDisposition",
-    "AuditControlEffect",
-    "AuditControlPlan",
-    "AuditDraftResult",
-    "AuditRunStateMappingPolicy",
     "AuditRunStateProjector",
     "CreateEngagement",
-    "CreateAuditDraft",
-    "CreateAuditDraftV2",
     "CreateRun",
-    "StartAudit",
+    "CLOSURE_EVALUATED_EVENT_TYPE",
+    "ClosureOutcome",
+    "ClosureReport",
+    "ClosureVerifierApplicationService",
     "DecideApproval",
     "EventApplicationService",
+    "EvidenceApplicationService",
     "ExecutionApplicationService",
     "CreateFinding",
     "FindingApplicationService",
+    "FindingClosure",
+    "IncompleteTaskClosure",
     "ModelProfileApplicationService",
     "ModelProfilesView",
     "ModelProfileView",
     "NodeApplicationService",
     "NodeHeartbeat",
     "NodeRegistration",
+    "CreatePentest",
+    "PentestApplicationService",
+    "PentestCapabilityResolver",
+    "PentestCapabilitySelection",
+    "PentestStatusApplicationService",
+    "PentestStatusProjection",
+    "ResolvedPentestCapabilities",
     "RegisteredToolView",
     "RegisterArtifact",
     "RegisterArtifactContent",
+    "RegisterArtifactSpanEvidence",
+    "RegisterCodeLocationEvidence",
     "ReportApplicationService",
+    "ReasoningGraphApplicationService",
+    "ReasoningGraphQueryResult",
     "ReportComposer",
     "ReportSource",
     "StructuredReport",
+    "SuccessCriterionClosure",
     "DeterministicReportComposer",
     "GenerateReports",
     "render_report",
@@ -148,6 +157,9 @@ __all__ = [
     "RunSafetyStopService",
     "SafetyStopResult",
     "stop_resources_payload",
+    "closure_event_id",
+    "closure_event_payload",
+    "closure_report_digest",
     "RunApplicationService",
     "RunWorkflowClient",
     "ToolApplicationService",
@@ -157,6 +169,9 @@ __all__ = [
     "TerminalApplicationService",
     "TerminalView",
     "TrafficMetadataApplicationService",
+    "TransitionReasoningNode",
+    "QueryReasoningGraph",
+    "WorkingMemoryProposalApplicationService",
     "WorkflowSignalBatchResult",
     "WorkflowSignalDefinitelyNotDelivered",
     "WorkflowSignalDispatcher",

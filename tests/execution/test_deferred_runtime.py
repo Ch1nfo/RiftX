@@ -26,7 +26,15 @@ from riftx.execution import (
     DeferredExecutionDispatcher,
     DeferredExecutionSpec,
     ExecutionService,
+    build_execution_key,
     build_tool_call_intent_id,
+)
+from riftx.observer import (
+    SupervisorCheck,
+    SupervisorDisposition,
+    SupervisorReport,
+    SupervisorSeverity,
+    SupervisorSignal,
 )
 from riftx.persistence import (
     Database,
@@ -94,6 +102,51 @@ class DeferredEngine:
 
     async def resume(self, request: object) -> DeferredEngineRun:
         return DeferredEngineRun(self._events)
+
+
+class ApprovalYieldObserver:
+    def __init__(
+        self,
+        tool_calls: SQLAlchemyToolCallIntentRepository,
+        approvals: SQLAlchemyRuntimeApprovalRepository,
+    ) -> None:
+        self._tool_calls = tool_calls
+        self._approvals = approvals
+        self.calls = 0
+
+    async def inspect(self, **kwargs: object) -> SupervisorReport:
+        self.calls += 1
+        session = kwargs["session"]
+        cycle = kwargs["cycle"]
+        assert isinstance(session, AgentSession)
+        assert isinstance(cycle, AgentCycle)
+        intents = await self._tool_calls.recent_for_session(session.id)
+        if not intents:
+            return SupervisorReport(
+                run_id=session.run_id,
+                session_id=session.id,
+                cycle_id=cycle.id,
+                disposition=SupervisorDisposition.CONTINUE,
+            )
+        approval = await self._approvals.get_for_intent(intents[-1].id)
+        assert approval is not None
+        return SupervisorReport(
+            run_id=session.run_id,
+            session_id=session.id,
+            cycle_id=cycle.id,
+            disposition=SupervisorDisposition.YIELD,
+            yield_reason=YieldReason.APPROVAL_REQUIRED,
+            signals=(
+                SupervisorSignal(
+                    code="approval_pending",
+                    check=SupervisorCheck.APPROVAL,
+                    severity=SupervisorSeverity.INFO,
+                    summary="Wait for durable approval",
+                    refs=(f"approval:{approval.id}",),
+                    yield_reason=YieldReason.APPROVAL_REQUIRED,
+                ),
+            ),
+        )
 
 
 class RecordingRunner:
@@ -357,6 +410,21 @@ def deferred_event(
     )
 
 
+def approved_control_event() -> AgentEngineEvent:
+    return AgentEngineEvent(
+        sequence=1,
+        event_type=AgentEngineEventType.TOOL_CALL_READY,
+        data={
+            "call_id": "patch-call",
+            "tool_id": "apply_patch",
+            "arguments": {"path": "src/app.py"},
+            "approval_level": ApprovalLevel.ALWAYS.value,
+            "approval_policy": "explicit",
+            "approval_required": True,
+        },
+    )
+
+
 def legacy_intent(
     fixture: DurableDispatcherFixture,
     *,
@@ -398,6 +466,125 @@ async def prepare(
         step=fixture.steps[cycle_id],
         event=event,
         status=status,
+    )
+
+
+async def test_provider_control_intent_requires_approval_and_settles_once(
+    durable_dispatcher: DurableDispatcherFixture,
+) -> None:
+    fixture = durable_dispatcher
+    intent = await fixture.dispatcher.prepare_control(
+        session=fixture.session,
+        cycle=fixture.cycles["cycle-1"],
+        step=fixture.steps["cycle-1"],
+        event=approved_control_event(),
+    )
+
+    assert intent.execution_spec is None
+    assert intent.status is ToolCallStatus.WAITING_APPROVAL
+    await fixture.dispatcher.approve_intent(intent.id)
+    with pytest.raises(ApplicationConflictError) as mismatched:
+        await fixture.dispatcher.begin_control_intent(
+            run_id=fixture.run.id,
+            session_id=fixture.session.id,
+            engine_call_id="patch-call",
+            tool_name="apply_patch",
+            arguments={"path": "foreign.py"},
+        )
+    assert mismatched.value.code == "control_tool_intent_mismatch"
+    claimed = await fixture.dispatcher.begin_control_intent(
+        run_id=fixture.run.id,
+        session_id=fixture.session.id,
+        engine_call_id="patch-call",
+        tool_name="apply_patch",
+        arguments={"path": "src/app.py"},
+    )
+    assert claimed is not None
+    assert claimed.id == intent.id
+    assert claimed.status is ToolCallStatus.EXECUTING
+    with pytest.raises(ApplicationConflictError, match="exactly-once"):
+        await fixture.dispatcher.begin_control_intent(
+            run_id=fixture.run.id,
+            session_id=fixture.session.id,
+            engine_call_id="patch-call",
+            tool_name="apply_patch",
+            arguments={"path": "src/app.py"},
+        )
+
+    await fixture.dispatcher.finish_control_intent(
+        run_id=fixture.run.id,
+        session_id=fixture.session.id,
+        engine_call_id="patch-call",
+        succeeded=True,
+    )
+
+    settled = await fixture.tool_calls.get(intent.id)
+    assert settled is not None and settled.status is ToolCallStatus.COMPLETED
+
+
+async def test_target_http_control_intent_uses_server_owned_redacted_target_summary(
+    durable_dispatcher: DurableDispatcherFixture,
+) -> None:
+    fixture = durable_dispatcher
+    intent = await fixture.dispatcher.prepare_control(
+        session=fixture.session,
+        cycle=fixture.cycles["cycle-1"],
+        step=fixture.steps["cycle-1"],
+        event=AgentEngineEvent(
+            sequence=1,
+            event_type=AgentEngineEventType.TOOL_CALL_READY,
+            data={
+                "call_id": "target-http-call",
+                "tool_id": "target_http_request",
+                "arguments": {
+                    "method": "GET",
+                    "url": "https://user:secret@example.test:8443/private?token=value",
+                },
+                "target_summary": "model-owned-summary",
+                "approval_level": ApprovalLevel.ALWAYS.value,
+                "approval_policy": "explicit",
+                "approval_required": True,
+            },
+        ),
+    )
+
+    assert intent.target_summary == "https://example.test:8443"
+    assert "secret" not in intent.target_summary
+    assert "private" not in intent.target_summary
+
+
+async def test_provider_control_intent_can_persist_a_deterministic_execution_claim(
+    durable_dispatcher: DurableDispatcherFixture,
+) -> None:
+    fixture = durable_dispatcher
+    intent = await fixture.dispatcher.prepare_control(
+        session=fixture.session,
+        cycle=fixture.cycles["cycle-1"],
+        step=fixture.steps["cycle-1"],
+        event=approved_control_event(),
+    )
+    await fixture.dispatcher.approve_intent(intent.id)
+
+    claimed = await fixture.dispatcher.begin_control_intent(
+        run_id=fixture.run.id,
+        session_id=fixture.session.id,
+        engine_call_id="patch-call",
+        tool_name="apply_patch",
+        arguments={"path": "src/app.py"},
+        attempt_group="mcp",
+    )
+
+    assert claimed is not None
+    execution_key = build_execution_key(
+        run_id=fixture.run.id,
+        session_id=fixture.session.id,
+        tool_call_id=intent.id,
+        attempt_group="mcp",
+    )
+    assert await fixture.tool_calls.execution_claim_is_current(
+        intent.id,
+        execution_key=execution_key,
+        attempt_group="mcp",
     )
 
 
@@ -927,3 +1114,69 @@ async def test_runtime_retry_yields_same_deferred_execution_without_relaunch(
     assert completed.execution.status is ExecutionStatus.COMPLETED
     await supervisor.close()
     await database.dispose()
+
+
+async def test_runtime_observer_yields_with_durable_approval_identity(
+    durable_dispatcher: DurableDispatcherFixture,
+) -> None:
+    database = durable_dispatcher.database
+    runs = SQLAlchemyRunRepository(database.session_factory)
+    sessions = SQLAlchemyAgentSessionRepository(database.session_factory)
+    events = SQLAlchemyRunEventRepository(database.session_factory)
+    observer = ApprovalYieldObserver(
+        durable_dispatcher.tool_calls,
+        durable_dispatcher.runtime_approvals,
+    )
+    coordinator = RuntimeCoordinator(
+        run_repository=runs,
+        session_repository=sessions,
+        cycle_repository=SQLAlchemyAgentCycleRepository(database.session_factory),
+        step_repository=SQLAlchemyAgentStepRepository(database.session_factory),
+        provider_state_repository=SQLAlchemyProviderStateRepository(database.session_factory),
+        event_repository=events,
+        lease_manager=DatabaseRunLeaseManager(
+            SQLAlchemyRunLeaseRepository(database.session_factory)
+        ),
+        context_compiler=MinimalContextCompiler(),
+        agent_engine=DeferredEngine(
+            [
+                deferred_event(durable_dispatcher.workspace),
+                AgentEngineEvent(
+                    sequence=2,
+                    event_type=AgentEngineEventType.RUN_COMPLETED,
+                ),
+            ]
+        ),
+        deferred_execution_dispatcher=durable_dispatcher.dispatcher,
+        approval_repository=durable_dispatcher.public_approvals,
+        runtime_approval_repository=durable_dispatcher.runtime_approvals,
+        approval_recorder=durable_dispatcher.approval_recorder,
+        observer=observer,
+    )
+
+    result = await coordinator.run_cycle(
+        RunCycleRequest(
+            run_id=durable_dispatcher.run.id,
+            session_id=durable_dispatcher.session.id,
+            worker_id="observer-worker",
+            cycle_id="observer-approval-cycle",
+        )
+    )
+
+    pending = await durable_dispatcher.runtime_approvals.pending_for_run(
+        durable_dispatcher.run.id
+    )
+    assert len(pending) == 1
+    assert result.yield_reason is YieldReason.APPROVAL_REQUIRED
+    assert result.waiting_object_id == pending[0].id
+    assert pending[0].provider_state_id == result.provider_state_id
+    assert observer.calls == 2
+    observer_events = [
+        item
+        for item in await events.list_after(durable_dispatcher.run.id)
+        if item.event_type == "runtime.observer_inspected"
+    ]
+    assert [item.payload["phase"] for item in observer_events] == [
+        "pre_model",
+        "tool_intent",
+    ]

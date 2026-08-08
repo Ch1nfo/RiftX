@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+          cache: pnpm
+
+      - name: Install Python dependencies
+        run: python -m pip install -e ".[dev]"
+
+      - name: Install Web dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint Python
+        run: python -m ruff check src/riftx tests migrations
+
+      - name: Test Python
+        run: python -m pytest
+
+      - name: Run release gate
+        run: python scripts/qa/release-gate.py
+
+      - name: Type-check WebUI
+        run: pnpm --filter @riftx/web typecheck
+
+      - name: Test WebUI
+        run: pnpm --filter @riftx/web test
+
+      - name: Build WebUI
+        run: pnpm --filter @riftx/web build
+
+      - name: Verify bundled WebUI is current
+        run: git diff --exit-code -- src/riftx/_webui

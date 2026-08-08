@@ -14,6 +14,7 @@ from riftx.domain import (
     EntryPoint,
     EntryPointKind,
     Objective,
+    PentestAdmission,
     Run,
     RunKind,
     RunStatus,
@@ -156,16 +157,59 @@ class CodeAuditRunResponse(BaseModel):
         return cls.model_validate(run)
 
 
+class PentestRunResponse(BaseModel):
+    """Generic local-operator projection for a persisted Pentest Run."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    engagement_id: str
+    node_id: str
+    objective: Objective
+    success_criteria: list[SuccessCriterion]
+    entry_points: list[EntryPoint]
+    scope: Scope
+    kind: Literal[RunKind.PENTEST]
+    status: RunStatus
+    approval_mode: ApprovalMode
+    pentest_admission: PentestAdmission
+    model_profile: str | None
+    workspace_path: str
+    temporal_workflow_id: str | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+    @classmethod
+    def from_domain(cls, run: Run) -> PentestRunResponse:
+        return cls.model_validate(run)
+
+
 RunReadResponse = Annotated[
-    RunResponse | CodeAuditRunResponse,
+    RunResponse | PentestRunResponse | CodeAuditRunResponse,
+    Field(discriminator="kind"),
+]
+
+InteractiveRunResponse = Annotated[
+    RunResponse | PentestRunResponse,
     Field(discriminator="kind"),
 ]
 
 
 def run_read_response_from_domain(run: Run) -> RunReadResponse:
+    if run.kind is RunKind.PENTEST:
+        return PentestRunResponse.from_domain(run)
     if run.kind is RunKind.CODE_AUDIT:
         return CodeAuditRunResponse.from_domain(run)
     return RunResponse.from_domain(run)
+
+
+def interactive_run_response_from_domain(run: Run) -> InteractiveRunResponse:
+    if run.kind is RunKind.PENTEST:
+        return PentestRunResponse.from_domain(run)
+    if run.kind is RunKind.GENERAL:
+        return RunResponse.from_domain(run)
+    raise ValueError("interactive Run response requires General or Pentest ownership")
 
 
 class RunListResponse(BaseModel):
@@ -176,7 +220,7 @@ class RunListResponse(BaseModel):
 
 class RunActionResponse(BaseModel):
     accepted: bool = True
-    run: RunResponse
+    run: InteractiveRunResponse
 
 
 class RunMessageRequest(BaseModel):

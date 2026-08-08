@@ -5,17 +5,36 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "riftx"
 version = "2.0.0a0"
-description = "Host-native durable agent execution platform"
+description = "Host-native Pentest-first agent platform for authorized security testing"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = "Apache-2.0"
 authors = [
   { name = "RiftX contributors" },
 ]
+keywords = [
+  "agent",
+  "fastapi",
+  "penetration-testing",
+  "security-testing",
+  "temporal",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Framework :: FastAPI",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Information Technology",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Security",
+]
 dependencies = [
   "aiosqlite>=0.20,<1",
   "alembic>=1.14,<2",
-  "fastapi>=0.136,<1",
+  "fastapi>=0.136,<0.137",
   "httpx>=0.28,<1",
   "pydantic>=2.10,<3",
   "prompt-toolkit>=3.0.53,<4",
@@ -24,7 +43,6 @@ dependencies = [
   "rich>=14,<15",
   "openai>=2.50,<3",
   "openai-agents>=0.19,<1",
-  "playwright>=1.52,<2",
   "sqlalchemy[asyncio]>=2.0.36,<3",
   "temporalio>=1.30,<2",
   "typer>=0.26,<1",
@@ -37,10 +55,21 @@ dependencies = [
 riftx = "riftx.cli.app:app"
 riftx-runner = "riftx.runner.daemon:app"
 
+[project.urls]
+Homepage = "https://github.com/Ch1nfo/RiftX"
+Documentation = "https://github.com/Ch1nfo/RiftX/tree/main/docs"
+Repository = "https://github.com/Ch1nfo/RiftX.git"
+Issues = "https://github.com/Ch1nfo/RiftX/issues"
+Changelog = "https://github.com/Ch1nfo/RiftX/blob/main/CHANGELOG.md"
+
 [project.optional-dependencies]
+browser = [
+  "playwright>=1.52,<2",
+]
 dev = [
   "pytest>=8.3,<9",
   "pytest-asyncio>=0.25,<1",
+  "ruff>=0.15,<1",
 ]
 
 [tool.setuptools]
@@ -48,6 +77,24 @@ package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"riftx" = [
+  "_webui/index.html",
+  "_webui/assets/*",
+]
+"riftx.packs" = [
+  "official/*/*.yaml",
+  "official/*/*.md",
+  "official/*/skills/*/*.md",
+  "official/*/skills/*/schemas/*.json",
+]
+
+[tool.setuptools.data-files]
+"share/riftx" = ["alembic.ini"]
+"share/riftx/templates" = ["configs/tools.example.yaml"]
+"share/riftx/migrations" = ["migrations/env.py", "migrations/script.py.mako"]
+"share/riftx/migrations/versions" = ["migrations/versions/*.py"]
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-config --strict-markers --import-mode=importlib"

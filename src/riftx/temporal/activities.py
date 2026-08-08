@@ -30,11 +30,15 @@ from riftx.application.ports import (
     RunRepository,
 )
 from riftx.application.services import (
+    CLOSURE_EVALUATED_EVENT_TYPE,
     ApprovalInterruption,
     ApprovalRequestRecorder,
+    ClosureVerifierApplicationService,
     GenerateReports,
     ReportApplicationService,
     RunSafetyStopService,
+    closure_event_id,
+    closure_event_payload,
     stop_resources_payload,
 )
 from riftx.context.compaction import (
@@ -90,6 +94,7 @@ class RiftXActivities:
         safety_stopper: RunSafetyStopService,
         agent_cycle: AgentCycleRunner,
         approval_recorder: ApprovalRequestRecorder,
+        closure_verifier: ClosureVerifierApplicationService,
         report_service: ReportApplicationService,
         session_factory: async_sessionmaker[AsyncSession],
         compaction_manager: ContextCompactionManager | None = None,
@@ -100,6 +105,7 @@ class RiftXActivities:
         self._safety_stopper = safety_stopper
         self._agent_cycle = agent_cycle
         self._approval_recorder = approval_recorder
+        self._closure_verifier = closure_verifier
         self._report_service = report_service
         self._session_factory = session_factory
         self._compaction_manager = compaction_manager
@@ -205,7 +211,13 @@ class RiftXActivities:
             run = await self._move_to_running(run)
 
         if input.cancel_current_execution:
-            await self._cancel_run_executions(run.id)
+            stop_result = await self._safety_stopper.stop_run(run.id, drain=False)
+            if not stop_result.succeeded:
+                raise ApplicationError(
+                    "current Run effects could not be confirmed stopped: "
+                    f"{stop_resources_payload(stop_result)!r}",
+                    type="execution_cancel_unconfirmed",
+                )
 
         context = RiftXAgentContext.from_run(
             run,
@@ -522,6 +534,8 @@ class RiftXActivities:
             return CleanupRunResult(cleaned=False)
         if run.status not in {target, RunStatus.COMPLETING}:
             return CleanupRunResult(cleaned=False)
+        if target is RunStatus.COMPLETED:
+            await self._record_closure(run.id)
 
         # COMPLETING is the cross-process admission fence for all three effect
         # families. Only trusted physical-stop acknowledgements can release it
@@ -579,9 +593,9 @@ class RiftXActivities:
         run = await self._run_repository.get(run_id)
         if run is None:
             raise ApplicationError(f"run {run_id!r} was not found", non_retryable=True)
-        if run.kind is not RunKind.GENERAL:
+        if run.kind not in {RunKind.GENERAL, RunKind.PENTEST}:
             raise ApplicationError(
-                "General RiftX Activities cannot operate on a Code Audit Run",
+                "Interactive RiftX Activities cannot operate on a Code Audit Run",
                 type="run_kind_operation_unsupported",
                 non_retryable=True,
             )
@@ -610,6 +624,8 @@ class RiftXActivities:
             run = updated
         if run.status not in {target, RunStatus.COMPLETING}:
             return False
+        if target is RunStatus.COMPLETED:
+            await self._record_closure(run.id)
 
         stop_result = await self._safety_stopper.stop_run(run.id, drain=True)
         if not stop_result.succeeded:
@@ -628,6 +644,15 @@ class RiftXActivities:
                 return False
             run = updated
         return run.status is target
+
+    async def _record_closure(self, run_id: str) -> None:
+        report = await self._closure_verifier.verify(run_id)
+        await self._event_repository.append(
+            run_id,
+            CLOSURE_EVALUATED_EVENT_TYPE,
+            closure_event_payload(report),
+            event_id=closure_event_id(report),
+        )
 
     async def _fence_cleanup_finalization(
         self,

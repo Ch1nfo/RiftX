@@ -1,0 +1,8 @@
+{
+  "type": "object",
+  "required": ["targets", "scope"],
+  "properties": {
+    "targets": {"type": "array", "items": {"type": "string"}},
+    "scope": {"type": "object"}
+  }
+}

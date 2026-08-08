@@ -14,7 +14,7 @@ from riftx.application.errors import (
     EntityNotFoundError,
     resource_not_accessible,
 )
-from riftx.application.services.runs import require_general_run_operation
+from riftx.application.services.runs import require_interactive_run_operation
 from riftx.domain import DomainError, TerminalOwner, TerminalStatus
 
 from ..auth import accept_local_operator_websocket
@@ -50,7 +50,7 @@ async def create_terminal(
     service: TerminalServiceDependency,
     runs: RunServiceDependency,
 ) -> TerminalResponse:
-    require_general_run_operation(await runs.get_run(run_id))
+    require_interactive_run_operation(await runs.get_run(run_id))
     return TerminalResponse.from_view(await service.create(run_id, request.to_command()))
 
 
@@ -66,7 +66,7 @@ async def get_terminal(
 ) -> TerminalResponse:
     run_id = await service.resolve_run_id(session_id)
     authorized_run = await authorizer.require(run_id)
-    require_general_run_operation(authorized_run)
+    require_interactive_run_operation(authorized_run)
     view = await load_authorized_child(
         service.get(session_id, expected_run_id=run_id)
     )
@@ -86,7 +86,7 @@ async def close_terminal(
     runs: RunServiceDependency,
 ) -> TerminalResponse:
     current = await service.get(session_id)
-    require_general_run_operation(await runs.get_run(current.terminal.run_id))
+    require_interactive_run_operation(await runs.get_run(current.terminal.run_id))
     return TerminalResponse.from_view(await service.close(session_id))
 
 
@@ -213,7 +213,7 @@ async def terminal_websocket(websocket: WebSocket, session_id: str) -> None:
     try:
         run_id = await service.resolve_run_id(session_id)
         authorized_run = await authorizer.require(run_id)
-        require_general_run_operation(authorized_run)
+        require_interactive_run_operation(authorized_run)
         initial = await send_state()
     except EntityNotFoundError:
         error = resource_not_accessible()

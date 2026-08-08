@@ -78,6 +78,7 @@ def test_connector_api_targets_existing_or_new_runs_and_exposes_controls(
     runs = FakeRuns()
     connector = FakeConnector()
     settings = APISettings(
+        connectors_enabled=True,
         trust_profile=TrustProfile.LOCAL_SINGLE_OPERATOR,
         local_principal_path=tmp_path / "local-principal.json",
         admin_token="test-only-local-operator-token-0001",
@@ -89,7 +90,6 @@ def test_connector_api_targets_existing_or_new_runs_and_exposes_controls(
         settings=settings,
         connector_service=connector,
         run_service=runs,
-        audit_service=object(),
         tool_service=SimpleNamespace(node_id="local"),
     )
     app = create_app(control_plane=control_plane)  # type: ignore[arg-type]
@@ -149,3 +149,17 @@ def test_connector_api_targets_existing_or_new_runs_and_exposes_controls(
         webui = client.get("/api/v1/connectors/runs/run-1/webui")
         assert webui.status_code == 200
         assert webui.json()["url"].endswith("/runs/run-1")
+
+
+def test_connector_routes_are_absent_when_disabled(tmp_path: Path) -> None:
+    settings = APISettings(
+        trust_profile=TrustProfile.LOCAL_SINGLE_OPERATOR,
+        local_principal_path=tmp_path / "local-principal.json",
+        admin_token="test-only-local-operator-token-0001",
+        cors_origins=(),
+    )
+    app = create_app(
+        control_plane=SimpleNamespace(settings=settings),  # type: ignore[arg-type]
+    )
+
+    assert all(not route.path.startswith("/api/v1/connectors") for route in app.routes)
