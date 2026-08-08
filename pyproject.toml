@@ -5,12 +5,31 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "riftx"
 version = "2.0.0a0"
-description = "Host-native durable agent execution platform"
+description = "Host-native Pentest-first agent platform for authorized security testing"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = "Apache-2.0"
 authors = [
   { name = "RiftX contributors" },
+]
+keywords = [
+  "agent",
+  "fastapi",
+  "penetration-testing",
+  "security-testing",
+  "temporal",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Framework :: FastAPI",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Information Technology",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Security",
 ]
 dependencies = [
   "aiosqlite>=0.20,<1",
@@ -35,6 +54,13 @@ dependencies = [
 [project.scripts]
 riftx = "riftx.cli.app:app"
 riftx-runner = "riftx.runner.daemon:app"
+
+[project.urls]
+Homepage = "https://github.com/Ch1nfo/RiftX"
+Documentation = "https://github.com/Ch1nfo/RiftX/tree/main/docs"
+Repository = "https://github.com/Ch1nfo/RiftX.git"
+Issues = "https://github.com/Ch1nfo/RiftX/issues"
+Changelog = "https://github.com/Ch1nfo/RiftX/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 browser = [
