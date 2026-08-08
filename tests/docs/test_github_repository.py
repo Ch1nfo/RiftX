@@ -18,6 +18,7 @@ def test_public_repository_has_required_community_files_and_metadata() -> None:
         ".github/ISSUE_TEMPLATE/feature_request.yml",
         ".github/ISSUE_TEMPLATE/config.yml",
         ".github/pull_request_template.md",
+        ".github/workflows/ci.yml",
     ):
         assert (ROOT / relative_path).is_file(), relative_path
 
@@ -37,3 +38,26 @@ def test_public_repository_has_required_community_files_and_metadata() -> None:
         url.startswith("https://github.com/Ch1nfo/RiftX")
         for url in project["urls"].values()
     )
+
+
+def test_ci_qualifies_the_docker_free_release_path() -> None:
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+    for required in (
+        "permissions:\n  contents: read",
+        "actions/checkout@v4",
+        "actions/setup-python@v5",
+        "pnpm/action-setup@v4",
+        "actions/setup-node@v4",
+        'python -m pip install -e ".[dev]"',
+        "python -m ruff check src/riftx tests migrations",
+        "python -m pytest",
+        "python scripts/qa/release-gate.py",
+        "pnpm --filter @riftx/web typecheck",
+        "pnpm --filter @riftx/web test",
+        "pnpm --filter @riftx/web build",
+        "git diff --exit-code -- src/riftx/_webui",
+    ):
+        assert required in workflow
+
+    assert "docker" not in workflow.lower()
