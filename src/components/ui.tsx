@@ -1,0 +1,152 @@
+"use client";
+
+import * as Select from "@radix-ui/react-select";
+import * as Tooltip from "@radix-ui/react-tooltip";
+import { Check, CaretDown, Moon, Sun, Warning, WarningCircle, X } from "@phosphor-icons/react";
+import { useEffect, useState, type ReactNode } from "react";
+import type { ApprovalMode } from "@/lib/types";
+
+function syncFavicon(theme: "dark" | "light") {
+  const href = theme === "light" ? "/riftx-logo-light.png" : "/riftx-logo-dark.png";
+  let link = document.querySelector<HTMLLinkElement>('link[data-riftx-favicon="true"]');
+  if (!link) {
+    link = document.createElement("link");
+    link.rel = "icon";
+    link.dataset.riftxFavicon = "true";
+    document.head.appendChild(link);
+  }
+  link.href = href;
+}
+
+export function RiftxLogo({ decorative = false, variant = "mark", className = "" }: { decorative?: boolean; variant?: "mark" | "full"; className?: string }) {
+  const lightAsset = variant === "full" ? "/riftx-logo-light.png" : "/riftx-logo-light-mark.png";
+  const darkAsset = variant === "full" ? "/riftx-logo-dark.png" : "/riftx-logo-dark-mark.png";
+  return <span className={`riftx-logo ${className}`} aria-label={decorative ? undefined : "RiftX"} aria-hidden={decorative}><img className="riftx-logo-light" src={lightAsset} alt="" /><img className="riftx-logo-dark" src={darkAsset} alt="" /></span>;
+}
+
+export function SelectField({ value, onValueChange, options, placeholder }: { value: string; onValueChange: (value: string) => void; options: Array<{ value: string; label: string }>; placeholder?: string }) {
+  return (
+    <Select.Root value={value} onValueChange={onValueChange}>
+      <Select.Trigger className="select-trigger" aria-label={placeholder}>
+        <Select.Value placeholder={placeholder} />
+        <Select.Icon><CaretDown size={14} /></Select.Icon>
+      </Select.Trigger>
+      <Select.Portal>
+        <Select.Content className="select-content" position="popper" sideOffset={6}>
+          <Select.Viewport className="select-viewport">
+            {options.map((option) => (
+              <Select.Item className="select-item" value={option.value} key={option.value}>
+                <Select.ItemText>{option.label}</Select.ItemText>
+                <Select.ItemIndicator><Check size={14} weight="bold" /></Select.ItemIndicator>
+              </Select.Item>
+            ))}
+          </Select.Viewport>
+        </Select.Content>
+      </Select.Portal>
+    </Select.Root>
+  );
+}
+
+const approvalModeLabels: Record<ApprovalMode, string> = {
+  request: "请求审批",
+  auto: "帮我审批",
+  full: "完全访问"
+};
+
+export function ApprovalModeMenu({ value, onValueChange, disabled }: { value: ApprovalMode; onValueChange: (value: ApprovalMode) => void; disabled?: boolean }) {
+  return (
+    <Select.Root value={value} onValueChange={(next) => onValueChange(next as ApprovalMode)} disabled={disabled}>
+      <Select.Trigger className={`approval-mode-trigger ${value === "full" ? "full" : ""}`} aria-label="审批模式">
+        {value === "full" ? <Warning size={13} weight="fill" aria-hidden="true" /> : null}
+        <Select.Value>{approvalModeLabels[value]}</Select.Value>
+      </Select.Trigger>
+      <Select.Portal>
+        <Select.Content className="select-content approval-mode-content" position="popper" sideOffset={6} align="start">
+          <Select.Viewport className="select-viewport">
+            {(Object.keys(approvalModeLabels) as ApprovalMode[]).map((mode) => (
+              <Select.Item className="select-item" value={mode} key={mode}>
+                <Select.ItemText>{approvalModeLabels[mode]}</Select.ItemText>
+                <Select.ItemIndicator><Check size={14} weight="bold" /></Select.ItemIndicator>
+              </Select.Item>
+            ))}
+          </Select.Viewport>
+        </Select.Content>
+      </Select.Portal>
+    </Select.Root>
+  );
+}
+
+export function ModelMenu({ value, onValueChange, options, disabled }: { value: string; onValueChange: (value: string) => void; options: Array<{ value: string; label: string }>; disabled?: boolean }) {
+  return (
+    <Select.Root value={value} onValueChange={onValueChange} disabled={disabled}>
+      <Select.Trigger className="model-menu-trigger" aria-label="当前模型">
+        <Select.Value />
+        <Select.Icon><CaretDown size={12} /></Select.Icon>
+      </Select.Trigger>
+      <Select.Portal>
+        <Select.Content className="select-content model-menu-content" position="popper" sideOffset={6} align="end">
+          <Select.Viewport className="select-viewport">
+            {options.map((option) => (
+              <Select.Item className="select-item" value={option.value} key={option.value}>
+                <Select.ItemText>{option.label}</Select.ItemText>
+                <Select.ItemIndicator><Check size={14} weight="bold" /></Select.ItemIndicator>
+              </Select.Item>
+            ))}
+          </Select.Viewport>
+        </Select.Content>
+      </Select.Portal>
+    </Select.Root>
+  );
+}
+
+export function ThemeToggle() {
+  const [theme, setTheme] = useState<"dark" | "light">("dark");
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem("riftx-theme");
+    const next = stored === "light" ? "light" : "dark";
+    setTheme(next);
+    document.documentElement.dataset.theme = next;
+    syncFavicon(next);
+  }, []);
+
+  const toggle = () => {
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    document.documentElement.dataset.theme = next;
+    window.localStorage.setItem("riftx-theme", next);
+    syncFavicon(next);
+  };
+
+  return <Tip content={theme === "dark" ? "切换亮色主题" : "切换暗色主题"}><button className="icon-button theme-toggle" onClick={toggle} aria-label={theme === "dark" ? "切换亮色主题" : "切换暗色主题"}>{theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}</button></Tip>;
+}
+
+export function Tip({ children, content }: { children: ReactNode; content: ReactNode }) {
+  return (
+    <Tooltip.Provider delayDuration={180}>
+      <Tooltip.Root>
+        <Tooltip.Trigger asChild>{children}</Tooltip.Trigger>
+        <Tooltip.Portal><Tooltip.Content className="tooltip-content" sideOffset={8}>{content}<Tooltip.Arrow className="tooltip-arrow" /></Tooltip.Content></Tooltip.Portal>
+      </Tooltip.Root>
+    </Tooltip.Provider>
+  );
+}
+
+export function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+  return <label className="field"><span className="field-label">{label}</span>{children}{hint ? <span className="field-hint">{hint}</span> : null}</label>;
+}
+
+export function ContextRing({ percent, label, detail }: { percent: number | null; label: string; detail: ReactNode }) {
+  const safe = percent ?? 0;
+  return (
+    <Tip content={detail}>
+      <span className={`context-ring-wrap ${safe >= 85 ? "danger" : safe >= 65 ? "warn" : ""}`}>
+        <span className="context-ring" style={{ "--progress": `${safe}%` } as React.CSSProperties}><span>{label}</span></span>
+      </span>
+    </Tip>
+  );
+}
+
+export function ErrorNotice({ message, onDismiss }: { message: string; onDismiss?: () => void }) {
+  return <div className="error-notice"><WarningCircle size={17} weight="fill" /><span>{message}</span>{onDismiss ? <button className="icon-button" onClick={onDismiss} aria-label="关闭"><X size={15} /></button> : null}</div>;
+}

@@ -1,0 +1,50 @@
+# Dependencies and build output
+node_modules/
+.next/
+.next-stale-design-options/
+out/
+coverage/
+*.tsbuildinfo
+
+# Local runtime state (RiftX and Pi)
+.riftx/
+.riftx/sessions/
+.riftx/pi-agent/
+*.jsonl
+
+# Environment and credentials
+.env
+.env.*
+!.env.example
+.npmrc
+.yarnrc
+.yarnrc.yml
+auth.json
+models.json
+*credentials*
+*secrets*
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
+
+# Local databases and caches
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+.cache/
+.tmp/
+tmp/
+
+# Logs and OS/editor metadata
+*.log
+logs/
+.DS_Store
+.AppleDouble
+.LSOverride
+.idea/
+.vscode/
