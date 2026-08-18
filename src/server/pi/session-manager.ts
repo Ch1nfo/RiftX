@@ -22,6 +22,8 @@ import { createPermissionExtension } from "./permission-extension";
 import { normalizeContextUsage } from "./usage";
 import { PENTEST_SYSTEM_PROMPT } from "./system-prompt";
 import { evaluateApproval } from "./approval-evaluator";
+import { createBrowserExtension, BrowserManager } from "@/browser";
+import { randomUUID } from "node:crypto";
 
 type SessionRecord = {
   id: string;
@@ -33,7 +35,12 @@ type SessionRecord = {
   gate: ApprovalGate;
   emitter: EventEmitter;
   unsubscribe: () => void;
+  browser?: BrowserManager;
+  dispose?: () => void;
+  runtimeVersion?: number;
 };
+
+const RUNTIME_VERSION = 2;
 
 declare global {
   // eslint-disable-next-line no-var
@@ -121,10 +128,13 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
   );
   const childProfile = config.childInherit ? profile : config.profiles.find((item) => item.id === config.childProfileId) ?? profile;
   const customTools = parent && !child ? [createSubagentTool(parent, childProfile)] : [];
+  const browserSessionId = randomUUID();
+  const browser = new BrowserManager({ cwd, sessionId: browserSessionId });
+  const browserExtension = createBrowserExtension({ cwd, sessionId: browserSessionId }, browser);
   const resourceLoader = new DefaultResourceLoader({
     cwd,
     agentDir: paths.piAgent,
-    extensionFactories: [permission],
+    extensionFactories: child ? [permission] : [permission, browserExtension],
     noExtensions: true,
     systemPrompt: PENTEST_SYSTEM_PROMPT
   });
@@ -141,7 +151,7 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
     modelRegistry,
     model,
     thinkingLevel: profile.thinkingLevel,
-    tools: child ? ["read", "grep", "find", "ls"] : ["read", "grep", "find", "ls", "bash", "write", "edit"],
+    tools: child ? ["read", "grep", "find", "ls"] : ["read", "grep", "find", "ls", "bash", "write", "edit", "browser"],
     customTools,
     resourceLoader,
     sessionManager,
@@ -156,6 +166,8 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
     session: result.session,
     gate,
     emitter,
+    browser,
+    runtimeVersion: RUNTIME_VERSION,
     unsubscribe: () => undefined
   };
   const unsubscribe = result.session.subscribe((event) => {
@@ -169,6 +181,7 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
     dispose() {
       gate.rejectAll();
       unsubscribe();
+      void browser.close();
       result.session.dispose();
     }
   };
@@ -189,10 +202,13 @@ export async function getOrCreateSession(id?: string) {
     // penetration-testing identity without losing its persisted history.
     if (
       existing.session.systemPrompt.includes("advanced Web penetration testing") &&
-      !existing.session.systemPrompt.includes("general coding assistant")
+      !existing.session.systemPrompt.includes("general coding assistant") &&
+      Boolean(existing.session.getToolDefinition("browser")) &&
+      existing.runtimeVersion === RUNTIME_VERSION
     ) return existing;
     existing.gate.rejectAll();
     existing.unsubscribe();
+    await existing.browser?.close();
     existing.session.dispose();
     sessions.delete(id);
   }
@@ -289,6 +305,9 @@ export async function startPromptSession(id: string, text: string, mode: "prompt
 
 export async function abortSession(id: string) {
   const record = await getOrCreateSession(id);
+  // Tool calls can be paused inside the approval gate, which is outside Pi's
+  // abort signal. Release those waits first so the agent loop can actually end.
+  record.gate.rejectAll();
   await record.session.abort();
 }
 
@@ -407,9 +426,7 @@ export async function archiveSession(id: string) {
   }
   const record = sessions.get(id);
   if (record) {
-    record.gate.rejectAll();
-    record.unsubscribe();
-    record.session.dispose();
+    record.dispose?.();
     sessions.delete(id);
   }
   return listSessions();
@@ -421,9 +438,7 @@ export async function deleteArchivedSession(id: string) {
   const session = (await listSessions()).find((item) => item.id === id);
   const record = sessions.get(id);
   if (record) {
-    record.gate.rejectAll();
-    record.unsubscribe();
-    record.session.dispose();
+    record.dispose?.();
     sessions.delete(id);
   }
   if (session?.path) {
@@ -441,9 +456,7 @@ export async function deleteArchivedSession(id: string) {
 export async function setActiveProfile(profileId: string) {
   await updateConfig({ activeProfileId: profileId });
   for (const [id, session] of sessions) {
-    session.gate.rejectAll();
-    session.unsubscribe();
-    session.session.dispose();
+    session.dispose?.();
     sessions.delete(id);
   }
 }

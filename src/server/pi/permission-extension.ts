@@ -3,7 +3,8 @@ import type { ApprovalRequest } from "@/lib/types";
 import { ApprovalGate } from "./approval-gate";
 import type { ApprovalEvaluation } from "./approval-evaluator";
 
-const guardedTools = new Set(["bash", "write", "edit"]);
+const guardedTools = new Set(["bash", "write", "edit", "browser"]);
+const readOnlyBrowserActions = new Set(["snapshot", "requests", "request_detail", "response_body", "cookies", "storage", "screenshot", "tabs"]);
 
 export function createPermissionExtension(
   gate: ApprovalGate,
@@ -13,6 +14,10 @@ export function createPermissionExtension(
   return (pi) => {
     pi.on("tool_call", async (event: ToolCallEvent) => {
       if (!guardedTools.has(event.toolName)) return;
+      if (event.toolName === "browser") {
+        const action = (event.input as { action?: unknown }).action;
+        if (typeof action === "string" && readOnlyBrowserActions.has(action)) return;
+      }
       const request: ApprovalRequest = {
         id: event.toolCallId,
         toolName: event.toolName as ApprovalRequest["toolName"],

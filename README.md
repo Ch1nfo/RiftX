@@ -18,12 +18,14 @@ RiftX is an MVP. It focuses on Pi's core agent capabilities and safe local opera
 - Session history, archive management, tool cards, Markdown rendering, context usage ring, and light/dark themes.
 - AI-generated session titles that update immediately when a new task is sent.
 - SSE event streaming with local JSON/JSONL persistence.
+- A single action-based `browser` tool backed by Playwright/Chromium, with DOM refs (`e1`, `e2`), request history, cookies, storage, tabs, and screenshots.
 
 ## Requirements
 
 - Node.js compatible with the installed Next.js version.
 - A local conda environment named `agent` for development and verification.
 - An API-compatible model endpoint and API key configured from the Settings page.
+- Playwright Chromium installed once with `conda run -n agent npx playwright install chromium`.
 
 RiftX does not require a database or a remote RiftX account.
 
@@ -57,6 +59,8 @@ RiftX is intended for targets where the operator has explicit authorization.
 
 - `read`, `grep`, `find`, and `ls` are allowed by default.
 - `bash`, `write`, and `edit` are guarded by the approval extension.
+- Browser read actions (`snapshot`, `requests`, `cookies`, `storage`, `screenshot`, and `tabs`) are direct; navigation and page-mutating actions use the same approval gate.
+- Set `RIFTX_BROWSER_ALLOWED_ORIGINS` to comma-separated authorized origins to enforce navigation scope. Without it, the first navigation locks the session to its origin. Out-of-scope requests and redirects are blocked.
 - Request approval pauses for an explicit human decision.
 - AI-assisted approval evaluates the proposed operation and blocks when local or target impact cannot be determined.
 - Full access bypasses the approval gate and should only be used in a controlled environment.
@@ -82,6 +86,7 @@ src/components/   Workbench, settings, and shared UI
 src/server/pi/    Pi adapter, session lifecycle, approvals, and usage
 src/server/       Local configuration and persistence helpers
 src/lib/          Shared TypeScript types
+src/browser/      Unified Playwright browser tool, snapshots, scope guard, and network recorder
 public/           RiftX logo assets
 ```
 

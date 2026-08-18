@@ -71,6 +71,10 @@ a { color: inherit; text-decoration: none; }
 .workspace { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; min-width: 0; }
 .workspace span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topbar-spacer { flex: 1; }
+.topbar-actions { display: flex; align-items: center; gap: 4px; }
+.language-toggle { height: 29px; min-width: 40px; padding: 0 7px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; font: 11px var(--font-mono); }
+.language-toggle:hover { color: var(--text); background: var(--panel-3); }
+.language-toggle:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 65%, transparent); outline-offset: 2px; }
 .conversation { position: relative; flex: 1; min-height: 0; overflow: auto; }
 .conversation-inner { max-width: 920px; margin: 0 auto; padding: 52px 32px 190px; }
 .jump-latest { position: fixed; z-index: 5; left: calc(50% + 124px); bottom: 158px; width: 34px; height: 34px; transform: translateX(-50%); display: grid; place-items: center; border: 1px solid var(--line); border-radius: 50%; background: color-mix(in srgb, var(--panel-2) 94%, transparent); color: var(--muted); box-shadow: 0 7px 22px rgba(0, 0, 0, .28); cursor: pointer; transition: color .15s, border-color .15s, transform .15s, background .15s; }

@@ -5,8 +5,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Archive, ArrowDown, ArrowUp, Brain, Command, Gear, List, Plus, Stop, TerminalWindow, WarningCircle, X } from "@phosphor-icons/react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ApprovalModeMenu, ContextRing, ErrorNotice, ModelMenu, RiftxLogo, ThemeToggle, Tip } from "./ui";
+import { ApprovalModeMenu, ContextRing, ErrorNotice, LanguageToggle, ModelMenu, RiftxLogo, ThemeToggle, Tip } from "./ui";
 import type { ApprovalMode, ApprovalRequest, ContextUsage, ModelProfile, RiftxEvent, SessionSummary } from "@/lib/types";
+import { useLanguage } from "@/lib/i18n";
 
 type Message = { id: string; role: "user" | "assistant" | "thinking" | "tool"; content: string; toolName?: string; toolCallId?: string; status?: string; isError?: boolean };
 
@@ -26,15 +27,17 @@ function summarizeApprovalInput(input: unknown) {
 }
 
 function ToolCard({ message }: { message: Message }) {
+  const { t } = useLanguage();
   const [open, setOpen] = useState(message.status === "running");
   useEffect(() => { setOpen(message.status === "running"); }, [message.status]);
   return <details className={`tool-card ${message.isError ? "error" : ""}`} open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
-    <summary className="tool-card-head"><span><Command size={14} />{message.toolName}</span><span className={`tool-status ${message.status}`}>{message.status === "running" ? "运行中" : message.status === "error" ? "失败" : "完成"}</span></summary>
+    <summary className="tool-card-head"><span><Command size={14} />{message.toolName}</span><span className={`tool-status ${message.status}`}>{message.status === "running" ? t("running") : message.status === "error" ? t("failed") : t("complete")}</span></summary>
     <pre>{message.content}</pre>
   </details>;
 }
 
 export function Workbench() {
+  const { language, t } = useLanguage();
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [activeId, setActiveId] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
@@ -66,7 +69,7 @@ export function Workbench() {
         if (!response.ok) return;
         const data = await response.json() as { sessions?: SessionSummary[] };
         if (!data.sessions) return;
-        setSessions((current) => current.map((currentSession) => currentSession.name === "正在总结任务…" ? currentSession : data.sessions?.find((next) => next.id === currentSession.id) ?? currentSession));
+        setSessions((current) => current.map((currentSession) => currentSession.name === t("summarizeTitle") ? currentSession : data.sessions?.find((next) => next.id === currentSession.id) ?? currentSession));
       } catch {
         // Title backfill is best-effort and should not block opening the workbench.
       }
@@ -86,7 +89,7 @@ export function Workbench() {
       const profile = profiles.find((item) => item.id === data.activeProfileId);
       if (profile) setModelName(`${profile.provider}/${profile.model}`);
       if (data.approvalMode === "request" || data.approvalMode === "auto" || data.approvalMode === "full") setApprovalMode(data.approvalMode);
-    }).catch(() => setError("无法连接到 RiftX 后端")).finally(() => setBootstrapping(false));
+    }).catch(() => setError(t("cannotConnect"))).finally(() => setBootstrapping(false));
     return undefined;
   }, []);
 
@@ -132,7 +135,7 @@ export function Workbench() {
       }
       if (payload.type === "error") { setRunning(false); setApprovalQueue([]); setError(String(payload.error ?? "Agent error")); }
     };
-    source.onerror = () => { setRunning(false); setApprovalQueue([]); setError("实时连接已断开，请刷新重试"); };
+    source.onerror = () => { setRunning(false); setApprovalQueue([]); setError(language === "en" ? "Live connection lost. Refresh and try again." : "实时连接已断开，请刷新重试"); };
     return () => source.close();
   }, [activeId, streamGeneration]);
 
@@ -167,20 +170,20 @@ export function Workbench() {
 
   const queueSessionTitle = (text: string) => {
     const requestId = ++titleRequestRef.current;
-    const previousName = sessions.find((session) => session.id === activeId)?.name ?? "未命名任务";
-    setSessions((current) => current.map((session) => session.id === activeId ? { ...session, name: "正在总结任务…", updatedAt: new Date().toISOString() } : session));
+    const previousName = sessions.find((session) => session.id === activeId)?.name ?? t("unnamed");
+    setSessions((current) => current.map((session) => session.id === activeId ? { ...session, name: t("summarizeTitle"), updatedAt: new Date().toISOString() } : session));
     titleQueueRef.current = titleQueueRef.current
       .catch(() => undefined)
       .then(async () => {
         const response = await fetch(`/api/sessions/${activeId}/title`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
         const data = await response.json();
-        if (!response.ok) throw new Error(data.error ?? "生成任务标题失败");
+        if (!response.ok) throw new Error(data.error ?? (language === "en" ? "Could not generate task title" : "生成任务标题失败"));
         if (requestId === titleRequestRef.current) setSessions(data.sessions ?? []);
       })
       .catch((reason: unknown) => {
         if (requestId === titleRequestRef.current) {
-          setSessions((current) => current.map((session) => session.id === activeId && session.name === "正在总结任务…" ? { ...session, name: previousName } : session));
-          setError(reason instanceof Error ? reason.message : "生成任务标题失败");
+          setSessions((current) => current.map((session) => session.id === activeId && session.name === t("summarizeTitle") ? { ...session, name: previousName } : session));
+          setError(reason instanceof Error ? reason.message : t("sendFailed"));
         }
       });
   };
@@ -198,7 +201,7 @@ export function Workbench() {
     if (!hasExistingUserMessage) queueSessionTitle(text);
     setRunning(true);
     const response = await fetch(`/api/sessions/${activeId}/prompt`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, mode }) });
-    if (!response.ok) setError((await response.json()).error ?? "发送失败");
+    if (!response.ok) setError((await response.json()).error ?? t("sendFailed"));
   };
 
   const newSession = async () => {
@@ -212,7 +215,7 @@ export function Workbench() {
 
   const archiveSession = async (id: string) => {
     const response = await fetch(`/api/sessions/${id}/archive`, { method: "POST" });
-    if (!response.ok) { setError((await response.json()).error ?? "归档会话失败"); return; }
+    if (!response.ok) { setError((await response.json()).error ?? t("sendFailed")); return; }
     const data = await response.json();
     const nextSessions = (data.sessions ?? []).filter((session: SessionSummary) => !session.archived);
     setSessions(nextSessions);
@@ -229,7 +232,7 @@ export function Workbench() {
     if (!approval || !activeId) return;
     const response = await fetch(`/api/sessions/${activeId}/approval`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ approvalId: approval.id, approved, scope }) });
     const result = await response.json() as { ok?: boolean; error?: string };
-    if (!response.ok || result.ok !== true) { setError(result.error ?? "审批请求已失效，请重新运行任务"); return; }
+    if (!response.ok || result.ok !== true) { setError(result.error ?? t("approvalExpired")); return; }
     setApprovalQueue((current) => current.filter((item) => item.id !== approval.id));
   };
 
@@ -239,7 +242,7 @@ export function Workbench() {
     const response = await fetch("/api/settings/approval-mode", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ approvalMode: mode }) });
     if (!response.ok) {
       setApprovalMode(previous);
-      setError((await response.json()).error ?? "切换审批模式失败");
+      setError((await response.json()).error ?? (language === "en" ? "Could not change approval mode" : "切换审批模式失败"));
     }
   };
 
@@ -253,37 +256,37 @@ export function Workbench() {
     setModelName(`${nextProfile.provider}/${nextProfile.model}`);
     try {
       const response = await fetch("/api/settings/model-profiles", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ activeProfileId: profileId }) });
-      if (!response.ok) throw new Error((await response.json()).error ?? "切换模型失败");
+      if (!response.ok) throw new Error((await response.json()).error ?? (language === "en" ? "Could not switch model" : "切换模型失败"));
       setUsage(emptyUsage);
       setStreamGeneration((current) => current + 1);
     } catch (error) {
       setActiveProfileId(previousId);
       setModelName(previousProfile ? `${previousProfile.provider}/${previousProfile.model}` : "No model configured");
-      setError(error instanceof Error ? error.message : "切换模型失败");
+      setError(error instanceof Error ? error.message : (language === "en" ? "Could not switch model" : "切换模型失败"));
     }
   };
 
   const detail = useMemo(() => {
     const safe = { tokens: Number(usage.tokens) || 0, contextWindow: Number(usage.contextWindow) || 0, input: Number(usage.input) || 0, output: Number(usage.output) || 0, cacheRead: Number(usage.cacheRead) || 0, cacheWrite: Number(usage.cacheWrite) || 0, remaining: Number(usage.remaining) || 0 };
-    return <div className="usage-tooltip"><strong>{usage.percent === null ? "未知" : `${Math.round(Number(usage.percent) || 0)}%`} context</strong><span>{safe.tokens.toLocaleString()} / {safe.contextWindow.toLocaleString()} tokens</span><span>输入 {safe.input.toLocaleString()} · 输出 {safe.output.toLocaleString()}</span><span>缓存读 {safe.cacheRead.toLocaleString()} · 写 {safe.cacheWrite.toLocaleString()}</span><span>剩余 {safe.remaining.toLocaleString()} tokens</span></div>;
+    return <div className="usage-tooltip"><strong>{usage.percent === null ? t("contextUnknown") : `${Math.round(Number(usage.percent) || 0)}%`} {t("context")}</strong><span>{safe.tokens.toLocaleString()} / {safe.contextWindow.toLocaleString()} {t("tokens")}</span><span>{t("input")} {safe.input.toLocaleString()} · {t("output")} {safe.output.toLocaleString()}</span><span>{t("cacheRead")} {safe.cacheRead.toLocaleString()} · {t("cacheWrite")} {safe.cacheWrite.toLocaleString()}</span><span>{t("remaining")} {safe.remaining.toLocaleString()} {t("tokens")}</span></div>;
   }, [usage]);
 
   return <div className="app-shell">
     <aside className={`sidebar ${mobileNav ? "open" : ""}`}>
       <div className="brand-row"><div className="brand-mark"><RiftxLogo /></div><span>RiftX</span><button className="icon-button mobile-only" onClick={() => setMobileNav(false)}><X size={17} /></button></div>
-      <button className="new-session" onClick={newSession}><Plus size={17} weight="bold" />新建会话<span className="shortcut">⌘ N</span></button>
-      <div className="sidebar-label">最近会话</div>
-      <div className="session-list">{bootstrapping ? <span className="session-loading">加载中…</span> : sessions.map((session) => <div key={session.id} className="session-item-row"><button className={`session-item ${activeId === session.id ? "active" : ""}`} onClick={() => { setActiveId(session.id); setMessages([]); setMobileNav(false); }}><span className="session-dot" /><span className="session-copy">{session.name === "正在总结任务…" ? <span className="session-title-loading" role="status" aria-label="正在生成任务标题" title="正在生成任务标题" /> : <strong>{session.name || "New session"}</strong>}<small>{new Date(session.updatedAt).toLocaleDateString()}</small></span></button><button className="session-archive" aria-label={`归档 ${session.name || "会话"}`} title="归档会话" onClick={(event) => { event.stopPropagation(); void archiveSession(session.id); }}><Archive size={14} /></button></div>)}</div>
-      <div className="sidebar-bottom"><div className="sidebar-settings-row"><Link href="/settings" className="sidebar-link"><Gear size={17} />设置</Link><ThemeToggle /></div></div>
+      <button className="new-session" onClick={newSession}><Plus size={17} weight="bold" />{t("newSession")}<span className="shortcut">⌘ N</span></button>
+      <div className="sidebar-label">{t("recentSessions")}</div>
+      <div className="session-list">{bootstrapping ? <span className="session-loading">{t("loading")}</span> : sessions.map((session) => <div key={session.id} className="session-item-row"><button className={`session-item ${activeId === session.id ? "active" : ""}`} onClick={() => { setActiveId(session.id); setMessages([]); setMobileNav(false); }}><span className="session-dot" /><span className="session-copy">{session.name === t("summarizeTitle") ? <span className="session-title-loading" role="status" aria-label={t("summarizeTitle")} title={t("summarizeTitle")} /> : <strong>{session.name || t("newSessionEnglish")}</strong>}<small>{new Date(session.updatedAt).toLocaleDateString()}</small></span></button><button className="session-archive" aria-label={`${t("archive")} ${session.name || t("archived")}`} title={t("archive")} onClick={(event) => { event.stopPropagation(); void archiveSession(session.id); }}><Archive size={14} /></button></div>)}</div>
+      <div className="sidebar-bottom"><div className="sidebar-settings-row"><Link href="/settings" className="sidebar-link"><Gear size={17} />{t("settings")}</Link></div></div>
     </aside>
-    {mobileNav ? <button className="scrim mobile-only" onClick={() => setMobileNav(false)} aria-label="关闭导航" /> : null}
+    {mobileNav ? <button className="scrim mobile-only" onClick={() => setMobileNav(false)} aria-label={t("closeNav")} /> : null}
     <main className="main-panel">
-      <header className="topbar"><button className="icon-button mobile-only" onClick={() => setMobileNav(true)}><List size={19} /></button><div className="workspace"><TerminalWindow size={16} /><span>{cwd || "当前工作目录"}</span></div><div className="topbar-spacer" /></header>
-      <section ref={conversationRef} className="conversation" onScroll={handleConversationScroll}><div className="conversation-inner">{messages.length === 0 ? <div className="empty-state"><div className="empty-orbit"><RiftxLogo decorative variant="mark" /></div><h1>{bootstrapping ? "正在加载工作区" : activeId ? "准备开始" : "暂无会话"}</h1><p>{bootstrapping ? "正在读取会话和模型配置…" : activeId ? "让 RiftX 读取代码、检查配置，或协助你梳理安全问题。" : "新建会话后即可开始使用 RiftX。"}</p>{activeId && !bootstrapping ? <div className="prompt-suggestions"><button onClick={() => setInput("先概览一下当前工作目录")}>概览当前目录</button><button onClick={() => setInput("检查项目里可能存在的安全风险")}>检查安全风险</button></div> : null}</div> : messages.map((message) => <article key={message.id} className={`message ${message.role}`}>
-        {message.role === "user" ? <div className="avatar user-avatar">你</div> : message.role === "assistant" ? <div className="avatar assistant-avatar"><RiftxLogo decorative /></div> : null}
-        <div className="message-body">{message.role === "thinking" ? <details className="thinking-block" open={message.status === "streaming"}><summary><span className="thinking-title"><Brain size={14} weight="bold" />Thinking</span><span className="thinking-state">{message.status === "streaming" ? "思考中" : "已完成"}</span></summary><div className="thinking-copy">{message.content}</div></details> : message.role === "tool" ? <ToolCard key={`${message.id}-${message.status}`} message={message} /> : <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>}</div>
-      </article>)}<div ref={endRef} /></div>{showJumpToLatest ? <button className="jump-latest" type="button" aria-label="回到最新消息" title="回到最新消息" onClick={jumpToLatest}><ArrowDown size={17} weight="bold" /></button> : null}</section>
-      <footer className="composer-wrap">{approval ? <div className="approval-card"><div className="approval-card-main"><div className="approval-icon"><WarningCircle size={18} weight="bold" /></div><div className="approval-card-copy"><div className="approval-card-title"><span className="eyebrow">需要确认</span><strong>{approval.toolName}</strong><span className="approval-card-risk">高风险</span></div><p>需要在本机终端执行命令以继续当前任务。</p></div></div><details className="approval-command"><summary><code>{summarizeApprovalInput(approval.input)}</code><span>查看完整命令</span></summary><pre>{formatApprovalInput(approval.input)}</pre></details><div className="approval-actions"><button className="button reject" onClick={() => void decide(false)}>拒绝</button><button className="button ghost" onClick={() => void decide(true, "task")}>允许本次任务</button><button className="button primary" onClick={() => void decide(true)}>允许一次</button></div></div> : null}<div className="composer"><textarea value={input} disabled={!activeId || bootstrapping} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder={bootstrapping ? "正在加载工作区…" : running ? "输入消息，引导 RiftX 的下一步…" : activeId ? "向 RiftX 描述你要完成的工作…" : "请先新建会话"} rows={1} /><div className="composer-bottom"><div className="composer-tools"><ApprovalModeMenu value={approvalMode} onValueChange={(mode) => void changeApprovalMode(mode)} disabled={bootstrapping || running} /><span className="composer-hint"><span className="keycap">Shift</span> + <span className="keycap">Enter</span> 换行</span></div><div className="composer-actions"><ContextRing percent={bootstrapping ? null : usage.percent} label={bootstrapping ? "—" : usage.percent === null ? "—" : `${Math.round(usage.percent)}`} detail={detail} />{bootstrapping ? <span className="model-label">加载模型…</span> : modelProfiles.length > 1 ? <ModelMenu value={activeProfileId} onValueChange={(profileId) => void changeModel(profileId)} options={modelProfiles.map((profile) => ({ value: profile.id, label: `${profile.provider}/${profile.model}` }))} disabled={running} /> : <span className="model-label">{modelName}</span>}{running && input.trim() ? <button className="send-button" aria-label="发送引导消息" title="发送引导消息" onClick={() => void send("steer")}><ArrowUp size={18} weight="bold" /></button> : running ? <button className="send-button stop" aria-label="停止运行" title="停止运行" onClick={() => { setRunning(false); setApprovalQueue([]); void fetch(`/api/sessions/${activeId}/abort`, { method: "POST" }); }}><Stop size={17} weight="fill" /></button> : <button className="send-button" aria-label="发送消息" title="发送消息" onClick={() => void send("prompt")} disabled={!activeId || bootstrapping || !input.trim()}><ArrowUp size={18} weight="bold" /></button>}</div></div></div></footer>
+      <header className="topbar"><button className="icon-button mobile-only" onClick={() => setMobileNav(true)} aria-label={t("settings")}><List size={19} /></button><div className="workspace"><TerminalWindow size={16} /><span>{cwd || t("workingDirectory")}</span></div><div className="topbar-spacer" /><div className="topbar-actions"><LanguageToggle /><ThemeToggle /></div></header>
+      <section ref={conversationRef} className="conversation" onScroll={handleConversationScroll}><div className="conversation-inner">{messages.length === 0 ? <div className="empty-state"><div className="empty-orbit"><RiftxLogo decorative variant="mark" /></div><h1>{bootstrapping ? t("loadingWorkspace") : activeId ? t("ready") : t("noSession")}</h1><p>{bootstrapping ? t("readingWorkspace") : activeId ? t("readOrTest") : t("createSessionFirst")}</p>{activeId && !bootstrapping ? <div className="prompt-suggestions"><button onClick={() => setInput(t("overview"))}>{t("overview")}</button><button onClick={() => setInput(t("checkRisks"))}>{t("checkRisks")}</button></div> : null}</div> : messages.map((message) => <article key={message.id} className={`message ${message.role}`}>
+        {message.role === "user" ? <div className="avatar user-avatar">{language === "en" ? "You" : "你"}</div> : message.role === "assistant" ? <div className="avatar assistant-avatar"><RiftxLogo decorative /></div> : null}
+        <div className="message-body">{message.role === "thinking" ? <details className="thinking-block" open={message.status === "streaming"}><summary><span className="thinking-title"><Brain size={14} weight="bold" />{t("thinking")}</span><span className="thinking-state">{message.status === "streaming" ? t("thinkingNow") : t("thinkingDone")}</span></summary><div className="thinking-copy">{message.content}</div></details> : message.role === "tool" ? <ToolCard key={`${message.id}-${message.status}`} message={message} /> : <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>}</div>
+      </article>)}<div ref={endRef} /></div>{showJumpToLatest ? <button className="jump-latest" type="button" aria-label={t("jumpLatest")} title={t("jumpLatest")} onClick={jumpToLatest}><ArrowDown size={17} weight="bold" /></button> : null}</section>
+      <footer className="composer-wrap">{approval ? <div className="approval-card"><div className="approval-card-main"><div className="approval-icon"><WarningCircle size={18} weight="bold" /></div><div className="approval-card-copy"><div className="approval-card-title"><span className="eyebrow">{t("needConfirm")}</span><strong>{approval.toolName}</strong><span className="approval-card-risk">{t("highRisk")}</span></div><p>{approval.toolName === "browser" ? t("browserApproval") : t("terminalApproval")}</p></div></div><details className="approval-command"><summary><code>{summarizeApprovalInput(approval.input)}</code><span>{t("expandCommand")}</span></summary><pre>{formatApprovalInput(approval.input)}</pre></details><div className="approval-actions"><button className="button reject" onClick={() => void decide(false)}>{t("reject")}</button><button className="button ghost" onClick={() => void decide(true, "task")}>{t("allowTask")}</button><button className="button primary" onClick={() => void decide(true)}>{t("allowOnce")}</button></div></div> : null}<div className="composer"><textarea value={input} disabled={!activeId || bootstrapping} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder={bootstrapping ? t("loadingWorkspace") : running ? t("guide") : activeId ? t("ask") : t("createSessionFirst")} rows={1} /><div className="composer-bottom"><div className="composer-tools"><ApprovalModeMenu value={approvalMode} onValueChange={(mode) => void changeApprovalMode(mode)} disabled={bootstrapping || running} /><span className="composer-hint"><span className="keycap">Shift</span> + <span className="keycap">Enter</span> {t("shiftEnter")}</span></div><div className="composer-actions"><ContextRing percent={bootstrapping ? null : usage.percent} label={bootstrapping ? "—" : usage.percent === null ? "—" : `${Math.round(usage.percent)}`} detail={detail} />{bootstrapping ? <span className="model-label">{t("loadingModel")}</span> : modelProfiles.length > 1 ? <ModelMenu value={activeProfileId} onValueChange={(profileId) => void changeModel(profileId)} options={modelProfiles.map((profile) => ({ value: profile.id, label: `${profile.provider}/${profile.model}` }))} disabled={running} /> : <span className="model-label">{modelName}</span>}{running && input.trim() ? <button className="send-button" aria-label={t("sendGuide")} title={t("sendGuide")} onClick={() => void send("steer")}><ArrowUp size={18} weight="bold" /></button> : running ? <button className="send-button stop" aria-label={t("stop")} title={t("stop")} onClick={() => { setRunning(false); setApprovalQueue([]); void fetch(`/api/sessions/${activeId}/abort`, { method: "POST" }); }}><Stop size={17} weight="fill" /></button> : <button className="send-button" aria-label={t("send")} title={t("send")} onClick={() => void send("prompt")} disabled={!activeId || bootstrapping || !input.trim()}><ArrowUp size={18} weight="bold" /></button>}</div></div></div></footer>
     </main>
     {error ? <div className="toast-wrap"><ErrorNotice message={error} onDismiss={() => setError("")} /></div> : null}
   </div>;

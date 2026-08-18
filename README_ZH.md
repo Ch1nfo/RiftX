@@ -18,12 +18,14 @@ RiftX 当前是 MVP，重点实现 Pi 的基础 Agent 能力和本机安全运�
 - 会话历史、归档管理、可折叠工具卡片、Markdown、上下文占用圆环和明暗主题。
 - AI 自动总结任务标题，并在发送新任务后立即更新。
 - SSE 事件流和本机 JSON/JSONL 持久化。
+- 单一 action 形式的 `browser` 工具，底层使用 Playwright/Chromium，支持 DOM 引用（`e1`、`e2`）、请求历史、Cookie、Storage、标签页和截图。
 
 ## 环境要求
 
 - 与当前 Next.js 版本兼容的 Node.js。
 - 使用名为 `agent` 的 conda 环境执行开发和验证命令。
 - 在设置页配置可兼容的模型接口和 API Key。
+- 安装一次 Playwright Chromium：`conda run -n agent npx playwright install chromium`。
 
 RiftX 不需要数据库，也不需要远程 RiftX 账户。
 
@@ -57,6 +59,8 @@ RiftX 只应被用于操作者明确获得授权的目标。
 
 - `read`、`grep`、`find`、`ls` 默认允许。
 - `bash`、`write`、`edit` 由审批扩展拦截。
+- 浏览器只读 action（`snapshot`、`requests`、`cookies`、`storage`、`screenshot`、`tabs`）可直接使用；导航和会修改页面的 action 使用同一审批门。
+- 设置 `RIFTX_BROWSER_ALLOWED_ORIGINS`（逗号分隔的授权 Origin）来配置浏览器作用域；未设置时首次导航会锁定当前 Origin。越界请求和重定向会被阻止。
 - 请求审批会暂停任务，等待人工明确决定。
 - 帮我审批会评估提议的操作；无法判断其是否会影响本机或被测系统时默认阻止。
 - 完全访问会绕过审批门，只应在受控环境中使用。
@@ -82,6 +86,7 @@ src/components/   工作台、设置页和共享 UI
 src/server/pi/    Pi 适配器、会话生命周期、审批和用量
 src/server/       本机配置与持久化辅助模块
 src/lib/          共享 TypeScript 类型
+src/browser/      统一 Playwright 浏览器工具、快照、作用域校验和网络记录
 public/           RiftX Logo 资源
 ```
 

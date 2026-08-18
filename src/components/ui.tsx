@@ -2,9 +2,10 @@
 
 import * as Select from "@radix-ui/react-select";
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { Check, CaretDown, HandPalm, Moon, Sparkle, Sun, Warning, WarningCircle, X } from "@phosphor-icons/react";
+import { Check, CaretDown, HandPalm, Moon, Sparkle, Sun, Translate, Warning, WarningCircle, X } from "@phosphor-icons/react";
 import { useEffect, useState, type ReactNode } from "react";
 import type { ApprovalMode } from "@/lib/types";
+import { useLanguage } from "@/lib/i18n";
 
 function syncFavicon(theme: "dark" | "light") {
   const href = theme === "light" ? "/riftx-logo-light.png" : "/riftx-logo-dark.png";
@@ -59,6 +60,9 @@ const approvalModeDescriptions: Record<ApprovalMode, string> = {
   full: "跳过审批并允许完整访问"
 };
 
+const approvalModeLabelsEn: Record<ApprovalMode, string> = { request: "Request approval", auto: "Help me approve", full: "Full access" };
+const approvalModeDescriptionsEn: Record<ApprovalMode, string> = { request: "Ask before risky actions", auto: "AI evaluates and approves", full: "Skip approval for full access" };
+
 const approvalModeIcons: Record<ApprovalMode, ReactNode> = {
   request: <HandPalm size={14} weight="regular" aria-hidden="true" />,
   auto: <Sparkle size={14} weight="regular" aria-hidden="true" />,
@@ -66,18 +70,21 @@ const approvalModeIcons: Record<ApprovalMode, ReactNode> = {
 };
 
 export function ApprovalModeMenu({ value, onValueChange, disabled }: { value: ApprovalMode; onValueChange: (value: ApprovalMode) => void; disabled?: boolean }) {
+  const { language, t } = useLanguage();
+  const labels = language === "en" ? approvalModeLabelsEn : approvalModeLabels;
+  const descriptions = language === "en" ? approvalModeDescriptionsEn : approvalModeDescriptions;
   return (
     <Select.Root value={value} onValueChange={(next) => onValueChange(next as ApprovalMode)} disabled={disabled}>
-      <Select.Trigger className={`approval-mode-trigger ${value === "full" ? "full" : ""}`} aria-label="审批模式">
-        <span className="approval-mode-trigger-value">{approvalModeIcons[value]}<Select.Value>{approvalModeLabels[value]}</Select.Value></span>
+      <Select.Trigger className={`approval-mode-trigger ${value === "full" ? "full" : ""}`} aria-label={t("approvalMode")}>
+        <span className="approval-mode-trigger-value">{approvalModeIcons[value]}<Select.Value>{labels[value]}</Select.Value></span>
       </Select.Trigger>
       <Select.Portal>
         <Select.Content className="select-content approval-mode-content" position="popper" side="top" sideOffset={8} align="start" alignOffset={-8}>
           <Select.Viewport className="select-viewport">
-            {(Object.keys(approvalModeLabels) as ApprovalMode[]).map((mode) => (
+            {(Object.keys(labels) as ApprovalMode[]).map((mode) => (
               <Select.Item className={`select-item approval-mode-item ${mode === "full" ? "warning" : ""}`} value={mode} key={mode}>
                 <span className="approval-mode-item-icon">{approvalModeIcons[mode]}</span>
-                <span className="approval-mode-item-copy"><span className="approval-mode-item-title"><Select.ItemText>{approvalModeLabels[mode]}</Select.ItemText></span><span className="approval-mode-item-description">{approvalModeDescriptions[mode]}</span></span>
+                <span className="approval-mode-item-copy"><span className="approval-mode-item-title"><Select.ItemText>{labels[mode]}</Select.ItemText></span><span className="approval-mode-item-description">{descriptions[mode]}</span></span>
                 <Select.ItemIndicator className="approval-mode-check"><Check size={14} weight="bold" /></Select.ItemIndicator>
               </Select.Item>
             ))}
@@ -89,9 +96,10 @@ export function ApprovalModeMenu({ value, onValueChange, disabled }: { value: Ap
 }
 
 export function ModelMenu({ value, onValueChange, options, disabled }: { value: string; onValueChange: (value: string) => void; options: Array<{ value: string; label: string }>; disabled?: boolean }) {
+  const { language } = useLanguage();
   return (
     <Select.Root value={value} onValueChange={onValueChange} disabled={disabled}>
-      <Select.Trigger className="model-menu-trigger" aria-label="当前模型">
+      <Select.Trigger className="model-menu-trigger" aria-label={language === "en" ? "Current model" : "当前模型"}>
         <Select.Value />
         <Select.Icon><CaretDown size={12} /></Select.Icon>
       </Select.Trigger>
@@ -113,6 +121,7 @@ export function ModelMenu({ value, onValueChange, options, disabled }: { value: 
 
 export function ThemeToggle() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const { t } = useLanguage();
 
   useEffect(() => {
     const stored = window.localStorage.getItem("riftx-theme");
@@ -130,7 +139,13 @@ export function ThemeToggle() {
     syncFavicon(next);
   };
 
-  return <Tip content={theme === "dark" ? "切换亮色主题" : "切换暗色主题"}><button className="icon-button theme-toggle" onClick={toggle} aria-label={theme === "dark" ? "切换亮色主题" : "切换暗色主题"}>{theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}</button></Tip>;
+  return <Tip content={theme === "dark" ? t("switchLight") : t("switchDark")}><button className="icon-button theme-toggle" onClick={toggle} aria-label={theme === "dark" ? t("switchLight") : t("switchDark")}>{theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}</button></Tip>;
+}
+
+export function LanguageToggle() {
+  const { language, setLanguage, t } = useLanguage();
+  const next = language === "zh" ? "en" : "zh";
+  return <Tip content={language === "zh" ? t("switchToEnglish") : t("switchToChinese")}><button className="language-toggle" onClick={() => setLanguage(next)} aria-label={language === "zh" ? t("switchToEnglish") : t("switchToChinese")}><Translate size={16} /><span>{language === "zh" ? "中" : "EN"}</span></button></Tip>;
 }
 
 export function Tip({ children, content }: { children: ReactNode; content: ReactNode }) {
@@ -160,5 +175,6 @@ export function ContextRing({ percent, label, detail }: { percent: number | null
 }
 
 export function ErrorNotice({ message, onDismiss }: { message: string; onDismiss?: () => void }) {
-  return <div className="error-notice"><WarningCircle size={17} weight="fill" /><span>{message}</span>{onDismiss ? <button className="icon-button" onClick={onDismiss} aria-label="关闭"><X size={15} /></button> : null}</div>;
+  const { t } = useLanguage();
+  return <div className="error-notice"><WarningCircle size={17} weight="fill" /><span>{message}</span>{onDismiss ? <button className="icon-button" onClick={onDismiss} aria-label={t("dismiss")}><X size={15} /></button> : null}</div>;
 }

@@ -40,7 +40,7 @@ export type ContextUsage = {
 
 export type ApprovalRequest = {
   id: string;
-  toolName: "bash" | "write" | "edit";
+  toolName: "bash" | "write" | "edit" | "browser";
   input: unknown;
   createdAt: string;
 };
