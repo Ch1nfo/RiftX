@@ -16,6 +16,7 @@ RiftX is an MVP. It focuses on Pi's core agent capabilities and safe local opera
 - Clickable model switching from the workbench composer when multiple profiles exist.
 - One-shot read-only sub-agent support with profile inheritance or override.
 - Session history, archive management, tool cards, Markdown rendering, context usage ring, and light/dark themes.
+- AI-generated session titles that update immediately when a new task is sent.
 - SSE event streaming with local JSON/JSONL persistence.
 
 ## Requirements
@@ -93,6 +94,7 @@ The main endpoints include:
 - `GET /api/sessions/:id/stream`
 - `GET /api/sessions/:id/messages`
 - `POST /api/sessions/:id/prompt`
+- `POST /api/sessions/:id/title`
 - `POST /api/sessions/:id/abort`
 - `POST /api/sessions/:id/approval`
 - `GET/PUT /api/settings/model-profiles`

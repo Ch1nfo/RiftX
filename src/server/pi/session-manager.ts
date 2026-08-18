@@ -14,7 +14,7 @@ import {
   type ExtensionContext,
   type ToolDefinition
 } from "@mariozechner/pi-coding-agent";
-import type { Model } from "@mariozechner/pi-ai";
+import { completeSimple, type Model } from "@mariozechner/pi-ai";
 import { readConfig, getAppPaths, updateConfig } from "@/server/config-store";
 import type { ApprovalMode, ArchivedSession, ModelProfile, RiftxEvent, SessionSummary } from "@/lib/types";
 import { ApprovalGate } from "./approval-gate";
@@ -27,6 +27,8 @@ type SessionRecord = {
   id: string;
   cwd: string;
   profile: ModelProfile;
+  model: Model<any>;
+  modelRegistry: ModelRegistry;
   session: AgentSession;
   gate: ApprovalGate;
   emitter: EventEmitter;
@@ -149,6 +151,8 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
     id: result.session.sessionId,
     cwd,
     profile,
+    model,
+    modelRegistry,
     session: result.session,
     gate,
     emitter,
@@ -229,6 +233,52 @@ export async function promptSession(id: string, text: string, mode: "prompt" | "
   return record;
 }
 
+const TASK_TITLE_PROMPT = `You create concise session titles for RiftX, an authorized Web security testing assistant.
+
+Given the user's latest task, return exactly one short title in the same language as the task. Describe the main goal, not the full instructions. Keep it between 6 and 32 characters when possible. Do not use Markdown, quotes, prefixes, numbering, or a trailing period. Return title text only.`;
+
+function textFromTitleResponse(content: unknown) {
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((part): part is { type?: string; text?: string } => typeof part === "object" && part !== null)
+    .filter((part) => part.type === "text")
+    .map((part) => part.text ?? "")
+    .join("\n");
+}
+
+function normalizeSessionTitle(raw: string) {
+  const firstLine = raw.trim().split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? "";
+  const title = firstLine.replace(/^[-*#\d.)\s]+/, "").replace(/^([`'\"]+)|([`'\"]+)$/g, "").trim();
+  if (!title) throw new Error("模型没有返回有效任务标题");
+  return Array.from(title).slice(0, 32).join("");
+}
+
+export async function summarizeSessionTitle(id: string, task: string) {
+  const existingConfig = await readConfig();
+  const existingTitle = existingConfig.sessionTitles[id]?.trim();
+  if (existingTitle) return { title: existingTitle, sessions: (await listSessions()).filter((session) => !session.archived) };
+  const record = await getOrCreateSession(id);
+  const auth = await record.modelRegistry.getApiKeyAndHeaders(record.model);
+  if (!auth.ok) throw new Error(auth.error);
+  const response = await completeSimple(record.model, {
+    systemPrompt: TASK_TITLE_PROMPT,
+    messages: [{ role: "user", content: task, timestamp: Date.now() }]
+  }, {
+    apiKey: auth.apiKey,
+    headers: auth.headers,
+    maxTokens: 64,
+    temperature: 0,
+    timeoutMs: 20_000,
+    maxRetries: 0
+  });
+  const title = normalizeSessionTitle(textFromTitleResponse(response.content));
+  const config = await readConfig();
+  const latestTitle = config.sessionTitles[id]?.trim();
+  if (latestTitle) return { title: latestTitle, sessions: (await listSessions()).filter((session) => !session.archived) };
+  await updateConfig({ sessionTitles: { ...config.sessionTitles, [id]: title } });
+  return { title, sessions: (await listSessions()).filter((session) => !session.archived) };
+}
+
 export async function startPromptSession(id: string, text: string, mode: "prompt" | "steer" | "followUp" = "prompt") {
   const record = await getOrCreateSession(id);
   void promptSession(id, text, mode).catch((error) => {
@@ -244,7 +294,8 @@ export async function abortSession(id: string) {
 
 export async function decideApproval(id: string, approvalId: string, approved: boolean, scope: "once" | "task" = "once") {
   const record = await getOrCreateSession(id);
-  if (approved && scope === "task") record.gate.allowForTask();
+  const request = record.gate.pendingRequests().find((item) => item.id === approvalId);
+  if (approved && scope === "task" && request) record.gate.allowForTask(request);
   return record.gate.decide(approvalId, approved);
 }
 
@@ -311,7 +362,6 @@ export async function getSessionMessages(id: string) {
       }
     });
   });
-
   return messages;
 }
 
@@ -322,7 +372,7 @@ export async function listSessions(): Promise<SessionSummary[]> {
   const persisted = infos.map((info) => ({
     id: info.id,
     path: info.path,
-    name: info.name ?? (info.firstMessage.slice(0, 48) || "New session"),
+    name: config.sessionTitles[info.id] ?? (info.firstMessage ? "未命名任务" : "New session"),
     firstMessage: info.firstMessage,
     updatedAt: info.modified.toISOString(),
     archived: archived.has(info.id)
@@ -330,13 +380,13 @@ export async function listSessions(): Promise<SessionSummary[]> {
   const seen = new Set(persisted.map((item) => item.id));
   const live = [...sessions.values()]
     .filter((session) => !seen.has(session.id))
-    .map((session) => ({ id: session.id, path: session.session.sessionFile ?? "", name: "New session", firstMessage: "", updatedAt: new Date().toISOString(), archived: archived.has(session.id) }));
+    .map((session) => ({ id: session.id, path: session.session.sessionFile ?? "", name: config.sessionTitles[session.id] ?? "New session", firstMessage: "", updatedAt: new Date().toISOString(), archived: archived.has(session.id) }));
   const archivedMetadata = config.archivedSessions
     .filter((session) => !seen.has(session.id) && !live.some((item) => item.id === session.id))
-    .map((session) => ({ ...session, archived: true }));
+    .map((session) => ({ ...session, name: config.sessionTitles[session.id] ?? (session.firstMessage ? "未命名任务" : "New session"), archived: true }));
   const archivedFallback = config.archivedSessionIds
     .filter((id) => !seen.has(id) && !archivedMetadata.some((session) => session.id === id))
-    .map((id) => ({ id, path: "", name: "Archived session", firstMessage: "", updatedAt: new Date().toISOString(), archived: true }));
+    .map((id) => ({ id, path: "", name: config.sessionTitles[id] ?? "Archived session", firstMessage: "", updatedAt: new Date().toISOString(), archived: true }));
   return [...live, ...persisted, ...archivedMetadata, ...archivedFallback];
 }
 
@@ -383,7 +433,8 @@ export async function deleteArchivedSession(id: string) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
   }
-  await updateConfig({ archivedSessionIds: config.archivedSessionIds.filter((item) => item !== id), archivedSessions: config.archivedSessions.filter((item) => item.id !== id) });
+  const { [id]: _removedTitle, ...sessionTitles } = config.sessionTitles;
+  await updateConfig({ archivedSessionIds: config.archivedSessionIds.filter((item) => item !== id), archivedSessions: config.archivedSessions.filter((item) => item.id !== id), sessionTitles });
   return listSessions();
 }
 

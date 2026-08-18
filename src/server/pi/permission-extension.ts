@@ -19,7 +19,7 @@ export function createPermissionExtension(
         input: event.input,
         createdAt: new Date().toISOString()
       };
-      if (gate.shouldBypass()) return;
+      if (gate.shouldBypass(request)) return;
       if (gate.approvalMode === "auto" && evaluate) {
         try {
           const evaluation = await evaluate(request);

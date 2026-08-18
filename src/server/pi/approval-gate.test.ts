@@ -25,3 +25,14 @@ test("approval gate exposes pending requests for stream reconnection", async () 
   assert.equal(await pending, false);
   assert.deepEqual(gate.pendingRequests(), []);
 });
+
+test("task approval only bypasses the exact approved command", () => {
+  const gate = new ApprovalGate();
+  const cd = { toolName: "bash" as const, input: { command: "cd /tmp" } };
+  gate.allowForTask(cd);
+  assert.equal(gate.shouldBypass(cd), true);
+  assert.equal(gate.shouldBypass({ toolName: "bash", input: { command: "npx http-server" } }), false);
+  assert.equal(gate.shouldBypass({ toolName: "write", input: { path: "x" } }), false);
+  gate.beginTask();
+  assert.equal(gate.shouldBypass(cd), false);
+});

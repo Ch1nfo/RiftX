@@ -71,6 +71,7 @@ export type AppConfig = {
   approvalMode: ApprovalMode;
   archivedSessionIds: string[];
   archivedSessions: ArchivedSession[];
+  sessionTitles: Record<string, string>;
 };
 
 export const DEFAULT_PROFILE: ModelProfile = {

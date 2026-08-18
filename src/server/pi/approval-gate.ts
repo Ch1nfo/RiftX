@@ -7,11 +7,24 @@ type PendingApproval = {
   timer: ReturnType<typeof setTimeout>;
 };
 
+type ApprovalInput = Pick<ApprovalRequest, "toolName" | "input">;
+
+function stableSerialize(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? String(value);
+  if (Array.isArray(value)) return `[${value.map(stableSerialize).join(",")}]`;
+  const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right));
+  return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${stableSerialize(entry)}`).join(",")}}`;
+}
+
+function approvalKey(request: ApprovalInput) {
+  return `${request.toolName}:${stableSerialize(request.input)}`;
+}
+
 export class ApprovalGate {
   private pending = new Map<string, PendingApproval>();
   private listeners = new Set<(request: ApprovalRequest) => void>();
   private mode: ApprovalMode;
-  private taskBypass = false;
+  private taskBypass = new Set<string>();
 
   constructor(mode: ApprovalMode = "request") {
     this.mode = mode;
@@ -23,7 +36,7 @@ export class ApprovalGate {
 
   setMode(mode: ApprovalMode) {
     this.mode = mode;
-    this.taskBypass = false;
+    this.taskBypass.clear();
     if (mode === "full") {
       for (const id of this.pending.keys()) this.decide(id, true);
     } else if (this.pending.size > 0) {
@@ -32,15 +45,15 @@ export class ApprovalGate {
   }
 
   beginTask() {
-    this.taskBypass = false;
+    this.taskBypass.clear();
   }
 
-  allowForTask() {
-    this.taskBypass = true;
+  allowForTask(request: ApprovalInput) {
+    this.taskBypass.add(approvalKey(request));
   }
 
-  shouldBypass() {
-    return this.mode === "full" || this.taskBypass;
+  shouldBypass(request: ApprovalInput) {
+    return this.mode === "full" || this.taskBypass.has(approvalKey(request));
   }
 
   onRequest(listener: (request: ApprovalRequest) => void) {

@@ -16,6 +16,7 @@ RiftX 当前是 MVP，重点实现 Pi 的基础 Agent 能力和本机安全运�
 - 配置多个模型时，可直接在工作台输入框右侧点击模型名称切换。
 - 一次性只读子 Agent，支持继承主 Agent 或使用独立 profile。
 - 会话历史、归档管理、可折叠工具卡片、Markdown、上下文占用圆环和明暗主题。
+- AI 自动总结任务标题，并在发送新任务后立即更新。
 - SSE 事件流和本机 JSON/JSONL 持久化。
 
 ## 环境要求
@@ -93,6 +94,7 @@ public/           RiftX Logo 资源
 - `GET /api/sessions/:id/stream`
 - `GET /api/sessions/:id/messages`
 - `POST /api/sessions/:id/prompt`
+- `POST /api/sessions/:id/title`
 - `POST /api/sessions/:id/abort`
 - `POST /api/sessions/:id/approval`
 - `GET/PUT /api/settings/model-profiles`

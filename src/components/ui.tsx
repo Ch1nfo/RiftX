@@ -2,7 +2,7 @@
 
 import * as Select from "@radix-ui/react-select";
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { Check, CaretDown, Moon, Sun, Warning, WarningCircle, X } from "@phosphor-icons/react";
+import { Check, CaretDown, HandPalm, Moon, Sparkle, Sun, Warning, WarningCircle, X } from "@phosphor-icons/react";
 import { useEffect, useState, type ReactNode } from "react";
 import type { ApprovalMode } from "@/lib/types";
 
@@ -53,20 +53,32 @@ const approvalModeLabels: Record<ApprovalMode, string> = {
   full: "完全访问"
 };
 
+const approvalModeDescriptions: Record<ApprovalMode, string> = {
+  request: "关键操作执行前询问",
+  auto: "由 AI 自动评估风险并审批",
+  full: "跳过审批并允许完整访问"
+};
+
+const approvalModeIcons: Record<ApprovalMode, ReactNode> = {
+  request: <HandPalm size={14} weight="regular" aria-hidden="true" />,
+  auto: <Sparkle size={14} weight="regular" aria-hidden="true" />,
+  full: <Warning size={14} weight="regular" aria-hidden="true" />
+};
+
 export function ApprovalModeMenu({ value, onValueChange, disabled }: { value: ApprovalMode; onValueChange: (value: ApprovalMode) => void; disabled?: boolean }) {
   return (
     <Select.Root value={value} onValueChange={(next) => onValueChange(next as ApprovalMode)} disabled={disabled}>
       <Select.Trigger className={`approval-mode-trigger ${value === "full" ? "full" : ""}`} aria-label="审批模式">
-        {value === "full" ? <Warning size={13} weight="fill" aria-hidden="true" /> : null}
-        <Select.Value>{approvalModeLabels[value]}</Select.Value>
+        <span className="approval-mode-trigger-value">{approvalModeIcons[value]}<Select.Value>{approvalModeLabels[value]}</Select.Value></span>
       </Select.Trigger>
       <Select.Portal>
-        <Select.Content className="select-content approval-mode-content" position="popper" sideOffset={6} align="start">
+        <Select.Content className="select-content approval-mode-content" position="popper" side="top" sideOffset={8} align="start" alignOffset={-8}>
           <Select.Viewport className="select-viewport">
             {(Object.keys(approvalModeLabels) as ApprovalMode[]).map((mode) => (
-              <Select.Item className="select-item" value={mode} key={mode}>
-                <Select.ItemText>{approvalModeLabels[mode]}</Select.ItemText>
-                <Select.ItemIndicator><Check size={14} weight="bold" /></Select.ItemIndicator>
+              <Select.Item className={`select-item approval-mode-item ${mode === "full" ? "warning" : ""}`} value={mode} key={mode}>
+                <span className="approval-mode-item-icon">{approvalModeIcons[mode]}</span>
+                <span className="approval-mode-item-copy"><span className="approval-mode-item-title"><Select.ItemText>{approvalModeLabels[mode]}</Select.ItemText></span><span className="approval-mode-item-description">{approvalModeDescriptions[mode]}</span></span>
+                <Select.ItemIndicator className="approval-mode-check"><Check size={14} weight="bold" /></Select.ItemIndicator>
               </Select.Item>
             ))}
           </Select.Viewport>

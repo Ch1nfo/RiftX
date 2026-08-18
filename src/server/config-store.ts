@@ -16,7 +16,8 @@ const defaultConfig = (): AppConfig => ({
   cwd: process.cwd(),
   approvalMode: "request",
   archivedSessionIds: [],
-  archivedSessions: []
+  archivedSessions: [],
+  sessionTitles: {}
 });
 
 export async function ensureAppDirs() {
@@ -42,7 +43,10 @@ export async function readConfig(): Promise<AppConfig> {
       activeProfileId: parsed.activeProfileId ?? profiles[0].id,
       approvalMode,
       archivedSessionIds: Array.isArray(parsed.archivedSessionIds) ? parsed.archivedSessionIds : [],
-      archivedSessions: Array.isArray(parsed.archivedSessions) ? parsed.archivedSessions : []
+      archivedSessions: Array.isArray(parsed.archivedSessions) ? parsed.archivedSessions : [],
+      sessionTitles: parsed.sessionTitles && typeof parsed.sessionTitles === "object"
+        ? Object.fromEntries(Object.entries(parsed.sessionTitles).filter(([, title]) => typeof title === "string"))
+        : {}
     };
   } catch {
     const config = defaultConfig();
