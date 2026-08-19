@@ -1,5 +1,3 @@
-import type { BrowserContext, Page } from "playwright";
-
 export type BrowserAction =
   | "navigate"
   | "snapshot"
@@ -25,13 +23,10 @@ export type BrowserToolInput = {
   value?: string;
   key?: string;
   values?: string[];
-  requestRef?: string;
 };
 
 export type BrowserScope = {
   allowedOrigins?: string[];
-  allowedPaths?: string[];
-  allowSubdomains?: boolean;
 };
 
 export type ElementKind = "button" | "link" | "input" | "textarea" | "select" | "checkbox" | "radio";
@@ -86,10 +81,4 @@ export type BrowserManagerOptions = {
   cwd: string;
   sessionId: string;
   scope?: BrowserScope;
-  launch?: boolean;
-};
-
-export type BrowserRuntime = {
-  context: BrowserContext;
-  page: Page;
 };

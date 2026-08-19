@@ -1,10 +1,10 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { SUBAGENT_LOG_LIMITS, type ApprovalMode, type ApprovalRequest, type ContextUsage, type RiftxEvent, type SubagentLogEntry, type SubagentTask, type SubagentTaskPatch } from "@/lib/types";
+import { SUBAGENT_LOG_LIMITS, type ApprovalMode, type ApprovalRequest, type RiftxEvent, type SubagentLogEntry, type SubagentTask, type SubagentTaskPatch } from "@/lib/types";
 import { ApprovalGate } from "./approval-gate";
 
-export type SubagentResult = { summary: string; usage?: ContextUsage };
+export type SubagentResult = { summary: string };
 type TaskMetaUpdate = { threadId?: string; model?: string };
 
 export type SubagentRunnerContext = {
@@ -51,7 +51,6 @@ function trimLogContent(content: string) {
 function cloneTask(task: SubagentTask): SubagentTask {
   return {
     ...task,
-    usage: task.usage ? { ...task.usage } : undefined,
     logs: task.logs.map((log) => ({ ...log }))
   };
 }
@@ -93,6 +92,7 @@ export class SubagentManager {
       const parsed = JSON.parse(await readFile(this.storagePath, "utf8")) as { tasks?: SubagentTask[] };
       for (const task of Array.isArray(parsed.tasks) ? parsed.tasks : []) {
         if (!task?.id || task.parentSessionId !== this.parentSessionId) continue;
+        delete (task as SubagentTask & { usage?: unknown }).usage;
         if (task.status === "running") {
           task.status = "interrupted";
           task.error = "RiftX was restarted while this task was running.";
@@ -147,8 +147,7 @@ export class SubagentManager {
         subagentId: task.id,
         threadId: task.threadId,
         agentName: task.name,
-        taskSummary: task.task,
-        risk: "high" as const
+        taskSummary: task.task
       } : request);
     });
   }
@@ -319,7 +318,6 @@ export class SubagentManager {
         task.status = "completed";
         task.finishedAt = now();
         task.summary = result.summary;
-        task.usage = result.usage;
         this.emitTask("subagent_done", task);
         this.completionHandler?.(task, result);
         item.resolve?.(result);
@@ -347,7 +345,7 @@ export class SubagentManager {
     let taskPatch: SubagentTaskPatch | undefined;
     if (event?.type === "approval_required") {
       const approval = event.approval as ApprovalRequest;
-      const enriched: ApprovalRequest = { ...approval, subagentId: task.id, threadId: task.threadId, agentName: task.name, taskSummary: task.task, risk: "high" };
+      const enriched: ApprovalRequest = { ...approval, subagentId: task.id, threadId: task.threadId, agentName: task.name, taskSummary: task.task };
       task.pendingApprovalCount += 1;
       taskPatch = { id: task.id, pendingApprovalCount: task.pendingApprovalCount };
       this.emitParent({ ...event, type, approval: enriched, subagentId: task.id, taskPatch });

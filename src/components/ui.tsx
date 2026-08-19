@@ -19,9 +19,9 @@ function syncFavicon(theme: "dark" | "light") {
   link.href = href;
 }
 
-export function RiftxLogo({ decorative = false, variant = "mark", className = "" }: { decorative?: boolean; variant?: "mark" | "full"; className?: string }) {
-  const lightAsset = variant === "full" ? "/riftx-logo-light.png" : "/riftx-logo-light-mark.png";
-  const darkAsset = variant === "full" ? "/riftx-logo-dark.png" : "/riftx-logo-dark-mark.png";
+export function RiftxLogo({ decorative = false, className = "" }: { decorative?: boolean; className?: string }) {
+  const lightAsset = "/riftx-logo-light-mark.png";
+  const darkAsset = "/riftx-logo-dark-mark.png";
   return <span className={`riftx-logo ${className}`} aria-label={decorative ? undefined : "RiftX"} aria-hidden={decorative}><img className="riftx-logo-light" src={lightAsset} alt="" /><img className="riftx-logo-dark" src={darkAsset} alt="" /></span>;
 }
 

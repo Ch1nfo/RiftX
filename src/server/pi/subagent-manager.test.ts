@@ -94,11 +94,15 @@ test("queues every submitted task immediately and lets maxConcurrent control exe
   try {
     const promises = ["one", "two", "three", "four"].map((task) => manager.submit(task));
     assert.equal(manager.list().length, 4);
-    await waitFor(() => manager.runningCount === 2);
+    const [first, second, third, fourth] = manager.list();
+    await waitFor(() => active.has(first.id) && active.has(second.id));
     assert.equal(manager.list().filter((task) => task.status === "queued").length, 2);
-    for (const task of manager.list().filter((item) => item.status === "running")) active.get(task.id)?.();
-    await waitFor(() => manager.runningCount === 2);
-    for (const task of manager.list().filter((item) => item.status === "running")) active.get(task.id)?.();
+    active.get(first.id)?.();
+    active.get(second.id)?.();
+    await waitFor(() => active.has(third.id) && active.has(fourth.id)
+      && third.status === "running" && fourth.status === "running");
+    active.get(third.id)?.();
+    active.get(fourth.id)?.();
     await Promise.all(promises);
     await waitFor(() => manager.runningCount === 0);
   } finally {

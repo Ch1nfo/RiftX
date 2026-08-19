@@ -32,10 +32,10 @@ type SessionRecord = {
   id: string;
   cwd: string;
   profile: ModelProfile;
-  profileId?: string;
   authStorage: AuthStorage;
   model: Model<any>;
   modelRegistry: ModelRegistry;
+  settingsManager: SettingsManager;
   session: AgentSession;
   gate: ApprovalGate;
   emitter: EventEmitter;
@@ -103,7 +103,30 @@ function eventPayload(event: AgentSessionEvent): RiftxEvent {
   return { type: event.type, ...base };
 }
 
-function createSubagentTool(manager: SubagentManager, childProfile: ModelProfile, cwd: string, mutationLock: MutationLock, runtimeDeps: RuntimeDeps): ToolDefinition {
+function registerProfileModel(authStorage: AuthStorage, modelRegistry: ModelRegistry, profile: ModelProfile, replace = false) {
+  if (profile.apiKey) authStorage.setRuntimeApiKey(profile.provider, profile.apiKey);
+  if (replace || !modelRegistry.find(profile.provider, profile.model)) {
+    modelRegistry.registerProvider(profile.provider, {
+      baseUrl: profile.baseUrl,
+      apiKey: profile.apiKey || "riftx-configured",
+      api: profile.api,
+      models: [{
+        id: profile.model,
+        name: profile.name,
+        reasoning: profile.thinkingLevel !== "off",
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: profile.contextWindow,
+        maxTokens: profile.maxTokens
+      }]
+    });
+  }
+  const model = modelRegistry.find(profile.provider, profile.model) as Model<any> | undefined;
+  if (!model) throw new Error(`Model ${profile.provider}/${profile.model} could not be loaded`);
+  return model;
+}
+
+function createSubagentTool(manager: SubagentManager, getChildProfile: () => ModelProfile, cwd: string, mutationLock: MutationLock, runtimeDeps: RuntimeDeps): ToolDefinition {
   return defineTool({
     name: "spawn_subagent",
     label: "Spawn subagent",
@@ -112,6 +135,7 @@ function createSubagentTool(manager: SubagentManager, childProfile: ModelProfile
     executionMode: "parallel",
     parameters: Type.Object({ task: Type.String({ description: "A unique, self-contained task with a clear target surface, evidence goal, and no dependency on another child task." }) }),
     async execute(_toolCallId, params) {
+      const childProfile = getChildProfile();
       const submitted = manager.submitTask(params.task, (context) => runChildSession(childProfile, cwd, mutationLock, context, runtimeDeps));
       // The parent tool returns immediately; consume the background promise so
       // a child failure is represented by subagent_failed without an unhandled
@@ -131,41 +155,26 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
   const paths = getAppPaths();
   await mkdir(paths.piAgent, { recursive: true, mode: 0o700 });
   const authStorage = runtimeDeps?.authStorage ?? AuthStorage.create(`${paths.piAgent}/auth.json`);
-  if (profile.apiKey) authStorage.setRuntimeApiKey(profile.provider, profile.apiKey);
   const modelRegistry = runtimeDeps?.modelRegistry ?? ModelRegistry.create(authStorage, `${paths.piAgent}/models.json`);
-  if (!runtimeDeps || !modelRegistry.find(profile.provider, profile.model)) {
-    modelRegistry.registerProvider(profile.provider, {
-      baseUrl: profile.baseUrl,
-      apiKey: profile.apiKey || "riftx-configured",
-      api: profile.api,
-      models: [{
-        id: profile.model,
-        name: profile.name,
-        reasoning: profile.thinkingLevel !== "off",
-        input: ["text"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: profile.contextWindow,
-        maxTokens: profile.maxTokens
-      }]
-    });
-  }
-  const model = modelRegistry.find(profile.provider, profile.model) as Model<any> | undefined;
-  if (!model) throw new Error(`Model ${profile.provider}/${profile.model} could not be loaded`);
+  const model = registerProfileModel(authStorage, modelRegistry, profile, !runtimeDeps);
 
   const config = await readConfig();
   gate.setMode(config.approvalMode);
   const emitter = new EventEmitter();
+  let record: SessionRecord | undefined;
   const permission = createPermissionExtension(
     gate,
     (event) => emitter.emit("event", event),
-    (request) => evaluateApproval(model, modelRegistry, request),
+    (request) => evaluateApproval(record?.model ?? model, modelRegistry, request),
     mutationLock
   );
   const childProfile = config.childInherit ? profile : config.profiles.find((item) => item.id === config.childProfileId) ?? profile;
   const settingsManager = SettingsManager.create(cwd, paths.piAgent);
+  settingsManager.setTransport(profile.transport);
   const sessionManager = sessionManagerOverride ?? PiSessionManager.create(cwd, child ? join(paths.subagents, "runtime") : paths.sessions);
   const subagents = !child ? new SubagentManager(sessionManager.getSessionId(), paths.subagents, (event) => emitter.emit("event", event), config.maxConcurrentSubagents, config.approvalMode) : undefined;
-  const customTools = subagents ? [createSubagentTool(subagents, childProfile, cwd, mutationLock, { authStorage, modelRegistry })] : [];
+  const getChildProfile = () => config.childInherit ? (record?.profile ?? profile) : childProfile;
+  const customTools = subagents ? [createSubagentTool(subagents, getChildProfile, cwd, mutationLock, { authStorage, modelRegistry })] : [];
   const browserSessionId = randomUUID();
   const browser = new BrowserManager({ cwd, sessionId: browserSessionId });
   const browserExtension = createBrowserExtension({ cwd, sessionId: browserSessionId }, browser);
@@ -204,14 +213,14 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
       if (tool.name === "spawn_subagent") tool.executionMode = "parallel";
     }
   }
-  const record: SessionRecord = {
+  record = {
     id: result.session.sessionId,
     cwd,
     profile,
-    profileId: profile.id,
     authStorage,
     model,
     modelRegistry,
+    settingsManager,
     session: result.session,
     gate,
     emitter,
@@ -224,7 +233,7 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
   const unsubscribe = result.session.subscribe((event) => {
     emitter.emit("event", eventPayload(event));
     const usage = result.session.getContextUsage();
-    if (usage) emitter.emit("event", { type: "usage", usage: normalizeContextUsage(usage, profile.contextWindow) });
+    if (usage) emitter.emit("event", { type: "usage", usage: normalizeContextUsage(usage, record.profile.contextWindow) });
   });
   record.unsubscribe = unsubscribe;
   if (subagents) {
@@ -236,18 +245,16 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
         : result.session.followUp(message);
       void deliver.catch(() => undefined);
     });
-    await subagents.initialize((context) => runChildSession(childProfile, cwd, mutationLock, context, { authStorage, modelRegistry }));
+    await subagents.initialize((context) => runChildSession(getChildProfile(), cwd, mutationLock, context, { authStorage, modelRegistry }));
   }
-  return {
-    ...record,
-    dispose() {
-      gate.rejectAll();
-      void subagents?.abortAll();
-      unsubscribe();
-      void browser.close();
-      result.session.dispose();
-    }
+  record.dispose = () => {
+    gate.rejectAll();
+    void subagents?.abortAll();
+    unsubscribe();
+    void browser.close();
+    result.session.dispose();
   };
+  return record;
 }
 
 async function runChildSession(profile: ModelProfile, cwd: string, mutationLock: MutationLock, context: SubagentRunnerContext, runtimeDeps: RuntimeDeps) {
@@ -278,8 +285,7 @@ async function runChildSession(profile: ModelProfile, cwd: string, mutationLock:
     await child.session.prompt(context.task.task);
     const last = [...child.session.messages].reverse().find((message) => message.role === "assistant") as { content?: unknown } | undefined;
     const summary = textFromModelContent(last?.content).trim() || "No result";
-    const usage = child.session.getContextUsage();
-    return { summary, usage: usage ? normalizeContextUsage(usage, profile.contextWindow) : undefined };
+    return { summary };
   } finally {
     unsubscribe();
     context.signal.removeEventListener("abort", abortChild);
@@ -370,7 +376,7 @@ async function buildSessionSnapshot(id: string, path?: string) {
       id,
       provider: live.profile.provider,
       model: live.profile.model,
-      profileId: live.profileId ?? live.profile.id,
+      profileId: live.profile.id,
       contextWindow: live.profile.contextWindow,
       usage: usageFromRecord(live)
     } satisfies SessionSnapshot;
@@ -406,7 +412,7 @@ async function findSessionPath(id: string, cwd?: string) {
   return "";
 }
 
-export async function getOrCreateSession(id?: string) {
+async function getOrCreateSession(id?: string) {
   const config = await readConfig();
   if (id && sessions.has(id)) {
     const existing = sessions.get(id)!;
@@ -464,7 +470,7 @@ export async function setWorkingDirectory(input: string) {
   return { cwd, sessions: sessionsList, activeSessionId: sessionsList[0]?.id ?? "" };
 }
 
-export async function promptSession(id: string, text: string, mode: "prompt" | "steer" | "followUp" = "prompt") {
+async function promptSession(id: string, text: string, mode: "prompt" | "steer" | "followUp" = "prompt") {
   const record = await getOrCreateSession(id);
   if (mode !== "steer") record.gate.beginTask();
   if (mode === "steer") await record.session.steer(text);
@@ -683,7 +689,7 @@ export async function listSessions(): Promise<SessionSummary[]> {
       firstMessage: "",
       updatedAt: new Date().toISOString(),
       archived: archived.has(session.id),
-      profileId: session.profileId ?? session.profile.id,
+      profileId: session.profile.id,
       provider: session.profile.provider,
       model: session.profile.model,
       contextWindow: session.profile.contextWindow,
@@ -742,10 +748,36 @@ export async function deleteArchivedSession(id: string) {
   return listSessions();
 }
 
-export async function setActiveProfile(profileId: string) {
-  await updateConfig({ activeProfileId: profileId });
-  for (const [id, session] of sessions) {
-    session.dispose?.();
-    sessions.delete(id);
+export async function setActiveProfile(profile: ModelProfile) {
+  const prepared = [...sessions.values()].map((record) => ({
+    record,
+    model: registerProfileModel(record.authStorage, record.modelRegistry, profile, true),
+    previousProfile: record.profile,
+    previousModel: record.model
+  }));
+  for (const { record, model } of prepared) {
+    if (!record.modelRegistry.hasConfiguredAuth(model)) throw new Error(`No API key for ${model.provider}/${model.id}`);
+  }
+  const switched: typeof prepared = [];
+  try {
+    for (const item of prepared) {
+      await item.record.session.setModel(item.model);
+      switched.push(item);
+      item.record.session.setThinkingLevel(profile.thinkingLevel);
+      item.record.settingsManager.setTransport(profile.transport);
+      item.record.session.agent.transport = profile.transport;
+      item.record.profile = profile;
+      item.record.model = item.model;
+    }
+  } catch (error) {
+    for (const item of switched.reverse()) {
+      await item.record.session.setModel(item.previousModel).catch(() => undefined);
+      item.record.session.setThinkingLevel(item.previousProfile.thinkingLevel);
+      item.record.settingsManager.setTransport(item.previousProfile.transport);
+      item.record.session.agent.transport = item.previousProfile.transport;
+      item.record.profile = item.previousProfile;
+      item.record.model = item.previousModel;
+    }
+    throw error;
   }
 }

@@ -2,24 +2,11 @@
 
 import { ArrowsClockwise, CaretDown, CircleNotch, Stop, UsersThree, X } from "@phosphor-icons/react";
 import { useLanguage } from "@/lib/i18n";
-import type { SubagentStatus, SubagentTask } from "@/lib/types";
+import type { SubagentTask } from "@/lib/types";
 import { useState } from "react";
 
-const statusLabels: Record<SubagentStatus, { zh: string; en: string }> = {
-  queued: { zh: "排队", en: "Queued" },
-  running: { zh: "运行中", en: "Running" },
-  completed: { zh: "完成", en: "Completed" },
-  failed: { zh: "失败", en: "Failed" },
-  cancelled: { zh: "已取消", en: "Cancelled" },
-  interrupted: { zh: "已中断", en: "Interrupted" }
-};
-
-function statusLabel(status: SubagentStatus, language: "zh" | "en") {
-  return statusLabels[status][language];
-}
-
 export function SubagentPanel({ tasks, running, maxConcurrent, onCancel, onRetry }: { tasks: SubagentTask[]; running: number; maxConcurrent: number; onCancel: (taskId: string) => void; onRetry: (taskId: string) => void }) {
-  const { language, t } = useLanguage();
+  const { t } = useLanguage();
   const [open, setOpen] = useState(true);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   if (!tasks.length) return null;
@@ -31,10 +18,11 @@ export function SubagentPanel({ tasks, running, maxConcurrent, onCancel, onRetry
     {open ? <div className="subagent-list">{tasks.slice().reverse().map((task) => {
       const isExpanded = Boolean(expanded[task.id]);
       const active = task.status === "queued" || task.status === "running";
+      const status = task.status === "queued" ? t("queued") : task.status === "running" ? t("running") : task.status === "completed" ? t("complete") : task.status === "failed" ? t("failed") : task.status === "cancelled" ? t("cancelled") : t("interrupted");
       return <article className={`subagent-item ${task.status}`} key={task.id}>
         <button className="subagent-item-head" onClick={() => setExpanded((current) => ({ ...current, [task.id]: !isExpanded }))}>
           <span className="subagent-item-title"><span className={`subagent-status-dot ${task.status}`}>{task.status === "running" ? <CircleNotch size={12} className="spin" /> : null}</span><strong>{task.name}</strong></span>
-          <span className="subagent-status">{statusLabel(task.status, language)}<CaretDown size={12} className={isExpanded ? "rotated" : ""} /></span>
+          <span className="subagent-status">{status}<CaretDown size={12} className={isExpanded ? "rotated" : ""} /></span>
         </button>
         <p className="subagent-task-summary">{task.task}</p>
         <div className="subagent-meta"><span>{task.model || t("loadingSubagentModel")}</span>{task.pendingApprovalCount ? <span className="subagent-approval-count">{t("approvalCount", { count: String(task.pendingApprovalCount) })}</span> : null}</div>

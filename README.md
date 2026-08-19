@@ -17,6 +17,10 @@ RiftX is an MVP. It focuses on Pi's core agent capabilities and safe local opera
 - Concurrent sub-agents with queueing, retry, cancellation, independent Pi threads, independent approval gates, and configurable profile inheritance or override.
 - Session history, archive management, tool cards, Markdown rendering, context usage ring, and light/dark themes.
 - English/Chinese UI language toggle.
+- A system directory picker in the workbench header; session history is scoped to the selected working directory.
+- Separate Settings sections for model/agent configuration and archived sessions, with independent save actions.
+- Optional custom system prompt for the main Agent, with the built-in prompt used when disabled or empty.
+- Custom prompt changes apply when a session is newly created or reopened; an already loaded session keeps its current prompt.
 - AI-generated session titles that update immediately when a new task is sent.
 - SSE event streaming with local JSON/JSONL persistence.
 - A single action-based `browser` tool backed by Playwright/Chromium, with DOM refs (`e1`, `e2`), request history, cookies, storage, tabs, and screenshots.
@@ -38,6 +42,7 @@ RiftX currently focuses on:
 - Controlled local command/file execution
 - Approval-gated browser automation for authenticated or interactive Web flows
 - Concurrent child-agent delegation inside a single parent session
+- Persistent context usage and model metadata for active and historical sessions
 
 RiftX currently does not include:
 
@@ -53,7 +58,9 @@ conda run -n agent npm install
 conda run -n agent npm run dev
 ```
 
-Open <http://localhost:3000>, open **Settings**, and create or select a model profile. The default working directory is the directory from which RiftX is started.
+Open <http://localhost:3000>, choose a working directory from the folder button in the workbench header, then open **Settings** to create or select a model profile. The initial working directory is the directory from which RiftX is started; changing it replaces the visible session list with sessions from the new directory.
+
+The composer model selector changes the current Pi session in place, including an empty session that has not yet written its first message. This keeps the session ID and history intact while updating the model and context window.
 
 For a production build:
 
@@ -82,13 +89,15 @@ RiftX is intended for targets where the operator has explicit authorization.
 
 - `read`, `grep`, `find`, and `ls` are allowed by default.
 - `bash`, `write`, and `edit` are guarded by the approval extension.
+- `browser` is one unified action-based tool. Read-only actions can run directly; navigation, page changes, form submission, and browser teardown are approval-controlled.
 - Browser read actions (`snapshot`, `requests`, `cookies`, `storage`, `screenshot`, and `tabs`) are direct; navigation and page-mutating actions use the same approval gate.
-- Sub-agents use the same guarded tool surface as the main agent, but cannot create further sub-agents.
+- Sub-agents use the same guarded tool surface as the main agent, but cannot create further sub-agents. They have their own approval gate and BrowserContext.
 - Set `RIFTX_BROWSER_ALLOWED_ORIGINS` to comma-separated authorized origins to enforce navigation scope. Without it, the first navigation locks the session to its origin. Out-of-scope requests and redirects are blocked.
 - Request approval pauses for an explicit human decision.
 - AI-assisted approval evaluates the proposed operation and blocks when local or target impact cannot be determined.
 - Full access bypasses the approval gate and should only be used in a controlled environment.
 - Approval failures, timeouts, and disconnected clients fail closed.
+- The selected approval mode applies to the main Agent and running sub-agents.
 
 The agent must not be used to access systems outside the authorized scope, disrupt services, delete data, steal credentials, or retain access. A model response is not a security guarantee; review evidence and commands before allowing impactful operations.
 
@@ -99,6 +108,7 @@ Runtime state is stored outside the repository under `~/.riftx/`:
 - `~/.riftx/config.json` stores model profiles and RiftX settings.
 - `~/.riftx/sessions/` stores Pi session JSONL history.
 - `~/.riftx/pi-agent/` stores RiftX-isolated Pi auth and model metadata.
+- `~/.riftx/subagents/<parent-session-id>/` stores child-agent task state, logs, summaries, and thread metadata. Running tasks are marked `interrupted` after a restart and are not replayed automatically.
 
 API keys are stored locally with restricted file permissions. Never commit API keys, session history, authorization headers, cookies, target data, certificates, private keys, or generated reconnaissance artifacts. The repository `.gitignore` covers common secrets, runtime files, build output, and local caches, but always review `git status` before committing.
 
@@ -148,8 +158,11 @@ RiftX includes an application-level child-agent system on top of Pi sessions.
 - Child agents share the same working directory as the parent.
 - Child agents have independent Pi threads, approval gates, and browser contexts.
 - Child agents inherit the main model by default, or can use an independent profile from Settings.
+- The maximum concurrent child-agent count is configurable from 1 to 8. Tasks beyond the limit wait in the parent-session queue.
+- Scheduling aggressiveness has `low`, `default`, and `high` modes. High mode favors broader delegation and warns about higher token and concurrency consumption; it still avoids duplicate or state-dependent tasks.
 - Child agents cannot recursively spawn more child agents.
 - Child approval requests surface in the main composer approval area, and child status/logs appear in the workbench panel.
+- Child results and incremental logs are persisted and restored with the selected parent session.
 
 ## Web API
 
@@ -170,6 +183,7 @@ The main endpoints include:
 - `POST /api/sessions/:id/subagents/:taskId/retry`
 - `PUT /api/settings/approval-mode`
 - `GET/PUT /api/settings/model-profiles`
+- `POST /api/workspace`
 
 All endpoints are designed for local single-user operation and do not provide remote authentication.
 

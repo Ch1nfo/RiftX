@@ -38,7 +38,18 @@ export async function PUT(request: Request) {
     ...profile,
     apiKey: profile.apiKey && profile.apiKey !== "••••••••" ? profile.apiKey : current.profiles.find((item) => item.id === profile.id)?.apiKey
   }));
-  const config = await updateProfiles(profiles, body.activeProfileId ?? current.activeProfileId);
+  const activeProfileId = body.activeProfileId ?? current.activeProfileId;
+  const activeProfile = profiles.find((profile) => profile.id === activeProfileId);
+  if (!activeProfile) return Response.json({ error: "Model profile not found" }, { status: 400 });
+  const currentActiveProfile = current.profiles.find((profile) => profile.id === current.activeProfileId);
+  if (activeProfileId !== current.activeProfileId || JSON.stringify(activeProfile) !== JSON.stringify(currentActiveProfile)) {
+    try {
+      await setActiveProfile(activeProfile);
+    } catch (error) {
+      return Response.json({ error: error instanceof Error ? error.message : "Model switch failed" }, { status: 400 });
+    }
+  }
+  const config = await updateProfiles(profiles, activeProfileId);
   const finalConfig = await updateConfig({
     childProfileId: body.childProfileId === undefined ? current.childProfileId : body.childProfileId,
     childInherit: body.childInherit === undefined ? current.childInherit : body.childInherit,
@@ -48,6 +59,5 @@ export async function PUT(request: Request) {
     systemPrompt: typeof body.systemPrompt === "string" ? body.systemPrompt : current.systemPrompt
   });
   if (finalConfig.maxConcurrentSubagents !== current.maxConcurrentSubagents) await setMaxConcurrentSubagents(finalConfig.maxConcurrentSubagents);
-  if (finalConfig.activeProfileId !== current.activeProfileId) await setActiveProfile(finalConfig.activeProfileId);
   return Response.json({ ...finalConfig, profiles: finalConfig.profiles.map(publicProfile) });
 }

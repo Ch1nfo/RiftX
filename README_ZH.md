@@ -17,6 +17,10 @@ RiftX 当前是 MVP，重点实现 Pi 的基础 Agent 能力和本机安全运�
 - 支持并发子 Agent，具备排队、重试、取消、独立 Pi 线程、独立审批门，以及继承或覆盖主模型配置的能力。
 - 会话历史、归档管理、可折叠工具卡片、Markdown、上下文占用圆环和明暗主题。
 - 中英文界面切换。
+- 工作台顶部提供系统文件夹选择器；最近会话按当前工作目录隔离显示。
+- 设置页只保留“模型与 Agent”和“归档会话”两个页面，各设置区域使用独立保存按钮。
+- 主 Agent 支持可选的自定义系统提示词；关闭开关或内容为空时使用内置默认提示词。
+- 自定义提示词在新建或重新打开会话时生效；已经加载的会话继续使用当前提示词。
 - AI 自动总结任务标题，并在发送新任务后立即更新。
 - SSE 事件流和本机 JSON/JSONL 持久化。
 - 单一 action 形式的 `browser` 工具，底层使用 Playwright/Chromium，支持 DOM 引用（`e1`、`e2`）、请求历史、Cookie、Storage、标签页和截图。
@@ -38,6 +42,7 @@ RiftX 不需要数据库，也不需要远程 RiftX 账户。
 - 受控的本机命令与文件操作
 - 带审批门的浏览器自动化，用于登录态或交互式 Web 流程
 - 单个父会话中的并发子 Agent 委派
+- 活跃会话和历史会话的真实上下文占用与模型信息持久化
 
 当前 RiftX 还不包含：
 
@@ -53,7 +58,9 @@ conda run -n agent npm install
 conda run -n agent npm run dev
 ```
 
-打开 <http://localhost:3000>，进入“设置”创建或选择模型配置。默认工作目录是启动 RiftX 时所在的目录。
+打开 <http://localhost:3000>，先点击工作台顶部的工作目录按钮，通过系统文件夹选择器选择目录，再进入“设置”创建或选择模型配置。初始工作目录是启动 RiftX 时所在的目录；切换目录后，左侧只显示新目录下的会话。
+
+输入框中的模型选择器会原地切换当前 Pi 会话，即使会话还没有发送过第一条消息也不会丢失会话 ID 或历史；模型和上下文窗口会同步更新。
 
 生产构建：
 
@@ -82,13 +89,15 @@ RiftX 只应被用于操作者明确获得授权的目标。
 
 - `read`、`grep`、`find`、`ls` 默认允许。
 - `bash`、`write`、`edit` 由审批扩展拦截。
+- `browser` 是统一的 action 工具。只读 action 可直接执行；导航、页面修改、表单提交和关闭浏览器受审批控制。
 - 浏览器只读 action（`snapshot`、`requests`、`cookies`、`storage`、`screenshot`、`tabs`）可直接使用；导航和会修改页面的 action 使用同一审批门。
-- 子 Agent 与主 Agent 使用同一套受控工具能力，但不能继续创建子 Agent。
+- 子 Agent 与主 Agent 使用同一套受控工具能力，但不能继续创建子 Agent；每个子 Agent 有独立审批门和 BrowserContext。
 - 设置 `RIFTX_BROWSER_ALLOWED_ORIGINS`（逗号分隔的授权 Origin）来配置浏览器作用域；未设置时首次导航会锁定当前 Origin。越界请求和重定向会被阻止。
 - 请求审批会暂停任务，等待人工明确决定。
 - 帮我审批会评估提议的操作；无法判断其是否会影响本机或被测系统时默认阻止。
 - 完全访问会绕过审批门，只应在受控环境中使用。
 - 审批失败、超时和客户端断开时默认拒绝。
+- 当前审批模式会同步作用于主 Agent 和正在运行的子 Agent。
 
 不得使用 Agent 访问授权范围以外的系统、干扰服务、删除数据、窃取凭据或保留访问权限。模型输出不等于安全保证；允许有影响的操作前，应检查命令和证据。
 
@@ -99,6 +108,7 @@ RiftX 只应被用于操作者明确获得授权的目标。
 - `~/.riftx/config.json` 保存模型配置和 RiftX 设置。
 - `~/.riftx/sessions/` 保存 Pi 会话 JSONL 历史。
 - `~/.riftx/pi-agent/` 保存 RiftX 独立的 Pi 授权和模型元数据。
+- `~/.riftx/subagents/<父会话 ID>/` 保存子 Agent 任务状态、日志、摘要和线程元数据。服务重启后，运行中的任务会标记为 `interrupted`，不会自动重新执行。
 
 API Key 会以受限权限保存在本机。不要提交 API Key、会话历史、Authorization Header、Cookie、目标数据、证书、私钥或侦察生成文件。仓库中的 `.gitignore` 已覆盖常见密钥、运行时文件、构建产物和本地缓存，但提交前仍应检查 `git status`。
 
@@ -148,8 +158,11 @@ RiftX 在 Pi session 之上实现了应用层子 Agent 系统。
 - 子 Agent 与主 Agent 共享工作目录。
 - 子 Agent 拥有独立的 Pi thread、审批门和浏览器上下文。
 - 子 Agent 默认继承主模型，也可以在设置页切换为独立 profile。
+- 最大并发子 Agent 数量可在设置中配置为 1 到 8，超过上限的任务会进入父会话队列。
+- 调度积极性分为“低”“默认”“高”。高档会更积极地委派并提示更高的 token 与并发消耗，但仍会跳过重复任务和有状态依赖任务。
 - 子 Agent 不能递归继续创建子 Agent。
 - 子 Agent 的审批请求显示在主 Composer 审批区域，状态和日志显示在工作台面板中。
+- 子 Agent 结果和增量日志会随选定的父会话持久化和恢复。
 
 ## Web API
 
@@ -170,6 +183,7 @@ RiftX 在 Pi session 之上实现了应用层子 Agent 系统。
 - `POST /api/sessions/:id/subagents/:taskId/retry`
 - `PUT /api/settings/approval-mode`
 - `GET/PUT /api/settings/model-profiles`
+- `POST /api/workspace`
 
 所有接口面向本机单用户运行，不提供远程鉴权。
 

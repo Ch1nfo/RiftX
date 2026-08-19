@@ -13,10 +13,6 @@ export async function GET() {
     sessions: activeSessions,
     profiles: config.profiles.map(({ apiKey, ...profile }) => ({ ...profile, apiKey: apiKey ? "••••••••" : "" })),
     activeProfileId: config.activeProfileId,
-    approvalMode: config.approvalMode,
-    childProfileId: config.childProfileId,
-    childInherit: config.childInherit,
-    maxConcurrentSubagents: config.maxConcurrentSubagents,
-    subagentAggressiveness: config.subagentAggressiveness
+    approvalMode: config.approvalMode
   });
 }

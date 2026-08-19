@@ -21,11 +21,9 @@ export class BrowserManager {
   private lockedOrigin?: string;
   private scope: BrowserScope;
 
-  constructor(private readonly options: BrowserManagerOptions) {
+  constructor(options: BrowserManagerOptions) {
     this.scope = {
-      allowedOrigins: options.scope?.allowedOrigins ?? parseAllowedOrigins(process.env.RIFTX_BROWSER_ALLOWED_ORIGINS),
-      allowedPaths: options.scope?.allowedPaths,
-      allowSubdomains: options.scope?.allowSubdomains ?? false
+      allowedOrigins: options.scope?.allowedOrigins ?? parseAllowedOrigins(process.env.RIFTX_BROWSER_ALLOWED_ORIGINS)
     };
   }
 
@@ -80,13 +78,10 @@ export class BrowserManager {
     const allowed = origins.some((origin) => {
       try {
         const parsed = new URL(origin);
-        return target.origin === parsed.origin || (this.scope.allowSubdomains && target.hostname.endsWith(`.${parsed.hostname}`) && target.protocol === parsed.protocol && target.port === parsed.port);
+        return target.origin === parsed.origin;
       } catch { return false; }
     });
     if (!allowed) throw new Error(`Navigation blocked by RiftX scope: ${target.origin} is not allowed`);
-    if (this.scope.allowedPaths?.length && !this.scope.allowedPaths.some((path) => target.pathname.startsWith(path))) {
-      throw new Error(`Navigation blocked by RiftX scope: ${target.pathname} is not allowed`);
-    }
     return target.toString();
   }
 

@@ -49,7 +49,6 @@ export type ApprovalRequest = {
   threadId?: string;
   agentName?: string;
   taskSummary?: string;
-  risk?: "low" | "medium" | "high";
 };
 
 export type SubagentStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
@@ -88,7 +87,6 @@ export type SubagentTask = {
   finishedAt?: string;
   summary?: string;
   error?: string;
-  usage?: ContextUsage;
   pendingApprovalCount: number;
   logs: SubagentLogEntry[];
 };

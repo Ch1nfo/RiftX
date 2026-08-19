@@ -68,7 +68,6 @@ function mergeSubagentTasks(current: SubagentTask[], incoming: SubagentTask[]) {
 function cloneSubagentTask(task: SubagentTask): SubagentTask {
   return {
     ...task,
-    usage: task.usage ? { ...task.usage } : undefined,
     logs: task.logs.map((log) => ({ ...log }))
   };
 }
@@ -470,8 +469,17 @@ export function Workbench() {
     const hasExistingUserMessage = Boolean(currentSession?.firstMessage?.trim()) || messages.some((message) => message.role === "user");
     if (!hasExistingUserMessage) queueSessionTitle(text);
     setMainAgentRunning(true);
-    const response = await fetch(`/api/sessions/${activeId}/prompt`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, mode }) });
-    if (!response.ok) setError((await response.json()).error ?? t("sendFailed"));
+    try {
+      const response = await fetch(`/api/sessions/${activeId}/prompt`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, mode }) });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({})) as { error?: string };
+        setMainAgentRunning(false);
+        setError(data.error ?? t("sendFailed"));
+      }
+    } catch (error) {
+      setMainAgentRunning(false);
+      setError(error instanceof Error ? error.message : t("sendFailed"));
+    }
   };
 
   const newSession = async () => {
@@ -569,6 +577,7 @@ export function Workbench() {
 
   const changeModel = async (profileId: string) => {
     if (running || profileId === activeProfileId) return;
+    setError("");
     const previousId = activeProfileId;
     const previousProfile = modelProfiles.find((item) => item.id === previousId);
     const nextProfile = modelProfiles.find((item) => item.id === profileId);
@@ -577,7 +586,10 @@ export function Workbench() {
     setModelName(`${nextProfile.provider}/${nextProfile.model}`);
     try {
       const response = await fetch("/api/settings/model-profiles", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ activeProfileId: profileId }) });
-      if (!response.ok) throw new Error((await response.json()).error ?? t("switchModelFailed"));
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({})) as { error?: string };
+        throw new Error(data.error ?? t("switchModelFailed"));
+      }
       setUsage(makeEmptyUsage(nextProfile.contextWindow));
       setStreamGeneration((current) => current + 1);
     } catch (error) {
@@ -613,7 +625,7 @@ export function Workbench() {
     <main className="main-panel">
       <header className="topbar"><button className="icon-button mobile-only" onClick={() => setMobileNav(true)} aria-label={t("settings")}><List size={19} /></button><button className="workspace workspace-button" type="button" disabled={bootstrapping || workspaceChoosing} aria-busy={workspaceChoosing} onClick={() => void chooseWorkingDirectory()} title={t("changeWorkingDirectory")} aria-label={workspaceChoosing ? t("choosingWorkingDirectory") : t("changeWorkingDirectory")}><FolderOpen size={16} /><span>{cwd || t("workingDirectory")}</span></button><div className="topbar-spacer" /><div className="topbar-actions"><LanguageToggle /><ThemeToggle /></div></header>
       <SubagentPanel tasks={subagents} running={subagentRunning} maxConcurrent={maxConcurrentSubagents} onCancel={(taskId) => void cancelSubagent(taskId)} onRetry={(taskId) => void retrySubagent(taskId)} />
-      <section ref={conversationRef} className="conversation" onScroll={handleConversationScroll}><div ref={conversationInnerRef} className="conversation-inner">{messages.length === 0 ? <div className="empty-state"><div className="empty-orbit"><RiftxLogo decorative variant="mark" /></div><h1>{bootstrapping ? t("loadingWorkspace") : activeId ? t("ready") : t("noSession")}</h1><p>{bootstrapping ? t("readingWorkspace") : activeId ? t("readOrTest") : t("createSessionFirst")}</p>{activeId && !bootstrapping ? <div className="prompt-suggestions"><button onClick={() => setInput(t("overview"))}>{t("overview")}</button><button onClick={() => setInput(t("checkRisks"))}>{t("checkRisks")}</button></div> : null}</div> : messages.map((message) => <article key={message.id} className={`message ${message.role}`}>
+      <section ref={conversationRef} className="conversation" onScroll={handleConversationScroll}><div ref={conversationInnerRef} className="conversation-inner">{messages.length === 0 ? <div className="empty-state"><div className="empty-orbit"><RiftxLogo decorative /></div><h1>{bootstrapping ? t("loadingWorkspace") : activeId ? t("ready") : t("noSession")}</h1><p>{bootstrapping ? t("readingWorkspace") : activeId ? t("readOrTest") : t("createSessionFirst")}</p>{activeId && !bootstrapping ? <div className="prompt-suggestions"><button onClick={() => setInput(t("overview"))}>{t("overview")}</button><button onClick={() => setInput(t("checkRisks"))}>{t("checkRisks")}</button></div> : null}</div> : messages.map((message) => <article key={message.id} className={`message ${message.role}`}>
         {message.role === "user" ? <div className="avatar user-avatar">{t("you")}</div> : message.role === "assistant" ? <div className="avatar assistant-avatar"><RiftxLogo decorative /></div> : null}
         <div className="message-body">{message.role === "thinking" ? <details className="thinking-block" open={message.status === "streaming"}><summary><span className="thinking-title"><Brain size={14} weight="bold" />{t("thinking")}</span><span className="thinking-state">{message.status === "streaming" ? t("thinkingNow") : t("thinkingDone")}</span></summary><div className="thinking-copy">{message.content}</div></details> : message.role === "tool" ? <ToolCard key={`${message.id}-${message.status}`} message={message} /> : <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>}</div>
       </article>)}<div ref={endRef} /></div>{showJumpToLatest ? <button className="jump-latest" type="button" aria-label={t("jumpLatest")} title={t("jumpLatest")} onClick={jumpToLatest}><ArrowDown size={17} weight="bold" /></button> : null}</section>

@@ -1,5 +1,5 @@
 import { mkdir, readFile, writeFile, chmod } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { homedir } from "node:os";
 import { APPROVAL_MODES, DEFAULT_PROFILE, SUBAGENT_AGGRESSIVENESS, type AppConfig, type ModelProfile } from "@/lib/types";
 
@@ -25,7 +25,7 @@ const defaultConfig = (): AppConfig => ({
   systemPrompt: ""
 });
 
-export async function ensureAppDirs() {
+async function ensureAppDirs() {
   await mkdir(ROOT, { recursive: true, mode: 0o700 });
   await mkdir(SESSION_PATH, { recursive: true, mode: 0o700 });
   await mkdir(PI_AGENT_PATH, { recursive: true, mode: 0o700 });
@@ -65,7 +65,7 @@ export async function readConfig(): Promise<AppConfig> {
   }
 }
 
-export async function writeConfig(config: AppConfig) {
+async function writeConfig(config: AppConfig) {
   await ensureAppDirs();
   await writeFile(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
   await chmod(CONFIG_PATH, 0o600);
@@ -87,5 +87,3 @@ export async function updateConfig(patch: Partial<AppConfig>) {
   await writeConfig(next);
   return next;
 }
-
-export { CONFIG_PATH, PI_AGENT_PATH, SESSION_PATH, SUBAGENT_PATH };
