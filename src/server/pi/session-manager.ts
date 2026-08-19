@@ -174,7 +174,7 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
     agentDir: paths.piAgent,
     extensionFactories: [permission, browserExtension],
     noExtensions: true,
-    systemPrompt: child ? buildChildPentestSystemPrompt() : buildPentestSystemPrompt(config.subagentAggressiveness, config.systemPrompt)
+    systemPrompt: child ? buildChildPentestSystemPrompt() : buildPentestSystemPrompt(config.subagentAggressiveness, config.systemPromptEnabled ? config.systemPrompt : undefined)
   });
   // The SDK only reloads a resource loader it creates internally. RiftX supplies
   // its own loader, so load the custom system prompt and inline extensions before

@@ -21,6 +21,7 @@ const defaultConfig = (): AppConfig => ({
   sessionTitles: {},
   maxConcurrentSubagents: 3,
   subagentAggressiveness: "default",
+  systemPromptEnabled: false,
   systemPrompt: ""
 });
 
@@ -54,6 +55,7 @@ export async function readConfig(): Promise<AppConfig> {
         : {},
       maxConcurrentSubagents: Math.min(8, Math.max(1, Number.isFinite(parsed.maxConcurrentSubagents) ? Math.round(parsed.maxConcurrentSubagents as number) : 3)),
       subagentAggressiveness: SUBAGENT_AGGRESSIVENESS.includes(parsed.subagentAggressiveness as AppConfig["subagentAggressiveness"]) ? parsed.subagentAggressiveness as AppConfig["subagentAggressiveness"] : "default",
+      systemPromptEnabled: parsed.systemPromptEnabled === true,
       systemPrompt: typeof parsed.systemPrompt === "string" ? parsed.systemPrompt : ""
     };
   } catch {

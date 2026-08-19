@@ -22,6 +22,7 @@ export async function PUT(request: Request) {
     childInherit: boolean;
     maxConcurrentSubagents: number;
     subagentAggressiveness: SubagentAggressiveness;
+    systemPromptEnabled: boolean;
     systemPrompt: string;
   }>;
   const current = await readConfig();
@@ -43,6 +44,7 @@ export async function PUT(request: Request) {
     childInherit: body.childInherit === undefined ? current.childInherit : body.childInherit,
     maxConcurrentSubagents,
     subagentAggressiveness,
+    systemPromptEnabled: body.systemPromptEnabled === undefined ? current.systemPromptEnabled : body.systemPromptEnabled === true,
     systemPrompt: typeof body.systemPrompt === "string" ? body.systemPrompt : current.systemPrompt
   });
   if (finalConfig.maxConcurrentSubagents !== current.maxConcurrentSubagents) await setMaxConcurrentSubagents(finalConfig.maxConcurrentSubagents);

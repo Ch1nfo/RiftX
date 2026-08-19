@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildPentestSystemPrompt } from "./system-prompt";
 
-test("pentest prompt proactively selects browser and independent subagents", () => {
+test("pentest prompt actively selects browser and targeted testing methods", () => {
   const prompt = buildPentestSystemPrompt("default");
-  assert.match(prompt, /do not wait for the user to say the word "browser"/);
-  assert.match(prompt, /Use spawn_subagent proactively for broad work/);
-  assert.match(prompt, /do not create three tasks by default/);
+  assert.match(prompt, /Use browser proactively for live pages/);
+  assert.match(prompt, /Do not test only one input or one path/);
+  assert.match(prompt, /small, targeted, controlled test sets/);
+  assert.match(prompt, /Use the spawn_subagent tool to create child Agents/);
   assert.match(prompt, /configured maximum is a concurrency limit, not a target/);
-  assert.match(prompt, /Tool selection is part of the task/);
+  assert.match(prompt, /current approval mode/);
 });
 
 test("aggressiveness changes delegation policy", () => {

@@ -136,6 +136,7 @@ export type AppConfig = {
   sessionTitles: Record<string, string>;
   maxConcurrentSubagents: number;
   subagentAggressiveness: SubagentAggressiveness;
+  systemPromptEnabled: boolean;
   systemPrompt: string;
 };
 
