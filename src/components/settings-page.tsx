@@ -15,19 +15,22 @@ const labels: Record<string, string> = {
 };
 
 export function SettingsPage() {
-  const { t, language } = useLanguage();
+  const { t } = useLanguage();
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [selected, setSelected] = useState("");
-  const [saved, setSaved] = useState(false);
+  const [maxConcurrentDraft, setMaxConcurrentDraft] = useState("1");
+  const [savingSection, setSavingSection] = useState<string | null>(null);
+  const [savedSection, setSavedSection] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [archivedSessions, setArchivedSessions] = useState<SessionSummary[]>([]);
-  const [activeSection, setActiveSection] = useState<"model-agent" | "tool-security">("model-agent");
+  const [activeSection, setActiveSection] = useState<"model-agent" | "archived">("model-agent");
 
   useEffect(() => {
     Promise.all([fetch("/api/settings/model-profiles"), fetch("/api/sessions?archived=true")]).then(async ([configResponse, sessionsResponse]) => {
       const data = await configResponse.json();
       setConfig(data);
       setSelected(data.profiles?.[0]?.id ?? "");
+      setMaxConcurrentDraft(String(Math.min(8, Math.max(1, Number(data.maxConcurrentSubagents) || 1))));
       setArchivedSessions(await sessionsResponse.json());
     }).catch(() => setError(t("settingsLoadFailed")));
     return undefined;
@@ -37,13 +40,34 @@ export function SettingsPage() {
 
   const profile = config.profiles.find((item) => item.id === selected) ?? config.profiles[0];
   const updateProfile = (patch: Partial<ModelProfile>) => setConfig({ ...config, profiles: config.profiles.map((item) => item.id === profile.id ? { ...item, ...patch } : item) });
-  const save = async () => {
-    const response = await fetch("/api/settings/model-profiles", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(config) });
-    if (!response.ok) { setError(t("saveFailed")); return; }
-    setConfig(await response.json());
-    setSaved(true);
-    setTimeout(() => setSaved(false), 1800);
+  const updateMaxConcurrentDraft = (value: string) => {
+    const digits = value.replace(/\D/g, "").slice(0, 2);
+    setMaxConcurrentDraft(digits);
+    if (digits) setConfig({ ...config, maxConcurrentSubagents: Math.min(8, Math.max(1, Number(digits))) });
   };
+  const normalizeMaxConcurrentDraft = () => {
+    const normalized = Math.min(8, Math.max(1, Number(maxConcurrentDraft) || 1));
+    setMaxConcurrentDraft(String(normalized));
+    setConfig({ ...config, maxConcurrentSubagents: normalized });
+  };
+  const saveSection = async (section: string, patch: Record<string, unknown>, applyResponse?: (data: Partial<AppConfig>) => Partial<AppConfig>) => {
+    setSavingSection(section);
+    setSavedSection(null);
+    setError("");
+    try {
+      const response = await fetch("/api/settings/model-profiles", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+      const data = await response.json() as Partial<AppConfig> & { error?: string };
+      if (!response.ok) throw new Error(data.error ?? t("saveFailed"));
+      setConfig((current) => current ? { ...current, ...(applyResponse ? applyResponse(data) : patch) } : current);
+      setSavedSection(section);
+      window.setTimeout(() => setSavedSection((current) => current === section ? null : current), 1800);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("saveFailed"));
+    } finally {
+      setSavingSection(null);
+    }
+  };
+  const sectionSaveButton = (section: string, onSave: () => void) => <button className="button secondary settings-section-save" disabled={savingSection !== null} onClick={onSave}>{savingSection === section ? t("saving") : savedSection === section ? <><Check size={16} />{t("saved")}</> : <><FloppyDisk size={16} />{t("saveSettings")}</>}</button>;
   const addProfile = () => {
     const id = `profile-${Date.now()}`;
     const next = { ...profile, id, name: t("newModelProfile"), apiKey: "" };
@@ -68,13 +92,14 @@ export function SettingsPage() {
       <div className="settings-brand"><div className="brand-mark"><RiftxLogo /></div><div><strong>RiftX {t("settings")}</strong><small>{t("localAgent")} {t("configuration")}</small></div></div>
       <div className="settings-nav-label">{t("config")}</div>
       <a href="#model-agent" className={`settings-nav-item ${activeSection === "model-agent" ? "active" : ""}`} onClick={() => setActiveSection("model-agent")}>{t("modelAgent")}</a>
-      <a href="#tool-security" className={`settings-nav-item ${activeSection === "tool-security" ? "active" : ""}`} onClick={() => setActiveSection("tool-security")}>{t("toolSecurity")}</a>
+      <a href="#archived" className={`settings-nav-item ${activeSection === "archived" ? "active" : ""}`} onClick={() => setActiveSection("archived")}>{t("archived")}</a>
     </aside>
     <main className="settings-main">
-      <header className="settings-header"><div><span className="eyebrow">{t("workspaceSettings")}</span><h1>{t("modelAgent")}</h1><p>{t("modelSettingsDesc")}</p></div><div className="settings-header-actions"><LanguageToggle /><ThemeToggle />{saved ? <span className="settings-save-status" role="status">{t("saved")}</span> : null}<button className="button primary" onClick={() => void save()}>{saved ? <Check size={17} /> : <FloppyDisk size={17} />} {saved ? t("saved") : t("saveSettings")}</button></div></header>
+      <header className="settings-header"><div><span className="eyebrow">{t("workspaceSettings")}</span><h1>{activeSection === "archived" ? t("archived") : t("modelAgent")}</h1><p>{activeSection === "archived" ? t("archivedDesc") : t("modelSettingsDesc")}</p></div><div className="settings-header-actions"><LanguageToggle /><ThemeToggle /></div></header>
       <div className="settings-grid">
+        {activeSection === "model-agent" ? <>
         <section id="model-agent" className="settings-card">
-          <div className="card-heading"><div><h2>{t("modelProfiles")}</h2><p>{t("modelProfilesDesc")}</p></div><div className="inline-actions"><button className="icon-button" onClick={addProfile} aria-label={t("addProfile")}><Plus size={17} /></button><button className="icon-button danger-icon" onClick={removeProfile} aria-label={t("removeProfile")}><Trash size={16} /></button></div></div>
+          <div className="card-heading"><div><h2>{t("modelProfiles")}</h2><p>{t("modelProfilesDesc")}</p></div><div className="inline-actions"><button className="icon-button" onClick={addProfile} aria-label={t("addProfile")}><Plus size={17} /></button><button className="icon-button danger-icon" onClick={removeProfile} aria-label={t("removeProfile")}><Trash size={16} /></button>{sectionSaveButton("profiles", () => void saveSection("profiles", { profiles: config.profiles, activeProfileId: config.activeProfileId }, (data) => ({ profiles: data.profiles ?? config.profiles, activeProfileId: data.activeProfileId ?? config.activeProfileId })))}</div></div>
           <div className="profile-tabs">{config.profiles.map((item) => <button key={item.id} className={item.id === profile.id ? "active" : ""} onClick={() => setSelected(item.id)}>{item.name || item.model}</button>)}</div>
           <div className="form-grid">
             <Field label={t("profileName")}><input value={profile.name} onChange={(event) => updateProfile({ name: event.target.value })} /></Field>
@@ -89,10 +114,9 @@ export function SettingsPage() {
             <Field label="Max output tokens"><input type="number" min={256} step={256} value={profile.maxTokens} onChange={(event) => updateProfile({ maxTokens: Number(event.target.value) })} /></Field>
           </div>
         </section>
-        <section className="settings-card"><div className="card-heading"><div><h2>{t("childAgent")}</h2><p>{t("childAgentDesc")}</p></div></div><label className="toggle-row"><span><strong>{t("inheritMain")}</strong><small>{t("inheritMainDesc")}</small></span><input type="checkbox" checked={config.childInherit} onChange={(event) => setConfig({ ...config, childInherit: event.target.checked })} /></label><Field label={t("independentProfile")}><SelectField value={config.childProfileId ?? profile.id} onValueChange={(value) => setConfig({ ...config, childProfileId: value })} options={config.profiles.map((item) => ({ value: item.id, label: item.name || item.model }))} /></Field><Field label={t("maxConcurrentSubagents")} hint={t("maxConcurrentSubagentsHint")}><input type="number" min={1} max={8} step={1} value={config.maxConcurrentSubagents} onChange={(event) => setConfig({ ...config, maxConcurrentSubagents: Math.min(8, Math.max(1, Number(event.target.value) || 1)) })} /></Field><Field label={t("subagentAggressiveness")} hint={t("subagentAggressivenessDesc")}><SelectField value={config.subagentAggressiveness} onValueChange={(value) => setConfig({ ...config, subagentAggressiveness: value as SubagentAggressiveness })} options={SUBAGENT_AGGRESSIVENESS.map((value) => ({ value, label: value === "low" ? t("subagentLow") : value === "high" ? t("subagentHigh") : t("subagentDefault") }))} /></Field>{config.subagentAggressiveness === "high" ? <div className="safety-note"><Warning size={18} weight="regular" /><span>{t("subagentHighWarning")}</span></div> : null}<div className="field-hint subagent-new-session-note">{t("subagentNewSessionNote")}</div></section>
-        <section className="settings-card"><div className="card-heading"><div><h2>{t("workDir")}</h2><p>{t("workDirDesc")}</p></div></div><Field label={t("currentDir")}><input value={config.cwd} onChange={(event) => setConfig({ ...config, cwd: event.target.value })} /></Field><div className="safety-note"><Warning size={18} weight="regular" /><span>{t("highRiskNote")}</span></div></section>
-        <section id="tool-security" className="settings-card"><div className="card-heading"><div><h2>{t("toolSecurity")}</h2><p>{t("securityDesc")}</p></div><Warning size={18} color="var(--muted)" weight="regular" /></div><div className="security-policy-list"><div><strong>{t("allowedByDefault")}</strong><span>{t("readOnlyTools")}</span></div><div><strong>{t("needsApproval")}</strong><span>{t("riskyTools")}</span></div><div><strong>{t("currentMode")}</strong><span>{config.approvalMode === "request" ? t("requestApprovalMode") : config.approvalMode === "auto" ? t("helpApproveMode") : t("fullAccessMode")}{language === "en" ? ". " : "，"}{t("modeInComposer")}</span></div></div></section>
-        <section className="settings-card"><div className="card-heading"><div><h2>{t("archived")}</h2><p>{t("archivedDesc")}</p></div><Archive size={18} color="var(--muted)" /></div>{archivedSessions.length ? <div className="archived-session-list">{archivedSessions.map((session) => <div className="archived-session-row" key={session.id}><div className="session-copy"><strong>{session.name || t("newSessionEnglish")}</strong><small>{new Date(session.updatedAt).toLocaleString()}</small></div><button className="icon-button danger-icon" aria-label={`${t("deleteArchived")} ${session.name || t("archived")}`} title={t("deleteArchived")} onClick={() => void deleteArchived(session)}><Trash size={16} /></button></div>)}</div> : <div className="archived-empty">{t("noArchived")}</div>}</section>
+        <section className="settings-card"><div className="card-heading"><div><h2>{t("systemPrompt")}</h2><p>{t("systemPromptDesc")}</p></div>{sectionSaveButton("systemPrompt", () => void saveSection("systemPrompt", { systemPrompt: config.systemPrompt }))}</div><Field label={t("customSystemPrompt")} hint={t("customSystemPromptHint")}><textarea className="settings-prompt-input" value={config.systemPrompt} onChange={(event) => setConfig({ ...config, systemPrompt: event.target.value })} placeholder={t("systemPromptPlaceholder")} rows={12} /></Field></section>
+        <section className="settings-card"><div className="card-heading"><div><h2>{t("childAgent")}</h2><p>{t("childAgentDesc")}</p></div>{sectionSaveButton("childAgent", () => void saveSection("childAgent", { childProfileId: config.childProfileId, childInherit: config.childInherit, maxConcurrentSubagents: config.maxConcurrentSubagents, subagentAggressiveness: config.subagentAggressiveness }))}</div><label className="toggle-row"><span><strong>{t("inheritMain")}</strong><small>{t("inheritMainDesc")}</small></span><input type="checkbox" checked={config.childInherit} onChange={(event) => setConfig({ ...config, childInherit: event.target.checked })} /></label><Field label={t("independentProfile")}><SelectField value={config.childProfileId ?? profile.id} onValueChange={(value) => setConfig({ ...config, childProfileId: value })} options={config.profiles.map((item) => ({ value: item.id, label: item.name || item.model }))} /></Field><Field label={t("maxConcurrentSubagents")} hint={t("maxConcurrentSubagentsHint")}><input type="text" inputMode="numeric" maxLength={2} value={maxConcurrentDraft} onChange={(event) => updateMaxConcurrentDraft(event.target.value)} onFocus={(event) => { const input = event.currentTarget; const end = input.value.length; window.requestAnimationFrame(() => { if (input.isConnected) input.setSelectionRange(end, end); }); }} onBlur={normalizeMaxConcurrentDraft} /></Field><Field label={t("subagentAggressiveness")} hint={t("subagentAggressivenessDesc")}><SelectField value={config.subagentAggressiveness} onValueChange={(value) => setConfig({ ...config, subagentAggressiveness: value as SubagentAggressiveness })} options={SUBAGENT_AGGRESSIVENESS.map((value) => ({ value, label: value === "low" ? t("subagentLow") : value === "high" ? t("subagentHigh") : t("subagentDefault") }))} /></Field>{config.subagentAggressiveness === "high" ? <div className="safety-note"><Warning size={18} weight="regular" /><span>{t("subagentHighWarning")}</span></div> : null}<div className="field-hint subagent-new-session-note">{t("subagentNewSessionNote")}</div></section>
+        </> : <section id="archived" className="settings-card"><div className="card-heading"><div><h2>{t("archived")}</h2><p>{t("archivedDesc")}</p></div><Archive size={18} color="var(--muted)" /></div>{archivedSessions.length ? <div className="archived-session-list">{archivedSessions.map((session) => <div className="archived-session-row" key={session.id}><div className="session-copy"><strong>{session.name || t("newSessionEnglish")}</strong><small>{new Date(session.updatedAt).toLocaleString()}</small></div><button className="icon-button danger-icon" aria-label={`${t("deleteArchived")} ${session.name || t("archived")}`} title={t("deleteArchived")} onClick={() => void deleteArchived(session)}><Trash size={16} /></button></div>)}</div> : <div className="archived-empty">{t("noArchived")}</div>}</section>}
       </div>
       {error ? <div className="inline-error">{error}</div> : null}
     </main>

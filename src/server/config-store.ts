@@ -20,7 +20,8 @@ const defaultConfig = (): AppConfig => ({
   archivedSessions: [],
   sessionTitles: {},
   maxConcurrentSubagents: 3,
-  subagentAggressiveness: "default"
+  subagentAggressiveness: "default",
+  systemPrompt: ""
 });
 
 export async function ensureAppDirs() {
@@ -52,7 +53,8 @@ export async function readConfig(): Promise<AppConfig> {
         ? Object.fromEntries(Object.entries(parsed.sessionTitles).filter(([, title]) => typeof title === "string"))
         : {},
       maxConcurrentSubagents: Math.min(8, Math.max(1, Number.isFinite(parsed.maxConcurrentSubagents) ? Math.round(parsed.maxConcurrentSubagents as number) : 3)),
-      subagentAggressiveness: SUBAGENT_AGGRESSIVENESS.includes(parsed.subagentAggressiveness as AppConfig["subagentAggressiveness"]) ? parsed.subagentAggressiveness as AppConfig["subagentAggressiveness"] : "default"
+      subagentAggressiveness: SUBAGENT_AGGRESSIVENESS.includes(parsed.subagentAggressiveness as AppConfig["subagentAggressiveness"]) ? parsed.subagentAggressiveness as AppConfig["subagentAggressiveness"] : "default",
+      systemPrompt: typeof parsed.systemPrompt === "string" ? parsed.systemPrompt : ""
     };
   } catch {
     const config = defaultConfig();

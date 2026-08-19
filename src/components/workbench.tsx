@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Archive, ArrowDown, ArrowUp, Brain, Command, Gear, List, Plus, Stop, TerminalWindow, WarningCircle, X } from "@phosphor-icons/react";
+import { Archive, ArrowDown, ArrowUp, Brain, Command, FolderOpen, Gear, List, Plus, Stop, WarningCircle, X } from "@phosphor-icons/react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ApprovalModeMenu, ContextRing, ErrorNotice, LanguageToggle, ModelMenu, RiftxLogo, ThemeToggle } from "./ui";
@@ -12,7 +12,15 @@ import { useLanguage } from "@/lib/i18n";
 
 type Message = { id: string; role: "user" | "assistant" | "thinking" | "tool"; content: string; toolName?: string; toolCallId?: string; status?: string; isError?: boolean };
 
-const emptyUsage: ContextUsage = { tokens: 0, contextWindow: 128000, percent: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, remaining: 128000 };
+function makeEmptyUsage(contextWindow = 0): ContextUsage {
+  const safeWindow = Number.isFinite(contextWindow) && contextWindow > 0 ? contextWindow : 0;
+  return { tokens: 0, contextWindow: safeWindow, percent: safeWindow > 0 ? 0 : null, input: null, output: null, cacheRead: null, cacheWrite: null, remaining: safeWindow };
+}
+
+function usageFromSession(session?: SessionSummary | null): ContextUsage {
+  if (session?.usage) return { ...session.usage };
+  return makeEmptyUsage(session?.contextWindow ?? 0);
+}
 
 function trimSubagentLogContent(content: string) {
   if (content.length <= SUBAGENT_LOG_LIMITS.content) return content;
@@ -132,12 +140,13 @@ export function Workbench() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [activeId, setActiveId] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
-  const [usage, setUsage] = useState(emptyUsage);
+  const [usage, setUsage] = useState<ContextUsage>(() => makeEmptyUsage());
   const [modelName, setModelName] = useState("No model configured");
   const [modelProfiles, setModelProfiles] = useState<ModelProfile[]>([]);
   const [activeProfileId, setActiveProfileId] = useState("");
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("request");
   const [cwd, setCwd] = useState("");
+  const [workspaceChoosing, setWorkspaceChoosing] = useState(false);
   const [input, setInput] = useState("");
   const [mainAgentRunning, setMainAgentRunning] = useState(false);
   const [bootstrapping, setBootstrapping] = useState(true);
@@ -152,12 +161,23 @@ export function Workbench() {
   const conversationInnerRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(true);
   const endRef = useRef<HTMLDivElement>(null);
+  const composerInputRef = useRef<HTMLTextAreaElement>(null);
   const subagentsRef = useRef<SubagentTask[]>([]);
   const subagentQueueRef = useRef(new Map<string, SubagentTask>());
   const subagentPatchQueueRef = useRef(new Map<string, SubagentTaskPatch[]>());
   const subagentFlushFrameRef = useRef<number | undefined>(undefined);
   const titleQueueRef = useRef<Promise<void>>(Promise.resolve());
   const titleRequestRef = useRef(0);
+
+  useLayoutEffect(() => {
+    const textarea = composerInputRef.current;
+    if (!textarea) return;
+    const maxHeight = 200;
+    textarea.style.height = "auto";
+    const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
+    textarea.style.height = `${Math.max(48, nextHeight)}px`;
+    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+  }, [input]);
 
   const scheduleSubagentFlush = () => {
     if (subagentFlushFrameRef.current !== undefined) return;
@@ -196,7 +216,6 @@ export function Workbench() {
     const queue = subagentPatchQueueRef.current.get(patch.id) ?? [];
     queue.push({
       ...patch,
-      usage: patch.usage ? { ...patch.usage } : undefined,
       appendLog: patch.appendLog ? { ...patch.appendLog } : undefined,
       patchLog: patch.patchLog ? { ...patch.patchLog } : undefined
     });
@@ -246,8 +265,22 @@ export function Workbench() {
     subagentsRef.current = [];
     setSubagents([]);
     setApprovalQueue([]);
+    const sessionMeta = sessions.find((session) => session.id === activeId);
+    setUsage(usageFromSession(sessionMeta));
+    if (sessionMeta?.provider && sessionMeta?.model) setModelName(`${sessionMeta.provider}/${sessionMeta.model}`);
     if (!activeId) return;
     const controller = new AbortController();
+    fetch(`/api/sessions/${activeId}`, { signal: controller.signal }).then((response) => response.json()).then((data: Partial<SessionSummary>) => {
+      if (controller.signal.aborted) return;
+      const nextUsage = data.usage && typeof data.usage === "object"
+        ? { ...makeEmptyUsage(Number(data.contextWindow ?? (data.usage as ContextUsage).contextWindow ?? 0)), ...(data.usage as ContextUsage) }
+        : makeEmptyUsage(Number(data.contextWindow ?? 0));
+      setUsage(nextUsage);
+      if (data.provider && data.model) setModelName(`${data.provider}/${data.model}`);
+      if (data.id) {
+        setSessions((current) => current.map((session) => session.id === data.id ? { ...session, ...data, usage: nextUsage } : session));
+      }
+    }).catch(() => undefined);
     fetch(`/api/sessions/${activeId}/subagents`, { signal: controller.signal }).then((response) => response.json()).then((data: { tasks?: SubagentTask[]; running?: number; maxConcurrent?: number }) => {
       if (controller.signal.aborted) return;
       for (const task of (data.tasks ?? []).map(cloneSubagentTask)) queueSubagentTask(task, "snapshot");
@@ -279,7 +312,34 @@ export function Workbench() {
       }
       if (payload.type === "usage") {
         const next = payload.usage as Partial<ContextUsage>;
-        setUsage((current) => ({ ...current, ...next, tokens: Number(next.tokens ?? current.tokens), contextWindow: Number(next.contextWindow ?? current.contextWindow), percent: next.percent === null ? null : Number(next.percent ?? current.percent ?? 0), input: Number(next.input ?? current.input), output: Number(next.output ?? current.output), cacheRead: Number(next.cacheRead ?? current.cacheRead), cacheWrite: Number(next.cacheWrite ?? current.cacheWrite), remaining: Number(next.remaining ?? current.remaining) }));
+        setUsage((current) => ({
+          ...current,
+          ...next,
+          tokens: Number(next.tokens ?? current.tokens),
+          contextWindow: Number(next.contextWindow ?? current.contextWindow),
+          percent: next.percent === null ? null : Number(next.percent ?? current.percent ?? 0),
+          input: next.input === null ? null : next.input === undefined ? current.input : Number(next.input),
+          output: next.output === null ? null : next.output === undefined ? current.output : Number(next.output),
+          cacheRead: next.cacheRead === null ? null : next.cacheRead === undefined ? current.cacheRead : Number(next.cacheRead),
+          cacheWrite: next.cacheWrite === null ? null : next.cacheWrite === undefined ? current.cacheWrite : Number(next.cacheWrite),
+          remaining: Number(next.remaining ?? current.remaining)
+        }));
+        setSessions((current) => current.map((session) => session.id === activeId ? {
+          ...session,
+          contextWindow: Number(next.contextWindow ?? session.contextWindow ?? 0),
+          usage: {
+            ...(session.usage ?? makeEmptyUsage(Number(next.contextWindow ?? session.contextWindow ?? 0))),
+            ...next,
+            tokens: Number(next.tokens ?? session.usage?.tokens ?? 0),
+            contextWindow: Number(next.contextWindow ?? session.usage?.contextWindow ?? session.contextWindow ?? 0),
+            percent: next.percent === null ? null : Number(next.percent ?? session.usage?.percent ?? 0),
+            input: next.input === null ? null : next.input === undefined ? session.usage?.input ?? null : Number(next.input),
+            output: next.output === null ? null : next.output === undefined ? session.usage?.output ?? null : Number(next.output),
+            cacheRead: next.cacheRead === null ? null : next.cacheRead === undefined ? session.usage?.cacheRead ?? null : Number(next.cacheRead),
+            cacheWrite: next.cacheWrite === null ? null : next.cacheWrite === undefined ? session.usage?.cacheWrite ?? null : Number(next.cacheWrite),
+            remaining: Number(next.remaining ?? session.usage?.remaining ?? 0)
+          }
+        } : session));
         return;
       }
       if (payload.type === "approval_required") {
@@ -417,10 +477,36 @@ export function Workbench() {
   const newSession = async () => {
     const response = await fetch("/api/sessions", { method: "POST" });
     const data = await response.json();
+    const nextSessions = await fetch("/api/sessions").then((item) => item.json()) as SessionSummary[];
+    const nextSession = nextSessions.find((session) => session.id === data.id);
     setActiveId(data.id);
     setMessages([]);
-    setUsage(emptyUsage);
-    setSessions(await fetch("/api/sessions").then((item) => item.json()));
+    setUsage(usageFromSession(nextSession));
+    setSessions(nextSessions);
+  };
+
+  const chooseWorkingDirectory = async () => {
+    setWorkspaceChoosing(true);
+    try {
+      const response = await fetch("/api/workspace", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ language }) });
+      const data = await response.json() as { cwd?: string; sessions?: SessionSummary[]; activeSessionId?: string; cancelled?: boolean; error?: string };
+      if (!response.ok) throw new Error(data.error ?? t("changeWorkingDirectoryFailed"));
+      if (data.cancelled) return;
+      const nextSessions = data.sessions ?? [];
+      setCwd(data.cwd ?? cwd);
+      setSessions(nextSessions);
+      setActiveId(data.activeSessionId ?? "");
+      setMessages([]);
+      setUsage(makeEmptyUsage());
+      setMainAgentRunning(false);
+      setApprovalQueue([]);
+      subagentsRef.current = [];
+      setSubagents([]);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("changeWorkingDirectoryFailed"));
+    } finally {
+      setWorkspaceChoosing(false);
+    }
   };
 
   const archiveSession = async (id: string) => {
@@ -433,7 +519,7 @@ export function Workbench() {
     const next = nextSessions[0];
     setActiveId(next?.id ?? "");
     setMessages([]);
-    setUsage(emptyUsage);
+    setUsage(usageFromSession(next));
   };
 
   const cancelSubagent = async (taskId: string) => {
@@ -492,7 +578,7 @@ export function Workbench() {
     try {
       const response = await fetch("/api/settings/model-profiles", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ activeProfileId: profileId }) });
       if (!response.ok) throw new Error((await response.json()).error ?? t("switchModelFailed"));
-      setUsage(emptyUsage);
+      setUsage(makeEmptyUsage(nextProfile.contextWindow));
       setStreamGeneration((current) => current + 1);
     } catch (error) {
       setActiveProfileId(previousId);
@@ -502,8 +588,17 @@ export function Workbench() {
   };
 
   const detail = useMemo(() => {
-    const safe = { tokens: Number(usage.tokens) || 0, contextWindow: Number(usage.contextWindow) || 0, input: Number(usage.input) || 0, output: Number(usage.output) || 0, cacheRead: Number(usage.cacheRead) || 0, cacheWrite: Number(usage.cacheWrite) || 0, remaining: Number(usage.remaining) || 0 };
-    return <div className="usage-tooltip"><strong>{usage.percent === null ? t("contextUnknown") : `${Math.round(Number(usage.percent) || 0)}%`} {t("context")}</strong><span>{safe.tokens.toLocaleString()} / {safe.contextWindow.toLocaleString()} {t("tokens")}</span><span>{t("input")} {safe.input.toLocaleString()} · {t("output")} {safe.output.toLocaleString()}</span><span>{t("cacheRead")} {safe.cacheRead.toLocaleString()} · {t("cacheWrite")} {safe.cacheWrite.toLocaleString()}</span><span>{t("remaining")} {safe.remaining.toLocaleString()} {t("tokens")}</span></div>;
+    const safe = {
+      tokens: Number(usage.tokens) || 0,
+      contextWindow: Number(usage.contextWindow) || 0,
+      input: usage.input,
+      output: usage.output,
+      cacheRead: usage.cacheRead,
+      cacheWrite: usage.cacheWrite,
+      remaining: Number(usage.remaining) || 0
+    };
+    const formatPart = (value: number | null) => value === null ? "—" : value.toLocaleString();
+    return <div className="usage-tooltip"><strong>{usage.percent === null ? t("contextUnknown") : `${Math.round(Number(usage.percent) || 0)}%`} {t("context")}</strong><span>{safe.tokens.toLocaleString()} / {safe.contextWindow.toLocaleString()} {t("tokens")}</span><span>{t("input")} {formatPart(safe.input)} · {t("output")} {formatPart(safe.output)}</span><span>{t("cacheRead")} {formatPart(safe.cacheRead)} · {t("cacheWrite")} {formatPart(safe.cacheWrite)}</span><span>{t("remaining")} {safe.remaining.toLocaleString()} {t("tokens")}</span></div>;
   }, [usage]);
 
   return <div className="app-shell">
@@ -516,13 +611,13 @@ export function Workbench() {
     </aside>
     {mobileNav ? <button className="scrim mobile-only" onClick={() => setMobileNav(false)} aria-label={t("closeNav")} /> : null}
     <main className="main-panel">
-      <header className="topbar"><button className="icon-button mobile-only" onClick={() => setMobileNav(true)} aria-label={t("settings")}><List size={19} /></button><div className="workspace"><TerminalWindow size={16} /><span>{cwd || t("workingDirectory")}</span></div><div className="topbar-spacer" /><div className="topbar-actions"><LanguageToggle /><ThemeToggle /></div></header>
+      <header className="topbar"><button className="icon-button mobile-only" onClick={() => setMobileNav(true)} aria-label={t("settings")}><List size={19} /></button><button className="workspace workspace-button" type="button" disabled={bootstrapping || workspaceChoosing} aria-busy={workspaceChoosing} onClick={() => void chooseWorkingDirectory()} title={t("changeWorkingDirectory")} aria-label={workspaceChoosing ? t("choosingWorkingDirectory") : t("changeWorkingDirectory")}><FolderOpen size={16} /><span>{cwd || t("workingDirectory")}</span></button><div className="topbar-spacer" /><div className="topbar-actions"><LanguageToggle /><ThemeToggle /></div></header>
       <SubagentPanel tasks={subagents} running={subagentRunning} maxConcurrent={maxConcurrentSubagents} onCancel={(taskId) => void cancelSubagent(taskId)} onRetry={(taskId) => void retrySubagent(taskId)} />
       <section ref={conversationRef} className="conversation" onScroll={handleConversationScroll}><div ref={conversationInnerRef} className="conversation-inner">{messages.length === 0 ? <div className="empty-state"><div className="empty-orbit"><RiftxLogo decorative variant="mark" /></div><h1>{bootstrapping ? t("loadingWorkspace") : activeId ? t("ready") : t("noSession")}</h1><p>{bootstrapping ? t("readingWorkspace") : activeId ? t("readOrTest") : t("createSessionFirst")}</p>{activeId && !bootstrapping ? <div className="prompt-suggestions"><button onClick={() => setInput(t("overview"))}>{t("overview")}</button><button onClick={() => setInput(t("checkRisks"))}>{t("checkRisks")}</button></div> : null}</div> : messages.map((message) => <article key={message.id} className={`message ${message.role}`}>
         {message.role === "user" ? <div className="avatar user-avatar">{t("you")}</div> : message.role === "assistant" ? <div className="avatar assistant-avatar"><RiftxLogo decorative /></div> : null}
         <div className="message-body">{message.role === "thinking" ? <details className="thinking-block" open={message.status === "streaming"}><summary><span className="thinking-title"><Brain size={14} weight="bold" />{t("thinking")}</span><span className="thinking-state">{message.status === "streaming" ? t("thinkingNow") : t("thinkingDone")}</span></summary><div className="thinking-copy">{message.content}</div></details> : message.role === "tool" ? <ToolCard key={`${message.id}-${message.status}`} message={message} /> : <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>}</div>
       </article>)}<div ref={endRef} /></div>{showJumpToLatest ? <button className="jump-latest" type="button" aria-label={t("jumpLatest")} title={t("jumpLatest")} onClick={jumpToLatest}><ArrowDown size={17} weight="bold" /></button> : null}</section>
-      <footer className="composer-wrap">{approval ? <div className="approval-card"><div className="approval-card-main"><div className="approval-icon"><WarningCircle size={18} weight="bold" /></div><div className="approval-card-copy"><div className="approval-card-title"><span className="eyebrow">{approval.subagentId ? t("subagentApproval") : t("needConfirm")}</span><strong>{approval.subagentId ? approval.agentName : approval.toolName}</strong><span className="approval-card-risk">{t("highRisk")}</span></div>{approval.subagentId ? <p>{t("subagentRequestsTool", { agent: approval.agentName ?? "", tool: approval.toolName })}</p> : <p>{approval.toolName === "browser" ? t("browserApproval") : t("terminalApproval")}</p>}</div></div><details className="approval-command"><summary><code>{summarizeApprovalInput(approval.input)}</code><span>{t("expandCommand")}</span></summary><pre>{formatApprovalInput(approval.input)}</pre></details><div className="approval-actions"><button className="button reject" onClick={() => void decide(false)}>{t("reject")}</button><button className="button ghost" onClick={() => void decide(true, "task")}>{t("allowTask")}</button><button className="button primary" onClick={() => void decide(true)}>{t("allowOnce")}</button></div></div> : null}<div className="composer"><textarea value={input} disabled={!activeId || bootstrapping} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder={bootstrapping ? t("loadingWorkspace") : composerBusy ? t("guide") : activeId ? t("ask") : t("createSessionFirst")} rows={1} /><div className="composer-bottom"><div className="composer-tools"><ApprovalModeMenu value={approvalMode} onValueChange={(mode) => void changeApprovalMode(mode)} disabled={bootstrapping || mainAgentRunning} /><span className="composer-hint"><span className="keycap">Shift</span> + <span className="keycap">Enter</span> {t("shiftEnter")}</span></div><div className="composer-actions"><ContextRing percent={bootstrapping ? null : usage.percent} label={bootstrapping ? "—" : usage.percent === null ? "—" : `${Math.round(usage.percent)}`} detail={detail} />{bootstrapping ? <span className="model-label">{t("loadingModel")}</span> : modelProfiles.length > 1 ? <ModelMenu value={activeProfileId} onValueChange={(profileId) => void changeModel(profileId)} options={modelProfiles.map((profile) => ({ value: profile.id, label: `${profile.provider}/${profile.model}` }))} disabled={mainAgentRunning} /> : <span className="model-label">{modelName}</span>}{composerBusy ? (input.trim() ? <button className="send-button" aria-label={t("sendGuide")} title={t("sendGuide")} onClick={() => void send("steer")}><ArrowUp size={18} weight="bold" /></button> : <button className="send-button stop" aria-label={t("stop")} title={t("stop")} onClick={stopAll}><Stop size={17} weight="fill" /></button>) : input.trim() ? <button className="send-button" aria-label={t("send")} title={t("send")} onClick={() => void send("prompt")} disabled={!activeId || bootstrapping}><ArrowUp size={18} weight="bold" /></button> : running ? <button className="send-button stop" aria-label={t("stop")} title={t("stop")} onClick={stopAll}><Stop size={17} weight="fill" /></button> : <button className="send-button" aria-label={t("send")} title={t("send")} onClick={() => void send("prompt")} disabled={!activeId || bootstrapping || !input.trim()}><ArrowUp size={18} weight="bold" /></button>}</div></div></div></footer>
+      <footer className="composer-wrap">{approval ? <div className="approval-card"><div className="approval-card-main"><div className="approval-icon"><WarningCircle size={18} weight="bold" /></div><div className="approval-card-copy"><div className="approval-card-title"><span className="eyebrow">{approval.subagentId ? t("subagentApproval") : t("needConfirm")}</span><strong>{approval.subagentId ? approval.agentName : approval.toolName}</strong><span className="approval-card-risk">{t("highRisk")}</span></div>{approval.subagentId ? <p>{t("subagentRequestsTool", { agent: approval.agentName ?? "", tool: approval.toolName })}</p> : <p>{approval.toolName === "browser" ? t("browserApproval") : t("terminalApproval")}</p>}</div></div><details className="approval-command"><summary><code>{summarizeApprovalInput(approval.input)}</code><span>{t("expandCommand")}</span></summary><pre>{formatApprovalInput(approval.input)}</pre></details><div className="approval-actions"><button className="button reject" onClick={() => void decide(false)}>{t("reject")}</button><button className="button ghost" onClick={() => void decide(true, "task")}>{t("allowTask")}</button><button className="button primary" onClick={() => void decide(true)}>{t("allowOnce")}</button></div></div> : null}<div className="composer"><textarea ref={composerInputRef} value={input} disabled={!activeId || bootstrapping} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); } }} placeholder={bootstrapping ? t("loadingWorkspace") : composerBusy ? t("guide") : activeId ? t("ask") : t("createSessionFirst")} rows={1} /><div className="composer-bottom"><div className="composer-tools"><ApprovalModeMenu value={approvalMode} onValueChange={(mode) => void changeApprovalMode(mode)} disabled={bootstrapping || mainAgentRunning} /><span className="composer-hint"><span className="keycap">Shift</span> + <span className="keycap">Enter</span> {t("shiftEnter")}</span></div><div className="composer-actions"><ContextRing percent={bootstrapping ? null : usage.percent} label={bootstrapping ? "—" : usage.percent === null ? "—" : `${Math.round(usage.percent)}`} detail={detail} />{bootstrapping ? <span className="model-label">{t("loadingModel")}</span> : modelProfiles.length > 1 ? <ModelMenu value={activeProfileId} onValueChange={(profileId) => void changeModel(profileId)} options={modelProfiles.map((profile) => ({ value: profile.id, label: `${profile.provider}/${profile.model}` }))} disabled={mainAgentRunning} /> : <span className="model-label">{modelName}</span>}{composerBusy ? (input.trim() ? <button className="send-button" aria-label={t("sendGuide")} title={t("sendGuide")} onClick={() => void send("steer")}><ArrowUp size={18} weight="bold" /></button> : <button className="send-button stop" aria-label={t("stop")} title={t("stop")} onClick={stopAll}><Stop size={17} weight="fill" /></button>) : input.trim() ? <button className="send-button" aria-label={t("send")} title={t("send")} onClick={() => void send("prompt")} disabled={!activeId || bootstrapping}><ArrowUp size={18} weight="bold" /></button> : running ? <button className="send-button stop" aria-label={t("stop")} title={t("stop")} onClick={stopAll}><Stop size={17} weight="fill" /></button> : <button className="send-button" aria-label={t("send")} title={t("send")} onClick={() => void send("prompt")} disabled={!activeId || bootstrapping || !input.trim()}><ArrowUp size={18} weight="bold" /></button>}</div></div></div></footer>
     </main>
     {error ? <div className="toast-wrap"><ErrorNotice message={error} onDismiss={() => setError("")} /></div> : null}
   </div>;

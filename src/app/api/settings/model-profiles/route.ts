@@ -20,9 +20,9 @@ export async function PUT(request: Request) {
     activeProfileId: string;
     childProfileId: string | null;
     childInherit: boolean;
-    cwd: string;
     maxConcurrentSubagents: number;
     subagentAggressiveness: SubagentAggressiveness;
+    systemPrompt: string;
   }>;
   const current = await readConfig();
   const incoming = Array.isArray(body.profiles) ? body.profiles : current.profiles;
@@ -41,9 +41,9 @@ export async function PUT(request: Request) {
   const finalConfig = await updateConfig({
     childProfileId: body.childProfileId === undefined ? current.childProfileId : body.childProfileId,
     childInherit: body.childInherit === undefined ? current.childInherit : body.childInherit,
-    cwd: body.cwd?.trim() || current.cwd,
     maxConcurrentSubagents,
-    subagentAggressiveness
+    subagentAggressiveness,
+    systemPrompt: typeof body.systemPrompt === "string" ? body.systemPrompt : current.systemPrompt
   });
   if (finalConfig.maxConcurrentSubagents !== current.maxConcurrentSubagents) await setMaxConcurrentSubagents(finalConfig.maxConcurrentSubagents);
   if (finalConfig.activeProfileId !== current.activeProfileId) await setActiveProfile(finalConfig.activeProfileId);

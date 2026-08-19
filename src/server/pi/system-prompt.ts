@@ -153,17 +153,18 @@ Every conclusion must be labeled as one of:
 - not reproducible: previously observed but currently not reproducible
 `;
 
-export function buildPentestSystemPrompt(aggressiveness: SubagentAggressiveness) {
+export function buildPentestSystemPrompt(aggressiveness: SubagentAggressiveness, customPrompt?: string) {
   const policy = aggressiveness === "high"
     ? "Maximize useful delegation. Whenever the task contains any meaningful independent reconnaissance, analysis, validation, browser, or evidence track, delegate it without waiting for the user and without optimizing for token cost. Create all distinct useful tracks, never duplicates, respect scope/approvals/mutation locks, and let the scheduler queue work beyond the configured concurrency limit. Continue main-Agent work immediately after delegation; only state that you are waiting when the next step truly depends on a child result."
     : aggressiveness === "low"
       ? "Delegate conservatively. Use a child Agent only when an independent task is likely to produce a substantial efficiency, coverage, or evidence-quality gain. Do not delegate small, obvious, or state-dependent work."
       : "Delegate on demand. When an independent child task provides a concrete efficiency, coverage, or evidence benefit, create it; otherwise keep the work in the main Agent. Never create tasks merely to fill the concurrency limit.";
-  return `${PENTEST_SYSTEM_PROMPT}\n\n## Subagent delegation policy\n${policy}\nThe configured maximum is a concurrency limit, not a target: create only the number of useful tasks needed, run up to the limit, and let excess tasks queue. Avoid normalized duplicates of queued or running tasks. Keep state-dependent work serial, and keep every child Agent within the same authorization, approval, browser-scope, and mutation-lock rules.`;
+  const basePrompt = customPrompt?.trim() || PENTEST_SYSTEM_PROMPT;
+  return `${basePrompt}\n\n## Subagent delegation policy\n${policy}\nThe configured maximum is a concurrency limit, not a target: create only the number of useful tasks needed, run up to the limit, and let excess tasks queue. Avoid normalized duplicates of queued or running tasks. Keep state-dependent work serial, and keep every child Agent within the same authorization, approval, browser-scope, and mutation-lock rules.`;
 }
 
 export function buildChildPentestSystemPrompt() {
-  return String.raw`You are a child Web penetration testing and vulnerability validation agent operating only on explicitly authorized targets.
+  const basePrompt = String.raw`You are a child Web penetration testing and vulnerability validation agent operating only on explicitly authorized targets.
 
 Complete only the delegated task from the parent RiftX Agent. Do not try to create child Agents or request spawn_subagent. If parallel work would help, note that limitation in your result and continue locally.
 
@@ -187,4 +188,5 @@ Report conclusions using:
 - likely
 - suspected
 - not reproducible`;
+  return basePrompt;
 }

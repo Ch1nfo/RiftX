@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
-import { mkdir, unlink } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, stat, unlink } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { Type } from "@sinclair/typebox";
 import {
   AuthStorage,
@@ -16,10 +16,10 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { completeSimple, type Model } from "@mariozechner/pi-ai";
 import { readConfig, getAppPaths, updateConfig } from "@/server/config-store";
-import type { ApprovalMode, ArchivedSession, ModelProfile, RiftxEvent, SessionSummary } from "@/lib/types";
+import type { ApprovalMode, ArchivedSession, ContextUsage, ModelProfile, RiftxEvent, SessionSummary } from "@/lib/types";
 import { ApprovalGate } from "./approval-gate";
 import { createPermissionExtension } from "./permission-extension";
-import { normalizeContextUsage } from "./usage";
+import { emptyContextUsage, normalizeContextUsage } from "./usage";
 import { buildChildPentestSystemPrompt, buildPentestSystemPrompt } from "./system-prompt";
 import { evaluateApproval } from "./approval-evaluator";
 import { createBrowserExtension, BrowserManager } from "@/browser";
@@ -32,6 +32,7 @@ type SessionRecord = {
   id: string;
   cwd: string;
   profile: ModelProfile;
+  profileId?: string;
   authStorage: AuthStorage;
   model: Model<any>;
   modelRegistry: ModelRegistry;
@@ -48,6 +49,24 @@ type SessionRecord = {
 };
 
 const RUNTIME_VERSION = 8;
+
+type SessionSnapshotCacheEntry = {
+  modifiedMs: number;
+  size: number;
+  profileKey: string;
+  snapshot: SessionSnapshot | null;
+};
+
+const sessionSnapshotCache = new Map<string, SessionSnapshotCacheEntry>();
+
+type SessionSnapshot = {
+  id: string;
+  provider?: string;
+  model?: string;
+  profileId?: string;
+  contextWindow: number;
+  usage: ContextUsage;
+};
 
 declare global {
   // eslint-disable-next-line no-var
@@ -155,7 +174,7 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
     agentDir: paths.piAgent,
     extensionFactories: [permission, browserExtension],
     noExtensions: true,
-    systemPrompt: child ? buildChildPentestSystemPrompt() : buildPentestSystemPrompt(config.subagentAggressiveness)
+    systemPrompt: child ? buildChildPentestSystemPrompt() : buildPentestSystemPrompt(config.subagentAggressiveness, config.systemPrompt)
   });
   // The SDK only reloads a resource loader it creates internally. RiftX supplies
   // its own loader, so load the custom system prompt and inline extensions before
@@ -189,6 +208,7 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
     id: result.session.sessionId,
     cwd,
     profile,
+    profileId: profile.id,
     authStorage,
     model,
     modelRegistry,
@@ -273,13 +293,126 @@ async function profileFor(id?: string) {
   return config.profiles.find((profile) => profile.id === (id ?? config.activeProfileId)) ?? config.profiles[0];
 }
 
+function summaryName(config: Awaited<ReturnType<typeof readConfig>>, id: string, firstMessage: string, archived = false) {
+  if (config.sessionTitles[id]) return config.sessionTitles[id];
+  if (firstMessage) return "Untitled task";
+  return archived ? "Archived session" : "New session";
+}
+
+function usageFromRecord(record: SessionRecord): ContextUsage {
+  const usage = record.session.getContextUsage();
+  return usage ? normalizeContextUsage(usage, record.profile.contextWindow) : emptyContextUsage(record.profile.contextWindow);
+}
+
+async function sessionSnapshotFromFile(path: string, profiles: ModelProfile[]): Promise<SessionSnapshot | null> {
+  const profileKey = profiles.map((profile) => `${profile.id}:${profile.provider}:${profile.model}:${profile.contextWindow}`).join("|");
+  try {
+    const fileInfo = await stat(path);
+    const cached = sessionSnapshotCache.get(path);
+    if (cached && cached.modifiedMs === fileInfo.mtimeMs && cached.size === fileInfo.size && cached.profileKey === profileKey) {
+      return cached.snapshot ? { ...cached.snapshot, usage: { ...cached.snapshot.usage } } : null;
+    }
+    const text = await readFile(path, "utf8");
+    const lines = text.split(/\r?\n/).filter(Boolean);
+    let sessionId = "";
+    let provider = "";
+    let model = "";
+    let usage: ContextUsage | undefined;
+    for (const line of lines) {
+      let entry: Record<string, unknown>;
+      try {
+        entry = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      if (!sessionId && entry.type === "session" && typeof entry.id === "string") sessionId = entry.id;
+      if (entry.type === "model_change") {
+        if (typeof entry.provider === "string") provider = entry.provider;
+        if (typeof entry.modelId === "string") model = entry.modelId;
+      }
+      if (entry.type === "message") {
+        const message = entry.message as Record<string, unknown> | undefined;
+        if (message?.usage) {
+          if (typeof message.provider === "string") provider = message.provider;
+          if (typeof message.model === "string") model = message.model;
+          const matchedProfile = profiles.find((profile) => profile.provider === provider && profile.model === model);
+          const contextWindow = matchedProfile?.contextWindow ?? 0;
+          usage = normalizeContextUsage(message.usage, contextWindow);
+        }
+      }
+    }
+    const matchedProfile = profiles.find((profile) => profile.provider === provider && profile.model === model);
+    const contextWindow = matchedProfile?.contextWindow ?? usage?.contextWindow ?? 0;
+    const snapshot = {
+      id: sessionId,
+      provider: provider || matchedProfile?.provider,
+      model: model || matchedProfile?.model,
+      profileId: matchedProfile?.id,
+      contextWindow,
+      usage: usage ? {
+        ...usage,
+        contextWindow,
+        remaining: usage.percent === null ? contextWindow : Math.max(0, contextWindow - usage.tokens),
+        percent: usage.percent === null ? null : contextWindow > 0 ? Math.min(100, (usage.tokens / contextWindow) * 100) : null
+      } : emptyContextUsage(contextWindow)
+    };
+    sessionSnapshotCache.set(path, { modifiedMs: fileInfo.mtimeMs, size: fileInfo.size, profileKey, snapshot });
+    return { ...snapshot, usage: { ...snapshot.usage } };
+  } catch {
+    return null;
+  }
+}
+
+async function buildSessionSnapshot(id: string, path?: string) {
+  const live = sessions.get(id);
+  if (live) {
+    return {
+      id,
+      provider: live.profile.provider,
+      model: live.profile.model,
+      profileId: live.profileId ?? live.profile.id,
+      contextWindow: live.profile.contextWindow,
+      usage: usageFromRecord(live)
+    } satisfies SessionSnapshot;
+  }
+  const config = await readConfig();
+  const fromFile = path ? await sessionSnapshotFromFile(path, config.profiles) : null;
+  if (fromFile) return fromFile;
+  const fallbackProfile = config.profiles.find((profile) => profile.id === config.activeProfileId) ?? config.profiles[0];
+  return {
+    id,
+    provider: fallbackProfile?.provider,
+    model: fallbackProfile?.model,
+    profileId: fallbackProfile?.id,
+    contextWindow: fallbackProfile?.contextWindow ?? 0,
+    usage: emptyContextUsage(fallbackProfile?.contextWindow ?? 0)
+  } satisfies SessionSnapshot;
+}
+
+async function listWorkspaceSessionInfos(cwd: string) {
+  const target = resolve(cwd);
+  const infos = await PiSessionManager.list(cwd, getAppPaths().sessions);
+  const launchDirectory = resolve(process.cwd());
+  return infos.filter((info) => info.cwd ? resolve(info.cwd) === target : target === launchDirectory);
+}
+
+async function findSessionPath(id: string, cwd?: string) {
+  const config = await readConfig();
+  const rootCwd = cwd ?? config.cwd;
+  const info = (await listWorkspaceSessionInfos(rootCwd)).find((item) => item.id === id);
+  if (info?.path) return info.path;
+  const archived = config.archivedSessions.find((item) => item.id === id);
+  if (archived?.path) return archived.path;
+  return "";
+}
+
 export async function getOrCreateSession(id?: string) {
   const config = await readConfig();
   if (id && sessions.has(id)) {
     const existing = sessions.get(id)!;
     // Rebuild stale process-global session objects after a dev-server reload
     // or runtime-version bump, while keeping persisted history on disk.
-    if (existing.runtimeVersion === RUNTIME_VERSION) return existing;
+    if (existing.runtimeVersion === RUNTIME_VERSION && resolve(existing.cwd) === resolve(config.cwd)) return existing;
     existing.gate.rejectAll();
     await existing.subagents?.abortAll();
     existing.unsubscribe();
@@ -290,8 +423,9 @@ export async function getOrCreateSession(id?: string) {
   const profile = await profileFor();
   let sessionManager: PiSessionManager | undefined;
   if (id) {
-    const info = (await PiSessionManager.list(config.cwd, getAppPaths().sessions)).find((item) => item.id === id);
-    if (info) sessionManager = PiSessionManager.open(info.path, getAppPaths().sessions, config.cwd);
+    const info = (await listWorkspaceSessionInfos(config.cwd)).find((item) => item.id === id);
+    if (!info) throw new Error("Session does not belong to the current working directory");
+    sessionManager = PiSessionManager.open(info.path, getAppPaths().sessions, config.cwd);
   }
   const created = await createPiSession(profile, config.cwd, new ApprovalGate(), false, sessionManager);
   sessions.set(created.id, created);
@@ -304,6 +438,30 @@ export async function createSession() {
   const created = await createPiSession(profile, config.cwd, new ApprovalGate());
   sessions.set(created.id, created);
   return created;
+}
+
+export async function setWorkingDirectory(input: string) {
+  const cwd = resolve(input.trim());
+  const directory = await stat(cwd).catch(() => null);
+  if (!directory?.isDirectory()) throw new Error("Working directory does not exist or is not a directory");
+
+  const config = await readConfig();
+  if (config.cwd !== cwd) {
+    for (const [id, record] of sessions) {
+      record.gate.rejectAll();
+      await record.subagents?.abortAll();
+      record.session.abortBash();
+      await record.session.abort().catch(() => undefined);
+      record.unsubscribe();
+      await record.browser?.close();
+      record.session.dispose();
+      sessions.delete(id);
+    }
+    await updateConfig({ cwd });
+  }
+
+  const sessionsList = (await listSessions()).filter((session) => !session.archived);
+  return { cwd, sessions: sessionsList, activeSessionId: sessionsList[0]?.id ?? "" };
 }
 
 export async function promptSession(id: string, text: string, mode: "prompt" | "steer" | "followUp" = "prompt") {
@@ -416,6 +574,7 @@ export async function subscribeSession(id: string, listener: (event: RiftxEvent)
   // Replay state that may have happened before an SSE reconnect, especially an
   // approval request that is still holding the agent at a guarded tool call.
   if (record.session.isStreaming) onEvent({ type: "session_state", state: "running" });
+  onEvent({ type: "usage", usage: usageFromRecord(record) });
   for (const request of record.gate.pendingRequests()) onEvent({ type: "approval_required", approval: request });
   for (const request of record.subagents?.pendingApprovals() ?? []) onEvent({ type: "approval_required", approval: request });
   return () => {
@@ -426,6 +585,18 @@ export async function subscribeSession(id: string, listener: (event: RiftxEvent)
 export async function listSubagents(id: string) {
   const record = await getOrCreateSession(id);
   return { tasks: record.subagents?.list() ?? [], running: record.subagents?.runningCount ?? 0, maxConcurrent: record.subagents?.maxConcurrentSubagents ?? 0 };
+}
+
+export async function getSessionSnapshot(id: string) {
+  const snapshot = await buildSessionSnapshot(id, await findSessionPath(id));
+  return {
+    id,
+    provider: snapshot.provider ?? "",
+    model: snapshot.model ?? "",
+    profileId: snapshot.profileId ?? "",
+    contextWindow: snapshot.contextWindow,
+    usage: snapshot.usage
+  };
 }
 
 export async function cancelSubagent(id: string, taskId: string) {
@@ -485,25 +656,45 @@ export async function getSessionMessages(id: string) {
 export async function listSessions(): Promise<SessionSummary[]> {
   const config = await readConfig();
   const archived = new Set(config.archivedSessionIds);
-  const infos = await PiSessionManager.list(config.cwd, getAppPaths().sessions);
-  const persisted = infos.map((info) => ({
-    id: info.id,
-    path: info.path,
-    name: config.sessionTitles[info.id] ?? (info.firstMessage ? "Untitled task" : "New session"),
-    firstMessage: info.firstMessage,
-    updatedAt: info.modified.toISOString(),
-    archived: archived.has(info.id)
+  const infos = await listWorkspaceSessionInfos(config.cwd);
+  const persisted = await Promise.all(infos.map(async (info) => {
+    const snapshot = await buildSessionSnapshot(info.id, info.path);
+    return {
+      id: info.id,
+      path: info.path,
+      name: summaryName(config, info.id, info.firstMessage, archived.has(info.id)),
+      firstMessage: info.firstMessage,
+      updatedAt: info.modified.toISOString(),
+      archived: archived.has(info.id),
+      profileId: snapshot.profileId,
+      provider: snapshot.provider,
+      model: snapshot.model,
+      contextWindow: snapshot.contextWindow,
+      usage: snapshot.usage
+    } satisfies SessionSummary;
   }));
   const seen = new Set(persisted.map((item) => item.id));
   const live = [...sessions.values()]
-    .filter((session) => !seen.has(session.id))
-    .map((session) => ({ id: session.id, path: session.session.sessionFile ?? "", name: config.sessionTitles[session.id] ?? "New session", firstMessage: "", updatedAt: new Date().toISOString(), archived: archived.has(session.id) }));
+    .filter((session) => resolve(session.cwd) === resolve(config.cwd) && !seen.has(session.id))
+    .map((session) => ({
+      id: session.id,
+      path: session.session.sessionFile ?? "",
+      name: summaryName(config, session.id, "", archived.has(session.id)),
+      firstMessage: "",
+      updatedAt: new Date().toISOString(),
+      archived: archived.has(session.id),
+      profileId: session.profileId ?? session.profile.id,
+      provider: session.profile.provider,
+      model: session.profile.model,
+      contextWindow: session.profile.contextWindow,
+      usage: usageFromRecord(session)
+    } satisfies SessionSummary));
   const archivedMetadata = config.archivedSessions
     .filter((session) => !seen.has(session.id) && !live.some((item) => item.id === session.id))
-    .map((session) => ({ ...session, name: config.sessionTitles[session.id] ?? (session.firstMessage ? "Untitled task" : "New session"), archived: true }));
+    .map((session) => ({ ...session, name: summaryName(config, session.id, session.firstMessage, true), archived: true } satisfies SessionSummary));
   const archivedFallback = config.archivedSessionIds
     .filter((id) => !seen.has(id) && !archivedMetadata.some((session) => session.id === id))
-    .map((id) => ({ id, path: "", name: config.sessionTitles[id] ?? "Archived session", firstMessage: "", updatedAt: new Date().toISOString(), archived: true }));
+    .map((id) => ({ id, path: "", name: summaryName(config, id, "", true), firstMessage: "", updatedAt: new Date().toISOString(), archived: true } satisfies SessionSummary));
   return [...live, ...persisted, ...archivedMetadata, ...archivedFallback];
 }
 

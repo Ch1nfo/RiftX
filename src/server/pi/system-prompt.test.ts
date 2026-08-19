@@ -16,3 +16,10 @@ test("aggressiveness changes delegation policy", () => {
   assert.match(buildPentestSystemPrompt("default"), /Delegate on demand/);
   assert.match(buildPentestSystemPrompt("low"), /Delegate conservatively/);
 });
+
+test("custom system prompt replaces the built-in base while retaining delegation policy", () => {
+  const prompt = buildPentestSystemPrompt("default", "CUSTOM RIFTX PROMPT");
+  assert.match(prompt, /CUSTOM RIFTX PROMPT/);
+  assert.doesNotMatch(prompt, /You are an advanced Web penetration testing/);
+  assert.match(prompt, /Subagent delegation policy/);
+});

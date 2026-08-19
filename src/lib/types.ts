@@ -33,10 +33,10 @@ export type ContextUsage = {
   tokens: number;
   contextWindow: number;
   percent: number | null;
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
+  input: number | null;
+  output: number | null;
+  cacheRead: number | null;
+  cacheWrite: number | null;
   remaining: number;
 };
 
@@ -109,6 +109,11 @@ export type SessionSummary = {
   firstMessage: string;
   updatedAt: string;
   archived: boolean;
+  profileId?: string;
+  provider?: string;
+  model?: string;
+  contextWindow?: number;
+  usage?: ContextUsage;
 };
 
 export type ArchivedSession = Omit<SessionSummary, "archived">;
@@ -131,6 +136,7 @@ export type AppConfig = {
   sessionTitles: Record<string, string>;
   maxConcurrentSubagents: number;
   subagentAggressiveness: SubagentAggressiveness;
+  systemPrompt: string;
 };
 
 export const DEFAULT_PROFILE: ModelProfile = {
