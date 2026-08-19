@@ -15,6 +15,8 @@ export async function GET() {
     activeProfileId: config.activeProfileId,
     approvalMode: config.approvalMode,
     childProfileId: config.childProfileId,
-    childInherit: config.childInherit
+    childInherit: config.childInherit,
+    maxConcurrentSubagents: config.maxConcurrentSubagents,
+    subagentAggressiveness: config.subagentAggressiveness
   });
 }

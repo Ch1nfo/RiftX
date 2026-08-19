@@ -2,11 +2,10 @@ import { URL } from "node:url";
 import type { Page } from "playwright";
 import { ContextManager } from "./context-manager";
 import { PageManager } from "./page-manager";
-import { createSnapshot, } from "../snapshot/snapshot";
+import { createSnapshot } from "../snapshot/snapshot";
 import { ElementRefMapper } from "../snapshot/element-refs";
 import { RequestStore, redactHeaders } from "../network/request-store";
 import type { BrowserManagerOptions, BrowserPageInfo, BrowserScope, PageSnapshot } from "../types";
-import type { BrowserSessionState } from "../state/browser-state";
 
 function parseAllowedOrigins(value?: string) {
   return value?.split(",").map((item) => item.trim()).filter(Boolean) ?? [];
@@ -161,19 +160,6 @@ export class BrowserManager {
 
   async tabs(): Promise<BrowserPageInfo[]> {
     return Promise.all([...this.pages.entries()].map(([id, manager]) => manager.info(id === this.activeId)));
-  }
-
-  async state(): Promise<BrowserSessionState> {
-    const context = await this.contextManager.getContext();
-    const page = this.pageManager().page;
-    const storage = await page.evaluate(() => {
-      try {
-        return { localStorage: Object.fromEntries(Object.entries(localStorage)), sessionStorage: Object.fromEntries(Object.entries(sessionStorage)) };
-      } catch {
-        return { localStorage: {}, sessionStorage: {} };
-      }
-    });
-    return { currentUrl: this.currentUrl, cookies: await context.cookies(), ...storage, requests: this.requests.list(), pages: await this.tabs() };
   }
 
   async close() {

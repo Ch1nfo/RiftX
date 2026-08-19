@@ -12,6 +12,8 @@ export type Transport = (typeof TRANSPORTS)[number];
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 export const APPROVAL_MODES = ["request", "auto", "full"] as const;
 export type ApprovalMode = (typeof APPROVAL_MODES)[number];
+export const SUBAGENT_AGGRESSIVENESS = ["low", "default", "high"] as const;
+export type SubagentAggressiveness = (typeof SUBAGENT_AGGRESSIVENESS)[number];
 
 export type ModelProfile = {
   id: string;
@@ -43,6 +45,61 @@ export type ApprovalRequest = {
   toolName: "bash" | "write" | "edit" | "browser";
   input: unknown;
   createdAt: string;
+  subagentId?: string;
+  threadId?: string;
+  agentName?: string;
+  taskSummary?: string;
+  risk?: "low" | "medium" | "high";
+};
+
+export type SubagentStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
+
+export type SubagentLogEntry = {
+  id: string;
+  type: "thinking" | "tool" | "text" | "error";
+  content: string;
+  toolName?: string;
+  status?: "running" | "done" | "error";
+  createdAt: string;
+};
+
+export type SubagentLogPatch = {
+  id: string;
+  content?: string;
+  appendContent?: string;
+  status?: "running" | "done" | "error";
+};
+
+export const SUBAGENT_LOG_LIMITS = {
+  entries: 80,
+  content: 12000
+} as const;
+
+export type SubagentTask = {
+  id: string;
+  parentSessionId: string;
+  threadId: string;
+  name: string;
+  task: string;
+  status: SubagentStatus;
+  model: string;
+  createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  summary?: string;
+  error?: string;
+  usage?: ContextUsage;
+  pendingApprovalCount: number;
+  logs: SubagentLogEntry[];
+};
+
+export type SubagentTaskPatch = {
+  id: string;
+  threadId?: string;
+  model?: string;
+  pendingApprovalCount?: number;
+  appendLog?: SubagentLogEntry;
+  patchLog?: SubagentLogPatch;
 };
 
 export type SessionSummary = {
@@ -72,6 +129,8 @@ export type AppConfig = {
   archivedSessionIds: string[];
   archivedSessions: ArchivedSession[];
   sessionTitles: Record<string, string>;
+  maxConcurrentSubagents: number;
+  subagentAggressiveness: SubagentAggressiveness;
 };
 
 export const DEFAULT_PROFILE: ModelProfile = {

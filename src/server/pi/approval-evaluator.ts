@@ -1,6 +1,7 @@
 import { completeSimple, type Model } from "@mariozechner/pi-ai";
 import type { ModelRegistry } from "@mariozechner/pi-coding-agent";
 import type { ApprovalRequest } from "@/lib/types";
+import { textFromModelContent } from "./text-content";
 
 export const APPROVAL_EVALUATOR_PROMPT = `You are RiftX's internal approval evaluator for an authorized Web security assessment.
 
@@ -20,13 +21,11 @@ export type ApprovalEvaluation = {
   reason: string;
 };
 
-function textFromMessage(content: unknown) {
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter((part): part is { type?: string; text?: string } => typeof part === "object" && part !== null)
-    .filter((part) => part.type === "text")
-    .map((part) => part.text ?? "")
-    .join("\n");
+function extractFirstJsonObject(raw: string) {
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start < 0 || end < start) return raw;
+  return raw.slice(start, end + 1);
 }
 
 export async function evaluateApproval(model: Model<any>, modelRegistry: ModelRegistry, request: ApprovalRequest): Promise<ApprovalEvaluation> {
@@ -47,8 +46,8 @@ export async function evaluateApproval(model: Model<any>, modelRegistry: ModelRe
     timeoutMs: 30_000,
     maxRetries: 0
   });
-  const raw = textFromMessage(response.content).trim();
-  const parsed = JSON.parse(raw) as { decision?: string; reason?: string };
+  const raw = textFromModelContent(response.content).trim();
+  const parsed = JSON.parse(extractFirstJsonObject(raw)) as { decision?: string; reason?: string };
   return {
     approved: parsed.decision === "approve",
     reason: parsed.reason?.trim() || "No reason provided"

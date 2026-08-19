@@ -26,6 +26,15 @@ test("approval gate exposes pending requests for stream reconnection", async () 
   assert.deepEqual(gate.pendingRequests(), []);
 });
 
+test("approval gate rejects an outstanding request when the agent is aborted", async () => {
+  const gate = new ApprovalGate();
+  const controller = new AbortController();
+  const pending = gate.waitForApproval({ id: "abort", toolName: "bash", input: { command: "sleep 30" }, createdAt: new Date().toISOString() }, 1000, controller.signal);
+  controller.abort();
+  assert.equal(await pending, false);
+  assert.deepEqual(gate.pendingRequests(), []);
+});
+
 test("task approval only bypasses the exact approved command", () => {
   const gate = new ApprovalGate();
   const cd = { toolName: "bash" as const, input: { command: "cd /tmp" } };

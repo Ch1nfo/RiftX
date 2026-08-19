@@ -1,12 +1,13 @@
 import { mkdir, readFile, writeFile, chmod } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { APPROVAL_MODES, DEFAULT_PROFILE, type AppConfig, type ModelProfile } from "@/lib/types";
+import { APPROVAL_MODES, DEFAULT_PROFILE, SUBAGENT_AGGRESSIVENESS, type AppConfig, type ModelProfile } from "@/lib/types";
 
 const ROOT = join(homedir(), ".riftx");
 const CONFIG_PATH = join(ROOT, "config.json");
 const SESSION_PATH = join(ROOT, "sessions");
 const PI_AGENT_PATH = join(ROOT, "pi-agent");
+const SUBAGENT_PATH = join(ROOT, "subagents");
 
 const defaultConfig = (): AppConfig => ({
   profiles: [DEFAULT_PROFILE],
@@ -17,17 +18,20 @@ const defaultConfig = (): AppConfig => ({
   approvalMode: "request",
   archivedSessionIds: [],
   archivedSessions: [],
-  sessionTitles: {}
+  sessionTitles: {},
+  maxConcurrentSubagents: 3,
+  subagentAggressiveness: "default"
 });
 
 export async function ensureAppDirs() {
   await mkdir(ROOT, { recursive: true, mode: 0o700 });
   await mkdir(SESSION_PATH, { recursive: true, mode: 0o700 });
   await mkdir(PI_AGENT_PATH, { recursive: true, mode: 0o700 });
+  await mkdir(SUBAGENT_PATH, { recursive: true, mode: 0o700 });
 }
 
 export function getAppPaths() {
-  return { root: ROOT, config: CONFIG_PATH, sessions: SESSION_PATH, piAgent: PI_AGENT_PATH };
+  return { root: ROOT, config: CONFIG_PATH, sessions: SESSION_PATH, piAgent: PI_AGENT_PATH, subagents: SUBAGENT_PATH };
 }
 
 export async function readConfig(): Promise<AppConfig> {
@@ -46,7 +50,9 @@ export async function readConfig(): Promise<AppConfig> {
       archivedSessions: Array.isArray(parsed.archivedSessions) ? parsed.archivedSessions : [],
       sessionTitles: parsed.sessionTitles && typeof parsed.sessionTitles === "object"
         ? Object.fromEntries(Object.entries(parsed.sessionTitles).filter(([, title]) => typeof title === "string"))
-        : {}
+        : {},
+      maxConcurrentSubagents: Math.min(8, Math.max(1, Number.isFinite(parsed.maxConcurrentSubagents) ? Math.round(parsed.maxConcurrentSubagents as number) : 3)),
+      subagentAggressiveness: SUBAGENT_AGGRESSIVENESS.includes(parsed.subagentAggressiveness as AppConfig["subagentAggressiveness"]) ? parsed.subagentAggressiveness as AppConfig["subagentAggressiveness"] : "default"
     };
   } catch {
     const config = defaultConfig();
@@ -78,4 +84,4 @@ export async function updateConfig(patch: Partial<AppConfig>) {
   return next;
 }
 
-export { CONFIG_PATH, PI_AGENT_PATH, SESSION_PATH };
+export { CONFIG_PATH, PI_AGENT_PATH, SESSION_PATH, SUBAGENT_PATH };
