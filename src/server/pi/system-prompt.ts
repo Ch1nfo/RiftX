@@ -65,6 +65,7 @@ For a completed assessment, report:
 7. Actual impact, affected scope, and risk rating
 8. Remediation guidance and post-fix verification
 9. Uncovered areas, residual risk, and recommended next steps
+
 `;
 
 export function buildPentestSystemPrompt(aggressiveness: SubagentAggressiveness, customPrompt?: string) {
@@ -74,7 +75,7 @@ export function buildPentestSystemPrompt(aggressiveness: SubagentAggressiveness,
       ? "Use the spawn_subagent tool to create child Agents. Delegate conservatively. Use a child Agent only when an independent task is likely to produce a substantial efficiency, coverage, or evidence-quality gain. Do not delegate small, obvious, or state-dependent work."
       : "Use the spawn_subagent tool to create child Agents. Delegate on demand. When an independent child task provides a concrete efficiency, coverage, or evidence benefit, create it; otherwise keep the work in the main Agent. Never create tasks merely to fill the concurrency limit.";
   const basePrompt = customPrompt?.trim() || PENTEST_SYSTEM_PROMPT;
-  return `${basePrompt}\n\n## Subagent delegation policy\n${policy}\nThe configured maximum is a concurrency limit, not a target: create only the number of useful tasks needed, run up to the limit, and let excess tasks queue. Avoid normalized duplicates of queued or running tasks. Keep state-dependent work serial, and keep every child Agent within the same authorization, approval, browser-scope, and mutation-lock rules.`;
+  return `${basePrompt}\n\n## Subagent delegation policy\n${policy}\nThe configured maximum is a concurrency limit, not a target: create only the number of useful tasks needed, run up to the limit, and let excess tasks queue. Avoid normalized duplicates of queued or running tasks. Keep state-dependent work serial, and keep every child Agent within the same authorization, approval, browser-scope, and mutation-lock rules.\n\n## Session Findings\nWhen a conclusion has concrete, reviewable evidence, use \`record_finding\` to save it to this session. Include the affected asset, one of \`confirmed\`, \`likely\`, \`suspected\`, or \`not_reproducible\`, a short impact and reproduction note, and only the minimum quote, tool-call, browser request, or screenshot evidence needed to review it. Do not record hypotheses just to fill a list; use \`likely\` or \`suspected\` when validation is incomplete.`;
 }
 
 export function buildChildPentestSystemPrompt() {
@@ -102,5 +103,5 @@ Report conclusions using:
 - likely
 - suspected
 - not reproducible`;
-  return basePrompt;
+  return `${basePrompt}\n\n## Session Findings\nWhen a conclusion has concrete, reviewable evidence, use \`record_finding\` to save it to the parent session. Include the affected asset, confidence, a short impact and reproduction note, and minimum quote, tool-call, browser request, or screenshot evidence. Do not record findings to fill a quota; incomplete validation may use likely or suspected.`;
 }

@@ -7,8 +7,11 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ApprovalModeMenu, ContextRing, ErrorNotice, LanguageToggle, ModelMenu, RiftxLogo, ThemeToggle } from "./ui";
 import { SubagentPanel } from "./subagent-panel";
-import { SUBAGENT_LOG_LIMITS, type ApprovalMode, type ApprovalRequest, type ContextUsage, type ModelProfile, type RiftxEvent, type SessionSummary, type SubagentTask, type SubagentTaskPatch } from "@/lib/types";
+import { FindingsPanel } from "./findings-panel";
+import { SUBAGENT_LOG_LIMITS, type ApprovalMode, type ApprovalRequest, type ContextUsage, type Finding, type FindingPatch, type ModelProfile, type RiftxEvent, type SessionSummary, type SubagentTask, type SubagentTaskPatch } from "@/lib/types";
 import { useLanguage } from "@/lib/i18n";
+import { isAlreadyProcessingError } from "@/lib/prompt-mode";
+import { summarizeToolResult } from "@/lib/tool-result";
 
 type Message = { id: string; role: "user" | "assistant" | "thinking" | "tool"; content: string; toolName?: string; toolCallId?: string; status?: string; isError?: boolean };
 
@@ -124,11 +127,18 @@ function summarizeApprovalInput(input: unknown) {
   return formatApprovalInput(input).replace(/\s+/g, " ").trim();
 }
 
+function containsToken(text: string, token: string) {
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|[^\\w])${escaped}(?:[^\\w]|$)`).test(text);
+}
+
+type EvidenceTarget = { kind: "tool"; toolCallId: string } | { kind: "subagent"; taskId: string; logId: string };
+
 function ToolCard({ message }: { message: Message }) {
   const { language, t } = useLanguage();
   const [open, setOpen] = useState(message.status === "running");
   useEffect(() => { setOpen(message.status === "running"); }, [message.status]);
-  return <details className={`tool-card ${message.isError ? "error" : ""}`} open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
+  return <details id={message.toolCallId ? `tool-${encodeURIComponent(message.toolCallId)}` : undefined} className={`tool-card ${message.isError ? "error" : ""}`} open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
     <summary className="tool-card-head"><span><Command size={14} />{message.toolName}</span><span className={`tool-status ${message.status}`}>{message.status === "running" ? t("running") : message.status === "error" ? t("failed") : message.status === "cancelled" ? t("stopped") : t("complete")}</span></summary>
     <pre>{message.content}</pre>
   </details>;
@@ -151,7 +161,9 @@ export function Workbench() {
   const [bootstrapping, setBootstrapping] = useState(true);
   const [approvalQueue, setApprovalQueue] = useState<ApprovalRequest[]>([]);
   const [subagents, setSubagents] = useState<SubagentTask[]>([]);
+  const [findings, setFindings] = useState<Finding[]>([]);
   const [maxConcurrentSubagents, setMaxConcurrentSubagents] = useState(3);
+  const [subagentFocus, setSubagentFocus] = useState<{ taskId: string; logId?: string } | null>(null);
   const [error, setError] = useState("");
   const [mobileNav, setMobileNav] = useState(false);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
@@ -263,6 +275,7 @@ export function Workbench() {
     setShowJumpToLatest(false);
     subagentsRef.current = [];
     setSubagents([]);
+    setFindings([]);
     setApprovalQueue([]);
     const sessionMeta = sessions.find((session) => session.id === activeId);
     setUsage(usageFromSession(sessionMeta));
@@ -285,6 +298,10 @@ export function Workbench() {
       for (const task of (data.tasks ?? []).map(cloneSubagentTask)) queueSubagentTask(task, "snapshot");
       setMaxConcurrentSubagents(Number(data.maxConcurrent ?? 3));
     }).catch(() => undefined);
+    fetch(`/api/sessions/${activeId}/findings`, { signal: controller.signal }).then((response) => response.json()).then((data: { findings?: Finding[] }) => {
+      if (controller.signal.aborted) return;
+      setFindings(data.findings ?? []);
+    }).catch(() => undefined);
     fetch(`/api/sessions/${activeId}/messages`, { signal: controller.signal }).then((response) => response.json()).then((items: Message[]) => {
       if (controller.signal.aborted) return;
       setMessages(items.filter((item) => ["user", "assistant", "thinking", "tool"].includes(item.role)).map((item) => ({ ...item, role: item.role as Message["role"] })));
@@ -302,6 +319,16 @@ export function Workbench() {
         return;
       }
       if (payload.type === "connected") return;
+      if (payload.type === "finding" && payload.finding) {
+        const finding = payload.finding as Finding;
+        setFindings((current) => current.some((item) => item.id === finding.id) ? current.map((item) => item.id === finding.id ? finding : item) : [...current, finding]);
+        return;
+      }
+      if (payload.type === "findingPatch" && payload.findingPatch) {
+        const findingPatch = payload.findingPatch as FindingPatch;
+        setFindings((current) => current.map((item) => item.id === findingPatch.id ? { ...item, ...findingPatch } : item));
+        return;
+      }
       if ((payload.type.startsWith("subagent_") || payload.type === "approval_decided") && payload.task) {
         const task = payload.task as SubagentTask;
         queueSubagentTask(task);
@@ -381,9 +408,15 @@ export function Workbench() {
       }
       if (payload.type === "tool_end") {
         const toolCallId = String(payload.toolCallId ?? "");
-        setMessages((current) => current.map((message) => message.id === toolCallId ? { ...message, status: payload.isError ? "error" : "done", isError: Boolean(payload.isError), content: JSON.stringify(payload.result ?? {}, null, 2) } : message)); return;
+        setMessages((current) => current.map((message) => message.id === toolCallId ? { ...message, status: payload.isError ? "error" : "done", isError: Boolean(payload.isError), content: summarizeToolResult(payload.result) } : message)); return;
       }
-      if (payload.type === "error") { setMainAgentRunning(false); setApprovalQueue((current) => current.filter(isSubagentApproval)); setError(String(payload.error ?? "Agent error")); }
+      if (payload.type === "error") {
+        const message = String(payload.error ?? "Agent error");
+        if (isAlreadyProcessingError(message)) return;
+        setMainAgentRunning(false);
+        setApprovalQueue((current) => current.filter(isSubagentApproval));
+        setError(message);
+      }
     };
     source.onerror = () => {
       if (disposed) return;
@@ -460,7 +493,8 @@ export function Workbench() {
   const send = async (requestedMode?: "prompt" | "steer" | "followUp") => {
     const text = input.trim();
     if (!text || !activeId) return;
-    const mode = requestedMode ?? (composerBusy ? "steer" : "prompt");
+    const wasRunning = composerBusy;
+    const mode = requestedMode ?? (wasRunning ? "steer" : "prompt");
     setInput("");
     shouldAutoScrollRef.current = true;
     setShowJumpToLatest(false);
@@ -473,11 +507,11 @@ export function Workbench() {
       const response = await fetch(`/api/sessions/${activeId}/prompt`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, mode }) });
       if (!response.ok) {
         const data = await response.json().catch(() => ({})) as { error?: string };
-        setMainAgentRunning(false);
+        if (!wasRunning) setMainAgentRunning(false);
         setError(data.error ?? t("sendFailed"));
       }
     } catch (error) {
-      setMainAgentRunning(false);
+      if (!wasRunning) setMainAgentRunning(false);
       setError(error instanceof Error ? error.message : t("sendFailed"));
     }
   };
@@ -542,6 +576,86 @@ export function Workbench() {
     const data = await response.json() as { task?: SubagentTask };
     if (data.task) queueSubagentTask(data.task);
   };
+
+  const patchFindingInSession = async (id: string, patch: FindingPatch) => {
+    if (!activeId) return;
+    const body = { confidence: patch.confidence, dismissed: patch.status === "dismissed" ? true : patch.status === "open" ? false : undefined };
+    const response = await fetch(`/api/sessions/${activeId}/findings/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!response.ok) { setError((await response.json().catch(() => ({})) as { error?: string }).error ?? t("sendFailed")); return; }
+    const data = await response.json() as { finding?: Finding };
+    if (data.finding) setFindings((current) => current.map((item) => item.id === id ? data.finding! : item));
+  };
+
+  const scrollToSubagentLog = (taskId: string, logId: string) => {
+    setSubagentFocus({ taskId, logId });
+  };
+
+  const findRequestTarget = (requestRef: string, finding: Finding): EvidenceTarget | null => {
+    const searchSubagent = (taskId?: string) => {
+      const tasks = taskId ? subagents.filter((task) => task.id === taskId) : subagents;
+      for (const task of tasks) {
+        const log = task.logs.find((entry) => containsToken(entry.content, requestRef));
+        if (log) return { kind: "subagent", taskId: task.id, logId: log.id } as const;
+      }
+      return null;
+    };
+    const searchMain = () => {
+      const tool = messages.find((message) => message.role === "tool" && containsToken(message.content, requestRef));
+      return tool?.toolCallId ? { kind: "tool", toolCallId: tool.toolCallId } as const : null;
+    };
+    if (finding.source === "subagent") return finding.subagentId ? searchSubagent(finding.subagentId) : null;
+    if (finding.subagentId) return searchSubagent(finding.subagentId) ?? searchMain();
+    return searchMain();
+  };
+
+  const scrollToTool = (toolCallId: string) => {
+    const target = document.getElementById(`tool-${encodeURIComponent(toolCallId)}`);
+    if (target instanceof HTMLDetailsElement) {
+      target.open = true;
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
+    const subagent = subagents.find((task) => task.logs.some((log) => log.id === toolCallId));
+    if (subagent) {
+      scrollToSubagentLog(subagent.id, toolCallId);
+      return;
+    }
+    setError(t("evidenceTargetUnavailable"));
+  };
+
+  const scrollToRequest = (requestRef: string, finding: Finding) => {
+    const target = findRequestTarget(requestRef, finding);
+    if (!target) {
+      setError(t("evidenceTargetUnavailable"));
+      return;
+    }
+    if (target.kind === "tool") scrollToTool(target.toolCallId);
+    else scrollToSubagentLog(target.taskId, target.logId);
+  };
+
+  useEffect(() => {
+    if (!subagentFocus?.taskId || !subagentFocus.logId) return;
+    let cancelled = false;
+    let attempts = 0;
+    const seek = () => {
+      if (cancelled) return;
+      const target = document.getElementById(`subagent-log-${subagentFocus.taskId}-${subagentFocus.logId}`);
+      if (target) {
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        return;
+      }
+      if (attempts++ < 8) {
+        requestAnimationFrame(seek);
+        return;
+      }
+      setError(t("evidenceTargetUnavailable"));
+    };
+    const frame = requestAnimationFrame(seek);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+    };
+  }, [subagentFocus, t]);
 
   const approval = approvalQueue[0] ?? null;
 
@@ -624,7 +738,7 @@ export function Workbench() {
     {mobileNav ? <button className="scrim mobile-only" onClick={() => setMobileNav(false)} aria-label={t("closeNav")} /> : null}
     <main className="main-panel">
       <header className="topbar"><button className="icon-button mobile-only" onClick={() => setMobileNav(true)} aria-label={t("settings")}><List size={19} /></button><button className="workspace workspace-button" type="button" disabled={bootstrapping || workspaceChoosing} aria-busy={workspaceChoosing} onClick={() => void chooseWorkingDirectory()} title={t("changeWorkingDirectory")} aria-label={workspaceChoosing ? t("choosingWorkingDirectory") : t("changeWorkingDirectory")}><FolderOpen size={16} /><span>{cwd || t("workingDirectory")}</span></button><div className="topbar-spacer" /><div className="topbar-actions"><LanguageToggle /><ThemeToggle /></div></header>
-      <SubagentPanel tasks={subagents} running={subagentRunning} maxConcurrent={maxConcurrentSubagents} onCancel={(taskId) => void cancelSubagent(taskId)} onRetry={(taskId) => void retrySubagent(taskId)} />
+      <div className="right-rail"><SubagentPanel tasks={subagents} running={subagentRunning} maxConcurrent={maxConcurrentSubagents} onCancel={(taskId) => void cancelSubagent(taskId)} onRetry={(taskId) => void retrySubagent(taskId)} focus={subagentFocus} /><FindingsPanel sessionId={activeId || undefined} findings={findings} onPatch={(id, patch) => void patchFindingInSession(id, patch)} onToolClick={scrollToTool} onRequestClick={scrollToRequest} /></div>
       <section ref={conversationRef} className="conversation" onScroll={handleConversationScroll}><div ref={conversationInnerRef} className="conversation-inner">{messages.length === 0 ? <div className="empty-state"><div className="empty-orbit"><RiftxLogo decorative /></div><h1>{bootstrapping ? t("loadingWorkspace") : activeId ? t("ready") : t("noSession")}</h1><p>{bootstrapping ? t("readingWorkspace") : activeId ? t("readOrTest") : t("createSessionFirst")}</p>{activeId && !bootstrapping ? <div className="prompt-suggestions"><button onClick={() => setInput(t("overview"))}>{t("overview")}</button><button onClick={() => setInput(t("checkRisks"))}>{t("checkRisks")}</button></div> : null}</div> : messages.map((message) => <article key={message.id} className={`message ${message.role}`}>
         {message.role === "user" ? <div className="avatar user-avatar">{t("you")}</div> : message.role === "assistant" ? <div className="avatar assistant-avatar"><RiftxLogo decorative /></div> : null}
         <div className="message-body">{message.role === "thinking" ? <details className="thinking-block" open={message.status === "streaming"}><summary><span className="thinking-title"><Brain size={14} weight="bold" />{t("thinking")}</span><span className="thinking-state">{message.status === "streaming" ? t("thinkingNow") : t("thinkingDone")}</span></summary><div className="thinking-copy">{message.content}</div></details> : message.role === "tool" ? <ToolCard key={`${message.id}-${message.status}`} message={message} /> : <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>}</div>

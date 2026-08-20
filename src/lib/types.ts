@@ -122,6 +122,34 @@ export type RiftxEvent = {
   [key: string]: unknown;
 };
 
+export type FindingConfidence = "confirmed" | "likely" | "suspected" | "not_reproducible";
+export type FindingStatus = "open" | "dismissed";
+export type FindingSource = "main" | "subagent";
+
+export type FindingEvidence =
+  | { type: "quote"; quote: string }
+  | { type: "tool"; toolCallId: string; toolName: string }
+  | { type: "request"; requestRef: string; method?: string; url?: string; status?: number }
+  | { type: "screenshot"; screenshotId: string; url?: string };
+
+export type Finding = {
+  id: string;
+  title: string;
+  asset: string;
+  confidence: FindingConfidence;
+  status: FindingStatus;
+  impact: string;
+  reproduction: string;
+  evidence: FindingEvidence[];
+  source: FindingSource;
+  subagentId?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type FindingInput = Pick<Finding, "title" | "asset" | "confidence" | "impact" | "reproduction" | "evidence">;
+export type FindingPatch = { id: string; confidence?: FindingConfidence; status?: FindingStatus; updatedAt?: string };
+
 export type AppConfig = {
   profiles: ModelProfile[];
   activeProfileId: string;

@@ -16,9 +16,10 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { completeSimple, type Model } from "@mariozechner/pi-ai";
 import { readConfig, getAppPaths, updateConfig } from "@/server/config-store";
-import type { ApprovalMode, ArchivedSession, ContextUsage, ModelProfile, RiftxEvent, SessionSummary } from "@/lib/types";
+import type { ApprovalMode, ArchivedSession, ContextUsage, FindingInput, FindingSource, ModelProfile, RiftxEvent, SessionSummary } from "@/lib/types";
 import { ApprovalGate } from "./approval-gate";
 import { createPermissionExtension } from "./permission-extension";
+import { resolvePromptMode } from "@/lib/prompt-mode";
 import { emptyContextUsage, normalizeContextUsage } from "./usage";
 import { buildChildPentestSystemPrompt, buildPentestSystemPrompt } from "./system-prompt";
 import { evaluateApproval } from "./approval-evaluator";
@@ -27,6 +28,7 @@ import { randomUUID } from "node:crypto";
 import { MutationLock } from "./mutation-lock";
 import { SubagentManager, type SubagentRunnerContext } from "./subagent-manager";
 import { textFromModelContent } from "./text-content";
+import { EvidenceStore, getEvidenceStore, removeEvidence } from "./evidence-store";
 
 type SessionRecord = {
   id: string;
@@ -43,6 +45,7 @@ type SessionRecord = {
   browser?: BrowserManager;
   mutationLock: MutationLock;
   subagents?: SubagentManager;
+  evidenceStore: EvidenceStore;
   dispose?: () => void;
   runtimeVersion?: number;
   abortPromise?: Promise<void>;
@@ -78,7 +81,11 @@ const sessions = globalThis.__riftxSessions ?? (globalThis.__riftxSessions = new
 type RuntimeDeps = {
   authStorage: AuthStorage;
   modelRegistry: ModelRegistry;
+  evidenceStore: EvidenceStore;
+  evidenceSessionId: string;
 };
+
+type FindingSourceInfo = { source: FindingSource; subagentId?: string };
 
 function eventPayload(event: AgentSessionEvent): RiftxEvent {
   const base = event as unknown as Record<string, unknown>;
@@ -126,6 +133,38 @@ function registerProfileModel(authStorage: AuthStorage, modelRegistry: ModelRegi
   return model;
 }
 
+function createFindingTool(store: EvidenceStore, source: FindingSourceInfo, browser: BrowserManager): ToolDefinition {
+  return defineTool({
+    name: "record_finding",
+    label: "Record finding",
+    description: "Record one evidence-backed finding in the parent session. Use only when there is a concrete, reviewable conclusion; use likely or suspected when validation is incomplete and never create findings to fill a quota.",
+    promptSnippet: "record_finding(title, asset, confidence, impact, reproduction, evidence)",
+    parameters: Type.Object({
+      title: Type.String({ description: "Short finding title." }),
+      asset: Type.String({ description: "Affected URL, host, route, or other asset." }),
+      confidence: Type.Union([Type.Literal("confirmed"), Type.Literal("likely"), Type.Literal("suspected"), Type.Literal("not_reproducible")]),
+      impact: Type.String({ description: "Short description of the actual or expected impact." }),
+      reproduction: Type.String({ description: "Short reproducible validation steps or the reason reproduction is incomplete." }),
+      evidence: Type.Array(Type.Union([
+        Type.Object({ type: Type.Literal("quote"), quote: Type.String() }),
+        Type.Object({ type: Type.Literal("tool"), toolCallId: Type.String(), toolName: Type.String() }),
+        Type.Object({ type: Type.Literal("request"), requestRef: Type.String() }),
+        Type.Object({ type: Type.Literal("screenshot"), screenshotId: Type.String() })
+      ]), { minItems: 1 })
+    }),
+    async execute(_toolCallId, params) {
+      const input = params as FindingInput;
+      const evidence = await Promise.all(input.evidence.map(async (item) => {
+        if (item.type === "request") return browser.requestEvidence(item.requestRef);
+        if (item.type === "screenshot") return browser.screenshotEvidence(item.screenshotId);
+        return item;
+      }));
+      const finding = await store.upsert({ ...input, evidence }, source.source, source.subagentId);
+      return { content: [{ type: "text", text: `Finding recorded: ${finding.title}` }], details: { findingId: finding.id } };
+    }
+  });
+}
+
 function createSubagentTool(manager: SubagentManager, getChildProfile: () => ModelProfile, cwd: string, mutationLock: MutationLock, runtimeDeps: RuntimeDeps): ToolDefinition {
   return defineTool({
     name: "spawn_subagent",
@@ -151,7 +190,7 @@ function createSubagentTool(manager: SubagentManager, getChildProfile: () => Mod
   });
 }
 
-async function createPiSession(profile: ModelProfile, cwd: string, gate: ApprovalGate, child = false, sessionManagerOverride?: PiSessionManager, mutationLock = new MutationLock(), runtimeDeps?: RuntimeDeps) {
+async function createPiSession(profile: ModelProfile, cwd: string, gate: ApprovalGate, child = false, sessionManagerOverride?: PiSessionManager, mutationLock = new MutationLock(), runtimeDeps?: RuntimeDeps, findingSource: FindingSourceInfo = { source: "main" }) {
   const paths = getAppPaths();
   await mkdir(paths.piAgent, { recursive: true, mode: 0o700 });
   const authStorage = runtimeDeps?.authStorage ?? AuthStorage.create(`${paths.piAgent}/auth.json`);
@@ -172,11 +211,13 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
   const settingsManager = SettingsManager.create(cwd, paths.piAgent);
   settingsManager.setTransport(profile.transport);
   const sessionManager = sessionManagerOverride ?? PiSessionManager.create(cwd, child ? join(paths.subagents, "runtime") : paths.sessions);
+  const evidenceSessionId = runtimeDeps?.evidenceSessionId ?? sessionManager.getSessionId();
+  const evidenceStore = runtimeDeps?.evidenceStore ?? getEvidenceStore(evidenceSessionId, paths.evidence, (event) => emitter.emit("event", event));
   const subagents = !child ? new SubagentManager(sessionManager.getSessionId(), paths.subagents, (event) => emitter.emit("event", event), config.maxConcurrentSubagents, config.approvalMode) : undefined;
   const getChildProfile = () => config.childInherit ? (record?.profile ?? profile) : childProfile;
-  const customTools = subagents ? [createSubagentTool(subagents, getChildProfile, cwd, mutationLock, { authStorage, modelRegistry })] : [];
   const browserSessionId = randomUUID();
-  const browser = new BrowserManager({ cwd, sessionId: browserSessionId });
+  const browser = new BrowserManager({ cwd, sessionId: browserSessionId, evidenceRoot: paths.evidence, evidenceSessionId });
+  const customTools = [createFindingTool(evidenceStore, findingSource, browser), ...(subagents ? [createSubagentTool(subagents, getChildProfile, cwd, mutationLock, { authStorage, modelRegistry, evidenceStore, evidenceSessionId })] : [])];
   const browserExtension = createBrowserExtension({ cwd, sessionId: browserSessionId }, browser);
   const resourceLoader = new DefaultResourceLoader({
     cwd,
@@ -196,7 +237,7 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
     modelRegistry,
     model,
     thinkingLevel: profile.thinkingLevel,
-    tools: ["read", "grep", "find", "ls", "bash", "write", "edit", "browser", ...(subagents ? ["spawn_subagent"] : [])],
+    tools: ["read", "grep", "find", "ls", "bash", "write", "edit", "browser", "record_finding", ...(subagents ? ["spawn_subagent"] : [])],
     customTools,
     resourceLoader,
     sessionManager,
@@ -227,6 +268,7 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
     browser,
     mutationLock,
     subagents,
+    evidenceStore,
     runtimeVersion: RUNTIME_VERSION,
     unsubscribe: () => undefined
   };
@@ -245,7 +287,7 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
         : result.session.followUp(message);
       void deliver.catch(() => undefined);
     });
-    await subagents.initialize((context) => runChildSession(getChildProfile(), cwd, mutationLock, context, { authStorage, modelRegistry }));
+    await subagents.initialize((context) => runChildSession(getChildProfile(), cwd, mutationLock, context, { authStorage, modelRegistry, evidenceStore, evidenceSessionId }));
   }
   record.dispose = () => {
     gate.rejectAll();
@@ -262,7 +304,7 @@ async function runChildSession(profile: ModelProfile, cwd: string, mutationLock:
   const threadDir = join(paths.subagents, context.task.parentSessionId, context.task.id);
   await mkdir(threadDir, { recursive: true, mode: 0o700 });
   const childSessionManager = PiSessionManager.create(cwd, threadDir);
-  const child = await createPiSession(profile, cwd, context.gate, true, childSessionManager, mutationLock, runtimeDeps);
+  const child = await createPiSession(profile, cwd, context.gate, true, childSessionManager, mutationLock, runtimeDeps, { source: "subagent", subagentId: context.task.id });
   context.task.model = `${profile.provider}/${profile.model}`;
   context.updateTaskMeta({ model: context.task.model, threadId: child.id });
   const abortChild = () => {
@@ -472,9 +514,10 @@ export async function setWorkingDirectory(input: string) {
 
 async function promptSession(id: string, text: string, mode: "prompt" | "steer" | "followUp" = "prompt") {
   const record = await getOrCreateSession(id);
-  if (mode !== "steer") record.gate.beginTask();
-  if (mode === "steer") await record.session.steer(text);
-  else if (mode === "followUp") await record.session.followUp(text);
+  const resolvedMode = resolvePromptMode(mode, record.session.isStreaming);
+  if (resolvedMode !== "steer") record.gate.beginTask();
+  if (resolvedMode === "steer") await record.session.steer(text);
+  else if (resolvedMode === "followUp") await record.session.followUp(text);
   else await record.session.prompt(text);
   return record;
 }
@@ -581,11 +624,34 @@ export async function subscribeSession(id: string, listener: (event: RiftxEvent)
   // approval request that is still holding the agent at a guarded tool call.
   if (record.session.isStreaming) onEvent({ type: "session_state", state: "running" });
   onEvent({ type: "usage", usage: usageFromRecord(record) });
+  for (const finding of await record.evidenceStore.list()) onEvent({ type: "finding", finding });
   for (const request of record.gate.pendingRequests()) onEvent({ type: "approval_required", approval: request });
   for (const request of record.subagents?.pendingApprovals() ?? []) onEvent({ type: "approval_required", approval: request });
   return () => {
     record.emitter.off("event", onEvent);
   };
+}
+
+export async function listFindings(id: string) {
+  await assertSessionInCurrentWorkspace(id);
+  const record = sessions.get(id);
+  const store = record?.evidenceStore ?? getEvidenceStore(id, getAppPaths().evidence);
+  return store.list();
+}
+
+export async function patchFinding(id: string, findingId: string, patch: { confidence?: "confirmed" | "likely" | "suspected" | "not_reproducible"; dismissed?: boolean }) {
+  await assertSessionInCurrentWorkspace(id);
+  const record = sessions.get(id);
+  const store = record?.evidenceStore ?? getEvidenceStore(id, getAppPaths().evidence);
+  return store.patch(findingId, { confidence: patch.confidence, status: patch.dismissed === undefined ? undefined : patch.dismissed ? "dismissed" : "open" });
+}
+
+export async function assertSessionInCurrentWorkspace(id: string) {
+  const config = await readConfig();
+  const live = sessions.get(id);
+  if (live && resolve(live.cwd) === resolve(config.cwd)) return;
+  const info = (await listWorkspaceSessionInfos(config.cwd)).find((item) => item.id === id);
+  if (!info) throw new Error("Session does not belong to the current working directory");
 }
 
 export async function listSubagents(id: string) {
@@ -722,6 +788,7 @@ export async function archiveSession(id: string) {
   const record = sessions.get(id);
   if (record) {
     record.dispose?.();
+    await record.subagents?.abortAll();
     sessions.delete(id);
   }
   return listSessions();
@@ -734,6 +801,7 @@ export async function deleteArchivedSession(id: string) {
   const record = sessions.get(id);
   if (record) {
     record.dispose?.();
+    await record.subagents?.abortAll();
     sessions.delete(id);
   }
   if (session?.path) {
@@ -743,6 +811,7 @@ export async function deleteArchivedSession(id: string) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
   }
+  await removeEvidence(id, getAppPaths().evidence);
   const { [id]: _removedTitle, ...sessionTitles } = config.sessionTitles;
   await updateConfig({ archivedSessionIds: config.archivedSessionIds.filter((item) => item !== id), archivedSessions: config.archivedSessions.filter((item) => item.id !== id), sessionTitles });
   return listSessions();

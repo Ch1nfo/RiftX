@@ -1,4 +1,7 @@
 import { URL } from "node:url";
+import { mkdir, stat, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import type { Page } from "playwright";
 import { ContextManager } from "./context-manager";
 import { PageManager } from "./page-manager";
@@ -6,6 +9,7 @@ import { createSnapshot } from "../snapshot/snapshot";
 import { ElementRefMapper } from "../snapshot/element-refs";
 import { RequestStore, redactHeaders } from "../network/request-store";
 import type { BrowserManagerOptions, BrowserPageInfo, BrowserScope, PageSnapshot } from "../types";
+import { getScreenshotPath } from "@/server/pi/evidence-path";
 
 function parseAllowedOrigins(value?: string) {
   return value?.split(",").map((item) => item.trim()).filter(Boolean) ?? [];
@@ -20,8 +24,13 @@ export class BrowserManager {
   private contextListenerAttached = false;
   private lockedOrigin?: string;
   private scope: BrowserScope;
+  private readonly evidenceRoot?: string;
+  private readonly evidenceSessionId?: string;
+  private latestScreenshotId?: string;
 
   constructor(options: BrowserManagerOptions) {
+    this.evidenceRoot = options.evidenceRoot;
+    this.evidenceSessionId = options.evidenceSessionId;
     this.scope = {
       allowedOrigins: options.scope?.allowedOrigins ?? parseAllowedOrigins(process.env.RIFTX_BROWSER_ALLOWED_ORIGINS)
     };
@@ -125,6 +134,18 @@ export class BrowserManager {
     return [`${item.method} ${item.url} HTTP/1.1`, requestHeaders ? `\n${requestHeaders}` : "", item.requestBody ? `\n\n${item.requestBody}` : "", `\n\nResponse:\n${item.status ?? "pending"} ${item.statusText ?? ""}`, responseHeaders ? `\n${responseHeaders}` : ""].join("");
   }
 
+  requestEvidence(ref: string) {
+    const item = this.requests.get(ref);
+    if (!item) throw new Error(`Unknown request ref ${ref}`);
+    return {
+      type: "request" as const,
+      requestRef: item.ref,
+      method: item.method,
+      url: item.url,
+      status: item.status
+    };
+  }
+
   responseBody(ref: string) {
     const item = this.requests.get(ref);
     if (!item) throw new Error(`Unknown request ref ${ref}`);
@@ -153,6 +174,30 @@ export class BrowserManager {
     return (await page.screenshot({ type: "png" })).toString("base64");
   }
 
+  async captureScreenshot() {
+    const screenshotId = `s-${randomUUID()}`;
+    const base64 = await this.screenshot();
+    this.latestScreenshotId = screenshotId;
+    if (this.evidenceRoot && this.evidenceSessionId) {
+      const directory = join(this.evidenceRoot, this.evidenceSessionId, "shots");
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      await writeFile(getScreenshotPath(this.evidenceRoot, this.evidenceSessionId, screenshotId), Buffer.from(base64, "base64"), { mode: 0o600 });
+    }
+    return { screenshotId, base64, url: this.currentUrl };
+  }
+
+  async screenshotEvidence(screenshotId: string) {
+    const resolvedId = screenshotId === "latest" ? this.latestScreenshotId : screenshotId;
+    if (!resolvedId) throw new Error("No browser screenshot is available");
+    if (this.evidenceRoot && this.evidenceSessionId) {
+      const path = getScreenshotPath(this.evidenceRoot, this.evidenceSessionId, resolvedId);
+      await stat(path).catch(() => { throw new Error(`Unknown screenshot id ${resolvedId}`); });
+    } else if (resolvedId !== this.latestScreenshotId) {
+      throw new Error(`Unknown screenshot id ${resolvedId}`);
+    }
+    return { type: "screenshot" as const, screenshotId: resolvedId, url: this.currentUrl };
+  }
+
   async tabs(): Promise<BrowserPageInfo[]> {
     return Promise.all([...this.pages.entries()].map(([id, manager]) => manager.info(id === this.activeId)));
   }
@@ -163,6 +208,7 @@ export class BrowserManager {
     this.activeId = undefined;
     this.lockedOrigin = undefined;
     this.contextListenerAttached = false;
+    this.latestScreenshotId = undefined;
     await this.contextManager.close();
   }
 

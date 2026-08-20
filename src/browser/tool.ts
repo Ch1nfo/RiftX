@@ -55,7 +55,16 @@ export function createBrowserExtension(options: BrowserManagerOptions, existingM
             case "response_body": result = manager.responseBody(requireString(params.ref, "ref")); break;
             case "cookies": result = await manager.cookies(); break;
             case "storage": result = await manager.storage(); break;
-            case "screenshot": return { content: [{ type: "image" as const, data: await manager.screenshot(), mimeType: "image/png" }], details: { action: params.action, url: manager.currentUrl } };
+            case "screenshot": {
+              const screenshot = await manager.captureScreenshot();
+              return {
+                content: [
+                  { type: "text" as const, text: `Screenshot captured: ${screenshot.screenshotId}` },
+                  { type: "image" as const, data: screenshot.base64, mimeType: "image/png" }
+                ],
+                details: { action: params.action, screenshotId: screenshot.screenshotId, url: screenshot.url }
+              };
+            }
             case "tabs": result = JSON.stringify(await manager.tabs(), null, 2); break;
             case "close": await manager.close(); result = "Browser closed"; break;
           }

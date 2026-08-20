@@ -8,6 +8,7 @@ const CONFIG_PATH = join(ROOT, "config.json");
 const SESSION_PATH = join(ROOT, "sessions");
 const PI_AGENT_PATH = join(ROOT, "pi-agent");
 const SUBAGENT_PATH = join(ROOT, "subagents");
+const EVIDENCE_PATH = join(ROOT, "evidence");
 
 const defaultConfig = (): AppConfig => ({
   profiles: [DEFAULT_PROFILE],
@@ -30,10 +31,11 @@ async function ensureAppDirs() {
   await mkdir(SESSION_PATH, { recursive: true, mode: 0o700 });
   await mkdir(PI_AGENT_PATH, { recursive: true, mode: 0o700 });
   await mkdir(SUBAGENT_PATH, { recursive: true, mode: 0o700 });
+  await mkdir(EVIDENCE_PATH, { recursive: true, mode: 0o700 });
 }
 
 export function getAppPaths() {
-  return { root: ROOT, config: CONFIG_PATH, sessions: SESSION_PATH, piAgent: PI_AGENT_PATH, subagents: SUBAGENT_PATH };
+  return { root: ROOT, config: CONFIG_PATH, sessions: SESSION_PATH, piAgent: PI_AGENT_PATH, subagents: SUBAGENT_PATH, evidence: EVIDENCE_PATH };
 }
 
 export async function readConfig(): Promise<AppConfig> {

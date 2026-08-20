@@ -3,12 +3,20 @@
 import { ArrowsClockwise, CaretDown, CircleNotch, Stop, UsersThree, X } from "@phosphor-icons/react";
 import { useLanguage } from "@/lib/i18n";
 import type { SubagentTask } from "@/lib/types";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
-export function SubagentPanel({ tasks, running, maxConcurrent, onCancel, onRetry }: { tasks: SubagentTask[]; running: number; maxConcurrent: number; onCancel: (taskId: string) => void; onRetry: (taskId: string) => void }) {
+export function SubagentPanel({ tasks, running, maxConcurrent, onCancel, onRetry, focus }: { tasks: SubagentTask[]; running: number; maxConcurrent: number; onCancel: (taskId: string) => void; onRetry: (taskId: string) => void; focus?: { taskId: string; logId?: string } | null }) {
   const { t } = useLanguage();
   const [open, setOpen] = useState(true);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [openLogs, setOpenLogs] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    if (!focus?.taskId) return;
+    setOpen(true);
+    setExpanded((current) => ({ ...current, [focus.taskId]: true }));
+    const logId = focus.logId;
+    if (logId) setOpenLogs((current) => ({ ...current, [logId]: true }));
+  }, [focus?.taskId, focus?.logId]);
   if (!tasks.length) return null;
   return <aside className={`subagent-panel ${open ? "open" : "collapsed"}`} aria-label={t("subagents")}>
     <button className="subagent-panel-head" onClick={() => setOpen((value) => !value)}>
@@ -19,7 +27,7 @@ export function SubagentPanel({ tasks, running, maxConcurrent, onCancel, onRetry
       const isExpanded = Boolean(expanded[task.id]);
       const active = task.status === "queued" || task.status === "running";
       const status = task.status === "queued" ? t("queued") : task.status === "running" ? t("running") : task.status === "completed" ? t("complete") : task.status === "failed" ? t("failed") : task.status === "cancelled" ? t("cancelled") : t("interrupted");
-      return <article className={`subagent-item ${task.status}`} key={task.id}>
+      return <article className={`subagent-item ${task.status}`} key={task.id} id={`subagent-task-${task.id}`}>
         <button className="subagent-item-head" onClick={() => setExpanded((current) => ({ ...current, [task.id]: !isExpanded }))}>
           <span className="subagent-item-title"><span className={`subagent-status-dot ${task.status}`}>{task.status === "running" ? <CircleNotch size={12} className="spin" /> : null}</span><strong>{task.name}</strong></span>
           <span className="subagent-status">{status}<CaretDown size={12} className={isExpanded ? "rotated" : ""} /></span>
@@ -27,7 +35,7 @@ export function SubagentPanel({ tasks, running, maxConcurrent, onCancel, onRetry
         <p className="subagent-task-summary">{task.task}</p>
         <div className="subagent-meta"><span>{task.model || t("loadingSubagentModel")}</span>{task.pendingApprovalCount ? <span className="subagent-approval-count">{t("approvalCount", { count: String(task.pendingApprovalCount) })}</span> : null}</div>
         {isExpanded ? <div className="subagent-details">
-          {task.logs.length ? <div className="subagent-logs">{task.logs.map((log) => <details className={`subagent-log-card ${log.type}`} key={log.id}>
+          {task.logs.length ? <div className="subagent-logs">{task.logs.map((log) => <details className={`subagent-log-card ${log.type}`} key={log.id} id={`subagent-log-${task.id}-${log.id}`} open={Boolean(openLogs[log.id])} onToggle={(event) => { const nextOpen = event.currentTarget.open; setOpenLogs((current) => ({ ...current, [log.id]: nextOpen })); }}>
             <summary className="subagent-log-head"><span className="subagent-log-head-main"><span className="subagent-log-type">{log.type === "tool" ? log.toolName : log.type}</span>{log.status ? <span className={`subagent-log-status ${log.status}`}>{log.status === "running" ? t("running") : log.status === "error" ? t("failed") : t("complete")}</span> : null}</span><CaretDown size={12} className="subagent-log-caret" /></summary>
             <pre>{log.content}</pre>
           </details>)}</div> : null}

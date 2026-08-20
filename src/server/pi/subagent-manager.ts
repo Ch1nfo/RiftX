@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { SUBAGENT_LOG_LIMITS, type ApprovalMode, type ApprovalRequest, type RiftxEvent, type SubagentLogEntry, type SubagentTask, type SubagentTaskPatch } from "@/lib/types";
 import { ApprovalGate } from "./approval-gate";
+import { summarizeToolResult } from "@/lib/tool-result";
 
 export type SubagentResult = { summary: string };
 type TaskMetaUpdate = { threadId?: string; model?: string };
@@ -378,7 +379,7 @@ export class SubagentManager {
     } else if (event?.type === "tool_end") {
       const log = task.logs.find((entry) => entry.id === String(event.toolCallId));
       if (log) {
-        log.content = trimLogContent(typeof event.result === "string" ? event.result : JSON.stringify(event.result ?? "", null, 2));
+        log.content = trimLogContent(summarizeToolResult(event.result));
         log.status = event.isError ? "error" : "done";
         taskPatch = { id: task.id, patchLog: { id: log.id, content: log.content, status: log.status } };
       }
