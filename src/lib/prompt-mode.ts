@@ -1,7 +1,8 @@
 export type PromptMode = "prompt" | "steer" | "followUp";
 
 export function resolvePromptMode(mode: PromptMode, isStreaming: boolean): PromptMode {
-  return mode === "prompt" && isStreaming ? "steer" : mode;
+  if (!isStreaming) return "prompt";
+  return mode === "prompt" ? "steer" : mode;
 }
 
 export function isAlreadyProcessingError(message: string) {

@@ -29,6 +29,7 @@ import { MutationLock } from "./mutation-lock";
 import { SubagentManager, type SubagentRunnerContext } from "./subagent-manager";
 import { textFromModelContent } from "./text-content";
 import { EvidenceStore, getEvidenceStore, removeEvidence } from "./evidence-store";
+import { estimateCompactedUsage, estimateMessagesContextUsage, installMidTurnCompaction } from "./mid-turn-compaction";
 
 type SessionRecord = {
   id: string;
@@ -51,7 +52,7 @@ type SessionRecord = {
   abortPromise?: Promise<void>;
 };
 
-const RUNTIME_VERSION = 8;
+const RUNTIME_VERSION = 9;
 
 type SessionSnapshotCacheEntry = {
   modifiedMs: number;
@@ -200,6 +201,9 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
   const config = await readConfig();
   gate.setMode(config.approvalMode);
   const emitter = new EventEmitter();
+  if (!child) {
+    gate.onDecision((request, approved) => emitter.emit("event", { type: "approval_decided", approvalId: request.id, approval: request, approved }));
+  }
   let record: SessionRecord | undefined;
   const permission = createPermissionExtension(
     gate,
@@ -243,6 +247,7 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
     sessionManager,
     settingsManager
   });
+  installMidTurnCompaction(result.session);
   // Pi prepares parallel calls before executing them. Keep guarded mutation
   // tools sequential so they cannot deadlock on the shared mutation lock, but
   // allow independent spawn_subagent calls to run concurrently.
@@ -274,7 +279,9 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
   };
   const unsubscribe = result.session.subscribe((event) => {
     emitter.emit("event", eventPayload(event));
-    const usage = result.session.getContextUsage();
+    const usage = event.type === "compaction_end" && event.result
+      ? estimateCompactedUsage(result.session, record.profile.contextWindow)
+      : usageFromRecord(record);
     if (usage) emitter.emit("event", { type: "usage", usage: normalizeContextUsage(usage, record.profile.contextWindow) });
   });
   record.unsubscribe = unsubscribe;
@@ -282,9 +289,10 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
     subagents.setCompletionHandler((task, childResult) => {
       const summary = childResult.summary?.trim() || "No result";
       const message = `[RiftX subagent result]\nSubagent: ${task.name}\nTask: ${task.task}\nStatus: completed\nSummary:\n${summary}\n\nUse this result if it helps the current assessment. Do not repeat the same delegated task.`;
+      if (!result.session.isStreaming) record.gate.beginTask();
       const deliver = result.session.isStreaming
         ? result.session.steer(message)
-        : result.session.followUp(message);
+        : result.session.prompt(message);
       void deliver.catch(() => undefined);
     });
     await subagents.initialize((context) => runChildSession(getChildProfile(), cwd, mutationLock, context, { authStorage, modelRegistry, evidenceStore, evidenceSessionId }));
@@ -349,7 +357,9 @@ function summaryName(config: Awaited<ReturnType<typeof readConfig>>, id: string,
 
 function usageFromRecord(record: SessionRecord): ContextUsage {
   const usage = record.session.getContextUsage();
-  return usage ? normalizeContextUsage(usage, record.profile.contextWindow) : emptyContextUsage(record.profile.contextWindow);
+  if (!usage) return emptyContextUsage(record.profile.contextWindow);
+  if (usage.percent === null) return estimateCompactedUsage(record.session, record.profile.contextWindow);
+  return normalizeContextUsage(usage, record.profile.contextWindow);
 }
 
 async function sessionSnapshotFromFile(path: string, profiles: ModelProfile[]): Promise<SessionSnapshot | null> {
@@ -366,6 +376,8 @@ async function sessionSnapshotFromFile(path: string, profiles: ModelProfile[]): 
     let provider = "";
     let model = "";
     let usage: ContextUsage | undefined;
+    let postCompactionMessages: unknown[] | undefined;
+    let hasPostCompactionUsage = false;
     for (const line of lines) {
       let entry: Record<string, unknown>;
       try {
@@ -378,19 +390,33 @@ async function sessionSnapshotFromFile(path: string, profiles: ModelProfile[]): 
         if (typeof entry.provider === "string") provider = entry.provider;
         if (typeof entry.modelId === "string") model = entry.modelId;
       }
+      if (entry.type === "compaction") {
+        postCompactionMessages = [{ role: "compactionSummary", summary: String(entry.summary ?? "") }];
+        hasPostCompactionUsage = false;
+      }
+      if (entry.type === "branch_summary" && postCompactionMessages) {
+        postCompactionMessages.push({ role: "branchSummary", summary: String(entry.summary ?? "") });
+      }
       if (entry.type === "message") {
         const message = entry.message as Record<string, unknown> | undefined;
+        if (postCompactionMessages && message) postCompactionMessages.push(message);
         if (message?.usage) {
           if (typeof message.provider === "string") provider = message.provider;
           if (typeof message.model === "string") model = message.model;
           const matchedProfile = profiles.find((profile) => profile.provider === provider && profile.model === model);
           const contextWindow = matchedProfile?.contextWindow ?? 0;
           usage = normalizeContextUsage(message.usage, contextWindow);
+          if (postCompactionMessages && message.role === "assistant" && message.stopReason !== "aborted" && message.stopReason !== "error") {
+            hasPostCompactionUsage = true;
+          }
         }
       }
     }
     const matchedProfile = profiles.find((profile) => profile.provider === provider && profile.model === model);
     const contextWindow = matchedProfile?.contextWindow ?? usage?.contextWindow ?? 0;
+    if (postCompactionMessages && !hasPostCompactionUsage) {
+      usage = estimateMessagesContextUsage(postCompactionMessages, contextWindow);
+    }
     const snapshot = {
       id: sessionId,
       provider: provider || matchedProfile?.provider,
@@ -456,6 +482,7 @@ async function findSessionPath(id: string, cwd?: string) {
 
 async function getOrCreateSession(id?: string) {
   const config = await readConfig();
+  if (id && config.archivedSessionIds.includes(id)) throw new Error("Session is archived");
   if (id && sessions.has(id)) {
     const existing = sessions.get(id)!;
     // Rebuild stale process-global session objects after a dev-server reload
@@ -624,12 +651,19 @@ export async function subscribeSession(id: string, listener: (event: RiftxEvent)
   // approval request that is still holding the agent at a guarded tool call.
   if (record.session.isStreaming) onEvent({ type: "session_state", state: "running" });
   onEvent({ type: "usage", usage: usageFromRecord(record) });
+  for (const task of record.subagents?.list() ?? []) onEvent({ type: "subagent_snapshot", task });
   for (const finding of await record.evidenceStore.list()) onEvent({ type: "finding", finding });
   for (const request of record.gate.pendingRequests()) onEvent({ type: "approval_required", approval: request });
   for (const request of record.subagents?.pendingApprovals() ?? []) onEvent({ type: "approval_required", approval: request });
   return () => {
     record.emitter.off("event", onEvent);
   };
+}
+
+export async function assertSessionRunnable(id: string) {
+  const config = await readConfig();
+  if (config.archivedSessionIds.includes(id)) throw new Error("Session is archived");
+  await assertSessionInCurrentWorkspace(id);
 }
 
 export async function listFindings(id: string) {

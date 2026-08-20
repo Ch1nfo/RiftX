@@ -41,3 +41,15 @@ test("keeps missing breakdown fields unknown instead of coercing them to zero", 
   assert.equal(usage.cacheRead, null);
   assert.equal(usage.cacheWrite, null);
 });
+
+test("uses the current configured window instead of a stale provider window", () => {
+  const usage = normalizeContextUsage({ tokens: 60_000, contextWindow: 128_000, percent: 46.875 }, 48_000);
+  assert.equal(usage.contextWindow, 48_000);
+  assert.equal(usage.percent, 100);
+  assert.equal(usage.remaining, 0);
+});
+
+test("clamps an explicit percentage when token data is unavailable", () => {
+  const usage = normalizeContextUsage({ percent: 120, contextWindow: 48_000 }, 48_000);
+  assert.equal(usage.percent, 100);
+});

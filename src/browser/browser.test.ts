@@ -10,6 +10,8 @@ test("redacts sensitive request metadata", () => {
   const store = new RequestStore();
   const item = store.start({ pageId: "p", method: "GET", url: "https://example.test", resourceType: "document", requestHeaders: {}, startedAt: new Date().toISOString() });
   assert.equal(store.get(item.ref)?.ref, "r1");
+  store.clear();
+  assert.equal(store.get(item.ref), undefined);
 });
 
 test("browser blocks navigation outside configured scope", async () => {

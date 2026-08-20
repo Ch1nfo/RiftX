@@ -11,7 +11,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     return Response.json({ ok: true, sessionId: session.id });
   } catch (error) {
     const message = error instanceof Error ? error.message : "发送任务失败";
-    const status = message === "Session does not belong to the current working directory" || message === "session not found" ? 404 : 500;
+    const status = message === "Session does not belong to the current working directory" || message === "Session is archived" || message === "session not found" ? 404 : 500;
     return Response.json({ error: message }, { status });
   }
 }

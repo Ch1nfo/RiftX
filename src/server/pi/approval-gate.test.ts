@@ -11,9 +11,22 @@ test("approval gate resolves an explicit decision", async () => {
 
 test("approval gate rejects unknown and timed out requests", async () => {
   const gate = new ApprovalGate();
+  const decisions: Array<[string, boolean]> = [];
+  gate.onDecision((request, approved) => decisions.push([request.id, approved]));
   assert.equal(gate.decide("missing", true), false);
   const promise = gate.waitForApproval({ id: "b", toolName: "write", input: { path: "x" }, createdAt: new Date().toISOString() }, 5);
   assert.equal(await promise, false);
+  assert.deepEqual(decisions, [["b", false]]);
+});
+
+test("changing approval mode keeps pending requests unless switching to full", async () => {
+  const gate = new ApprovalGate();
+  const pending = gate.waitForApproval({ id: "mode", toolName: "bash", input: { command: "id" }, createdAt: new Date().toISOString() }, 1000);
+  gate.setMode("auto");
+  assert.equal(gate.pendingRequests().length, 1);
+  gate.setMode("full");
+  assert.equal(await pending, true);
+  assert.deepEqual(gate.pendingRequests(), []);
 });
 
 test("approval gate exposes pending requests for stream reconnection", async () => {

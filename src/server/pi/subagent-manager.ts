@@ -249,15 +249,7 @@ export class SubagentManager {
   }
 
   rejectAllApprovals() {
-    for (const [taskId, runtime] of this.runtimes.entries()) {
-      const pending = runtime.gate.pendingRequests().length;
-      runtime.gate.rejectAll();
-      const task = this.tasks.get(taskId);
-      if (task && pending > 0) {
-        task.pendingApprovalCount = Math.max(0, task.pendingApprovalCount - pending);
-        this.emitTask("subagent_update", task);
-      }
-    }
+    for (const runtime of this.runtimes.values()) runtime.gate.rejectAll();
   }
 
   decideApproval(approvalId: string, approved: boolean, scope: "once" | "task" = "once") {
@@ -265,13 +257,7 @@ export class SubagentManager {
       const request = runtime.gate.pendingRequests().find((item) => item.id === approvalId);
       if (!request) continue;
       if (approved && scope === "task") runtime.gate.allowForTask(request);
-      const decided = runtime.gate.decide(approvalId, approved);
-      const task = [...this.tasks.values()].find((item) => this.runtimes.get(item.id) === runtime);
-      if (task) {
-        task.pendingApprovalCount = Math.max(0, task.pendingApprovalCount - 1);
-        this.emitTask("approval_decided", task, { type: "approval_decided", approvalId, approved });
-      }
-      return decided;
+      return runtime.gate.decide(approvalId, approved);
     }
     return false;
   }
@@ -292,6 +278,10 @@ export class SubagentManager {
     const { task, runner } = item;
     const controller = new AbortController();
     const gate = new ApprovalGate(this.approvalMode);
+    gate.onDecision((request, approved) => {
+      task.pendingApprovalCount = Math.max(0, task.pendingApprovalCount - 1);
+      this.emitTask("approval_decided", task, { type: "approval_decided", approvalId: request.id, approved });
+    });
     this.runtimes.set(task.id, { controller, gate });
     task.status = "running";
     task.startedAt = now();

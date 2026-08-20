@@ -203,6 +203,7 @@ export class BrowserManager {
   }
 
   async close() {
+    this.requests.clear();
     this.refs.clear();
     this.pages.clear();
     this.activeId = undefined;

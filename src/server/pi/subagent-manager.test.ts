@@ -156,6 +156,27 @@ test("returns a background task immediately and reports its result on completion
   }
 });
 
+test("emits approval decisions when a child approval times out", async () => {
+  const root = await mkdtemp(join(tmpdir(), "riftx-subagents-"));
+  const events: RiftxEvent[] = [];
+  const manager = new SubagentManager("parent", root, (event) => events.push(event), 1, "request");
+  await manager.initialize(async ({ gate, emit }) => {
+    const request = { id: "approval-timeout", toolName: "bash" as const, input: { command: "id" }, createdAt: new Date().toISOString() };
+    emit({ type: "approval_required", approval: request });
+    assert.equal(await gate.waitForApproval(request, 5), false);
+    throw new Error("approval timed out");
+  });
+  try {
+    await assert.rejects(manager.submit("approval timeout"), /approval timed out/);
+    const decision = events.find((event) => event.type === "approval_decided");
+    assert.equal(decision?.approvalId, "approval-timeout");
+    assert.deepEqual(decision?.taskPatch, { id: manager.list()[0].id, pendingApprovalCount: 0 });
+  } finally {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("retry creates a new task record", async () => {
   const root = await mkdtemp(join(tmpdir(), "riftx-subagents-"));
   const manager = new SubagentManager("parent", root, () => undefined, 1, "request");

@@ -9,6 +9,7 @@ type PendingApproval = {
 };
 
 type ApprovalInput = Pick<ApprovalRequest, "toolName" | "input">;
+type ApprovalDecisionListener = (request: ApprovalRequest, approved: boolean) => void;
 
 function stableSerialize(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value) ?? String(value);
@@ -24,6 +25,7 @@ function approvalKey(request: ApprovalInput) {
 export class ApprovalGate {
   private pending = new Map<string, PendingApproval>();
   private listeners = new Set<(request: ApprovalRequest) => void>();
+  private decisionListeners = new Set<ApprovalDecisionListener>();
   private mode: ApprovalMode;
   private taskBypass = new Set<string>();
 
@@ -40,8 +42,6 @@ export class ApprovalGate {
     this.taskBypass.clear();
     if (mode === "full") {
       for (const id of this.pending.keys()) this.decide(id, true);
-    } else if (this.pending.size > 0) {
-      this.rejectAll();
     }
   }
 
@@ -62,15 +62,22 @@ export class ApprovalGate {
     return () => this.listeners.delete(listener);
   }
 
+  onDecision(listener: ApprovalDecisionListener) {
+    this.decisionListeners.add(listener);
+    return () => this.decisionListeners.delete(listener);
+  }
+
   waitForApproval(request: ApprovalRequest, timeoutMs = 120_000, signal?: AbortSignal): Promise<boolean> {
     return new Promise((resolve) => {
       if (signal?.aborted) {
+        for (const listener of this.decisionListeners) listener(request, false);
         resolve(false);
         return;
       }
       const timer = setTimeout(() => {
         this.pending.delete(request.id);
         signal?.removeEventListener("abort", onAbort);
+        for (const listener of this.decisionListeners) listener(request, false);
         resolve(false);
       }, timeoutMs);
       const onAbort = () => this.decide(request.id, false);
@@ -86,6 +93,7 @@ export class ApprovalGate {
     clearTimeout(pending.timer);
     pending.abortCleanup?.();
     this.pending.delete(id);
+    for (const listener of this.decisionListeners) listener(pending.request, approved);
     pending.resolve(approved);
     return true;
   }

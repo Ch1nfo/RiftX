@@ -15,6 +15,9 @@ RiftX 当前是 MVP，重点实现 Pi 的基础 Agent 能力和本机安全运�
 - 模型配置档案：Provider、模型 ID、API Key、Base URL、协议、传输方式、上下文大小、输出上限和 Thinking level。
 - 配置多个模型时，可直接在工作台输入框右侧点击模型名称切换。
 - 支持并发子 Agent，具备排队、重试、取消、独立 Pi 线程、独立审批门，以及继承或覆盖主模型配置的能力。
+- 主 Agent 和子 Agent 均可记录会话发现，包含置信度、影响、复现说明，以及可复核的摘录、工具调用、浏览器请求或截图证据。
+- 支持不中断当前 Agent 任务的中途上下文自动压缩，并根据压缩后的对话更新上下文占用。
+- 重新连接会恢复子 Agent 快照与待处理审批；已归档或不属于当前工作目录的会话不能建立事件流。
 - 会话历史、归档管理、可折叠工具卡片、Markdown、上下文占用圆环和明暗主题。
 - 中英文界面切换。
 - 工作台顶部提供系统文件夹选择器；最近会话按当前工作目录隔离显示。
@@ -42,6 +45,8 @@ RiftX 不需要数据库，也不需要远程 RiftX 账户。
 - 受控的本机命令与文件操作
 - 带审批门的浏览器自动化，用于登录态或交互式 Web 流程
 - 单个父会话中的并发子 Agent 委派
+- 与支撑证据关联、可持久化复核的会话发现
+- 在预留响应空间耗尽前自动压缩上下文
 - 活跃会话和历史会话的真实上下文占用与模型信息持久化
 
 当前 RiftX 还不包含：
@@ -109,6 +114,7 @@ RiftX 只应被用于操作者明确获得授权的目标。
 - `~/.riftx/sessions/` 保存 Pi 会话 JSONL 历史。
 - `~/.riftx/pi-agent/` 保存 RiftX 独立的 Pi 授权和模型元数据。
 - `~/.riftx/subagents/<父会话 ID>/` 保存子 Agent 任务状态、日志、摘要和线程元数据。服务重启后，运行中的任务会标记为 `interrupted`，不会自动重新执行。
+- `~/.riftx/evidence/<会话 ID>/` 保存会话发现和为发现保留的截图。
 
 API Key 会以受限权限保存在本机。不要提交 API Key、会话历史、Authorization Header、Cookie、目标数据、证书、私钥或侦察生成文件。仓库中的 `.gitignore` 已覆盖常见密钥、运行时文件、构建产物和本地缓存，但提交前仍应检查 `git status`。
 
@@ -149,6 +155,16 @@ RiftX 暴露的是单一统一的 `browser` 工具，而不是拆成多个独立
 
 快照会生成适合 Agent 消费的文本视图，并返回稳定元素引用，如 `e1`、`e2`、`e3`，因此模型可以按 ref 交互，而不是直接依赖原始 CSS Selector。
 
+## 会话发现
+
+主 Agent 和子 Agent 可以把有证据支撑的结论记录到当前父会话。
+
+- 每条发现包含受影响资产、置信度（`confirmed`、`likely`、`suspected` 或 `not_reproducible`）、影响、复现说明、来源和时间戳。
+- 证据可以引用简短摘录、工具调用、已捕获的浏览器请求或保留的截图。
+- 工作台证据面板可以跳转到工具与请求详情，截图按需加载。
+- 操作者可以调整置信度、忽略发现并恢复已忽略的发现，不会删除底层记录。
+- 发现按规范化后的资产和标题去重，并合并新证据。
+
 ## 子 Agent
 
 RiftX 在 Pi session 之上实现了应用层子 Agent 系统。
@@ -163,6 +179,8 @@ RiftX 在 Pi session 之上实现了应用层子 Agent 系统。
 - 子 Agent 不能递归继续创建子 Agent。
 - 子 Agent 的审批请求显示在主 Composer 审批区域，状态和日志显示在工作台面板中。
 - 子 Agent 结果和增量日志会随选定的父会话持久化和恢复。
+- 子 Agent 完成后会把结果回传给父 Agent：父任务运行中时作为引导消息，父任务空闲时启动新的父会话轮次。
+- 重新连接会话时会重放当前子 Agent 任务快照和未处理的审批请求。
 
 ## Web API
 
@@ -178,6 +196,9 @@ RiftX 在 Pi session 之上实现了应用层子 Agent 系统。
 - `POST /api/sessions/:id/title`
 - `POST /api/sessions/:id/abort`
 - `POST /api/sessions/:id/approval`
+- `GET /api/sessions/:id/findings`
+- `PATCH /api/sessions/:id/findings/:findingId`
+- `GET /api/sessions/:id/findings/screenshot/:screenshotId`
 - `GET /api/sessions/:id/subagents`
 - `POST /api/sessions/:id/subagents/:taskId/cancel`
 - `POST /api/sessions/:id/subagents/:taskId/retry`

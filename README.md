@@ -15,6 +15,9 @@ RiftX is an MVP. It focuses on Pi's core agent capabilities and safe local opera
 - Model profiles with provider, model ID, API key, base URL, protocol, transport, context window, output limit, and thinking level.
 - Clickable model switching from the workbench composer when multiple profiles exist.
 - Concurrent sub-agents with queueing, retry, cancellation, independent Pi threads, independent approval gates, and configurable profile inheritance or override.
+- Session findings with confidence, impact, reproduction notes, and reviewable quote, tool-call, browser-request, or screenshot evidence from the main Agent and sub-agents.
+- Automatic mid-turn context compaction that keeps the active Agent run alive and updates context usage from the compacted conversation.
+- Reconnection restores sub-agent snapshots and pending approvals, while session streams reject archived or out-of-workspace sessions.
 - Session history, archive management, tool cards, Markdown rendering, context usage ring, and light/dark themes.
 - English/Chinese UI language toggle.
 - A system directory picker in the workbench header; session history is scoped to the selected working directory.
@@ -42,6 +45,8 @@ RiftX currently focuses on:
 - Controlled local command/file execution
 - Approval-gated browser automation for authenticated or interactive Web flows
 - Concurrent child-agent delegation inside a single parent session
+- Persistent, reviewable findings linked to their supporting evidence
+- Automatic context compaction before the configured response reserve is exhausted
 - Persistent context usage and model metadata for active and historical sessions
 
 RiftX currently does not include:
@@ -109,6 +114,7 @@ Runtime state is stored outside the repository under `~/.riftx/`:
 - `~/.riftx/sessions/` stores Pi session JSONL history.
 - `~/.riftx/pi-agent/` stores RiftX-isolated Pi auth and model metadata.
 - `~/.riftx/subagents/<parent-session-id>/` stores child-agent task state, logs, summaries, and thread metadata. Running tasks are marked `interrupted` after a restart and are not replayed automatically.
+- `~/.riftx/evidence/<session-id>/` stores session findings and retained finding screenshots.
 
 API keys are stored locally with restricted file permissions. Never commit API keys, session history, authorization headers, cookies, target data, certificates, private keys, or generated reconnaissance artifacts. The repository `.gitignore` covers common secrets, runtime files, build output, and local caches, but always review `git status` before committing.
 
@@ -149,6 +155,16 @@ Supported actions currently include:
 
 Snapshots are agent-friendly text views with stable element refs such as `e1`, `e2`, and `e3`, so the model interacts with page elements by ref instead of raw selectors.
 
+## Session Findings
+
+The main Agent and child agents can record evidence-backed conclusions into the selected parent session.
+
+- Findings include an affected asset, confidence (`confirmed`, `likely`, `suspected`, or `not_reproducible`), impact, reproduction notes, source, and timestamps.
+- Evidence can reference a short quote, tool call, captured browser request, or retained screenshot.
+- The workbench evidence panel links back to tool and request details and lazily loads screenshots.
+- Operators can adjust confidence, dismiss a finding, and restore dismissed findings without deleting the underlying record.
+- Findings are deduplicated by normalized asset and title, then merged with new evidence.
+
 ## Sub-agents
 
 RiftX includes an application-level child-agent system on top of Pi sessions.
@@ -163,6 +179,8 @@ RiftX includes an application-level child-agent system on top of Pi sessions.
 - Child agents cannot recursively spawn more child agents.
 - Child approval requests surface in the main composer approval area, and child status/logs appear in the workbench panel.
 - Child results and incremental logs are persisted and restored with the selected parent session.
+- Completed child results are delivered back into the parent Agent: they steer an active run or start a new parent turn when the parent is idle.
+- Reconnecting to a session replays current child task snapshots and unresolved approval requests.
 
 ## Web API
 
@@ -178,6 +196,9 @@ The main endpoints include:
 - `POST /api/sessions/:id/title`
 - `POST /api/sessions/:id/abort`
 - `POST /api/sessions/:id/approval`
+- `GET /api/sessions/:id/findings`
+- `PATCH /api/sessions/:id/findings/:findingId`
+- `GET /api/sessions/:id/findings/screenshot/:screenshotId`
 - `GET /api/sessions/:id/subagents`
 - `POST /api/sessions/:id/subagents/:taskId/cancel`
 - `POST /api/sessions/:id/subagents/:taskId/retry`

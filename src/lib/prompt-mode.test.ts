@@ -6,6 +6,8 @@ test("queues a prompt as steer when the agent is already streaming", () => {
   assert.equal(resolvePromptMode("prompt", true), "steer");
   assert.equal(resolvePromptMode("prompt", false), "prompt");
   assert.equal(resolvePromptMode("followUp", true), "followUp");
+  assert.equal(resolvePromptMode("steer", false), "prompt");
+  assert.equal(resolvePromptMode("followUp", false), "prompt");
 });
 
 test("detects Pi's in-flight prompt error without treating other failures as idle", () => {

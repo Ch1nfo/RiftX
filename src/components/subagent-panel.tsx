@@ -17,13 +17,12 @@ export function SubagentPanel({ tasks, running, maxConcurrent, onCancel, onRetry
     const logId = focus.logId;
     if (logId) setOpenLogs((current) => ({ ...current, [logId]: true }));
   }, [focus?.taskId, focus?.logId]);
-  if (!tasks.length) return null;
   return <aside className={`subagent-panel ${open ? "open" : "collapsed"}`} aria-label={t("subagents")}>
     <button className="subagent-panel-head" onClick={() => setOpen((value) => !value)}>
       <span><UsersThree size={15} />{t("subagents")}</span>
       <span className="subagent-count">{running} / {maxConcurrent || "—"}<CaretDown size={13} className={open ? "rotated" : ""} /></span>
     </button>
-    {open ? <div className="subagent-list">{tasks.slice().reverse().map((task) => {
+    {open ? <div className="subagent-list">{tasks.length ? tasks.slice().reverse().map((task) => {
       const isExpanded = Boolean(expanded[task.id]);
       const active = task.status === "queued" || task.status === "running";
       const status = task.status === "queued" ? t("queued") : task.status === "running" ? t("running") : task.status === "completed" ? t("complete") : task.status === "failed" ? t("failed") : task.status === "cancelled" ? t("cancelled") : t("interrupted");
@@ -50,7 +49,7 @@ export function SubagentPanel({ tasks, running, maxConcurrent, onCancel, onRetry
           <div className="subagent-actions">{active ? <button className="subagent-action danger" onClick={() => onCancel(task.id)} title={t("stop")}><Stop size={14} />{t("stop")}</button> : null}{!active && task.status !== "completed" ? <button className="subagent-action" onClick={() => onRetry(task.id)} title={t("retry")}><ArrowsClockwise size={14} />{t("retry")}</button> : null}</div>
         </div> : null}
       </article>;
-    })}</div> : null}
+    }) : null}</div> : null}
     {!open ? <X size={13} className="subagent-panel-collapsed-icon" /> : null}
   </aside>;
 }

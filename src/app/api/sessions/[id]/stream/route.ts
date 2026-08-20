@@ -1,4 +1,4 @@
-import { subscribeSession } from "@/server/pi/session-manager";
+import { assertSessionRunnable, subscribeSession } from "@/server/pi/session-manager";
 
 export const runtime = "nodejs";
 
@@ -8,6 +8,13 @@ function encode(data: unknown) {
 
 export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
+  try {
+    await assertSessionRunnable(id);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "读取会话失败";
+    const status = message === "Session is archived" || message === "Session does not belong to the current working directory" ? 404 : 500;
+    return Response.json({ error: message }, { status });
+  }
   const encoder = new TextEncoder();
   let cleanup: () => void = () => undefined;
   const stream = new ReadableStream<Uint8Array>({
