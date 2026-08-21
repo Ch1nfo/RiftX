@@ -134,6 +134,8 @@ test("returns a background task immediately and reports its result on completion
   const root = await mkdtemp(join(tmpdir(), "riftx-subagents-"));
   const manager = new SubagentManager("parent", root, () => undefined, 1, "request");
   let finish!: () => void;
+  let completion: { id: string; summary: string } | undefined;
+  manager.setCompletionHandler((task, result) => { completion = { id: task.id, summary: result.summary }; });
   await manager.initialize(async () => new Promise((resolve) => { finish = () => resolve({ summary: "background result" }); }));
   try {
     const submitted = manager.submitTask("background task");
@@ -143,6 +145,8 @@ test("returns a background task immediately and reports its result on completion
     await waitFor(() => typeof finish === "function");
     finish();
     assert.deepEqual(await submitted.promise, { summary: "background result" });
+    await waitFor(() => completion?.id === submitted.task?.id);
+    assert.equal(completion?.summary, "background result");
   } finally {
     await new Promise((resolve) => setTimeout(resolve, 25));
     await rm(root, { recursive: true, force: true });

@@ -17,6 +17,7 @@ export type SubagentRunnerContext = {
 };
 
 export type SubagentRunner = (context: SubagentRunnerContext) => Promise<SubagentResult>;
+export type SubagentCompletionHandler = (task: SubagentTask, result: SubagentResult) => void;
 export type SubagentNameGenerator = (task: string) => Promise<string>;
 
 type QueueItem = {
@@ -65,6 +66,7 @@ export class SubagentManager {
   private maxConcurrent: number;
   private approvalMode: ApprovalMode = "request";
   private runner?: SubagentRunner;
+  private completionHandler?: SubagentCompletionHandler;
   private readonly idleWaiters = new Set<() => void>();
   private initialized = false;
   private persistChain = Promise.resolve();
@@ -173,6 +175,10 @@ export class SubagentManager {
         taskSummary: task.task
       } : request);
     });
+  }
+
+  setCompletionHandler(handler: SubagentCompletionHandler | undefined) {
+    this.completionHandler = handler;
   }
 
   private schedulePersist(delayMs = 150) {
@@ -350,6 +356,7 @@ export class SubagentManager {
         task.finishedAt = now();
         task.summary = result.summary;
         this.emitTask("subagent_done", task);
+        this.completionHandler?.(task, result);
         item.resolve?.(result);
       }
     } catch (error) {

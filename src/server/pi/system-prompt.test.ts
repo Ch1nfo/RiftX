@@ -9,7 +9,7 @@ test("pentest prompt actively selects browser and targeted testing methods", () 
   assert.match(prompt, /small, targeted, controlled test sets/);
   assert.match(prompt, /Use the spawn_subagent tool to create child Agents/);
   assert.match(prompt, /Every spawned child is mandatory for the final assessment/);
-  assert.match(prompt, /never give the final conclusion until every spawned child/);
+  assert.match(prompt, /If your current turn reaches a conclusion while any child is still active/);
   assert.match(prompt, /Never use bash, sleep, tasks.json, child log files, or filesystem polling/);
   assert.match(prompt, /no optional wait mode/);
   assert.match(prompt, /configured maximum is a concurrency limit, not a target/);

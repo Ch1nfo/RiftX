@@ -52,6 +52,7 @@ type SessionRecord = {
   runtimeVersion?: number;
   abortPromise?: Promise<void>;
   abortEpoch?: number;
+  waitingForSubagents?: boolean;
 };
 
 const RUNTIME_VERSION = 10;
@@ -196,7 +197,7 @@ function createSubagentTool(manager: SubagentManager, getChildProfile: () => Mod
   return defineTool({
     name: "spawn_subagent",
     label: "Spawn subagent",
-    description: "Start one focused, independent Web penetration testing child Agent. The task runs in the background so the main Agent can continue independent work. Every spawned child is mandatory for the final assessment: RiftX waits for all spawned children to finish before requesting the final conclusion. Never poll child logs or task files with bash or sleep. Use only for meaningful independent work, never duplicate or state-dependent child work; the scheduler enforces the configured concurrency limit and queues excess tasks. The child cannot create another child.",
+    description: "Start one focused, independent Web penetration testing child Agent. The task runs in the background so the main Agent can continue independent work, and each completed child result is returned as soon as it is available. Every spawned child is mandatory for the final assessment: if the main Agent reaches a conclusion while any child is still active, RiftX waits for all spawned children to finish before requesting that final conclusion. Never poll child logs or task files with bash or sleep. Use only for meaningful independent work, never duplicate or state-dependent child work; the scheduler enforces the configured concurrency limit and queues excess tasks. The child cannot create another child.",
     promptSnippet: "spawn_subagent(task)",
     executionMode: "parallel",
     parameters: Type.Object({
@@ -210,7 +211,7 @@ function createSubagentTool(manager: SubagentManager, getChildProfile: () => Mod
       const state = submitted.task?.status || "queued";
       const text = submitted.duplicate
         ? `A matching subagent task is already ${state}. Its existing result will be delivered when complete.`
-        : `Subagent task accepted in the background (${state}): ${taskLabel}. Continue independent work. RiftX will deliver all child results before the final conclusion.`;
+        : `Subagent task accepted in the background (${state}): ${taskLabel}. Continue independent work. RiftX will return its result when it completes and will wait for it before a final conclusion if needed.`;
       if (signal?.aborted && submitted.task?.id) manager.cancel(submitted.task.id);
       return { content: [{ type: "text", text }], details: { model: `${childProfile.provider}/${childProfile.model}`, taskId: submitted.task?.id, status: state, background: true } };
     }
@@ -321,9 +322,11 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
     evidenceStore,
     runtimeVersion: RUNTIME_VERSION,
     abortEpoch: 0,
+    waitingForSubagents: false,
     unsubscribe: () => undefined
   };
   const unsubscribe = result.session.subscribe((event) => {
+    if (event.type === "agent_end" && subagents?.hasActiveTasks()) record.waitingForSubagents = true;
     const payload = event.type === "agent_end" && subagents?.hasActiveTasks()
       ? { type: "session_state", state: "waiting_for_subagents" }
       : eventPayload(event);
@@ -335,6 +338,17 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
   });
   record.unsubscribe = unsubscribe;
   if (subagents) {
+    subagents.setCompletionHandler((task, childResult) => {
+      if (record.waitingForSubagents) return;
+      const summary = childResult.summary?.trim() || "No result";
+      const message = `[RiftX subagent result]\nSubagent: ${task.name}\nStatus: completed\nSummary:\n${summary}\n\nUse this result in the current assessment. Do not repeat the same delegated task.`;
+      if (record.session.isStreaming) {
+        void record.session.steer(message).catch(() => undefined);
+        return;
+      }
+      record.gate.beginTask();
+      void record.session.prompt(message).catch(() => undefined);
+    });
     await subagents.initialize((context) => runChildSession(getChildProfile(), cwd, mutationLock, context, { authStorage, modelRegistry, evidenceStore, evidenceSessionId }));
   }
   record.dispose = () => {
@@ -618,6 +632,7 @@ async function waitForSubagentsBeforeConclusion(record: SessionRecord, knownTask
         return `[RiftX subagent result]\nSubagent: ${task.name}\nStatus: ${status}\nSummary:\n${summary}`;
       }).join("\n\n");
       for (const task of results) delivered.add(task.id);
+      record.waitingForSubagents = false;
       record.gate.beginTask();
       await record.session.prompt(`${message}\n\nAll delegated child tasks required for this assessment have now reached a terminal state. Synthesize the final conclusion using these results. Do not start more child tasks or poll task files.`);
     }
@@ -678,6 +693,7 @@ export async function abortSession(id: string) {
   if (record.abortPromise) return record.abortPromise;
   record.abortPromise = (async () => {
     record.abortEpoch = (record.abortEpoch ?? 0) + 1;
+    record.waitingForSubagents = false;
     // Release approval/mutation waits first, then explicitly stop Pi's bash
     // controller. AgentSession.abort() only aborts the model loop; bash has a
     // separate controller in the Pi SDK.

@@ -179,7 +179,7 @@ RiftX 在 Pi session 之上实现了应用层子 Agent 系统。
 - 子 Agent 不能递归继续创建子 Agent。
 - 子 Agent 的审批请求显示在主 Composer 审批区域，状态和日志显示在工作台面板中。
 - 子 Agent 结果和增量日志会随选定的父会话持久化和恢复。
-- 所有子 Agent 都在后台运行，主 Agent 可以继续执行独立工作；但所有已启动的子 Agent 都是本次评估的必需任务。RiftX 会等待所有子 Agent 到达终止状态后，再请求主 Agent 生成最终结论，并一次性提供子 Agent 结果。
+- 所有子 Agent 都在后台运行，主 Agent 可以继续执行独立工作；子 Agent 完成后会立即回传结果。所有已启动的子 Agent 都是本次评估的必需任务：如果主 Agent 已经准备结束而仍有子 Agent 未完成，RiftX 才会等待所有子 Agent 到达终止状态，再请求主 Agent 生成最终结论。
 - `spawn_subagent` 不再提供可选等待模式。主 Agent 禁止使用 `bash`/`sleep` 轮询子 Agent 日志、`tasks.json` 或文件系统状态，最终 join 由运行时完成。
 - 重新连接会话时会重放当前子 Agent 任务快照和未处理的审批请求。
 
