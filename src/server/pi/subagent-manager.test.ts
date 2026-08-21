@@ -225,6 +225,8 @@ test("waits for the real result of a queued task restored after restart", async 
 test("rejects a cancelled subagent when cancellation races with a successful runner result", async () => {
   const root = await mkdtemp(join(tmpdir(), "riftx-subagents-"));
   const manager = new SubagentManager("parent", root, () => undefined, 1, "request");
+  let completion: { status?: string; summary?: string } | undefined;
+  manager.setCompletionHandler((task, result) => { completion = { status: task.status, summary: result.summary }; });
   await manager.initialize(async ({ signal }) => new Promise((resolve) => {
     signal.addEventListener("abort", () => setTimeout(() => resolve({ summary: "late result" }), 0), { once: true });
   }));
@@ -234,6 +236,7 @@ test("rejects a cancelled subagent when cancellation races with a successful run
     assert.equal(manager.cancel(submitted.task!.id), true);
     await assert.rejects(submitted.promise, /cancelled/i);
     assert.equal(manager.list()[0]?.status, "cancelled");
+    assert.deepEqual(completion, { status: "cancelled", summary: "Cancelled by the user." });
   } finally {
     await new Promise((resolve) => setTimeout(resolve, 25));
     await rm(root, { recursive: true, force: true });

@@ -16,7 +16,7 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { completeSimple, type Model } from "@mariozechner/pi-ai";
 import { readConfig, getAppPaths, updateConfig } from "@/server/config-store";
-import type { ApprovalMode, ArchivedSession, ContextUsage, FindingInput, FindingSource, ModelProfile, RiftxEvent, SessionSummary, SubagentTask } from "@/lib/types";
+import type { ApprovalMode, ArchivedSession, ContextUsage, FindingInput, FindingSource, ModelProfile, RiftxEvent, SessionSummary } from "@/lib/types";
 import { ApprovalGate } from "./approval-gate";
 import { createPermissionExtension } from "./permission-extension";
 import { resolvePromptMode } from "@/lib/prompt-mode";
@@ -30,6 +30,7 @@ import { SubagentManager, type SubagentRunnerContext } from "./subagent-manager"
 import { textFromModelContent } from "./text-content";
 import { EvidenceStore, getEvidenceStore, removeEvidence } from "./evidence-store";
 import { estimateCompactedUsage, estimateMessagesContextUsage, installMidTurnCompaction } from "./mid-turn-compaction";
+import { shouldDeliverSubagentCompletion, waitForSubagentsBeforeConclusion } from "./session-join";
 
 type SessionRecord = {
   id: string;
@@ -51,8 +52,10 @@ type SessionRecord = {
   dispose?: () => void;
   runtimeVersion?: number;
   abortPromise?: Promise<void>;
+  aborting?: boolean;
   abortEpoch?: number;
   waitingForSubagents?: boolean;
+  deliveredSubagentResults: Set<string>;
 };
 
 const RUNTIME_VERSION = 10;
@@ -321,8 +324,10 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
     subagents,
     evidenceStore,
     runtimeVersion: RUNTIME_VERSION,
+    aborting: false,
     abortEpoch: 0,
     waitingForSubagents: false,
+    deliveredSubagentResults: new Set(),
     unsubscribe: () => undefined
   };
   const unsubscribe = result.session.subscribe((event) => {
@@ -339,7 +344,8 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
   record.unsubscribe = unsubscribe;
   if (subagents) {
     subagents.setCompletionHandler((task, childResult) => {
-      if (record.waitingForSubagents || record.abortPromise) return;
+      if (!shouldDeliverSubagentCompletion(record)) return;
+      record.deliveredSubagentResults.add(task.id);
       const summary = childResult.summary?.trim() || "No result";
       const status = task.status === "completed" ? "completed" : task.status;
       const message = `[RiftX subagent result]\nSubagent: ${task.name}\nStatus: ${status}\nSummary:\n${summary}\n\nUse this result in the current assessment. Do not repeat the same delegated task.`;
@@ -597,49 +603,15 @@ export async function setWorkingDirectory(input: string) {
 async function promptSession(id: string, text: string, mode: "prompt" | "steer" | "followUp" = "prompt") {
   const record = await getOrCreateSession(id);
   const resolvedMode = resolvePromptMode(mode, record.session.isStreaming);
+  const promptAbortEpoch = record.abortEpoch ?? 0;
   const knownTaskIds = new Set(record.subagents?.list().map((task) => task.id) ?? []);
   const activeBefore = new Set(record.subagents?.list().filter((task) => task.status === "queued" || task.status === "running").map((task) => task.id) ?? []);
   if (resolvedMode !== "steer") record.gate.beginTask();
   if (resolvedMode === "steer") await record.session.steer(text);
   else if (resolvedMode === "followUp") await record.session.followUp(text);
   else await record.session.prompt(text);
-  if (resolvedMode !== "steer" && record.subagents) await waitForSubagentsBeforeConclusion(record, knownTaskIds, activeBefore, record.abortEpoch ?? 0);
+  if (resolvedMode !== "steer" && record.subagents) await waitForSubagentsBeforeConclusion(record, knownTaskIds, activeBefore, promptAbortEpoch);
   return record;
-}
-
-function terminalSubagent(task: SubagentTask) {
-  return task.status === "completed" || task.status === "failed" || task.status === "cancelled" || task.status === "interrupted";
-}
-
-async function waitForSubagentsBeforeConclusion(record: SessionRecord, knownTaskIds: Set<string>, requiredTaskIds: Set<string>, abortEpoch: number) {
-  const manager = record.subagents;
-  if (!manager) return;
-  for (const task of manager.list()) {
-    if (!knownTaskIds.has(task.id)) requiredTaskIds.add(task.id);
-  }
-  const delivered = new Set<string>();
-  while (requiredTaskIds.size > 0) {
-    if (manager.hasActiveTasks()) await manager.waitForAll();
-    if ((record.abortEpoch ?? 0) !== abortEpoch) return;
-    const tasks = manager.list();
-    for (const task of tasks) {
-      if (!knownTaskIds.has(task.id)) requiredTaskIds.add(task.id);
-    }
-    const results = tasks.filter((task) => requiredTaskIds.has(task.id) && !delivered.has(task.id) && terminalSubagent(task));
-    if (results.length) {
-      const message = results.map((task) => {
-        const status = task.status === "completed" ? "completed" : task.status;
-        const summary = task.summary?.trim() || task.error?.trim() || "No result";
-        return `[RiftX subagent result]\nSubagent: ${task.name}\nStatus: ${status}\nSummary:\n${summary}`;
-      }).join("\n\n");
-      for (const task of results) delivered.add(task.id);
-      record.waitingForSubagents = false;
-      record.gate.beginTask();
-      await record.session.prompt(`${message}\n\nAll delegated child tasks required for this assessment have now reached a terminal state. Synthesize the final conclusion using these results. Do not start more child tasks or poll task files.`);
-    }
-    const pending = tasks.some((task) => requiredTaskIds.has(task.id) && !delivered.has(task.id));
-    if (!manager.hasActiveTasks() && !pending) return;
-  }
 }
 
 const TASK_TITLE_PROMPT = `You create concise session titles for RiftX, an authorized Web security testing assistant.
@@ -692,6 +664,7 @@ export async function startPromptSession(id: string, text: string, mode: "prompt
 export async function abortSession(id: string) {
   const record = await getOrCreateSession(id);
   if (record.abortPromise) return record.abortPromise;
+  record.aborting = true;
   record.abortPromise = (async () => {
     record.abortEpoch = (record.abortEpoch ?? 0) + 1;
     record.waitingForSubagents = false;
@@ -712,6 +685,7 @@ export async function abortSession(id: string) {
     await record.abortPromise;
   } finally {
     record.abortPromise = undefined;
+    record.aborting = false;
   }
 }
 
@@ -744,7 +718,8 @@ export async function subscribeSession(id: string, listener: (event: RiftxEvent)
   record.emitter.on("event", onEvent);
   // Replay state that may have happened before an SSE reconnect, especially an
   // approval request that is still holding the agent at a guarded tool call.
-  if (record.session.isStreaming) onEvent({ type: "session_state", state: "running" });
+  if (record.waitingForSubagents) onEvent({ type: "session_state", state: "waiting_for_subagents" });
+  else if (record.session.isStreaming) onEvent({ type: "session_state", state: "running" });
   onEvent({ type: "usage", usage: usageFromRecord(record) });
   for (const task of record.subagents?.list() ?? []) onEvent({ type: "subagent_snapshot", task });
   for (const finding of await record.evidenceStore.list()) onEvent({ type: "finding", finding });

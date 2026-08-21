@@ -283,6 +283,7 @@ export class SubagentManager {
     runtime.gate.rejectAll();
     runtime.controller.abort();
     this.emitTask("subagent_cancelled", task);
+    this.completionHandler?.(task, { summary: task.error });
     this.schedulePersist();
     return true;
   }
