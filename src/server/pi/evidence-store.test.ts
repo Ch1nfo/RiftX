@@ -24,7 +24,7 @@ test("deduplicates findings by normalized asset and title and merges evidence", 
       confidence: "confirmed",
       impact: "Script executes",
       reproduction: "Submit the marker and observe execution",
-      evidence: [{ type: "tool", toolCallId: "tool-1", toolName: "browser" }]
+      evidence: [{ type: "tool", toolCallId: "tool-1", toolName: "browser", content: "HTTP 200" }]
     }, "subagent", "child-1");
     assert.equal(second.id, first.id);
     assert.equal((await store.list()).length, 1);
@@ -32,6 +32,7 @@ test("deduplicates findings by normalized asset and title and merges evidence", 
     assert.equal(second.source, "main");
     assert.equal(second.subagentId, "child-1");
     assert.equal(second.evidence.length, 2);
+    assert.equal((second.evidence.find((item) => item.type === "tool") as { content?: string }).content, "HTTP 200");
     assert.equal(events.length, 2);
     const saved = JSON.parse(await readFile(join(root, "parent", "findings.json"), "utf8")) as { findings: unknown[] };
     assert.equal(saved.findings.length, 1);

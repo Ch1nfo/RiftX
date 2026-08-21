@@ -33,7 +33,8 @@ function trimSubagentLogContent(content: string) {
 function sameSubagentTask(left: SubagentTask, right: SubagentTask) {
   const leftLog = left.logs.at(-1);
   const rightLog = right.logs.at(-1);
-  return left.status === right.status
+  return left.name === right.name
+    && left.status === right.status
     && left.threadId === right.threadId
     && left.model === right.model
     && left.summary === right.summary
@@ -77,6 +78,7 @@ function cloneSubagentTask(task: SubagentTask): SubagentTask {
 
 function applySubagentTaskPatch(task: SubagentTask, patch: SubagentTaskPatch) {
   const next = cloneSubagentTask(task);
+  if (patch.name !== undefined) next.name = patch.name;
   if (patch.threadId !== undefined) next.threadId = patch.threadId;
   if (patch.model !== undefined) next.model = patch.model;
   if (patch.pendingApprovalCount !== undefined) next.pendingApprovalCount = patch.pendingApprovalCount;
@@ -443,6 +445,7 @@ export function Workbench() {
   }, [activeId, streamGeneration]);
 
   const subagentRunning = useMemo(() => subagents.filter((task) => task.status === "queued" || task.status === "running").length, [subagents]);
+  const visibleMessages = useMemo(() => messages.filter((message) => message.toolName !== "spawn_subagent"), [messages]);
   const running = mainAgentRunning || subagentRunning > 0 || approvalQueue.length > 0;
   const composerBusy = mainAgentRunning || approvalQueue.some((item) => !item.subagentId);
 
@@ -612,16 +615,20 @@ export function Workbench() {
     return searchMain();
   };
 
-  const scrollToTool = (toolCallId: string) => {
+  const scrollToTool = (toolCallId: string, toolName?: string, subagentId?: string) => {
     const target = document.getElementById(`tool-${encodeURIComponent(toolCallId)}`);
     if (target instanceof HTMLDetailsElement) {
       target.open = true;
       target.scrollIntoView({ behavior: "smooth", block: "center" });
       return;
     }
-    const subagent = subagents.find((task) => task.logs.some((log) => log.id === toolCallId));
+    const scoped = subagentId ? subagents.filter((task) => task.id === subagentId) : subagents;
+    const subagent = scoped.find((task) => task.logs.some((log) => log.id === toolCallId))
+      ?? (toolName ? scoped.find((task) => task.logs.some((log) => log.toolName === toolName)) : undefined);
     if (subagent) {
-      scrollToSubagentLog(subagent.id, toolCallId);
+      const log = subagent.logs.find((entry) => entry.id === toolCallId)
+        ?? (toolName ? [...subagent.logs].reverse().find((entry) => entry.toolName === toolName) : undefined);
+      if (log) scrollToSubagentLog(subagent.id, log.id);
       return;
     }
     setError(t("evidenceTargetUnavailable"));
@@ -742,7 +749,7 @@ export function Workbench() {
     {mobileNav ? <button className="scrim mobile-only" onClick={() => setMobileNav(false)} aria-label={t("closeNav")} /> : null}
     <main className="main-panel">
       <header className="topbar"><button className="icon-button mobile-only" onClick={() => setMobileNav(true)} aria-label={t("settings")}><List size={19} /></button><button className="workspace workspace-button" type="button" disabled={bootstrapping || workspaceChoosing} aria-busy={workspaceChoosing} onClick={() => void chooseWorkingDirectory()} title={t("changeWorkingDirectory")} aria-label={workspaceChoosing ? t("choosingWorkingDirectory") : t("changeWorkingDirectory")}><FolderOpen size={16} /><span>{cwd || t("workingDirectory")}</span></button><div className="topbar-spacer" /><div className="topbar-actions"><LanguageToggle /><ThemeToggle /></div></header>
-      <section ref={conversationRef} className="conversation" onScroll={handleConversationScroll}><div ref={conversationInnerRef} className="conversation-inner">{messages.length === 0 ? <div className="empty-state"><div className="empty-orbit"><RiftxLogo decorative /></div><h1>{bootstrapping ? t("loadingWorkspace") : activeId ? t("ready") : t("noSession")}</h1><p>{bootstrapping ? t("readingWorkspace") : activeId ? t("readOrTest") : t("createSessionFirst")}</p>{activeId && !bootstrapping ? <div className="prompt-suggestions"><button onClick={() => setInput(t("overview"))}>{t("overview")}</button><button onClick={() => setInput(t("checkRisks"))}>{t("checkRisks")}</button></div> : null}</div> : messages.map((message) => <article key={message.id} className={`message ${message.role}`}>
+      <section ref={conversationRef} className="conversation" onScroll={handleConversationScroll}><div ref={conversationInnerRef} className="conversation-inner">{visibleMessages.length === 0 ? <div className="empty-state"><div className="empty-orbit"><RiftxLogo decorative /></div><h1>{bootstrapping ? t("loadingWorkspace") : activeId ? t("ready") : t("noSession")}</h1><p>{bootstrapping ? t("readingWorkspace") : activeId ? t("readOrTest") : t("createSessionFirst")}</p>{activeId && !bootstrapping ? <div className="prompt-suggestions"><button onClick={() => setInput(t("overview"))}>{t("overview")}</button><button onClick={() => setInput(t("checkRisks"))}>{t("checkRisks")}</button></div> : null}</div> : visibleMessages.map((message) => <article key={message.id} className={`message ${message.role}`}>
         {message.role === "user" ? <div className="avatar user-avatar">{t("you")}</div> : message.role === "assistant" ? <div className="avatar assistant-avatar"><RiftxLogo decorative /></div> : null}
         <div className="message-body">{message.role === "thinking" ? <details className="thinking-block" open={message.status === "streaming"}><summary><span className="thinking-title"><Brain size={14} weight="bold" />{t("thinking")}</span><span className="thinking-state">{message.status === "streaming" ? t("thinkingNow") : t("thinkingDone")}</span></summary><div className="thinking-copy">{message.content}</div></details> : message.role === "tool" ? <ToolCard key={`${message.id}-${message.status}`} message={message} /> : <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>}</div>
       </article>)}<div ref={endRef} /></div>{showJumpToLatest ? <button className="jump-latest" type="button" aria-label={t("jumpLatest")} title={t("jumpLatest")} onClick={jumpToLatest}><ArrowDown size={17} weight="bold" /></button> : null}</section>

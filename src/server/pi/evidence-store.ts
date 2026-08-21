@@ -17,7 +17,7 @@ function sanitizeEvidence(item: unknown): Finding["evidence"][number] | null {
   if (!item || typeof item !== "object") return null;
   const evidence = item as Record<string, unknown>;
   if (evidence.type === "quote" && typeof evidence.quote === "string") return { type: "quote", quote: evidence.quote };
-  if (evidence.type === "tool" && typeof evidence.toolCallId === "string" && typeof evidence.toolName === "string") return { type: "tool", toolCallId: evidence.toolCallId, toolName: evidence.toolName };
+  if (evidence.type === "tool" && typeof evidence.toolCallId === "string" && typeof evidence.toolName === "string") return { type: "tool", toolCallId: evidence.toolCallId, toolName: evidence.toolName, ...(typeof evidence.content === "string" ? { content: evidence.content } : {}) };
   if (evidence.type === "request" && typeof evidence.requestRef === "string") return {
     type: "request",
     requestRef: evidence.requestRef,

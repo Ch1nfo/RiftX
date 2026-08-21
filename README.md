@@ -179,8 +179,8 @@ RiftX includes an application-level child-agent system on top of Pi sessions.
 - Child agents cannot recursively spawn more child agents.
 - Child approval requests surface in the main composer approval area, and child status/logs appear in the workbench panel.
 - Child results and incremental logs are persisted and restored with the selected parent session.
-- Required child work uses `waitForResult: true`, which keeps the parent tool call pending until that child completes, fails, or is cancelled.
-- Optional background results are delivered back into the parent Agent: they steer an active run or start a new parent turn when the parent is idle.
+- Every spawned child runs in the background so the main Agent can continue independent work. All spawned children are mandatory for the assessment: RiftX waits for every child to reach a terminal state before requesting the final conclusion and delivers their results together.
+- `spawn_subagent` has no optional wait mode. The main Agent must never poll child logs, `tasks.json`, or filesystem state with `bash`/`sleep`; the runtime performs the final join.
 - Reconnecting to a session replays current child task snapshots and unresolved approval requests.
 
 ## Web API

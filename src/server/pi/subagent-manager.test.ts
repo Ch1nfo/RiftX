@@ -134,46 +134,56 @@ test("returns a background task immediately and reports its result on completion
   const root = await mkdtemp(join(tmpdir(), "riftx-subagents-"));
   const manager = new SubagentManager("parent", root, () => undefined, 1, "request");
   let finish!: () => void;
-  let completion: { id: string; summary?: string } | undefined;
-  manager.setCompletionHandler((task, result) => { completion = { id: task.id, summary: result.summary }; });
   await manager.initialize(async () => new Promise((resolve) => { finish = () => resolve({ summary: "background result" }); }));
   try {
     const submitted = manager.submitTask("background task");
     assert.ok(submitted.task);
     assert.ok(submitted.task.status === "queued" || submitted.task.status === "running");
-    assert.equal(Boolean(completion), false);
     await waitFor(() => manager.list()[0]?.status === "running");
-    assert.equal(Boolean(completion), false);
     await waitFor(() => typeof finish === "function");
     finish();
-    await submitted.promise;
-    await waitFor(() => completion?.id === submitted.task?.id);
-    const finalCompletion = completion as { id: string; summary?: string };
-    assert.equal(finalCompletion.summary, "background result");
+    assert.deepEqual(await submitted.promise, { summary: "background result" });
   } finally {
     await new Promise((resolve) => setTimeout(resolve, 25));
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("awaits a required subagent without also delivering a background completion", async () => {
+test("waitForAll resolves only after every queued and running task reaches a terminal state", async () => {
   const root = await mkdtemp(join(tmpdir(), "riftx-subagents-"));
   const manager = new SubagentManager("parent", root, () => undefined, 1, "request");
   let finish!: () => void;
-  let completionCount = 0;
-  manager.setCompletionHandler(() => { completionCount += 1; });
-  await manager.initialize(async () => new Promise((resolve) => { finish = () => resolve({ summary: "required result" }); }));
+  await manager.initialize(async () => new Promise((resolve) => { finish = () => resolve({ summary: "done" }); }));
   try {
-    const submitted = manager.submitTask("required task", undefined, true);
-    let settled = false;
-    void submitted.promise.finally(() => { settled = true; });
-    await waitFor(() => typeof finish === "function");
-    assert.equal(completionCount, 0);
-    assert.equal(settled, false);
+    const first = manager.submitTask("first");
+    const second = manager.submitTask("second");
+    let joined = false;
+    const join = manager.waitForAll().then(() => { joined = true; });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(joined, false);
+    assert.equal(manager.cancel(second.task!.id), true);
+    await assert.rejects(second.promise, /Cancelled before/);
     finish();
-    assert.deepEqual(await submitted.promise, { summary: "required result" });
-    assert.equal(settled, true);
-    assert.equal(completionCount, 0);
+    await first.promise;
+    await join;
+    assert.equal(joined, true);
+  } finally {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("uses the generated child-agent title instead of the prompt prefix", async () => {
+  const root = await mkdtemp(join(tmpdir(), "riftx-subagents-"));
+  const events: RiftxEvent[] = [];
+  const manager = new SubagentManager("parent", root, (event) => events.push(event), 1, "request", async () => "API access review");
+  await manager.initialize(async () => ({ summary: "done" }));
+  try {
+    const submitted = manager.submit("Inspect every API route for authorization bypasses and report evidence.");
+    await waitFor(() => manager.list()[0]?.name === "API access review");
+    assert.equal(manager.list()[0]?.name, "API access review");
+    assert.equal(events.some((event) => event.type === "subagent_update" && (event.taskPatch as { name?: string } | undefined)?.name === "API access review"), true);
+    await submitted;
   } finally {
     await new Promise((resolve) => setTimeout(resolve, 25));
     await rm(root, { recursive: true, force: true });
@@ -190,35 +200,32 @@ test("waits for the real result of a queued task restored after restart", async 
   ] }));
   const manager = new SubagentManager("parent", root, () => undefined, 1, "request");
   let finish!: () => void;
-  let completionCount = 0;
-  manager.setCompletionHandler(() => { completionCount += 1; });
   await manager.initialize(async ({ task }) => new Promise((resolve) => {
     finish = () => resolve({ summary: `real result: ${task.task}` });
   }));
   try {
     await waitFor(() => manager.list()[0]?.status === "running");
-    const submitted = manager.submitTask(" QUEUED   TASK ", undefined, true);
+    const submitted = manager.submitTask(" QUEUED   TASK ");
     let settled = false;
     void submitted.promise.finally(() => { settled = true; });
     await new Promise((resolve) => setTimeout(resolve, 10));
     assert.equal(settled, false);
     finish();
     assert.deepEqual(await submitted.promise, { summary: "real result: queued task" });
-    assert.equal(completionCount, 0);
   } finally {
     await new Promise((resolve) => setTimeout(resolve, 25));
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("rejects a required subagent when cancellation races with a successful runner result", async () => {
+test("rejects a cancelled subagent when cancellation races with a successful runner result", async () => {
   const root = await mkdtemp(join(tmpdir(), "riftx-subagents-"));
   const manager = new SubagentManager("parent", root, () => undefined, 1, "request");
   await manager.initialize(async ({ signal }) => new Promise((resolve) => {
     signal.addEventListener("abort", () => setTimeout(() => resolve({ summary: "late result" }), 0), { once: true });
   }));
   try {
-    const submitted = manager.submitTask("cancelled required task", undefined, true);
+    const submitted = manager.submitTask("cancelled required task");
     await waitFor(() => manager.list()[0]?.status === "running");
     assert.equal(manager.cancel(submitted.task!.id), true);
     await assert.rejects(submitted.promise, /cancelled/i);

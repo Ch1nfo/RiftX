@@ -15,14 +15,14 @@ function screenshotUrl(sessionId: string, screenshotId: string) {
   return `/api/sessions/${sessionId}/findings/screenshot/${encodeURIComponent(screenshotId)}`;
 }
 
-function evidenceNode(finding: Finding, evidence: FindingEvidence, sessionId: string | undefined, onToolClick: (toolCallId: string) => void, onRequestClick: (requestRef: string, finding: Finding) => void, t: ReturnType<typeof useLanguage>["t"]) {
+function evidenceNode(finding: Finding, evidence: FindingEvidence, sessionId: string | undefined, onToolClick: (toolCallId: string, toolName: string, subagentId?: string) => void, onRequestClick: (requestRef: string, finding: Finding) => void, t: ReturnType<typeof useLanguage>["t"]) {
   if (evidence.type === "quote") return <blockquote><small>{t("quoteEvidence")}</small>{evidence.quote}</blockquote>;
-  if (evidence.type === "tool") return <button className="finding-tool-link" onClick={() => onToolClick(evidence.toolCallId)}><small>{t("toolEvidence")}</small>{evidence.toolName}<CaretDown size={12} /></button>;
+  if (evidence.type === "tool") return <div className="finding-tool-evidence"><button className="finding-tool-link" onClick={() => onToolClick(evidence.toolCallId, evidence.toolName, finding.subagentId)}><small>{t("toolEvidence")}</small>{evidence.toolName}<CaretDown size={12} /></button>{evidence.content ? <pre className="finding-tool-snapshot">{evidence.content}</pre> : null}</div>;
   if (evidence.type === "request") return <button className="finding-request-link" onClick={() => onRequestClick(evidence.requestRef, finding)}><small>{t("requestEvidence")}</small><span>{[evidence.method, evidence.url].filter(Boolean).join(" ") || evidence.requestRef}</span>{evidence.status !== undefined ? <em>{evidence.status}</em> : null}</button>;
   return sessionId ? <a className="finding-screenshot-link" href={screenshotUrl(sessionId, evidence.screenshotId)} target="_blank" rel="noreferrer"><small>{t("screenshotEvidence")}</small><img src={screenshotUrl(sessionId, evidence.screenshotId)} alt={evidence.url ? `${evidence.url} screenshot` : "finding screenshot"} loading="lazy" /></a> : <div className="finding-screenshot-missing"><small>{t("screenshotEvidence")}</small>{evidence.screenshotId}</div>;
 }
 
-export function FindingsPanel({ sessionId, findings, onPatch, onToolClick, onRequestClick }: { sessionId?: string; findings: Finding[]; onPatch: (id: string, patch: FindingPatch) => void; onToolClick: (toolCallId: string) => void; onRequestClick: (requestRef: string, finding: Finding) => void }) {
+export function FindingsPanel({ sessionId, findings, onPatch, onToolClick, onRequestClick }: { sessionId?: string; findings: Finding[]; onPatch: (id: string, patch: FindingPatch) => void; onToolClick: (toolCallId: string, toolName: string, subagentId?: string) => void; onRequestClick: (requestRef: string, finding: Finding) => void }) {
   const { t } = useLanguage();
   const [open, setOpen] = useState(true);
   const [showDismissed, setShowDismissed] = useState(false);

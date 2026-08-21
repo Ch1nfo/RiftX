@@ -17,7 +17,7 @@ export type SubagentRunnerContext = {
 };
 
 export type SubagentRunner = (context: SubagentRunnerContext) => Promise<SubagentResult>;
-export type SubagentCompletionHandler = (task: SubagentTask, result: SubagentResult) => void;
+export type SubagentNameGenerator = (task: string) => Promise<string>;
 
 type QueueItem = {
   task: SubagentTask;
@@ -31,7 +31,7 @@ type Runtime = {
   gate: ApprovalGate;
 };
 
-function taskName(task: string) {
+function legacyTaskName(task: string) {
   const firstLine = task.trim().split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? "Subagent task";
   return Array.from(firstLine).slice(0, 48).join("");
 }
@@ -61,12 +61,11 @@ export class SubagentManager {
   private readonly runtimes = new Map<string, Runtime>();
   private readonly queue: QueueItem[] = [];
   private readonly taskPromises = new Map<string, Promise<SubagentResult>>();
-  private readonly awaitedTasks = new Set<string>();
   private active = 0;
   private maxConcurrent: number;
   private approvalMode: ApprovalMode = "request";
   private runner?: SubagentRunner;
-  private completionHandler?: SubagentCompletionHandler;
+  private readonly idleWaiters = new Set<() => void>();
   private initialized = false;
   private persistChain = Promise.resolve();
   private persistTimer: ReturnType<typeof setTimeout> | undefined;
@@ -76,7 +75,8 @@ export class SubagentManager {
     private readonly storageRoot: string,
     private readonly emitParent: (event: RiftxEvent) => void,
     maxConcurrent: number,
-    approvalMode: ApprovalMode
+    approvalMode: ApprovalMode,
+    private readonly nameGenerator?: SubagentNameGenerator
   ) {
     this.maxConcurrent = Math.min(8, Math.max(1, Math.round(maxConcurrent)));
     this.approvalMode = approvalMode;
@@ -116,6 +116,10 @@ export class SubagentManager {
         void promise.catch(() => undefined);
         this.taskPromises.set(task.id, promise);
       }
+      if (!task.name || task.name === legacyTaskName(task.task) || task.name === "Subagent task") {
+        task.name = "Subagent";
+        void this.generateName(task);
+      }
     }
     await this.persist();
     this.pump();
@@ -139,8 +143,19 @@ export class SubagentManager {
     return this.active;
   }
 
-  setCompletionHandler(handler: SubagentCompletionHandler | undefined) {
-    this.completionHandler = handler;
+  hasActiveTasks() {
+    return [...this.tasks.values()].some((task) => task.status === "queued" || task.status === "running");
+  }
+
+  waitForAll() {
+    if (!this.hasActiveTasks()) return Promise.resolve();
+    return new Promise<void>((resolve) => this.idleWaiters.add(resolve));
+  }
+
+  private resolveIdleWaiters() {
+    if (this.hasActiveTasks()) return;
+    for (const resolve of this.idleWaiters) resolve();
+    this.idleWaiters.clear();
   }
 
   list() {
@@ -168,13 +183,13 @@ export class SubagentManager {
     }, delayMs);
   }
 
-  private enqueue(taskText: string, runner = this.runner, waitForResult = false) {
+  private enqueue(taskText: string, runner = this.runner) {
     if (!runner) throw new Error("Subagent manager is not initialized");
     const task: SubagentTask = {
       id: randomUUID(),
       parentSessionId: this.parentSessionId,
       threadId: "",
-      name: taskName(taskText),
+      name: "Subagent",
       task: taskText,
       status: "queued",
       model: "",
@@ -183,7 +198,6 @@ export class SubagentManager {
       logs: []
     };
     this.tasks.set(task.id, task);
-    if (waitForResult) this.awaitedTasks.add(task.id);
     this.emitTask("subagent_queued", task);
     this.schedulePersist();
     const promise = new Promise<SubagentResult>((resolve, reject) => {
@@ -191,15 +205,28 @@ export class SubagentManager {
       this.pump();
     });
     this.taskPromises.set(task.id, promise);
+    void this.generateName(task);
     return { task, promise };
   }
 
-  submitTask(taskText: string, runner = this.runner, waitForResult = false) {
+  private async generateName(task: SubagentTask) {
+    if (!this.nameGenerator) return;
+    try {
+      const name = (await this.nameGenerator(task.task)).trim();
+      if (!name || task.name === name) return;
+      task.name = name;
+      this.emitTask("subagent_update", task);
+      this.schedulePersist();
+    } catch {
+      // A title failure must never delay or fail the child task.
+    }
+  }
+
+  submitTask(taskText: string, runner = this.runner) {
     const key = normalizeTask(taskText);
     const duplicate = [...this.tasks.values()].find((task) => (task.status === "queued" || task.status === "running") && normalizeTask(task.task) === key);
     if (duplicate) {
       const promise = this.taskPromises.get(duplicate.id);
-      if (waitForResult && promise) this.awaitedTasks.add(duplicate.id);
       return {
         task: duplicate,
         promise: promise ?? Promise.reject(new Error("The matching subagent task has no result promise.")),
@@ -207,7 +234,7 @@ export class SubagentManager {
       };
     }
     try {
-      const queued = this.enqueue(taskText, runner, waitForResult);
+      const queued = this.enqueue(taskText, runner);
       return { task: queued.task, promise: queued.promise, duplicate: false };
     } catch (error) {
       return { task: undefined, promise: Promise.reject(error), duplicate: false };
@@ -237,8 +264,8 @@ export class SubagentManager {
       this.emitTask("subagent_cancelled", task);
       queueItem?.reject?.(new Error(task.error));
       this.taskPromises.delete(task.id);
-      this.awaitedTasks.delete(task.id);
       this.schedulePersist();
+      this.resolveIdleWaiters();
       return true;
     }
     const runtime = this.runtimes.get(taskId);
@@ -301,18 +328,18 @@ export class SubagentManager {
     task.pendingApprovalCount = 0;
     this.emitTask("subagent_start", task);
     await this.persist();
-      const context: SubagentRunnerContext = {
-        task,
-        gate,
-        signal: controller.signal,
-        emit: (event) => this.emitTask(event.type, task, event),
-        updateTaskMeta: (update) => {
-          if (update.threadId !== undefined) task.threadId = update.threadId;
-          if (update.model !== undefined) task.model = update.model;
-          this.emitTask("subagent_update", task);
-          this.schedulePersist();
-        }
-      };
+    const context: SubagentRunnerContext = {
+      task,
+      gate,
+      signal: controller.signal,
+      emit: (event) => this.emitTask(event.type, task, event),
+      updateTaskMeta: (update) => {
+        if (update.threadId !== undefined) task.threadId = update.threadId;
+        if (update.model !== undefined) task.model = update.model;
+        this.emitTask("subagent_update", task);
+        this.schedulePersist();
+      }
+    };
     try {
       if (controller.signal.aborted) throw new Error("Subagent task was cancelled before it started.");
       const result = await runner(context);
@@ -323,7 +350,6 @@ export class SubagentManager {
         task.finishedAt = now();
         task.summary = result.summary;
         this.emitTask("subagent_done", task);
-        if (!this.awaitedTasks.has(task.id)) this.completionHandler?.(task, result);
         item.resolve?.(result);
       }
     } catch (error) {
@@ -340,9 +366,9 @@ export class SubagentManager {
       gate.rejectAll();
       this.runtimes.delete(task.id);
       this.taskPromises.delete(task.id);
-      this.awaitedTasks.delete(task.id);
       task.pendingApprovalCount = 0;
       await this.persist();
+      this.resolveIdleWaiters();
     }
   }
 
@@ -403,6 +429,7 @@ export class SubagentManager {
     if (!event && type === "subagent_update") {
       taskPatch = {
         id: task.id,
+        name: task.name,
         pendingApprovalCount: task.pendingApprovalCount,
         threadId: task.threadId || undefined,
         model: task.model || undefined

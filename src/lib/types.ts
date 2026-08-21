@@ -93,6 +93,7 @@ export type SubagentTask = {
 
 export type SubagentTaskPatch = {
   id: string;
+  name?: string;
   threadId?: string;
   model?: string;
   pendingApprovalCount?: number;
@@ -128,7 +129,7 @@ export type FindingSource = "main" | "subagent";
 
 export type FindingEvidence =
   | { type: "quote"; quote: string }
-  | { type: "tool"; toolCallId: string; toolName: string }
+  | { type: "tool"; toolCallId: string; toolName: string; content?: string }
   | { type: "request"; requestRef: string; method?: string; url?: string; status?: number }
   | { type: "screenshot"; screenshotId: string; url?: string };
 
