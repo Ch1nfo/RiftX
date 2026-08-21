@@ -117,11 +117,61 @@ export type SessionSummary = {
 
 export type ArchivedSession = Omit<SessionSummary, "archived">;
 
-export type RiftxEvent = {
-  type: string;
+export const RIFTX_EVENT_TYPES = [
+  "connected", "finding", "findingPatch", "usage", "session_state", "subagent_snapshot",
+  "subagent_queued", "subagent_start", "subagent_done", "subagent_failed", "subagent_cancelled",
+  "subagent_interrupted", "subagent_update", "approval_required", "approval_evaluated",
+  "approval_evaluation_error", "approval_decided", "text_delta", "thinking_delta", "message",
+  "tool_start", "tool_update", "tool_end", "done", "error"
+] as const;
+
+export type RiftxEventType = (typeof RIFTX_EVENT_TYPES)[number];
+type RiftxEventFields = {
   sessionId?: string;
-  [key: string]: unknown;
+  delta?: unknown;
+  message?: unknown;
+  toolResults?: unknown;
+  toolName?: string;
+  toolCallId?: string;
+  args?: unknown;
+  update?: unknown;
+  result?: unknown;
+  isError?: boolean;
+  error?: string;
+  state?: "running" | "retrying" | "compacting" | "waiting_for_subagents" | "idle";
+  attempt?: number;
+  reason?: string;
+  usage?: ContextUsage;
+  finding?: Finding;
+  findingPatch?: FindingPatch;
+  approval?: ApprovalRequest;
+  approvalId?: string;
+  approved?: boolean;
+  task?: SubagentTask;
+  taskPatch?: SubagentTaskPatch;
+  subagentId?: string;
 };
+
+export type RiftxEvent = RiftxEventFields & { type: RiftxEventType };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+export function parseRiftxEvent(value: unknown): RiftxEvent | null {
+  if (!isRecord(value) || typeof value.type !== "string" || !RIFTX_EVENT_TYPES.includes(value.type as RiftxEventType)) return null;
+  if (value.sessionId !== undefined && typeof value.sessionId !== "string") return null;
+  if (value.type === "connected" && typeof value.sessionId !== "string") return null;
+  if (value.type === "usage" && !isRecord(value.usage)) return null;
+  if (value.type === "finding" && !isRecord(value.finding)) return null;
+  if (value.type === "findingPatch" && !isRecord(value.findingPatch)) return null;
+  if (value.type === "approval_required" && !isRecord(value.approval)) return null;
+  if (value.type === "approval_decided" && typeof value.approvalId !== "string") return null;
+  if (value.type.startsWith("subagent_") && value.type !== "subagent_update" && !isRecord(value.task)) return null;
+  if (value.type === "subagent_update" && value.task === undefined && value.taskPatch === undefined) return null;
+  if (value.type === "session_state" && !["running", "retrying", "compacting", "waiting_for_subagents", "idle"].includes(value.state as string)) return null;
+  return value as RiftxEvent;
+}
 
 export type FindingConfidence = "confirmed" | "likely" | "suspected" | "not_reproducible";
 export type FindingStatus = "open" | "dismissed";

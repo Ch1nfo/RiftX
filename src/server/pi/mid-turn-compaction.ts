@@ -1,10 +1,7 @@
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
 import type { ContextUsage } from "@/lib/types";
 
-type InternalAgentSession = {
-  _agentEventQueue?: Promise<void>;
-  _runAutoCompaction?: (reason: "threshold", willRetry: boolean) => Promise<void>;
-};
+import { replaceAgentMessages, runAutoCompaction, waitForAgentEvents } from "./pi-internals";
 
 export function shouldCompactBeforeSampling(tokens: number | null | undefined, contextWindow: number, reserveTokens: number) {
   return Number.isFinite(tokens)
@@ -50,17 +47,7 @@ function estimateMessageTokens(message: unknown) {
   return Math.ceil(characters / 4);
 }
 
-function replaceMessages<T>(target: T[], source: readonly T[]) {
-  target.splice(0, target.length, ...source);
-}
-
-async function waitForAgentEvents(session: AgentSession) {
-  await (session as unknown as InternalAgentSession)._agentEventQueue;
-}
-
 async function runMidTurnCompaction(session: AgentSession, signal?: AbortSignal) {
-  const internal = session as unknown as InternalAgentSession;
-  if (!internal._runAutoCompaction) throw new Error("Pi auto-compaction hook is unavailable");
   if (signal?.aborted) throw new Error("Mid-turn compaction was cancelled");
 
   let result: unknown;
@@ -74,7 +61,7 @@ async function runMidTurnCompaction(session: AgentSession, signal?: AbortSignal)
     signal.addEventListener("abort", abortCompaction, { once: true });
   }
   try {
-    await internal._runAutoCompaction("threshold", false);
+    await runAutoCompaction(session);
   } finally {
     unsubscribe();
     signal?.removeEventListener("abort", abortCompaction);
@@ -118,7 +105,7 @@ export function installMidTurnCompaction(session: AgentSession) {
     compacting = true;
     try {
       const compacted = await runMidTurnCompaction(session, signal);
-      if (compacted) replaceMessages(messages, session.agent.state.messages);
+      if (compacted) replaceAgentMessages(session, messages, session.agent.state.messages);
       return messages;
     } finally {
       compacting = false;

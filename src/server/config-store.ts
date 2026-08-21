@@ -9,6 +9,7 @@ const SESSION_PATH = join(ROOT, "sessions");
 const PI_AGENT_PATH = join(ROOT, "pi-agent");
 const SUBAGENT_PATH = join(ROOT, "subagents");
 const EVIDENCE_PATH = join(ROOT, "evidence");
+let configWriteChain = Promise.resolve();
 
 const defaultConfig = (): AppConfig => ({
   profiles: [DEFAULT_PROFILE],
@@ -74,18 +75,26 @@ async function writeConfig(config: AppConfig) {
 }
 
 export async function updateProfiles(profiles: ModelProfile[], activeProfileId?: string) {
-  const current = await readConfig();
-  const next: AppConfig = {
-    ...current,
-    profiles: profiles.length ? profiles : [DEFAULT_PROFILE],
-    activeProfileId: activeProfileId ?? profiles[0]?.id ?? DEFAULT_PROFILE.id
-  };
-  await writeConfig(next);
-  return next;
+  const result = configWriteChain.then(async () => {
+    const current = await readConfig();
+    const next: AppConfig = {
+      ...current,
+      profiles: profiles.length ? profiles : [DEFAULT_PROFILE],
+      activeProfileId: activeProfileId ?? profiles[0]?.id ?? DEFAULT_PROFILE.id
+    };
+    await writeConfig(next);
+    return next;
+  });
+  configWriteChain = result.then(() => undefined, () => undefined);
+  return result;
 }
 
 export async function updateConfig(patch: Partial<AppConfig>) {
-  const next = { ...(await readConfig()), ...patch };
-  await writeConfig(next);
-  return next;
+  const result = configWriteChain.then(async () => {
+    const next = { ...(await readConfig()), ...patch };
+    await writeConfig(next);
+    return next;
+  });
+  configWriteChain = result.then(() => undefined, () => undefined);
+  return result;
 }

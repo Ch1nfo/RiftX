@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { setWorkingDirectory } from "@/server/pi/session-manager";
+import { errorMessage, errorStatus } from "@/server/errors";
 
 export const runtime = "nodejs";
 
@@ -34,6 +35,6 @@ export async function POST(request: Request) {
     if (!cwd) return Response.json({ cancelled: true });
     return Response.json(await setWorkingDirectory(cwd));
   } catch (error) {
-    return Response.json({ error: error instanceof Error ? error.message : "Could not open the system folder picker" }, { status: 500 });
+    return Response.json({ error: errorMessage(error, "Could not open the system folder picker") }, { status: errorStatus(error, 500) });
   }
 }

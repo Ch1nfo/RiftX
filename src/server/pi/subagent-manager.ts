@@ -436,7 +436,7 @@ export class SubagentManager {
       const enriched: ApprovalRequest = { ...approval, subagentId: task.id, threadId: task.threadId, agentName: task.name, taskSummary: task.task };
       task.pendingApprovalCount += 1;
       taskPatch = { id: task.id, pendingApprovalCount: task.pendingApprovalCount };
-      this.emitParent({ ...event, type, approval: enriched, subagentId: task.id, taskPatch });
+      this.emitParent({ ...event, type, approval: enriched, subagentId: task.id, taskPatch } as RiftxEvent);
       this.schedulePersist();
       return;
     }
@@ -509,7 +509,7 @@ export class SubagentManager {
       type: publicType,
       subagentId: task.id,
       ...(shouldSendFullTask ? { task: cloneTask(task) } : taskPatch ? { taskPatch } : {})
-    });
+    } as RiftxEvent);
     if (event?.type === "thinking_delta" || event?.type === "text_delta" || event?.type === "tool_update") this.schedulePersist(350);
     else this.schedulePersist();
   }

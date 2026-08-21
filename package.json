@@ -12,7 +12,6 @@
   "dependencies": {
     "@mariozechner/pi-coding-agent": "^0.73.1",
     "@phosphor-icons/react": "^2.1.7",
-    "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-select": "^2.2.6",
     "@radix-ui/react-tooltip": "^1.2.8",
     "@sinclair/typebox": "^0.34.33",

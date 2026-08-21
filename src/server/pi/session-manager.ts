@@ -14,8 +14,9 @@ import {
   type AgentSessionEvent,
   type ToolDefinition
 } from "@mariozechner/pi-coding-agent";
-import { completeSimple, type Model } from "@mariozechner/pi-ai";
+import type { Model } from "@mariozechner/pi-ai";
 import { readConfig, getAppPaths, updateConfig } from "@/server/config-store";
+import { RiftxError } from "@/server/errors";
 import type { ApprovalMode, ArchivedSession, ContextUsage, FindingInput, FindingSource, ModelProfile, RiftxEvent, SessionSummary } from "@/lib/types";
 import { ApprovalGate } from "./approval-gate";
 import { createPermissionExtension } from "./permission-extension";
@@ -28,9 +29,11 @@ import { randomUUID } from "node:crypto";
 import { MutationLock } from "./mutation-lock";
 import { SubagentManager, type SubagentRunnerContext } from "./subagent-manager";
 import { textFromModelContent } from "./text-content";
+import { generateSessionTitle } from "./session-title";
 import { EvidenceStore, getEvidenceStore, removeEvidence } from "./evidence-store";
 import { estimateCompactedUsage, estimateMessagesContextUsage, installMidTurnCompaction } from "./mid-turn-compaction";
 import { shouldDeliverSubagentCompletion, waitForSubagentsBeforeConclusion } from "./session-join";
+import { setAgentTransport } from "./pi-internals";
 
 type SessionRecord = {
   id: string;
@@ -120,21 +123,21 @@ function eventPayload(event: AgentSessionEvent): RiftxEvent {
     const assistant = base.assistantMessageEvent as Record<string, unknown> | undefined;
     return { type: assistant?.type === "text_delta" ? "text_delta" : assistant?.type === "thinking_delta" ? "thinking_delta" : "message", delta: assistant?.delta ?? "" };
   }
-  if (event.type === "tool_execution_start") return { type: "tool_start", toolName: base.toolName, toolCallId: base.toolCallId, args: base.args };
+  if (event.type === "tool_execution_start") return { type: "tool_start", toolName: base.toolName, toolCallId: base.toolCallId, args: base.args } as RiftxEvent;
   if (event.type === "tool_execution_update") {
     // Pi's AgentToolUpdateCallback payload is exposed as `partialResult`.
     // Reading the old `update` name turns every streamed tool update into
     // undefined, which the UI then renders literally after approval.
-    return { type: "tool_update", toolName: base.toolName, toolCallId: base.toolCallId, update: base.partialResult ?? base.update };
+    return { type: "tool_update", toolName: base.toolName, toolCallId: base.toolCallId, update: base.partialResult ?? base.update } as RiftxEvent;
   }
-  if (event.type === "tool_execution_end") return { type: "tool_end", toolName: base.toolName, toolCallId: base.toolCallId, result: base.result, isError: base.isError };
+  if (event.type === "tool_execution_end") return { type: "tool_end", toolName: base.toolName, toolCallId: base.toolCallId, result: base.result, isError: base.isError } as RiftxEvent;
   if (event.type === "agent_start") return { type: "session_state", state: "running" };
   if (event.type === "agent_end") return { type: "done" };
-  if (event.type === "turn_end") return { type: "message", message: base.message, toolResults: base.toolResults };
-  if (event.type === "auto_retry_start") return { type: "session_state", state: "retrying", attempt: base.attempt, error: base.errorMessage };
-  if (event.type === "compaction_start") return { type: "session_state", state: "compacting", reason: base.reason };
-  if (event.type === "compaction_end") return { type: "session_state", state: "running", reason: base.reason };
-  return { type: event.type, ...base };
+  if (event.type === "turn_end") return { type: "message", message: base.message, toolResults: base.toolResults } as RiftxEvent;
+  if (event.type === "auto_retry_start") return { type: "session_state", state: "retrying", attempt: base.attempt, error: base.errorMessage } as RiftxEvent;
+  if (event.type === "compaction_start") return { type: "session_state", state: "compacting", reason: base.reason } as RiftxEvent;
+  if (event.type === "compaction_end") return { type: "session_state", state: "running", reason: base.reason } as RiftxEvent;
+  return { type: "message", message: base };
 }
 
 function registerProfileModel(authStorage: AuthStorage, modelRegistry: ModelRegistry, profile: ModelProfile, replace = false) {
@@ -251,20 +254,7 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
   const evidenceSessionId = runtimeDeps?.evidenceSessionId ?? sessionManager.getSessionId();
   const evidenceStore = runtimeDeps?.evidenceStore ?? getEvidenceStore(evidenceSessionId, paths.evidence, (event) => emitter.emit("event", event));
   const subagentNameGenerator = !child ? async (task: string) => {
-    const auth = await modelRegistry.getApiKeyAndHeaders(titleModel);
-    if (!auth.ok) return "";
-    const response = await completeSimple(titleModel, {
-      systemPrompt: TASK_TITLE_PROMPT,
-      messages: [{ role: "user", content: task, timestamp: Date.now() }]
-    }, {
-      apiKey: auth.apiKey,
-      headers: auth.headers,
-      maxTokens: 64,
-      temperature: 0,
-      timeoutMs: 8_000,
-      maxRetries: 1
-    });
-    return normalizeSessionTitle(textFromModelContent(response.content));
+    return generateSessionTitle(modelRegistry, titleModel, task, "empty");
   } : undefined;
   const subagents = !child ? new SubagentManager(sessionManager.getSessionId(), paths.subagents, (event) => emitter.emit("event", event), config.maxConcurrentSubagents, config.approvalMode, subagentNameGenerator) : undefined;
   const getChildProfile = () => config.childInherit ? (record?.profile ?? profile) : childProfile;
@@ -546,7 +536,7 @@ async function findSessionPath(id: string, cwd?: string) {
 
 async function getOrCreateSession(id?: string) {
   const config = await readConfig();
-  if (id && config.archivedSessionIds.includes(id)) throw new Error("Session is archived");
+  if (id && config.archivedSessionIds.includes(id)) throw new RiftxError("Session is archived", "SESSION_ARCHIVED", 404);
   if (id && sessions.has(id)) {
     const existing = sessions.get(id)!;
     // Rebuild stale process-global session objects after a dev-server reload
@@ -563,7 +553,7 @@ async function getOrCreateSession(id?: string) {
   let sessionManager: PiSessionManager | undefined;
   if (id) {
     const info = (await listWorkspaceSessionInfos(config.cwd)).find((item) => item.id === id);
-    if (!info) throw new Error("Session does not belong to the current working directory");
+    if (!info) throw new RiftxError("Session does not belong to the current working directory", "SESSION_NOT_IN_WORKSPACE", 404);
     sessionManager = PiSessionManager.open(info.path, getAppPaths().sessions, config.cwd);
   }
   const created = await createPiSession(profile, config.cwd, new ApprovalGate(), false, sessionManager);
@@ -582,7 +572,7 @@ export async function createSession() {
 export async function setWorkingDirectory(input: string) {
   const cwd = resolve(input.trim());
   const directory = await stat(cwd).catch(() => null);
-  if (!directory?.isDirectory()) throw new Error("Working directory does not exist or is not a directory");
+  if (!directory?.isDirectory()) throw new RiftxError("Working directory does not exist or is not a directory", "INVALID_WORKING_DIRECTORY", 400);
 
   const config = await readConfig();
   if (config.cwd !== cwd) {
@@ -617,17 +607,6 @@ async function promptSession(id: string, text: string, mode: "prompt" | "steer" 
   return record;
 }
 
-const TASK_TITLE_PROMPT = `You create concise session titles for RiftX, an authorized Web security testing assistant.
-
-Given the user's latest task, return exactly one short title in the same language as the task. Describe the main goal, not the full instructions. Keep it between 6 and 32 characters when possible. Do not use Markdown, quotes, prefixes, numbering, or a trailing period. Return title text only.`;
-
-function normalizeSessionTitle(raw: string) {
-  const firstLine = raw.trim().split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? "";
-  const title = firstLine.replace(/^[-*#\d.)\s]+/, "").replace(/^([`'\"]+)|([`'\"]+)$/g, "").trim();
-  if (!title) throw new Error("模型没有返回有效任务标题");
-  return Array.from(title).slice(0, 32).join("");
-}
-
 export async function summarizeSessionTitle(id: string, task: string) {
   const existingConfig = await readConfig();
   const existingTitle = existingConfig.sessionTitles[id]?.trim();
@@ -637,20 +616,7 @@ export async function summarizeSessionTitle(id: string, task: string) {
     ? record.profile
     : existingConfig.profiles.find((item) => item.id === existingConfig.childProfileId) ?? record.profile;
   const titleModel = registerProfileModel(record.authStorage, record.modelRegistry, titleProfile);
-  const auth = await record.modelRegistry.getApiKeyAndHeaders(titleModel);
-  if (!auth.ok) throw new Error(auth.error);
-  const response = await completeSimple(titleModel, {
-    systemPrompt: TASK_TITLE_PROMPT,
-    messages: [{ role: "user", content: task, timestamp: Date.now() }]
-  }, {
-    apiKey: auth.apiKey,
-    headers: auth.headers,
-    maxTokens: 64,
-    temperature: 0,
-    timeoutMs: 8_000,
-    maxRetries: 1
-  });
-  const title = normalizeSessionTitle(textFromModelContent(response.content));
+  const title = await generateSessionTitle(record.modelRegistry, titleModel, task);
   const config = await readConfig();
   const latestTitle = config.sessionTitles[id]?.trim();
   if (latestTitle) return { title: latestTitle, sessions: (await listSessions()).filter((session) => !session.archived) };
@@ -739,7 +705,7 @@ export async function subscribeSession(id: string, listener: (event: RiftxEvent)
 
 export async function assertSessionRunnable(id: string) {
   const config = await readConfig();
-  if (config.archivedSessionIds.includes(id)) throw new Error("Session is archived");
+  if (config.archivedSessionIds.includes(id)) throw new RiftxError("Session is archived", "SESSION_ARCHIVED", 404);
   await assertSessionInCurrentWorkspace(id);
 }
 
@@ -762,7 +728,7 @@ export async function assertSessionInCurrentWorkspace(id: string) {
   const live = sessions.get(id);
   if (live && resolve(live.cwd) === resolve(config.cwd)) return;
   const info = (await listWorkspaceSessionInfos(config.cwd)).find((item) => item.id === id);
-  if (!info) throw new Error("Session does not belong to the current working directory");
+  if (!info) throw new RiftxError("Session does not belong to the current working directory", "SESSION_NOT_IN_WORKSPACE", 404);
 }
 
 export async function listSubagents(id: string) {
@@ -890,7 +856,7 @@ export async function archiveSession(id: string) {
   const config = await readConfig();
   const sessionsList = await listSessions();
   const summary = sessionsList.find((session) => session.id === id);
-  if (!summary) throw new Error("session not found");
+  if (!summary) throw new RiftxError("session not found", "SESSION_NOT_FOUND", 404);
   if (!config.archivedSessionIds.includes(id)) {
     const metadata: ArchivedSession = {
       id: summary.id,
@@ -912,7 +878,7 @@ export async function archiveSession(id: string) {
 
 export async function deleteArchivedSession(id: string) {
   const config = await readConfig();
-  if (!config.archivedSessionIds.includes(id)) throw new Error("session is not archived");
+  if (!config.archivedSessionIds.includes(id)) throw new RiftxError("session is not archived", "SESSION_NOT_ARCHIVED", 400);
   const session = (await listSessions()).find((item) => item.id === id);
   const record = sessions.get(id);
   if (record) {
@@ -950,7 +916,7 @@ export async function setActiveProfile(profile: ModelProfile) {
       switched.push(item);
       item.record.session.setThinkingLevel(profile.thinkingLevel);
       item.record.settingsManager.setTransport(profile.transport);
-      item.record.session.agent.transport = profile.transport;
+      setAgentTransport(item.record.session, profile.transport);
       item.record.profile = profile;
       item.record.model = item.model;
     }
@@ -959,7 +925,7 @@ export async function setActiveProfile(profile: ModelProfile) {
       await item.record.session.setModel(item.previousModel).catch(() => undefined);
       item.record.session.setThinkingLevel(item.previousProfile.thinkingLevel);
       item.record.settingsManager.setTransport(item.previousProfile.transport);
-      item.record.session.agent.transport = item.previousProfile.transport;
+      setAgentTransport(item.record.session, item.previousProfile.transport);
       item.record.profile = item.previousProfile;
       item.record.model = item.previousModel;
     }

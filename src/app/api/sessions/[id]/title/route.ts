@@ -1,4 +1,5 @@
 import { summarizeSessionTitle } from "@/server/pi/session-manager";
+import { requiredText } from "@/lib/api-validation";
 
 export const runtime = "nodejs";
 
@@ -6,7 +7,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const { id } = await context.params;
   const body = (await request.json()) as { text?: unknown };
   const text = typeof body.text === "string" ? body.text.trim() : "";
-  if (!text) return Response.json({ error: "任务内容不能为空" }, { status: 400 });
+  if (requiredText(text, "任务内容不能为空")) return Response.json({ error: "任务内容不能为空" }, { status: 400 });
   try {
     return Response.json(await summarizeSessionTitle(id, text));
   } catch (error) {

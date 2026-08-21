@@ -199,6 +199,7 @@ a { color: inherit; text-decoration: none; }
 .user-avatar { color: var(--muted); background: #24282a; }
 .assistant-avatar { color: var(--accent); background: #1d3022; border: 1px solid #35513b; }
 .message-body { min-width: 0; line-height: 1.72; }
+.message.user.error .message-body { color: var(--danger); }
 .markdown p { margin: 0 0 12px; }
 .markdown p:last-child { margin-bottom: 0; }
 .markdown pre, .tool-card pre, .approval-card pre { margin: 12px 0 0; padding: 12px; overflow: visible; border: 1px solid var(--line-soft); border-radius: 6px; background: #0c0e0f; color: #cbd4cf; font: 12px/1.6 var(--font-mono); white-space: pre-wrap; word-break: break-word; }

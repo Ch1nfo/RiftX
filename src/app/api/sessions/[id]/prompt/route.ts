@@ -1,4 +1,6 @@
 import { startPromptSession } from "@/server/pi/session-manager";
+import { errorMessage, errorStatus } from "@/server/errors";
+import { requiredText } from "@/lib/api-validation";
 
 export const runtime = "nodejs";
 
@@ -6,12 +8,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   try {
     const { id } = await context.params;
     const body = (await request.json()) as { text?: string; mode?: "prompt" | "steer" | "followUp" };
-    if (!body.text?.trim()) return Response.json({ error: "text is required" }, { status: 400 });
-    const session = await startPromptSession(id, body.text.trim(), body.mode ?? "prompt");
+    const text = typeof body.text === "string" ? body.text.trim() : "";
+    if (requiredText(text, "text is required")) return Response.json({ error: "text is required" }, { status: 400 });
+    const session = await startPromptSession(id, text, body.mode ?? "prompt");
     return Response.json({ ok: true, sessionId: session.id });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "发送任务失败";
-    const status = message === "Session does not belong to the current working directory" || message === "Session is archived" || message === "session not found" ? 404 : 500;
-    return Response.json({ error: message }, { status });
+    return Response.json({ error: errorMessage(error, "发送任务失败") }, { status: errorStatus(error, 500) });
   }
 }

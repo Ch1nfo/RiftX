@@ -8,7 +8,8 @@ import remarkGfm from "remark-gfm";
 import { ApprovalModeMenu, ContextRing, ErrorNotice, LanguageToggle, ModelMenu, RiftxLogo, ThemeToggle } from "./ui";
 import { SubagentPanel } from "./subagent-panel";
 import { FindingsPanel } from "./findings-panel";
-import { SUBAGENT_LOG_LIMITS, type ApprovalMode, type ApprovalRequest, type ContextUsage, type Finding, type FindingPatch, type ModelProfile, type RiftxEvent, type SessionSummary, type SubagentTask, type SubagentTaskPatch } from "@/lib/types";
+import { parseRiftxEvent, type ApprovalMode, type ApprovalRequest, type ContextUsage, type Finding, type FindingPatch, type ModelProfile, type RiftxEvent, type SessionSummary, type SubagentTask, type SubagentTaskPatch } from "@/lib/types";
+import { cloneSubagentTask, mergeSubagentTaskPatch, mergeSubagentTasks } from "@/lib/subagent-merge";
 import { useLanguage } from "@/lib/i18n";
 import { isAlreadyProcessingError } from "@/lib/prompt-mode";
 import { summarizeToolResult } from "@/lib/tool-result";
@@ -23,93 +24,6 @@ function makeEmptyUsage(contextWindow = 0): ContextUsage {
 function usageFromSession(session?: SessionSummary | null): ContextUsage {
   if (session?.usage) return { ...session.usage };
   return makeEmptyUsage(session?.contextWindow ?? 0);
-}
-
-function trimSubagentLogContent(content: string) {
-  if (content.length <= SUBAGENT_LOG_LIMITS.content) return content;
-  return content.slice(-SUBAGENT_LOG_LIMITS.content);
-}
-
-function sameSubagentTask(left: SubagentTask, right: SubagentTask) {
-  const leftLog = left.logs.at(-1);
-  const rightLog = right.logs.at(-1);
-  return left.name === right.name
-    && left.status === right.status
-    && left.threadId === right.threadId
-    && left.model === right.model
-    && left.summary === right.summary
-    && left.error === right.error
-    && left.pendingApprovalCount === right.pendingApprovalCount
-    && left.logs.length === right.logs.length
-    && leftLog?.content === rightLog?.content
-    && leftLog?.status === rightLog?.status;
-}
-
-function mergeSubagentTasks(current: SubagentTask[], incoming: SubagentTask[]) {
-  const next = current.slice();
-  let changed = false;
-  for (const task of incoming) {
-    const index = next.findIndex((item) => item.id === task.id);
-    if (index < 0) {
-      next.push(task);
-      changed = true;
-      continue;
-    }
-    const previous = next[index];
-    // An initial REST snapshot can arrive after SSE has already delivered newer
-    // logs/status. Never let that stale snapshot roll a task backwards.
-    const stale = previous.logs.length > task.logs.length
-      || (previous.status === "running" && task.status === "queued")
-      || (previous.finishedAt && !task.finishedAt);
-    if (!stale && !sameSubagentTask(previous, task)) {
-      next[index] = task;
-      changed = true;
-    }
-  }
-  return changed ? next.sort((left, right) => left.createdAt.localeCompare(right.createdAt)) : current;
-}
-
-function cloneSubagentTask(task: SubagentTask): SubagentTask {
-  return {
-    ...task,
-    logs: task.logs.map((log) => ({ ...log }))
-  };
-}
-
-function applySubagentTaskPatch(task: SubagentTask, patch: SubagentTaskPatch) {
-  const next = cloneSubagentTask(task);
-  if (patch.name !== undefined) next.name = patch.name;
-  if (patch.threadId !== undefined) next.threadId = patch.threadId;
-  if (patch.model !== undefined) next.model = patch.model;
-  if (patch.pendingApprovalCount !== undefined) next.pendingApprovalCount = patch.pendingApprovalCount;
-  if (patch.appendLog) {
-    const existingLogIndex = next.logs.findIndex((log) => log.id === patch.appendLog?.id);
-    const normalizedLog = { ...patch.appendLog, content: trimSubagentLogContent(patch.appendLog.content) };
-    if (existingLogIndex >= 0) next.logs[existingLogIndex] = { ...next.logs[existingLogIndex], ...normalizedLog };
-    else next.logs.push(normalizedLog);
-  }
-  if (patch.patchLog) {
-    const logIndex = next.logs.findIndex((log) => log.id === patch.patchLog?.id);
-    if (logIndex >= 0) {
-      const target = { ...next.logs[logIndex] };
-      if (patch.patchLog.content !== undefined) target.content = trimSubagentLogContent(patch.patchLog.content);
-      if (patch.patchLog.appendContent) target.content = trimSubagentLogContent(target.content + patch.patchLog.appendContent);
-      if (patch.patchLog.status !== undefined) target.status = patch.patchLog.status;
-      next.logs[logIndex] = target;
-    }
-  }
-  if (next.logs.length > SUBAGENT_LOG_LIMITS.entries) next.logs = next.logs.slice(-SUBAGENT_LOG_LIMITS.entries);
-  return next;
-}
-
-function mergeSubagentTaskPatch(current: SubagentTask[], patch: SubagentTaskPatch) {
-  const index = current.findIndex((task) => task.id === patch.id);
-  if (index < 0) return current;
-  const updated = applySubagentTaskPatch(current[index], patch);
-  if (sameSubagentTask(current[index], updated)) return current;
-  const next = current.slice();
-  next[index] = updated;
-  return next;
 }
 
 function isSubagentApproval(request: ApprovalRequest) {
@@ -148,6 +62,7 @@ function ToolCard({ message }: { message: Message }) {
 
 export function Workbench() {
   const { language, t } = useLanguage();
+  const tRef = useRef(t);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [activeId, setActiveId] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
@@ -183,6 +98,10 @@ export function Workbench() {
   const subagentFlushFrameRef = useRef<number | undefined>(undefined);
   const titleQueueRef = useRef<Promise<void>>(Promise.resolve());
   const titleRequestRef = useRef(0);
+
+  useEffect(() => {
+    tRef.current = t;
+  }, [t]);
 
   useLayoutEffect(() => {
     const textarea = composerInputRef.current;
@@ -239,14 +158,14 @@ export function Workbench() {
   };
 
   const backfillMissingTitles = (items: SessionSummary[]) => {
-    const missing = items.filter((session) => (session.name === t("unnamed") || session.name === "Untitled task" || session.name === "未命名任务") && session.firstMessage).slice(0, 8);
+    const missing = items.filter((session) => (session.name === tRef.current("unnamed") || session.name === "Untitled task" || session.name === "未命名任务") && session.firstMessage).slice(0, 8);
     void missing.reduce<Promise<void>>((chain, session) => chain.then(async () => {
       try {
         const response = await fetch(`/api/sessions/${session.id}/title`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: session.firstMessage }) });
         if (!response.ok) return;
         const data = await response.json() as { sessions?: SessionSummary[] };
         if (!data.sessions) return;
-        setSessions((current) => current.map((currentSession) => currentSession.name === t("summarizeTitle") ? currentSession : data.sessions?.find((next) => next.id === currentSession.id) ?? currentSession));
+        setSessions((current) => current.map((currentSession) => currentSession.name === tRef.current("summarizeTitle") ? currentSession : data.sessions?.find((next) => next.id === currentSession.id) ?? currentSession));
       } catch {
         // Title backfill is best-effort and should not block opening the workbench.
       }
@@ -266,7 +185,7 @@ export function Workbench() {
       const profile = profiles.find((item) => item.id === data.activeProfileId);
       if (profile) setModelName(`${profile.provider}/${profile.model}`);
       if (data.approvalMode === "request" || data.approvalMode === "auto" || data.approvalMode === "full") setApprovalMode(data.approvalMode);
-    }).catch(() => setError(t("cannotConnect"))).finally(() => setBootstrapping(false));
+    }).catch(() => setError(tRef.current("cannotConnect"))).finally(() => setBootstrapping(false));
     return undefined;
   }, []);
 
@@ -317,12 +236,13 @@ export function Workbench() {
     source.onmessage = (event) => {
       if (disposed) return;
       reconnectAttempts = 0;
-      let payload: RiftxEvent;
+      let payload: RiftxEvent | null;
       try {
-        payload = JSON.parse(event.data) as RiftxEvent;
+        payload = parseRiftxEvent(JSON.parse(event.data));
       } catch {
         return;
       }
+      if (!payload) return;
       if (payload.type === "connected") return;
       if (payload.type === "finding" && payload.finding) {
         const finding = payload.finding as Finding;
@@ -504,10 +424,12 @@ export function Workbench() {
     if (!text || !activeId) return;
     const wasRunning = composerBusy;
     const mode = requestedMode ?? (wasRunning ? "steer" : "prompt");
+    const messageId = crypto.randomUUID();
+    const markMessageFailed = () => setMessages((current) => current.map((message) => message.id === messageId ? { ...message, status: "error", isError: true } : message));
     setInput("");
     shouldAutoScrollRef.current = true;
     setShowJumpToLatest(false);
-    setMessages((current) => [...current, { id: crypto.randomUUID(), role: "user", content: text }]);
+    setMessages((current) => [...current, { id: messageId, role: "user", content: text }]);
     const currentSession = sessions.find((session) => session.id === activeId);
     const hasExistingUserMessage = Boolean(currentSession?.firstMessage?.trim()) || messages.some((message) => message.role === "user");
     if (!hasExistingUserMessage) queueSessionTitle(text);
@@ -517,10 +439,12 @@ export function Workbench() {
       if (!response.ok) {
         const data = await response.json().catch(() => ({})) as { error?: string };
         if (!wasRunning) setMainAgentRunning(false);
+        markMessageFailed();
         setError(data.error ?? t("sendFailed"));
       }
     } catch (error) {
       if (!wasRunning) setMainAgentRunning(false);
+      markMessageFailed();
       setError(error instanceof Error ? error.message : t("sendFailed"));
     }
   };
@@ -751,7 +675,7 @@ export function Workbench() {
     {mobileNav ? <button className="scrim mobile-only" onClick={() => setMobileNav(false)} aria-label={t("closeNav")} /> : null}
     <main className="main-panel">
       <header className="topbar"><button className="icon-button mobile-only" onClick={() => setMobileNav(true)} aria-label={t("settings")}><List size={19} /></button><button className="workspace workspace-button" type="button" disabled={bootstrapping || workspaceChoosing} aria-busy={workspaceChoosing} onClick={() => void chooseWorkingDirectory()} title={t("changeWorkingDirectory")} aria-label={workspaceChoosing ? t("choosingWorkingDirectory") : t("changeWorkingDirectory")}><FolderOpen size={16} /><span>{cwd || t("workingDirectory")}</span></button><div className="topbar-spacer" /><div className="topbar-actions"><LanguageToggle /><ThemeToggle /></div></header>
-      <section ref={conversationRef} className="conversation" onScroll={handleConversationScroll}><div ref={conversationInnerRef} className="conversation-inner">{visibleMessages.length === 0 ? <div className="empty-state"><div className="empty-orbit"><RiftxLogo decorative /></div><h1>{bootstrapping ? t("loadingWorkspace") : activeId ? t("ready") : t("noSession")}</h1><p>{bootstrapping ? t("readingWorkspace") : activeId ? t("readOrTest") : t("createSessionFirst")}</p>{activeId && !bootstrapping ? <div className="prompt-suggestions"><button onClick={() => setInput(t("overview"))}>{t("overview")}</button><button onClick={() => setInput(t("checkRisks"))}>{t("checkRisks")}</button></div> : null}</div> : visibleMessages.map((message) => <article key={message.id} className={`message ${message.role}`}>
+      <section ref={conversationRef} className="conversation" onScroll={handleConversationScroll}><div ref={conversationInnerRef} className="conversation-inner">{visibleMessages.length === 0 ? <div className="empty-state"><div className="empty-orbit"><RiftxLogo decorative /></div><h1>{bootstrapping ? t("loadingWorkspace") : activeId ? t("ready") : t("noSession")}</h1><p>{bootstrapping ? t("readingWorkspace") : activeId ? t("readOrTest") : t("createSessionFirst")}</p>{activeId && !bootstrapping ? <div className="prompt-suggestions"><button onClick={() => setInput(t("overview"))}>{t("overview")}</button><button onClick={() => setInput(t("checkRisks"))}>{t("checkRisks")}</button></div> : null}</div> : visibleMessages.map((message) => <article key={message.id} className={`message ${message.role}${message.status === "error" ? " error" : ""}`}>
         {message.role === "user" ? <div className="avatar user-avatar">{t("you")}</div> : message.role === "assistant" ? <div className="avatar assistant-avatar"><RiftxLogo decorative /></div> : null}
         <div className="message-body">{message.role === "thinking" ? <details className="thinking-block" open={message.status === "streaming"}><summary><span className="thinking-title"><Brain size={14} weight="bold" />{t("thinking")}</span><span className="thinking-state">{message.status === "streaming" ? t("thinkingNow") : t("thinkingDone")}</span></summary><div className="thinking-copy">{message.content}</div></details> : message.role === "tool" ? <ToolCard key={`${message.id}-${message.status}`} message={message} /> : <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>}</div>
       </article>)}<div ref={endRef} /></div>{showJumpToLatest ? <button className="jump-latest" type="button" aria-label={t("jumpLatest")} title={t("jumpLatest")} onClick={jumpToLatest}><ArrowDown size={17} weight="bold" /></button> : null}</section>

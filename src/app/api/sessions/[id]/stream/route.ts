@@ -1,4 +1,5 @@
 import { assertSessionRunnable, subscribeSession } from "@/server/pi/session-manager";
+import { errorMessage, errorStatus } from "@/server/errors";
 
 export const runtime = "nodejs";
 
@@ -11,22 +12,33 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   try {
     await assertSessionRunnable(id);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "读取会话失败";
-    const status = message === "Session is archived" || message === "Session does not belong to the current working directory" ? 404 : 500;
-    return Response.json({ error: message }, { status });
+    return Response.json({ error: errorMessage(error, "读取会话失败") }, { status: errorStatus(error, 500) });
   }
   const encoder = new TextEncoder();
-  let cleanup: () => void = () => undefined;
+  let unsubscribe: () => void = () => undefined;
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  const cleanup = () => {
+    if (heartbeat) clearInterval(heartbeat);
+    heartbeat = undefined;
+    unsubscribe();
+  };
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       controller.enqueue(encoder.encode(encode({ type: "connected", sessionId: id })));
-      cleanup = await subscribeSession(id, (event) => {
+      unsubscribe = await subscribeSession(id, (event) => {
         try {
           controller.enqueue(encoder.encode(encode(event)));
         } catch {
           cleanup();
         }
       });
+      heartbeat = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(": keep-alive\n\n"));
+        } catch {
+          cleanup();
+        }
+      }, 15_000);
     },
     cancel() {
       cleanup();
