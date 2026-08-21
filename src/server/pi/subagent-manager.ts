@@ -268,6 +268,7 @@ export class SubagentManager {
       task.finishedAt = now();
       task.error = "Cancelled before the child Agent started.";
       this.emitTask("subagent_cancelled", task);
+      this.completionHandler?.(task, { summary: task.error ?? "Subagent task cancelled." });
       queueItem?.reject?.(new Error(task.error));
       this.taskPromises.delete(task.id);
       this.schedulePersist();
@@ -367,6 +368,7 @@ export class SubagentManager {
         task.error = message;
         task.logs.push({ id: randomUUID(), type: "error", content: message, status: "error", createdAt: now() });
         this.emitTask(task.status === "cancelled" ? "subagent_cancelled" : "subagent_failed", task);
+        this.completionHandler?.(task, { summary: message });
       }
       item.reject?.(error);
     } finally {

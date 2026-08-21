@@ -339,9 +339,10 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
   record.unsubscribe = unsubscribe;
   if (subagents) {
     subagents.setCompletionHandler((task, childResult) => {
-      if (record.waitingForSubagents) return;
+      if (record.waitingForSubagents || record.abortPromise) return;
       const summary = childResult.summary?.trim() || "No result";
-      const message = `[RiftX subagent result]\nSubagent: ${task.name}\nStatus: completed\nSummary:\n${summary}\n\nUse this result in the current assessment. Do not repeat the same delegated task.`;
+      const status = task.status === "completed" ? "completed" : task.status;
+      const message = `[RiftX subagent result]\nSubagent: ${task.name}\nStatus: ${status}\nSummary:\n${summary}\n\nUse this result in the current assessment. Do not repeat the same delegated task.`;
       if (record.session.isStreaming) {
         void record.session.steer(message).catch(() => undefined);
         return;
