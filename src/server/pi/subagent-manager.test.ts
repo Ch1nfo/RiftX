@@ -156,6 +156,79 @@ test("returns a background task immediately and reports its result on completion
   }
 });
 
+test("awaits a required subagent without also delivering a background completion", async () => {
+  const root = await mkdtemp(join(tmpdir(), "riftx-subagents-"));
+  const manager = new SubagentManager("parent", root, () => undefined, 1, "request");
+  let finish!: () => void;
+  let completionCount = 0;
+  manager.setCompletionHandler(() => { completionCount += 1; });
+  await manager.initialize(async () => new Promise((resolve) => { finish = () => resolve({ summary: "required result" }); }));
+  try {
+    const submitted = manager.submitTask("required task", undefined, true);
+    let settled = false;
+    void submitted.promise.finally(() => { settled = true; });
+    await waitFor(() => typeof finish === "function");
+    assert.equal(completionCount, 0);
+    assert.equal(settled, false);
+    finish();
+    assert.deepEqual(await submitted.promise, { summary: "required result" });
+    assert.equal(settled, true);
+    assert.equal(completionCount, 0);
+  } finally {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("waits for the real result of a queued task restored after restart", async () => {
+  const root = await mkdtemp(join(tmpdir(), "riftx-subagents-"));
+  const parentDir = join(root, "parent");
+  await mkdir(parentDir, { recursive: true });
+  const createdAt = new Date().toISOString();
+  await writeFile(join(parentDir, "tasks.json"), JSON.stringify({ tasks: [
+    { id: "queued", parentSessionId: "parent", threadId: "", name: "queued", task: "queued task", status: "queued", model: "m", createdAt, pendingApprovalCount: 0, logs: [] }
+  ] }));
+  const manager = new SubagentManager("parent", root, () => undefined, 1, "request");
+  let finish!: () => void;
+  let completionCount = 0;
+  manager.setCompletionHandler(() => { completionCount += 1; });
+  await manager.initialize(async ({ task }) => new Promise((resolve) => {
+    finish = () => resolve({ summary: `real result: ${task.task}` });
+  }));
+  try {
+    await waitFor(() => manager.list()[0]?.status === "running");
+    const submitted = manager.submitTask(" QUEUED   TASK ", undefined, true);
+    let settled = false;
+    void submitted.promise.finally(() => { settled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(settled, false);
+    finish();
+    assert.deepEqual(await submitted.promise, { summary: "real result: queued task" });
+    assert.equal(completionCount, 0);
+  } finally {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects a required subagent when cancellation races with a successful runner result", async () => {
+  const root = await mkdtemp(join(tmpdir(), "riftx-subagents-"));
+  const manager = new SubagentManager("parent", root, () => undefined, 1, "request");
+  await manager.initialize(async ({ signal }) => new Promise((resolve) => {
+    signal.addEventListener("abort", () => setTimeout(() => resolve({ summary: "late result" }), 0), { once: true });
+  }));
+  try {
+    const submitted = manager.submitTask("cancelled required task", undefined, true);
+    await waitFor(() => manager.list()[0]?.status === "running");
+    assert.equal(manager.cancel(submitted.task!.id), true);
+    await assert.rejects(submitted.promise, /cancelled/i);
+    assert.equal(manager.list()[0]?.status, "cancelled");
+  } finally {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("emits approval decisions when a child approval times out", async () => {
   const root = await mkdtemp(join(tmpdir(), "riftx-subagents-"));
   const events: RiftxEvent[] = [];

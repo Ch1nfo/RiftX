@@ -8,6 +8,7 @@ test("pentest prompt actively selects browser and targeted testing methods", () 
   assert.match(prompt, /Do not test only one input or one path/);
   assert.match(prompt, /small, targeted, controlled test sets/);
   assert.match(prompt, /Use the spawn_subagent tool to create child Agents/);
+  assert.match(prompt, /waitForResult: true/);
   assert.match(prompt, /configured maximum is a concurrency limit, not a target/);
   assert.match(prompt, /current approval mode/);
 });

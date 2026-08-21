@@ -170,19 +170,40 @@ function createSubagentTool(manager: SubagentManager, getChildProfile: () => Mod
   return defineTool({
     name: "spawn_subagent",
     label: "Spawn subagent",
-    description: "Start one focused, independent task in a background Web penetration testing child Agent. This tool returns immediately; continue independent main-Agent work while the child runs. The child result is delivered to the parent session when complete. Use only for meaningful independent work, never duplicate or state-dependent work; the scheduler enforces the configured concurrency limit and queues excess tasks. The child cannot create another child.",
-    promptSnippet: "spawn_subagent(task)",
+    description: "Start one focused, independent Web penetration testing child Agent. Set waitForResult=true when the main Agent cannot continue its next reasoning step or final conclusion without the child result; the tool then remains pending until the child completes, fails, or is cancelled. Otherwise it returns immediately and delivers the result to the parent session in the background. Use only for meaningful independent work, never duplicate or state-dependent child work; the scheduler enforces the configured concurrency limit and queues excess tasks. The child cannot create another child.",
+    promptSnippet: "spawn_subagent(task, waitForResult?)",
     executionMode: "parallel",
-    parameters: Type.Object({ task: Type.String({ description: "A unique, self-contained task with a clear target surface, evidence goal, and no dependency on another child task." }) }),
-    async execute(_toolCallId, params) {
+    parameters: Type.Object({
+      task: Type.String({ description: "A unique, self-contained task with a clear target surface, evidence goal, and no dependency on another child task." }),
+      waitForResult: Type.Optional(Type.Boolean({ description: "Set true only when the main Agent's next reasoning step or final conclusion requires this result. Defaults to false for background work." }))
+    }),
+    async execute(_toolCallId, params, signal) {
       const childProfile = getChildProfile();
-      const submitted = manager.submitTask(params.task, (context) => runChildSession(childProfile, cwd, mutationLock, context, runtimeDeps));
-      // The parent tool returns immediately; consume the background promise so
-      // a child failure is represented by subagent_failed without an unhandled
-      // rejection in the Node process.
+      const waitForResult = params.waitForResult === true;
+      const submitted = manager.submitTask(params.task, (context) => runChildSession(childProfile, cwd, mutationLock, context, runtimeDeps), waitForResult);
+      // Always observe the background promise so a failure is represented by
+      // subagent_failed without an unhandled rejection. Required work also
+      // awaits the original promise below to keep the parent tool call open.
       void submitted.promise.catch(() => undefined);
       const taskLabel = submitted.task?.name || "subagent task";
       const state = submitted.task?.status || "queued";
+      if (waitForResult) {
+        const taskId = submitted.task?.id;
+        const onAbort = taskId ? () => manager.cancel(taskId) : undefined;
+        if (onAbort) {
+          signal?.addEventListener("abort", onAbort, { once: true });
+          if (signal?.aborted) onAbort();
+        }
+        try {
+          const result = await submitted.promise;
+          return {
+            content: [{ type: "text", text: `Required subagent completed: ${taskLabel}\n\n${result.summary?.trim() || "No result"}` }],
+            details: { model: `${childProfile.provider}/${childProfile.model}`, taskId, status: "completed", background: false }
+          };
+        } finally {
+          if (onAbort) signal?.removeEventListener("abort", onAbort);
+        }
+      }
       const text = submitted.duplicate
         ? `A matching subagent task is already ${state}. Its existing result will be delivered when complete.`
         : `Subagent task accepted in the background (${state}): ${taskLabel}. Continue independent work; RiftX will deliver the child result when it completes.`;

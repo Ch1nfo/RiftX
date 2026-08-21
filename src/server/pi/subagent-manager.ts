@@ -61,6 +61,7 @@ export class SubagentManager {
   private readonly runtimes = new Map<string, Runtime>();
   private readonly queue: QueueItem[] = [];
   private readonly taskPromises = new Map<string, Promise<SubagentResult>>();
+  private readonly awaitedTasks = new Set<string>();
   private active = 0;
   private maxConcurrent: number;
   private approvalMode: ApprovalMode = "request";
@@ -108,7 +109,13 @@ export class SubagentManager {
     }
     this.initialized = true;
     for (const task of this.tasks.values()) {
-      if (task.status === "queued") this.queue.push({ task, runner });
+      if (task.status === "queued") {
+        const promise = new Promise<SubagentResult>((resolve, reject) => {
+          this.queue.push({ task, runner, resolve, reject });
+        });
+        void promise.catch(() => undefined);
+        this.taskPromises.set(task.id, promise);
+      }
     }
     await this.persist();
     this.pump();
@@ -161,7 +168,7 @@ export class SubagentManager {
     }, delayMs);
   }
 
-  private enqueue(taskText: string, runner = this.runner) {
+  private enqueue(taskText: string, runner = this.runner, waitForResult = false) {
     if (!runner) throw new Error("Subagent manager is not initialized");
     const task: SubagentTask = {
       id: randomUUID(),
@@ -176,6 +183,7 @@ export class SubagentManager {
       logs: []
     };
     this.tasks.set(task.id, task);
+    if (waitForResult) this.awaitedTasks.add(task.id);
     this.emitTask("subagent_queued", task);
     this.schedulePersist();
     const promise = new Promise<SubagentResult>((resolve, reject) => {
@@ -186,16 +194,20 @@ export class SubagentManager {
     return { task, promise };
   }
 
-  submitTask(taskText: string, runner = this.runner) {
+  submitTask(taskText: string, runner = this.runner, waitForResult = false) {
     const key = normalizeTask(taskText);
     const duplicate = [...this.tasks.values()].find((task) => (task.status === "queued" || task.status === "running") && normalizeTask(task.task) === key);
-    if (duplicate) return {
-      task: duplicate,
-      promise: this.taskPromises.get(duplicate.id) ?? Promise.resolve({ summary: "A matching subagent task is already queued or running." }),
-      duplicate: true
-    };
+    if (duplicate) {
+      const promise = this.taskPromises.get(duplicate.id);
+      if (waitForResult && promise) this.awaitedTasks.add(duplicate.id);
+      return {
+        task: duplicate,
+        promise: promise ?? Promise.reject(new Error("The matching subagent task has no result promise.")),
+        duplicate: true
+      };
+    }
     try {
-      const queued = this.enqueue(taskText, runner);
+      const queued = this.enqueue(taskText, runner, waitForResult);
       return { task: queued.task, promise: queued.promise, duplicate: false };
     } catch (error) {
       return { task: undefined, promise: Promise.reject(error), duplicate: false };
@@ -225,6 +237,7 @@ export class SubagentManager {
       this.emitTask("subagent_cancelled", task);
       queueItem?.reject?.(new Error(task.error));
       this.taskPromises.delete(task.id);
+      this.awaitedTasks.delete(task.id);
       this.schedulePersist();
       return true;
     }
@@ -304,13 +317,13 @@ export class SubagentManager {
       if (controller.signal.aborted) throw new Error("Subagent task was cancelled before it started.");
       const result = await runner(context);
       if ((task.status as string) === "cancelled") {
-        item.resolve?.({ summary: task.error ?? "Cancelled" });
+        item.reject?.(new Error(task.error ?? "Subagent task was cancelled."));
       } else {
         task.status = "completed";
         task.finishedAt = now();
         task.summary = result.summary;
         this.emitTask("subagent_done", task);
-        this.completionHandler?.(task, result);
+        if (!this.awaitedTasks.has(task.id)) this.completionHandler?.(task, result);
         item.resolve?.(result);
       }
     } catch (error) {
@@ -327,6 +340,7 @@ export class SubagentManager {
       gate.rejectAll();
       this.runtimes.delete(task.id);
       this.taskPromises.delete(task.id);
+      this.awaitedTasks.delete(task.id);
       task.pendingApprovalCount = 0;
       await this.persist();
     }
