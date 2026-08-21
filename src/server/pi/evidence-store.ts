@@ -185,6 +185,7 @@ export class EvidenceStore {
 }
 
 const stores = new Map<string, EvidenceStore>();
+const EVIDENCE_STORE_CACHE_LIMIT = 256;
 
 export function getEvidenceStore(sessionId: string, root: string, emitter?: (event: RiftxEvent) => void) {
   const existing = stores.get(sessionId);
@@ -194,6 +195,7 @@ export function getEvidenceStore(sessionId: string, root: string, emitter?: (eve
   }
   const store = new EvidenceStore(sessionId, root, emitter);
   stores.set(sessionId, store);
+  while (stores.size > EVIDENCE_STORE_CACHE_LIMIT) stores.delete(stores.keys().next().value!);
   return store;
 }
 

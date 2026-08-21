@@ -78,8 +78,6 @@ export type BrowserPageInfo = {
 };
 
 export type BrowserManagerOptions = {
-  cwd: string;
-  sessionId: string;
   scope?: BrowserScope;
   evidenceRoot?: string;
   evidenceSessionId?: string;

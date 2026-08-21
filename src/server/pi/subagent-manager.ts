@@ -336,10 +336,6 @@ export class SubagentManager {
     await Promise.allSettled(pending);
   }
 
-  rejectAllApprovals() {
-    for (const runtime of this.runtimes.values()) runtime.gate.rejectAll();
-  }
-
   decideApproval(approvalId: string, approved: boolean, scope: "once" | "task" = "once") {
     for (const runtime of this.runtimes.values()) {
       const request = runtime.gate.pendingRequests().find((item) => item.id === approvalId);
@@ -430,6 +426,7 @@ export class SubagentManager {
   }
 
   private emitTask(type: string, task: SubagentTask, event?: RiftxEvent) {
+    if (event?.type === "usage" || event?.type === "session_state" || event?.type === "done" || event?.type === "message") return;
     let taskPatch: SubagentTaskPatch | undefined;
     if (event?.type === "approval_required") {
       const approval = event.approval as ApprovalRequest;

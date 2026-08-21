@@ -3,7 +3,7 @@ import type { ModelRegistry } from "@mariozechner/pi-coding-agent";
 import type { ApprovalRequest } from "@/lib/types";
 import { textFromModelContent } from "./text-content";
 
-export const APPROVAL_EVALUATOR_PROMPT = `You are RiftX's internal approval evaluator for an authorized Web security assessment.
+const APPROVAL_EVALUATOR_PROMPT = `You are RiftX's internal approval evaluator for an authorized Web security assessment.
 
 Decide based on one question: could this tool call materially harm either (1) the user's local computer, workspace, files, credentials, or services, or (2) the authorized system under test, its data, availability, users, or surrounding infrastructure?
 

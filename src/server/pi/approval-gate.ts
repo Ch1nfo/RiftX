@@ -24,7 +24,6 @@ function approvalKey(request: ApprovalInput) {
 
 export class ApprovalGate {
   private pending = new Map<string, PendingApproval>();
-  private listeners = new Set<(request: ApprovalRequest) => void>();
   private decisionListeners = new Set<ApprovalDecisionListener>();
   private mode: ApprovalMode;
   private taskBypass = new Set<string>();
@@ -57,11 +56,6 @@ export class ApprovalGate {
     return this.mode === "full" || this.taskBypass.has(approvalKey(request));
   }
 
-  onRequest(listener: (request: ApprovalRequest) => void) {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
-  }
-
   onDecision(listener: ApprovalDecisionListener) {
     this.decisionListeners.add(listener);
     return () => this.decisionListeners.delete(listener);
@@ -83,7 +77,6 @@ export class ApprovalGate {
       const onAbort = () => this.decide(request.id, false);
       signal?.addEventListener("abort", onAbort, { once: true });
       this.pending.set(request.id, { request, resolve, timer, abortCleanup: () => signal?.removeEventListener("abort", onAbort) });
-      for (const listener of this.listeners) listener(request);
     });
   }
 

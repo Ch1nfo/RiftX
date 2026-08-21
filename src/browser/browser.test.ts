@@ -15,7 +15,7 @@ test("redacts sensitive request metadata", () => {
 });
 
 test("browser blocks navigation outside configured scope", async () => {
-  const browser = new BrowserManager({ cwd: process.cwd(), sessionId: "scope", scope: { allowedOrigins: ["https://authorized.test"] } });
+  const browser = new BrowserManager({ scope: { allowedOrigins: ["https://authorized.test"] } });
   await assert.rejects(() => browser.navigate("https://outside.test"), /blocked by RiftX scope/);
   await browser.close();
 });
@@ -34,7 +34,7 @@ test("browser snapshot refs drive form interaction and request recording", async
   const address = server.address();
   assert.equal(typeof address, "object");
   const origin = `http://127.0.0.1:${(address as { port: number }).port}`;
-  const browser = new BrowserManager({ cwd: process.cwd(), sessionId: "integration" });
+  const browser = new BrowserManager({});
   try {
     const snapshot = await browser.navigate(origin);
     assert.match(snapshot.text, /\[e1\] input/);

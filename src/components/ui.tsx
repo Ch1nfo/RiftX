@@ -148,7 +148,7 @@ export function LanguageToggle() {
   return <Tip content={language === "zh" ? t("switchToEnglish") : t("switchToChinese")}><button className="language-toggle" onClick={() => setLanguage(next)} aria-label={language === "zh" ? t("switchToEnglish") : t("switchToChinese")}><Translate size={16} /><span>{language === "zh" ? "中" : "EN"}</span></button></Tip>;
 }
 
-export function Tip({ children, content }: { children: ReactNode; content: ReactNode }) {
+function Tip({ children, content }: { children: ReactNode; content: ReactNode }) {
   return (
     <Tooltip.Provider delayDuration={180}>
       <Tooltip.Root>

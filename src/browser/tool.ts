@@ -73,6 +73,9 @@ export function createBrowserExtension(options: BrowserManagerOptions, existingM
         try {
           return await Promise.race([operation, aborted]);
         } finally {
+          // The abort race does not cancel Playwright. Consume a later failure
+          // so a timed-out background operation cannot become unhandled.
+          void operation.catch(() => undefined);
           if (onAbort) signal?.removeEventListener("abort", onAbort);
         }
       }

@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdir, readFile, stat, unlink } from "node:fs/promises";
+import { mkdir, readFile, stat, unlink, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { Type } from "@sinclair/typebox";
 import {
@@ -25,7 +25,6 @@ import { emptyContextUsage, normalizeContextUsage } from "./usage";
 import { buildChildPentestSystemPrompt, buildPentestSystemPrompt } from "./system-prompt";
 import { evaluateApproval } from "./approval-evaluator";
 import { createBrowserExtension, BrowserManager } from "@/browser";
-import { randomUUID } from "node:crypto";
 import { MutationLock } from "./mutation-lock";
 import { SubagentManager, type SubagentRunnerContext } from "./subagent-manager";
 import { textFromModelContent } from "./text-content";
@@ -71,6 +70,7 @@ type SessionSnapshotCacheEntry = {
 };
 
 const sessionSnapshotCache = new Map<string, SessionSnapshotCacheEntry>();
+const SESSION_SNAPSHOT_CACHE_LIMIT = 256;
 
 type SessionSnapshot = {
   id: string;
@@ -84,9 +84,12 @@ type SessionSnapshot = {
 declare global {
   // eslint-disable-next-line no-var
   var __riftxSessions: Map<string, SessionRecord> | undefined;
+  // eslint-disable-next-line no-var
+  var __riftxSessionCreation: Map<string, Promise<SessionRecord>> | undefined;
 }
 
 const sessions = globalThis.__riftxSessions ?? (globalThis.__riftxSessions = new Map<string, SessionRecord>());
+const sessionCreation = globalThis.__riftxSessionCreation ?? (globalThis.__riftxSessionCreation = new Map<string, Promise<SessionRecord>>());
 
 type RuntimeDeps = {
   authStorage: AuthStorage;
@@ -99,7 +102,7 @@ type FindingSourceInfo = { source: FindingSource; subagentId?: string };
 
 type ToolEvidenceSnapshot = { toolCallId: string; toolName: string; content: string };
 
-function resolveToolEvidence(session: AgentSession | undefined, requestedId: string, requestedName: string): ToolEvidenceSnapshot | undefined {
+function resolveToolEvidence(session: AgentSession | undefined, requestedId: string): ToolEvidenceSnapshot | undefined {
   if (!session) return undefined;
   const messages = session.messages as unknown as Array<{ role?: string; content?: unknown; toolCallId?: string }>;
   const textFromContent = (content: unknown) => Array.isArray(content)
@@ -110,7 +113,7 @@ function resolveToolEvidence(session: AgentSession | undefined, requestedId: str
     return parts.filter((part): part is { type?: string; id?: string; name?: string } => Boolean(part && typeof part === "object" && (part as { type?: string }).type === "toolCall"))
       .map((part) => ({ id: String(part.id ?? ""), name: String(part.name ?? "tool") }));
   });
-  const selected = calls.find((call) => call.id === requestedId) ?? [...calls].reverse().find((call) => call.name === requestedName);
+  const selected = calls.find((call) => call.id === requestedId);
   if (!selected) return undefined;
   const result = messages.find((message) => message.role === "toolResult" && message.toolCallId === selected.id);
   const content = textFromContent(result?.content);
@@ -143,11 +146,27 @@ function eventPayload(event: AgentSessionEvent): RiftxEvent {
 function registerProfileModel(authStorage: AuthStorage, modelRegistry: ModelRegistry, profile: ModelProfile, replace = false) {
   if (profile.apiKey) authStorage.setRuntimeApiKey(profile.provider, profile.apiKey);
   if (replace || !modelRegistry.find(profile.provider, profile.model)) {
+    const models = modelRegistry.getAll()
+      .filter((model) => model.provider === profile.provider && model.id !== profile.model)
+      .map((model) => ({
+        id: model.id,
+        name: model.name,
+        api: model.api,
+        baseUrl: model.baseUrl,
+        reasoning: model.reasoning,
+        thinkingLevelMap: model.thinkingLevelMap,
+        input: model.input,
+        cost: model.cost,
+        contextWindow: model.contextWindow,
+        maxTokens: model.maxTokens,
+        headers: model.headers,
+        compat: model.compat
+      }));
     modelRegistry.registerProvider(profile.provider, {
       baseUrl: profile.baseUrl,
       apiKey: profile.apiKey || "riftx-configured",
       api: profile.api,
-      models: [{
+      models: [...models, {
         id: profile.model,
         name: profile.name,
         reasoning: profile.thinkingLevel !== "off",
@@ -186,7 +205,7 @@ function createFindingTool(store: EvidenceStore, source: FindingSourceInfo, brow
       const input = params as FindingInput;
       const evidence = await Promise.all(input.evidence.map(async (item) => {
         if (item.type === "tool") {
-          const snapshot = resolveToolEvidence(getSession(), item.toolCallId, item.toolName);
+          const snapshot = resolveToolEvidence(getSession(), item.toolCallId);
           return snapshot ? { ...item, ...snapshot } : item;
         }
         if (item.type === "request") return browser.requestEvidence(item.requestRef);
@@ -258,11 +277,10 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
   } : undefined;
   const subagents = !child ? new SubagentManager(sessionManager.getSessionId(), paths.subagents, (event) => emitter.emit("event", event), config.maxConcurrentSubagents, config.approvalMode, subagentNameGenerator) : undefined;
   const getChildProfile = () => config.childInherit ? (record?.profile ?? profile) : childProfile;
-  const browserSessionId = randomUUID();
-  const browser = new BrowserManager({ cwd, sessionId: browserSessionId, evidenceRoot: paths.evidence, evidenceSessionId });
+  const browser = new BrowserManager({ evidenceRoot: paths.evidence, evidenceSessionId });
   let evidenceSession: AgentSession | undefined;
   const customTools = [createFindingTool(evidenceStore, findingSource, browser, () => evidenceSession), ...(subagents ? [createSubagentTool(subagents, getChildProfile, cwd, mutationLock, { authStorage, modelRegistry, evidenceStore, evidenceSessionId })] : [])];
-  const browserExtension = createBrowserExtension({ cwd, sessionId: browserSessionId }, browser);
+  const browserExtension = createBrowserExtension({ evidenceRoot: paths.evidence, evidenceSessionId }, browser);
   const resourceLoader = new DefaultResourceLoader({
     cwd,
     agentDir: paths.piAgent,
@@ -485,6 +503,7 @@ async function sessionSnapshotFromFile(path: string, profiles: ModelProfile[]): 
       } : emptyContextUsage(contextWindow)
     };
     sessionSnapshotCache.set(path, { modifiedMs: fileInfo.mtimeMs, size: fileInfo.size, profileKey, snapshot });
+    while (sessionSnapshotCache.size > SESSION_SNAPSHOT_CACHE_LIMIT) sessionSnapshotCache.delete(sessionSnapshotCache.keys().next().value!);
     return { ...snapshot, usage: { ...snapshot.usage } };
   } catch {
     return null;
@@ -537,28 +556,45 @@ async function findSessionPath(id: string, cwd?: string) {
 async function getOrCreateSession(id?: string) {
   const config = await readConfig();
   if (id && config.archivedSessionIds.includes(id)) throw new RiftxError("Session is archived", "SESSION_ARCHIVED", 404);
-  if (id && sessions.has(id)) {
-    const existing = sessions.get(id)!;
-    // Rebuild stale process-global session objects after a dev-server reload
-    // or runtime-version bump, while keeping persisted history on disk.
-    if (existing.runtimeVersion === RUNTIME_VERSION && resolve(existing.cwd) === resolve(config.cwd)) return existing;
-    existing.gate.rejectAll();
-    await existing.subagents?.abortAll();
-    existing.unsubscribe();
-    await existing.browser?.close();
-    existing.session.dispose();
-    sessions.delete(id);
-  }
-  const profile = await profileFor();
-  let sessionManager: PiSessionManager | undefined;
   if (id) {
-    const info = (await listWorkspaceSessionInfos(config.cwd)).find((item) => item.id === id);
-    if (!info) throw new RiftxError("Session does not belong to the current working directory", "SESSION_NOT_IN_WORKSPACE", 404);
-    sessionManager = PiSessionManager.open(info.path, getAppPaths().sessions, config.cwd);
+    const pending = sessionCreation.get(id);
+    if (pending) return pending;
   }
-  const created = await createPiSession(profile, config.cwd, new ApprovalGate(), false, sessionManager);
-  sessions.set(created.id, created);
-  return created;
+  const create = async () => {
+    if (id && sessions.has(id)) {
+      const existing = sessions.get(id)!;
+      // Rebuild stale process-global session objects after a dev-server reload
+      // or runtime-version bump, while keeping persisted history on disk.
+      if (existing.runtimeVersion === RUNTIME_VERSION && resolve(existing.cwd) === resolve(config.cwd)) return existing;
+      existing.gate.rejectAll();
+      await existing.subagents?.abortAll();
+      existing.unsubscribe();
+      await existing.browser?.close();
+      existing.session.dispose();
+      sessions.delete(id);
+    }
+    const currentConfig = await readConfig();
+    const profile = await profileFor();
+    let sessionManager: PiSessionManager | undefined;
+    if (id) {
+      const info = (await listWorkspaceSessionInfos(currentConfig.cwd)).find((item) => item.id === id);
+      if (!info) throw new RiftxError("Session does not belong to the current working directory", "SESSION_NOT_IN_WORKSPACE", 404);
+      sessionManager = PiSessionManager.open(info.path, getAppPaths().sessions, currentConfig.cwd);
+    }
+    const created = await createPiSession(profile, currentConfig.cwd, new ApprovalGate(), false, sessionManager);
+    sessions.set(created.id, created);
+    return created;
+  };
+  if (id) {
+    const pending = create();
+    sessionCreation.set(id, pending);
+    try {
+      return await pending;
+    } finally {
+      if (sessionCreation.get(id) === pending) sessionCreation.delete(id);
+    }
+  }
+  return create();
 }
 
 export async function createSession() {
@@ -693,6 +729,7 @@ export async function subscribeSession(id: string, listener: (event: RiftxEvent)
   // approval request that is still holding the agent at a guarded tool call.
   if (record.waitingForSubagents) onEvent({ type: "session_state", state: "waiting_for_subagents" });
   else if (record.session.isStreaming) onEvent({ type: "session_state", state: "running" });
+  else onEvent({ type: "session_state", state: "idle" });
   onEvent({ type: "usage", usage: usageFromRecord(record) });
   for (const task of record.subagents?.list() ?? []) onEvent({ type: "subagent_snapshot", task });
   for (const finding of await record.evidenceStore.list()) onEvent({ type: "finding", finding });
@@ -760,7 +797,7 @@ export async function retrySubagent(id: string, taskId: string) {
 
 export async function getSessionMessages(id: string) {
   const record = await getOrCreateSession(id);
-  const messages: Array<{ id: string; role: "user" | "assistant" | "thinking" | "tool"; content: string; toolName?: string; toolCallId?: string; status?: "done" | "error"; isError?: boolean }> = [];
+  const messages: Array<{ id: string; role: "user" | "assistant" | "thinking" | "tool"; content: string; toolName?: string; toolCallId?: string; status?: "running" | "done" | "error"; isError?: boolean }> = [];
   const toolIndexes = new Map<string, number>();
   const textFromContent = (content: unknown) => Array.isArray(content)
     ? content.map((part: unknown) => typeof part === "string" ? part : part && typeof part === "object" && "text" in part ? String((part as { text?: unknown }).text ?? "") : "").join("")
@@ -800,7 +837,7 @@ export async function getSessionMessages(id: string) {
         const toolCallId = String(item.id ?? id);
         const toolIndex = messages.length;
         toolIndexes.set(toolCallId, toolIndex);
-        messages.push({ id: toolCallId, role: "tool", toolCallId, toolName: String(item.name ?? "tool"), content: JSON.stringify(item.arguments ?? {}, null, 2), status: "done" });
+        messages.push({ id: toolCallId, role: "tool", toolCallId, toolName: String(item.name ?? "tool"), content: JSON.stringify(item.arguments ?? {}, null, 2), status: "running" });
       }
     });
   });
@@ -894,6 +931,9 @@ export async function deleteArchivedSession(id: string) {
     }
   }
   await removeEvidence(id, getAppPaths().evidence);
+  const subagentPath = resolve(getAppPaths().subagents, id);
+  const subagentRoot = resolve(getAppPaths().subagents);
+  if (subagentPath.startsWith(`${subagentRoot}/`)) await rm(subagentPath, { recursive: true, force: true });
   const { [id]: _removedTitle, ...sessionTitles } = config.sessionTitles;
   await updateConfig({ archivedSessionIds: config.archivedSessionIds.filter((item) => item !== id), archivedSessions: config.archivedSessions.filter((item) => item.id !== id), sessionTitles });
   return listSessions();

@@ -1,6 +1,6 @@
 import type { SubagentAggressiveness } from "@/lib/types";
 
-export const PENTEST_SYSTEM_PROMPT = String.raw`You are RiftX, an authorized Web penetration testing and vulnerability validation assistant.
+const PENTEST_SYSTEM_PROMPT = String.raw`You are RiftX, an authorized Web penetration testing and vulnerability validation assistant.
 
 ## Role and Authorization
 

@@ -226,13 +226,31 @@ export function Workbench() {
       if (controller.signal.aborted) return;
       setFindings(data.findings ?? []);
     }).catch(() => undefined);
+    let messageVersion = 0;
+    const initialMessageVersion = messageVersion;
     fetch(`/api/sessions/${activeId}/messages`, { signal: controller.signal }).then((response) => response.json()).then((items: Message[]) => {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || initialMessageVersion !== messageVersion) return;
       setMessages(items.filter((item) => ["user", "assistant", "thinking", "tool"].includes(item.role)).map((item) => ({ ...item, role: item.role as Message["role"] })));
     }).catch(() => undefined);
     let disposed = false;
     let reconnectAttempts = 0;
+    let hasOpened = false;
     const source = new EventSource(`/api/sessions/${activeId}/stream`);
+    source.onopen = () => {
+      reconnectAttempts = 0;
+      if (!hasOpened) {
+        hasOpened = true;
+        return;
+      }
+      const requestedVersion = messageVersion;
+      void fetch(`/api/sessions/${activeId}/messages`, { signal: controller.signal })
+        .then((response) => response.ok ? response.json() as Promise<Message[]> : [])
+        .then((items) => {
+          if (disposed || controller.signal.aborted || requestedVersion !== messageVersion) return;
+          setMessages(items.filter((item) => ["user", "assistant", "thinking", "tool"].includes(item.role)).map((item) => ({ ...item, role: item.role as Message["role"] })));
+        })
+        .catch(() => undefined);
+    };
     source.onmessage = (event) => {
       if (disposed) return;
       reconnectAttempts = 0;
@@ -304,7 +322,10 @@ export function Workbench() {
         return;
       }
       if (payload.type.startsWith("subagent_") || payload.type === "approval_decided") return;
-      if (["text_delta", "tool_start", "tool_update", "tool_end", "message", "done", "error"].includes(payload.type)) setMessages((current) => current.map((message) => message.role === "thinking" && message.status === "streaming" ? { ...message, status: "done" } : message));
+      if (["text_delta", "tool_start", "tool_update", "tool_end", "message", "done", "error"].includes(payload.type)) {
+        messageVersion += 1;
+        setMessages((current) => current.map((message) => message.role === "thinking" && message.status === "streaming" ? { ...message, status: "done" } : message));
+      }
       if (payload.type === "session_state") { setMainAgentRunning(payload.state !== "idle"); return; }
       if (payload.type === "done") { setMainAgentRunning(false); setApprovalQueue((current) => current.filter(isSubagentApproval)); setMessages((current) => current.map((message) => message.role === "thinking" ? { ...message, status: "done" } : message.role === "tool" && message.status === "running" ? { ...message, status: "cancelled", isError: true, content: message.content ? `${message.content}\n\n${t("stopped")}` : t("stopped") } : message)); return; }
       if (payload.type === "text_delta") {

@@ -11,7 +11,4 @@ export class ElementRefMapper {
     return this.refs.get(ref);
   }
 
-  clear() {
-    this.refs.clear();
-  }
 }

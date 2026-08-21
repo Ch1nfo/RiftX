@@ -117,7 +117,7 @@ export type SessionSummary = {
 
 export type ArchivedSession = Omit<SessionSummary, "archived">;
 
-export const RIFTX_EVENT_TYPES = [
+const RIFTX_EVENT_TYPES = [
   "connected", "finding", "findingPatch", "usage", "session_state", "subagent_snapshot",
   "subagent_queued", "subagent_start", "subagent_done", "subagent_failed", "subagent_cancelled",
   "subagent_interrupted", "subagent_update", "approval_required", "approval_evaluated",

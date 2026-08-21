@@ -1,6 +1,7 @@
-import { mkdir, readFile, writeFile, chmod } from "node:fs/promises";
+import { mkdir, readFile, writeFile, chmod, rename } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { APPROVAL_MODES, DEFAULT_PROFILE, SUBAGENT_AGGRESSIVENESS, type AppConfig, type ModelProfile } from "@/lib/types";
 
 const ROOT = join(homedir(), ".riftx");
@@ -43,6 +44,7 @@ export async function readConfig(): Promise<AppConfig> {
   await ensureAppDirs();
   try {
     const parsed = JSON.parse(await readFile(CONFIG_PATH, "utf8")) as Partial<AppConfig>;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new SyntaxError("config must be an object");
     const profiles = Array.isArray(parsed.profiles) && parsed.profiles.length ? parsed.profiles : [DEFAULT_PROFILE];
     const approvalMode = APPROVAL_MODES.includes(parsed.approvalMode as AppConfig["approvalMode"]) ? parsed.approvalMode as AppConfig["approvalMode"] : "request";
     return {
@@ -61,7 +63,9 @@ export async function readConfig(): Promise<AppConfig> {
       systemPromptEnabled: parsed.systemPromptEnabled === true,
       systemPrompt: typeof parsed.systemPrompt === "string" ? parsed.systemPrompt : ""
     };
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
+    if (error instanceof SyntaxError) await rename(CONFIG_PATH, `${CONFIG_PATH}.bak`).catch(() => undefined);
     const config = defaultConfig();
     await writeConfig(config);
     return config;
@@ -70,8 +74,10 @@ export async function readConfig(): Promise<AppConfig> {
 
 async function writeConfig(config: AppConfig) {
   await ensureAppDirs();
-  await writeFile(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
-  await chmod(CONFIG_PATH, 0o600);
+  const temporaryPath = `${CONFIG_PATH}.tmp-${process.pid}-${randomUUID()}`;
+  await writeFile(temporaryPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+  await chmod(temporaryPath, 0o600);
+  await rename(temporaryPath, CONFIG_PATH);
 }
 
 export async function updateProfiles(profiles: ModelProfile[], activeProfileId?: string) {
