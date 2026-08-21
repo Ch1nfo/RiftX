@@ -41,6 +41,10 @@ function now() {
   return new Date().toISOString();
 }
 
+function delay(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
 function normalizeTask(task: string) {
   return task.trim().replace(/\s+/g, " ").toLocaleLowerCase();
 }
@@ -70,6 +74,10 @@ export class SubagentManager {
   private readonly idleWaiters = new Set<() => void>();
   private initialized = false;
   private persistChain = Promise.resolve();
+  private nameGenerationChain = Promise.resolve();
+  private readonly namingTasks = new Set<string>();
+  private readonly pendingNameRetries = new Set<string>();
+  private readonly usedNameRetries = new Set<string>();
   private persistTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
@@ -118,7 +126,7 @@ export class SubagentManager {
         void promise.catch(() => undefined);
         this.taskPromises.set(task.id, promise);
       }
-      if (!task.name || task.name === legacyTaskName(task.task) || task.name === "Subagent task") {
+      if (!task.name || task.name === "Subagent" || task.name === legacyTaskName(task.task) || task.name === "Subagent task") {
         task.name = "Subagent";
         void this.generateName(task);
       }
@@ -216,16 +224,47 @@ export class SubagentManager {
   }
 
   private async generateName(task: SubagentTask) {
-    if (!this.nameGenerator) return;
+    if (!this.nameGenerator || this.namingTasks.has(task.id)) return;
+    this.namingTasks.add(task.id);
+    let lastError: unknown;
+    const generate = async () => {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          const name = (await this.nameGenerator!(task.task)).trim();
+          if (!name) throw new Error("The title model returned an empty name.");
+          if (task.name !== name) {
+            task.name = name;
+            this.emitTask("subagent_update", task);
+            this.schedulePersist();
+          }
+          return;
+        } catch (error) {
+          lastError = error;
+          if (attempt < 2) await delay(250 * (attempt + 1));
+        }
+      }
+      const message = lastError instanceof Error ? lastError.message : String(lastError ?? "Unknown title error");
+      console.warn(`Failed to generate a title for subagent ${task.id}: ${message}`);
+    };
+    const scheduled = this.nameGenerationChain.then(generate, generate);
+    this.nameGenerationChain = scheduled.then(() => undefined, () => undefined);
     try {
-      const name = (await this.nameGenerator(task.task)).trim();
-      if (!name || task.name === name) return;
-      task.name = name;
-      this.emitTask("subagent_update", task);
-      this.schedulePersist();
-    } catch {
-      // A title failure must never delay or fail the child task.
+      await scheduled;
+    } finally {
+      this.namingTasks.delete(task.id);
+      this.maybeRetryName(task);
     }
+  }
+
+  private maybeRetryName(task: SubagentTask) {
+    if (!this.nameGenerator || task.name !== "Subagent" || this.usedNameRetries.has(task.id)) return;
+    if (this.namingTasks.has(task.id) || task.status === "queued" || task.status === "running") {
+      this.pendingNameRetries.add(task.id);
+      return;
+    }
+    this.pendingNameRetries.delete(task.id);
+    this.usedNameRetries.add(task.id);
+    void this.generateName(task);
   }
 
   submitTask(taskText: string, runner = this.runner) {
@@ -273,6 +312,7 @@ export class SubagentManager {
       this.taskPromises.delete(task.id);
       this.schedulePersist();
       this.resolveIdleWaiters();
+      this.maybeRetryName(task);
       return true;
     }
     const runtime = this.runtimes.get(taskId);
@@ -379,6 +419,13 @@ export class SubagentManager {
       task.pendingApprovalCount = 0;
       await this.persist();
       this.resolveIdleWaiters();
+      if (this.pendingNameRetries.has(task.id)) {
+        this.pendingNameRetries.delete(task.id);
+        this.usedNameRetries.add(task.id);
+        void this.generateName(task);
+      } else {
+        this.maybeRetryName(task);
+      }
     }
   }
 

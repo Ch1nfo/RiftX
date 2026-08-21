@@ -58,7 +58,7 @@ type SessionRecord = {
   deliveredSubagentResults: Set<string>;
 };
 
-const RUNTIME_VERSION = 10;
+const RUNTIME_VERSION = 11;
 
 type SessionSnapshotCacheEntry = {
   modifiedMs: number;
@@ -242,15 +242,18 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
     mutationLock
   );
   const childProfile = config.childInherit ? profile : config.profiles.find((item) => item.id === config.childProfileId) ?? profile;
+  // Keep title work on the configured child profile when available so it does
+  // not consume the main Agent's provider quota during a live turn.
+  const titleModel = registerProfileModel(authStorage, modelRegistry, childProfile);
   const settingsManager = SettingsManager.create(cwd, paths.piAgent);
   settingsManager.setTransport(profile.transport);
   const sessionManager = sessionManagerOverride ?? PiSessionManager.create(cwd, child ? join(paths.subagents, "runtime") : paths.sessions);
   const evidenceSessionId = runtimeDeps?.evidenceSessionId ?? sessionManager.getSessionId();
   const evidenceStore = runtimeDeps?.evidenceStore ?? getEvidenceStore(evidenceSessionId, paths.evidence, (event) => emitter.emit("event", event));
   const subagentNameGenerator = !child ? async (task: string) => {
-    const auth = await modelRegistry.getApiKeyAndHeaders(model);
+    const auth = await modelRegistry.getApiKeyAndHeaders(titleModel);
     if (!auth.ok) return "";
-    const response = await completeSimple(model, {
+    const response = await completeSimple(titleModel, {
       systemPrompt: TASK_TITLE_PROMPT,
       messages: [{ role: "user", content: task, timestamp: Date.now() }]
     }, {
@@ -258,8 +261,8 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
       headers: auth.headers,
       maxTokens: 64,
       temperature: 0,
-      timeoutMs: 20_000,
-      maxRetries: 0
+      timeoutMs: 8_000,
+      maxRetries: 1
     });
     return normalizeSessionTitle(textFromModelContent(response.content));
   } : undefined;
@@ -630,9 +633,13 @@ export async function summarizeSessionTitle(id: string, task: string) {
   const existingTitle = existingConfig.sessionTitles[id]?.trim();
   if (existingTitle) return { title: existingTitle, sessions: (await listSessions()).filter((session) => !session.archived) };
   const record = await getOrCreateSession(id);
-  const auth = await record.modelRegistry.getApiKeyAndHeaders(record.model);
+  const titleProfile = existingConfig.childInherit
+    ? record.profile
+    : existingConfig.profiles.find((item) => item.id === existingConfig.childProfileId) ?? record.profile;
+  const titleModel = registerProfileModel(record.authStorage, record.modelRegistry, titleProfile);
+  const auth = await record.modelRegistry.getApiKeyAndHeaders(titleModel);
   if (!auth.ok) throw new Error(auth.error);
-  const response = await completeSimple(record.model, {
+  const response = await completeSimple(titleModel, {
     systemPrompt: TASK_TITLE_PROMPT,
     messages: [{ role: "user", content: task, timestamp: Date.now() }]
   }, {
@@ -640,8 +647,8 @@ export async function summarizeSessionTitle(id: string, task: string) {
     headers: auth.headers,
     maxTokens: 64,
     temperature: 0,
-    timeoutMs: 20_000,
-    maxRetries: 0
+    timeoutMs: 8_000,
+    maxRetries: 1
   });
   const title = normalizeSessionTitle(textFromModelContent(response.content));
   const config = await readConfig();

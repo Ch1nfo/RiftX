@@ -194,6 +194,86 @@ test("uses the generated child-agent title instead of the prompt prefix", async 
   }
 });
 
+test("serializes title generation while child tasks continue concurrently", async () => {
+  const root = await mkdtemp(join(tmpdir(), "riftx-subagents-"));
+  let activeNames = 0;
+  let maxActiveNames = 0;
+  const manager = new SubagentManager("parent", root, () => undefined, 3, "request", async (task) => {
+    activeNames += 1;
+    maxActiveNames = Math.max(maxActiveNames, activeNames);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    activeNames -= 1;
+    return `Title: ${task}`;
+  });
+  await manager.initialize(async ({ task }) => ({ summary: task.task }));
+  try {
+    const children = [manager.submit("one"), manager.submit("two"), manager.submit("three")];
+    await waitFor(() => manager.list().every((task) => task.name.startsWith("Title:")));
+    assert.equal(maxActiveNames, 1);
+    await Promise.all(children);
+  } finally {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("retries a transient child-agent title failure", async () => {
+  const root = await mkdtemp(join(tmpdir(), "riftx-subagents-"));
+  let attempts = 0;
+  const manager = new SubagentManager("parent", root, () => undefined, 1, "request", async () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("rate limited");
+    return "Recovered title";
+  });
+  await manager.initialize(async () => ({ summary: "done" }));
+  try {
+    const child = manager.submit("retry title generation");
+    await waitFor(() => manager.list()[0]?.name === "Recovered title");
+    assert.equal(attempts, 2);
+    await child;
+  } finally {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("compensates for a title failure after the child task finishes in the same session", async () => {
+  const root = await mkdtemp(join(tmpdir(), "riftx-subagents-"));
+  let attempts = 0;
+  const manager = new SubagentManager("parent", root, () => undefined, 1, "request", async () => {
+    attempts += 1;
+    if (attempts < 4) throw new Error("temporary title outage");
+    return "Recovered after completion";
+  });
+  await manager.initialize(async () => ({ summary: "done" }));
+  try {
+    await manager.submit("title after task completion");
+    await waitFor(() => manager.list()[0]?.name === "Recovered after completion");
+    assert.equal(attempts, 4);
+  } finally {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("regenerates a persisted generic child-agent title", async () => {
+  const root = await mkdtemp(join(tmpdir(), "riftx-subagents-"));
+  const parentDir = join(root, "parent");
+  await mkdir(parentDir, { recursive: true });
+  const createdAt = new Date().toISOString();
+  await writeFile(join(parentDir, "tasks.json"), JSON.stringify({ tasks: [
+    { id: "completed", parentSessionId: "parent", threadId: "thread", name: "Subagent", task: "restored task", status: "completed", model: "m", createdAt, pendingApprovalCount: 0, logs: [] }
+  ] }));
+  const manager = new SubagentManager("parent", root, () => undefined, 1, "request", async () => "Restored title");
+  await manager.initialize(async () => ({ summary: "unused" }));
+  try {
+    await waitFor(() => manager.list()[0]?.name === "Restored title");
+  } finally {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("waits for the real result of a queued task restored after restart", async () => {
   const root = await mkdtemp(join(tmpdir(), "riftx-subagents-"));
   const parentDir = join(root, "parent");
