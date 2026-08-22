@@ -34,6 +34,7 @@ import { estimateCompactedUsage, estimateMessagesContextUsage, installMidTurnCom
 import { shouldDeliverSubagentCompletion, waitForSubagentsBeforeConclusion } from "./session-join";
 import { setAgentTransport } from "./pi-internals";
 import { prepareSkillPrompt, type SkillDescriptor } from "./skill-router";
+import { createTimedBashTool } from "./bash-timeout";
 
 type SessionRecord = {
   id: string;
@@ -63,7 +64,7 @@ type SessionRecord = {
   loadedSkills: Set<string>;
 };
 
-const RUNTIME_VERSION = 12;
+const RUNTIME_VERSION = 13;
 
 type SessionSnapshotCacheEntry = {
   modifiedMs: number;
@@ -282,7 +283,7 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
   const getChildProfile = () => config.childInherit ? (record?.profile ?? profile) : childProfile;
   const browser = new BrowserManager({ evidenceRoot: paths.evidence, evidenceSessionId });
   let evidenceSession: AgentSession | undefined;
-  const customTools = [createFindingTool(evidenceStore, findingSource, browser, () => evidenceSession), ...(subagents ? [createSubagentTool(subagents, getChildProfile, cwd, mutationLock, { authStorage, modelRegistry, evidenceStore, evidenceSessionId })] : [])];
+  const customTools = [createTimedBashTool(cwd, { commandPrefix: settingsManager.getShellCommandPrefix(), shellPath: settingsManager.getShellPath() }) as unknown as ToolDefinition, createFindingTool(evidenceStore, findingSource, browser, () => evidenceSession), ...(subagents ? [createSubagentTool(subagents, getChildProfile, cwd, mutationLock, { authStorage, modelRegistry, evidenceStore, evidenceSessionId })] : [])];
   const browserExtension = createBrowserExtension({ evidenceRoot: paths.evidence, evidenceSessionId }, browser);
   const resourceLoader = new DefaultResourceLoader({
     cwd,
