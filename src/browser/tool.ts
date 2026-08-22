@@ -20,7 +20,7 @@ function requireString(value: string | undefined, name: string): string {
 }
 
 export function createBrowserExtension(options: BrowserManagerOptions, existingManager?: BrowserManager): ExtensionFactory {
-  return (pi) => {
+  return (agent) => {
     const manager = existingManager ?? new BrowserManager(options);
     const browserTool = defineTool<typeof parameters, { action: BrowserAction; url: string }>({
       name: "browser",
@@ -80,7 +80,7 @@ export function createBrowserExtension(options: BrowserManagerOptions, existingM
         }
       }
     });
-    pi.registerTool(browserTool);
-    pi.on("session_shutdown", async () => { await manager.close(); });
+    agent.registerTool(browserTool);
+    agent.on("session_shutdown", async () => { await manager.close(); });
   };
 }

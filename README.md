@@ -2,19 +2,19 @@
 
 [中文文档](README_ZH.md)
 
-RiftX is a local, single-user Web UI for an authorized Web penetration testing and vulnerability validation agent. It embeds the Pi coding-agent SDK and provides a compact command-center interface for controlled reconnaissance, analysis, and evidence-driven validation.
+RiftX is a local, single-user Web UI for an authorized Web penetration testing and vulnerability validation agent. It provides a compact command-center interface for controlled reconnaissance, analysis, and evidence-driven validation.
 
-RiftX is an MVP. It focuses on Pi's core agent capabilities and safe local operation; it does not ship dedicated scanners such as nmap, httpx, or subfinder.
+RiftX is an MVP. It focuses on core agent capabilities and safe local operation; it does not ship dedicated scanners such as nmap, httpx, or subfinder.
 
 ## Highlights
 
-- Pi coding-agent sessions with streaming text, thinking, tool execution, and errors.
+- Agent sessions with streaming text, thinking, tool execution, and errors.
 - Built-in read-only tools: `read`, `grep`, `find`, and `ls`.
 - Approval-controlled `bash`, `write`, `edit`, and browser mutation actions.
 - Three approval modes: request approval, AI-assisted approval, and full access.
 - Model profiles with provider, model ID, API key, base URL, protocol, transport, context window, output limit, and thinking level.
 - Clickable model switching from the workbench composer when multiple profiles exist.
-- Concurrent sub-agents with queueing, retry, cancellation, independent Pi threads, independent approval gates, and configurable profile inheritance or override.
+- Concurrent sub-agents with queueing, retry, cancellation, independent threads, independent approval gates, and configurable profile inheritance or override.
 - Session findings with confidence, impact, reproduction notes, and reviewable quote, tool-call, browser-request, or screenshot evidence from the main Agent and sub-agents.
 - Automatic mid-turn context compaction that keeps the active Agent run alive and updates context usage from the compacted conversation.
 - Reconnection restores sub-agent snapshots and pending approvals, while session streams reject archived or out-of-workspace sessions.
@@ -41,7 +41,7 @@ RiftX does not require a database or a remote RiftX account.
 
 RiftX currently focuses on:
 
-- Pi-based interactive agent sessions
+- Interactive agent sessions
 - Controlled local command/file execution
 - Approval-gated browser automation for authenticated or interactive Web flows
 - Concurrent child-agent delegation inside a single parent session
@@ -65,7 +65,7 @@ conda run -n agent npm run dev
 
 Open <http://localhost:3000>, choose a working directory from the folder button in the workbench header, then open **Settings** to create or select a model profile. The initial working directory is the directory from which RiftX is started; changing it replaces the visible session list with sessions from the new directory.
 
-The composer model selector changes the current Pi session in place, including an empty session that has not yet written its first message. This keeps the session ID and history intact while updating the model and context window.
+The composer model selector changes the current Agent session in place, including an empty session that has not yet written its first message. This keeps the session ID and history intact while updating the model and context window.
 
 For a production build:
 
@@ -111,10 +111,20 @@ The agent must not be used to access systems outside the authorized scope, disru
 Runtime state is stored outside the repository under `~/.riftx/`:
 
 - `~/.riftx/config.json` stores model profiles and RiftX settings.
-- `~/.riftx/sessions/` stores Pi session JSONL history.
-- `~/.riftx/pi-agent/` stores RiftX-isolated Pi auth and model metadata.
+- `~/.riftx/sessions/` stores Agent session JSONL history.
+- `~/.riftx/agent/` stores RiftX-isolated auth and model metadata.
 - `~/.riftx/subagents/<parent-session-id>/` stores child-agent task state, logs, summaries, and thread metadata. Running tasks are marked `interrupted` after a restart and are not replayed automatically.
 - `~/.riftx/evidence/<session-id>/` stores session findings and retained finding screenshots.
+- `~/.riftx/skills/` stores locally installed Agent Skills (`<skill-name>/SKILL.md`). Skills in this directory are loaded for new and reopened sessions.
+
+Each skill uses the Agent Skills format:
+
+```text
+~/.riftx/skills/<skill-name>/SKILL.md
+```
+
+The `SKILL.md` frontmatter must include a matching lowercase `name` and a `description`. RiftX exposes the skill catalog to the Agent, automatically loads the best lexical match for a specialized task, and supports `/skill:<skill-name>` for explicit invocation. Skill files are read-only from RiftX; their content is never rewritten. Only this explicit user skill directory is loaded; implicit SDK and project skill directories are ignored.
+On Windows, this resolves under `%USERPROFILE%\\.riftx\\skills` through the platform home directory.
 
 API keys are stored locally with restricted file permissions. Never commit API keys, session history, authorization headers, cookies, target data, certificates, private keys, or generated reconnaissance artifacts. The repository `.gitignore` covers common secrets, runtime files, build output, and local caches, but always review `git status` before committing.
 
@@ -123,8 +133,7 @@ API keys are stored locally with restricted file permissions. Never commit API k
 ```text
 src/app/          Next.js pages and API routes
 src/components/   Workbench, settings, and shared UI
-src/server/pi/    Pi adapter, session lifecycle, approvals, and usage
-src/server/       Local configuration and persistence helpers
+src/server/       Agent runtime adapter, configuration, session lifecycle, approvals, usage, and persistence helpers
 src/lib/          Shared TypeScript types
 src/browser/      Unified Playwright browser tool, snapshots, scope guard, and network recorder
 public/           RiftX logo assets
@@ -167,12 +176,12 @@ The main Agent and child agents can record evidence-backed conclusions into the 
 
 ## Sub-agents
 
-RiftX includes an application-level child-agent system on top of Pi sessions.
+RiftX includes an application-level child-agent system on top of Agent sessions.
 
 - Child agents run in parallel up to the configured concurrency limit.
 - Extra tasks wait in the parent-session queue.
 - Child agents share the same working directory as the parent.
-- Child agents have independent Pi threads, approval gates, and browser contexts.
+- Child agents have independent threads, approval gates, and browser contexts.
 - Child agents inherit the main model by default, or can use an independent profile from Settings.
 - The maximum concurrent child-agent count is configurable from 1 to 8. Tasks beyond the limit wait in the parent-session queue.
 - Scheduling aggressiveness has `low`, `default`, and `high` modes. High mode favors broader delegation and warns about higher token and concurrency consumption; it still avoids duplicate or state-dependent tasks.

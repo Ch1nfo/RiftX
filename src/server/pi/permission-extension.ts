@@ -13,7 +13,7 @@ export function createPermissionExtension(
   evaluate?: (request: ApprovalRequest) => Promise<ApprovalEvaluation>,
   mutationLock?: MutationLock
 ): ExtensionFactory {
-  return (pi) => {
+  return (agent) => {
     const releases = new Map<string, { release: () => void; cleanupAbort?: () => void }>();
     const releaseTool = (toolCallId: string) => {
       const entry = releases.get(toolCallId);
@@ -22,10 +22,10 @@ export function createPermissionExtension(
       entry.cleanupAbort?.();
       entry.release();
     };
-    pi.on("tool_execution_end", (event) => {
+    agent.on("tool_execution_end", (event) => {
       releaseTool(event.toolCallId);
     });
-    pi.on("tool_call", async (event: ToolCallEvent, ctx) => {
+    agent.on("tool_call", async (event: ToolCallEvent, ctx) => {
       if (!guardedTools.has(event.toolName)) return;
       if (event.toolName === "browser") {
         const action = (event.input as { action?: unknown }).action;

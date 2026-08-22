@@ -6,7 +6,7 @@ import {
   AuthStorage,
   DefaultResourceLoader,
   ModelRegistry,
-  SessionManager as PiSessionManager,
+  SessionManager as AgentSessionManager,
   SettingsManager,
   createAgentSession,
   defineTool,
@@ -33,6 +33,7 @@ import { EvidenceStore, getEvidenceStore, removeEvidence } from "./evidence-stor
 import { estimateCompactedUsage, estimateMessagesContextUsage, installMidTurnCompaction } from "./mid-turn-compaction";
 import { shouldDeliverSubagentCompletion, waitForSubagentsBeforeConclusion } from "./session-join";
 import { setAgentTransport } from "./pi-internals";
+import { prepareSkillPrompt, type SkillDescriptor } from "./skill-router";
 
 type SessionRecord = {
   id: string;
@@ -42,7 +43,7 @@ type SessionRecord = {
   model: Model<any>;
   modelRegistry: ModelRegistry;
   settingsManager: SettingsManager;
-  sessionManager: PiSessionManager;
+  sessionManager: AgentSessionManager;
   session: AgentSession;
   gate: ApprovalGate;
   emitter: EventEmitter;
@@ -58,9 +59,11 @@ type SessionRecord = {
   abortEpoch?: number;
   waitingForSubagents?: boolean;
   deliveredSubagentResults: Set<string>;
+  skills: SkillDescriptor[];
+  loadedSkills: Set<string>;
 };
 
-const RUNTIME_VERSION = 11;
+const RUNTIME_VERSION = 12;
 
 type SessionSnapshotCacheEntry = {
   modifiedMs: number;
@@ -128,7 +131,7 @@ function eventPayload(event: AgentSessionEvent): RiftxEvent {
   }
   if (event.type === "tool_execution_start") return { type: "tool_start", toolName: base.toolName, toolCallId: base.toolCallId, args: base.args } as RiftxEvent;
   if (event.type === "tool_execution_update") {
-    // Pi's AgentToolUpdateCallback payload is exposed as `partialResult`.
+    // The runtime's AgentToolUpdateCallback payload is exposed as `partialResult`.
     // Reading the old `update` name turns every streamed tool update into
     // undefined, which the UI then renders literally after approval.
     return { type: "tool_update", toolName: base.toolName, toolCallId: base.toolCallId, update: base.partialResult ?? base.update } as RiftxEvent;
@@ -243,11 +246,11 @@ function createSubagentTool(manager: SubagentManager, getChildProfile: () => Mod
   });
 }
 
-async function createPiSession(profile: ModelProfile, cwd: string, gate: ApprovalGate, child = false, sessionManagerOverride?: PiSessionManager, mutationLock = new MutationLock(), runtimeDeps?: RuntimeDeps, findingSource: FindingSourceInfo = { source: "main" }) {
+async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: ApprovalGate, child = false, sessionManagerOverride?: AgentSessionManager, mutationLock = new MutationLock(), runtimeDeps?: RuntimeDeps, findingSource: FindingSourceInfo = { source: "main" }) {
   const paths = getAppPaths();
-  await mkdir(paths.piAgent, { recursive: true, mode: 0o700 });
-  const authStorage = runtimeDeps?.authStorage ?? AuthStorage.create(`${paths.piAgent}/auth.json`);
-  const modelRegistry = runtimeDeps?.modelRegistry ?? ModelRegistry.create(authStorage, `${paths.piAgent}/models.json`);
+  await mkdir(paths.agent, { recursive: true, mode: 0o700 });
+  const authStorage = runtimeDeps?.authStorage ?? AuthStorage.create(join(paths.agent, "auth.json"));
+  const modelRegistry = runtimeDeps?.modelRegistry ?? ModelRegistry.create(authStorage, join(paths.agent, "models.json"));
   const model = registerProfileModel(authStorage, modelRegistry, profile, !runtimeDeps);
 
   const config = await readConfig();
@@ -267,9 +270,9 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
   // Keep title work on the configured child profile when available so it does
   // not consume the main Agent's provider quota during a live turn.
   const titleModel = registerProfileModel(authStorage, modelRegistry, childProfile);
-  const settingsManager = SettingsManager.create(cwd, paths.piAgent);
+  const settingsManager = SettingsManager.create(cwd, paths.agent);
   settingsManager.setTransport(profile.transport);
-  const sessionManager = sessionManagerOverride ?? PiSessionManager.create(cwd, child ? join(paths.subagents, "runtime") : paths.sessions);
+  const sessionManager = sessionManagerOverride ?? AgentSessionManager.create(cwd, child ? join(paths.subagents, "runtime") : paths.sessions);
   const evidenceSessionId = runtimeDeps?.evidenceSessionId ?? sessionManager.getSessionId();
   const evidenceStore = runtimeDeps?.evidenceStore ?? getEvidenceStore(evidenceSessionId, paths.evidence, (event) => emitter.emit("event", event));
   const subagentNameGenerator = !child ? async (task: string) => {
@@ -283,9 +286,11 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
   const browserExtension = createBrowserExtension({ evidenceRoot: paths.evidence, evidenceSessionId }, browser);
   const resourceLoader = new DefaultResourceLoader({
     cwd,
-    agentDir: paths.piAgent,
+    agentDir: paths.agent,
+    additionalSkillPaths: [paths.skills],
     extensionFactories: [permission, browserExtension],
     noExtensions: true,
+    noSkills: true,
     systemPrompt: child ? buildChildPentestSystemPrompt() : buildPentestSystemPrompt(config.subagentAggressiveness, config.systemPromptEnabled ? config.systemPrompt : undefined)
   });
   // The SDK only reloads a resource loader it creates internally. RiftX supplies
@@ -294,7 +299,7 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
   await resourceLoader.reload();
   const result = await createAgentSession({
     cwd,
-    agentDir: paths.piAgent,
+    agentDir: paths.agent,
     authStorage,
     modelRegistry,
     model,
@@ -307,7 +312,7 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
   });
   evidenceSession = result.session;
   installMidTurnCompaction(result.session);
-  // Pi prepares parallel calls before executing them. Keep guarded mutation
+  // The runtime prepares parallel calls before executing them. Keep guarded mutation
   // tools sequential so they cannot deadlock on the shared mutation lock, but
   // allow independent spawn_subagent calls to run concurrently.
   const runtimeAgent = (result.session as unknown as { agent?: { toolExecution?: "parallel" | "sequential"; state?: { tools?: Array<{ name: string; executionMode?: "parallel" | "sequential" }> } } }).agent;
@@ -339,6 +344,8 @@ async function createPiSession(profile: ModelProfile, cwd: string, gate: Approva
     abortEpoch: 0,
     waitingForSubagents: false,
     deliveredSubagentResults: new Set(),
+    skills: resourceLoader.getSkills().skills as SkillDescriptor[],
+    loadedSkills: new Set(),
     unsubscribe: () => undefined
   };
   const unsubscribe = result.session.subscribe((event) => {
@@ -383,8 +390,8 @@ async function runChildSession(profile: ModelProfile, cwd: string, mutationLock:
   const paths = getAppPaths();
   const threadDir = join(paths.subagents, context.task.parentSessionId, context.task.id);
   await mkdir(threadDir, { recursive: true, mode: 0o700 });
-  const childSessionManager = PiSessionManager.create(cwd, threadDir);
-  const child = await createPiSession(profile, cwd, context.gate, true, childSessionManager, mutationLock, runtimeDeps, { source: "subagent", subagentId: context.task.id });
+  const childSessionManager = AgentSessionManager.create(cwd, threadDir);
+  const child = await createRuntimeSession(profile, cwd, context.gate, true, childSessionManager, mutationLock, runtimeDeps, { source: "subagent", subagentId: context.task.id });
   context.task.model = `${profile.provider}/${profile.model}`;
   context.updateTaskMeta({ model: context.task.model, threadId: child.id });
   const abortChild = () => {
@@ -538,7 +545,7 @@ async function buildSessionSnapshot(id: string, path?: string) {
 
 async function listWorkspaceSessionInfos(cwd: string) {
   const target = resolve(cwd);
-  const infos = await PiSessionManager.list(cwd, getAppPaths().sessions);
+  const infos = await AgentSessionManager.list(cwd, getAppPaths().sessions);
   const launchDirectory = resolve(process.cwd());
   return infos.filter((info) => info.cwd ? resolve(info.cwd) === target : target === launchDirectory);
 }
@@ -575,13 +582,13 @@ async function getOrCreateSession(id?: string) {
     }
     const currentConfig = await readConfig();
     const profile = await profileFor();
-    let sessionManager: PiSessionManager | undefined;
+    let sessionManager: AgentSessionManager | undefined;
     if (id) {
       const info = (await listWorkspaceSessionInfos(currentConfig.cwd)).find((item) => item.id === id);
       if (!info) throw new RiftxError("Session does not belong to the current working directory", "SESSION_NOT_IN_WORKSPACE", 404);
-      sessionManager = PiSessionManager.open(info.path, getAppPaths().sessions, currentConfig.cwd);
+      sessionManager = AgentSessionManager.open(info.path, getAppPaths().sessions, currentConfig.cwd);
     }
-    const created = await createPiSession(profile, currentConfig.cwd, new ApprovalGate(), false, sessionManager);
+    const created = await createRuntimeSession(profile, currentConfig.cwd, new ApprovalGate(), false, sessionManager);
     sessions.set(created.id, created);
     return created;
   };
@@ -600,7 +607,7 @@ async function getOrCreateSession(id?: string) {
 export async function createSession() {
   const config = await readConfig();
   const profile = await profileFor();
-  const created = await createPiSession(profile, config.cwd, new ApprovalGate());
+  const created = await createRuntimeSession(profile, config.cwd, new ApprovalGate());
   sessions.set(created.id, created);
   return created;
 }
@@ -632,13 +639,32 @@ export async function setWorkingDirectory(input: string) {
 async function promptSession(id: string, text: string, mode: "prompt" | "steer" | "followUp" = "prompt") {
   const record = await getOrCreateSession(id);
   const resolvedMode = resolvePromptMode(mode, record.session.isStreaming);
+  const prepared = resolvedMode === "steer" ? { prompt: text, skillContext: "", loaded: [] as string[] } : await prepareSkillPrompt(text, record.skills, record.loadedSkills);
   const promptAbortEpoch = record.abortEpoch ?? 0;
   const knownTaskIds = new Set(record.subagents?.list().map((task) => task.id) ?? []);
   const activeBefore = new Set(record.subagents?.list().filter((task) => task.status === "queued" || task.status === "running").map((task) => task.id) ?? []);
   if (resolvedMode !== "steer") record.gate.beginTask();
-  if (resolvedMode === "steer") await record.session.steer(text);
-  else if (resolvedMode === "followUp") await record.session.followUp(text);
-  else await record.session.prompt(text);
+  let skillInjected = false;
+  try {
+    if (resolvedMode === "steer") await record.session.steer(prepared.prompt);
+    else if (resolvedMode === "followUp") {
+      if (prepared.skillContext) {
+        await record.session.sendCustomMessage({ customType: "riftx_skill_context", content: prepared.skillContext, display: false }, { deliverAs: "followUp" });
+        skillInjected = true;
+      }
+      await record.session.followUp(text);
+    }
+    else {
+      if (prepared.skillContext) {
+        await record.session.sendCustomMessage({ customType: "riftx_skill_context", content: prepared.skillContext, display: false });
+        skillInjected = true;
+      }
+      await record.session.prompt(text);
+    }
+  } catch (error) {
+    if (!skillInjected) prepared.loaded.forEach((name) => record.loadedSkills.delete(name));
+    throw error;
+  }
   if (resolvedMode !== "steer" && record.subagents) await waitForSubagentsBeforeConclusion(record, knownTaskIds, activeBefore, promptAbortEpoch);
   return record;
 }
@@ -662,7 +688,7 @@ export async function summarizeSessionTitle(id: string, task: string) {
 
 export async function startPromptSession(id: string, text: string, mode: "prompt" | "steer" | "followUp" = "prompt") {
   const record = await getOrCreateSession(id);
-  // Keep Pi single-run while a previous stop is still unwinding a tool.
+  // Keep the Agent single-run while a previous stop is still unwinding a tool.
   if (record.abortPromise) await record.abortPromise;
   void promptSession(id, text, mode).catch((error) => {
     record.emitter.emit("event", { type: "error", error: error instanceof Error ? error.message : "Agent request failed" });
@@ -677,9 +703,9 @@ export async function abortSession(id: string) {
   record.abortPromise = (async () => {
     record.abortEpoch = (record.abortEpoch ?? 0) + 1;
     record.waitingForSubagents = false;
-    // Release approval/mutation waits first, then explicitly stop Pi's bash
-    // controller. AgentSession.abort() only aborts the model loop; bash has a
-    // separate controller in the Pi SDK.
+    // Release approval/mutation waits first, then explicitly stop the Agent's
+    // bash controller. AgentSession.abort() only aborts the model loop; bash
+    // has a separate controller in the runtime SDK.
     record.gate.rejectAll();
     const subagentAbort = record.subagents?.abortAll();
     record.session.abortBash();

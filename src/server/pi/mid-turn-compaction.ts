@@ -74,7 +74,7 @@ async function runMidTurnCompaction(session: AgentSession, signal?: AbortSignal)
 }
 
 /**
- * Keep Pi's active loop alive while replacing its detached context after a
+ * Keep the Agent's active loop alive while replacing its detached context after a
  * tool turn. The public compact() API aborts the active run, so this uses the
  * SDK's auto-compaction path and keeps the current message array in place.
  */

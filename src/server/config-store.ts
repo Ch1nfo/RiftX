@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile, chmod, rename } from "node:fs/promises";
+import { mkdir, readFile, writeFile, chmod, rename, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -7,9 +7,11 @@ import { APPROVAL_MODES, DEFAULT_PROFILE, SUBAGENT_AGGRESSIVENESS, type AppConfi
 const ROOT = join(homedir(), ".riftx");
 const CONFIG_PATH = join(ROOT, "config.json");
 const SESSION_PATH = join(ROOT, "sessions");
-const PI_AGENT_PATH = join(ROOT, "pi-agent");
+const AGENT_PATH = join(ROOT, "agent");
+const LEGACY_AGENT_PATH = join(ROOT, "pi-agent");
 const SUBAGENT_PATH = join(ROOT, "subagents");
 const EVIDENCE_PATH = join(ROOT, "evidence");
+const SKILLS_PATH = join(ROOT, "skills");
 let configWriteChain = Promise.resolve();
 
 const defaultConfig = (): AppConfig => ({
@@ -31,13 +33,22 @@ const defaultConfig = (): AppConfig => ({
 async function ensureAppDirs() {
   await mkdir(ROOT, { recursive: true, mode: 0o700 });
   await mkdir(SESSION_PATH, { recursive: true, mode: 0o700 });
-  await mkdir(PI_AGENT_PATH, { recursive: true, mode: 0o700 });
+  try {
+    await stat(AGENT_PATH);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    await rename(LEGACY_AGENT_PATH, AGENT_PATH).catch((migrationError: NodeJS.ErrnoException) => {
+      if (migrationError.code !== "ENOENT") throw migrationError;
+    });
+  }
+  await mkdir(AGENT_PATH, { recursive: true, mode: 0o700 });
   await mkdir(SUBAGENT_PATH, { recursive: true, mode: 0o700 });
   await mkdir(EVIDENCE_PATH, { recursive: true, mode: 0o700 });
+  await mkdir(SKILLS_PATH, { recursive: true, mode: 0o700 });
 }
 
 export function getAppPaths() {
-  return { root: ROOT, config: CONFIG_PATH, sessions: SESSION_PATH, piAgent: PI_AGENT_PATH, subagents: SUBAGENT_PATH, evidence: EVIDENCE_PATH };
+  return { root: ROOT, config: CONFIG_PATH, sessions: SESSION_PATH, agent: AGENT_PATH, subagents: SUBAGENT_PATH, evidence: EVIDENCE_PATH, skills: SKILLS_PATH };
 }
 
 export async function readConfig(): Promise<AppConfig> {

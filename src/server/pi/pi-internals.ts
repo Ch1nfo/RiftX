@@ -15,7 +15,7 @@ export async function waitForAgentEvents(session: AgentSession) {
 
 export async function runAutoCompaction(session: AgentSession) {
   const internal = internalSession(session);
-  if (!internal._runAutoCompaction) throw new Error("Pi auto-compaction hook is unavailable");
+  if (!internal._runAutoCompaction) throw new Error("Auto-compaction hook is unavailable");
   await internal._runAutoCompaction("threshold", false);
 }
 

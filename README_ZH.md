@@ -2,19 +2,19 @@
 
 [English README](README.md)
 
-RiftX 是一个本机单用户 Web UI，用于在已获得明确授权的范围内进行 Web 渗透测试与漏洞验证。它嵌入 Pi coding-agent SDK，提供紧凑的终端指挥台界面，用于受控侦察、分析和基于证据的验证。
+RiftX 是一个本机单用户 Web UI，用于在已获得明确授权的范围内进行 Web 渗透测试与漏洞验证。它提供紧凑的终端指挥台界面，用于受控侦察、分析和基于证据的验证。
 
-RiftX 当前是 MVP，重点实现 Pi 的基础 Agent 能力和本机安全运行，不内置 nmap、httpx、subfinder 等专用扫描器。
+RiftX 当前是 MVP，重点实现基础 Agent 能力和本机安全运行，不内置 nmap、httpx、subfinder 等专用扫描器。
 
 ## 主要能力
 
-- Pi coding-agent 会话，支持文本、思考、工具执行和错误事件流式显示。
+- Agent 会话，支持文本、思考、工具执行和错误事件流式显示。
 - 默认允许只读工具：`read`、`grep`、`find`、`ls`。
 - `bash`、`write`、`edit` 以及会修改页面的浏览器 action 受审批策略保护。
 - 三种审批模式：请求审批、帮我审批、完全访问。
 - 模型配置档案：Provider、模型 ID、API Key、Base URL、协议、传输方式、上下文大小、输出上限和 Thinking level。
 - 配置多个模型时，可直接在工作台输入框右侧点击模型名称切换。
-- 支持并发子 Agent，具备排队、重试、取消、独立 Pi 线程、独立审批门，以及继承或覆盖主模型配置的能力。
+- 支持并发子 Agent，具备排队、重试、取消、独立线程、独立审批门，以及继承或覆盖主模型配置的能力。
 - 主 Agent 和子 Agent 均可记录会话发现，包含置信度、影响、复现说明，以及可复核的摘录、工具调用、浏览器请求或截图证据。
 - 支持不中断当前 Agent 任务的中途上下文自动压缩，并根据压缩后的对话更新上下文占用。
 - 重新连接会恢复子 Agent 快照与待处理审批；已归档或不属于当前工作目录的会话不能建立事件流。
@@ -41,7 +41,7 @@ RiftX 不需要数据库，也不需要远程 RiftX 账户。
 
 当前 RiftX 重点覆盖：
 
-- 基于 Pi 的交互式 Agent 会话
+- 交互式 Agent 会话
 - 受控的本机命令与文件操作
 - 带审批门的浏览器自动化，用于登录态或交互式 Web 流程
 - 单个父会话中的并发子 Agent 委派
@@ -65,7 +65,7 @@ conda run -n agent npm run dev
 
 打开 <http://localhost:3000>，先点击工作台顶部的工作目录按钮，通过系统文件夹选择器选择目录，再进入“设置”创建或选择模型配置。初始工作目录是启动 RiftX 时所在的目录；切换目录后，左侧只显示新目录下的会话。
 
-输入框中的模型选择器会原地切换当前 Pi 会话，即使会话还没有发送过第一条消息也不会丢失会话 ID 或历史；模型和上下文窗口会同步更新。
+输入框中的模型选择器会原地切换当前 Agent 会话，即使会话还没有发送过第一条消息也不会丢失会话 ID 或历史；模型和上下文窗口会同步更新。
 
 生产构建：
 
@@ -111,10 +111,20 @@ RiftX 只应被用于操作者明确获得授权的目标。
 运行时数据保存在仓库之外的 `~/.riftx/`：
 
 - `~/.riftx/config.json` 保存模型配置和 RiftX 设置。
-- `~/.riftx/sessions/` 保存 Pi 会话 JSONL 历史。
-- `~/.riftx/pi-agent/` 保存 RiftX 独立的 Pi 授权和模型元数据。
+- `~/.riftx/sessions/` 保存 Agent 会话 JSONL 历史。
+- `~/.riftx/agent/` 保存 RiftX 独立的授权和模型元数据。
 - `~/.riftx/subagents/<父会话 ID>/` 保存子 Agent 任务状态、日志、摘要和线程元数据。服务重启后，运行中的任务会标记为 `interrupted`，不会自动重新执行。
 - `~/.riftx/evidence/<会话 ID>/` 保存会话发现和为发现保留的截图。
+- `~/.riftx/skills/` 保存本机安装的 Agent Skill（`<skill-name>/SKILL.md`）；新建或重新打开的会话会加载其中的 skill。
+
+Skill 使用 Agent Skills 格式：
+
+```text
+~/.riftx/skills/<skill-name>/SKILL.md
+```
+
+`SKILL.md` 的 frontmatter 必须包含与目录匹配的、仅使用小写字母/数字/连字符的 `name`，以及 `description`。RiftX 会把 skill 目录提供给 Agent，并在专业任务中自动加载最匹配的 skill；也可以通过 `/skill:<skill-name>` 显式调用。RiftX 只读加载 skill，不会改写外部 skill 文件。RiftX 只加载这个明确指定的用户 skill 目录，忽略 SDK 和项目的隐式 skill 目录。
+在 Windows 上，该路径会通过系统 home 目录解析为 `%USERPROFILE%\\.riftx\\skills`。
 
 API Key 会以受限权限保存在本机。不要提交 API Key、会话历史、Authorization Header、Cookie、目标数据、证书、私钥或侦察生成文件。仓库中的 `.gitignore` 已覆盖常见密钥、运行时文件、构建产物和本地缓存，但提交前仍应检查 `git status`。
 
@@ -123,8 +133,7 @@ API Key 会以受限权限保存在本机。不要提交 API Key、会话历史�
 ```text
 src/app/          Next.js 页面和 API 路由
 src/components/   工作台、设置页和共享 UI
-src/server/pi/    Pi 适配器、会话生命周期、审批和用量
-src/server/       本机配置与持久化辅助模块
+src/server/       Agent 运行时适配、本机配置、会话生命周期、审批、用量和持久化辅助模块
 src/lib/          共享 TypeScript 类型
 src/browser/      统一 Playwright 浏览器工具、快照、作用域校验和网络记录
 public/           RiftX Logo 资源
@@ -167,12 +176,12 @@ RiftX 暴露的是单一统一的 `browser` 工具，而不是拆成多个独立
 
 ## 子 Agent
 
-RiftX 在 Pi session 之上实现了应用层子 Agent 系统。
+RiftX 在 Agent session 之上实现了应用层子 Agent 系统。
 
 - 子 Agent 按配置的最大并发数并行运行。
 - 超出并发限制的任务会进入父会话队列等待。
 - 子 Agent 与主 Agent 共享工作目录。
-- 子 Agent 拥有独立的 Pi thread、审批门和浏览器上下文。
+- 子 Agent 拥有独立的 thread、审批门和浏览器上下文。
 - 子 Agent 默认继承主模型，也可以在设置页切换为独立 profile。
 - 最大并发子 Agent 数量可在设置中配置为 1 到 8，超过上限的任务会进入父会话队列。
 - 调度积极性分为“低”“默认”“高”。高档会更积极地委派并提示更高的 token 与并发消耗，但仍会跳过重复任务和有状态依赖任务。

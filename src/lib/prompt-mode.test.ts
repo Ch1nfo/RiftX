@@ -10,7 +10,7 @@ test("queues a prompt as steer when the agent is already streaming", () => {
   assert.equal(resolvePromptMode("followUp", false), "prompt");
 });
 
-test("detects Pi's in-flight prompt error without treating other failures as idle", () => {
+test("detects the in-flight prompt error without treating other failures as idle", () => {
   assert.equal(isAlreadyProcessingError("Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message."), true);
   assert.equal(isAlreadyProcessingError("Agent request failed"), false);
 });
