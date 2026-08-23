@@ -16,7 +16,7 @@ export async function GET(request: Request) {
 export async function POST() {
   try {
     const session = await createSession();
-    return Response.json({ id: session.id }, { status: 201 });
+    return Response.json(session, { status: 201 });
   } catch (error) {
     return Response.json({ error: errorMessage(error, "创建会话失败") }, { status: errorStatus(error, 500) });
   }

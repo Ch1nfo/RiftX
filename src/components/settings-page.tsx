@@ -23,18 +23,36 @@ export function SettingsPage() {
   const [savedSection, setSavedSection] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [archivedSessions, setArchivedSessions] = useState<SessionSummary[]>([]);
+  const [archivedLoading, setArchivedLoading] = useState(false);
+  const [archivedLoaded, setArchivedLoaded] = useState(false);
   const [activeSection, setActiveSection] = useState<"model-agent" | "archived">("model-agent");
 
   useEffect(() => {
-    Promise.all([fetch("/api/settings/model-profiles"), fetch("/api/sessions?archived=true")]).then(async ([configResponse, sessionsResponse]) => {
-      const data = await configResponse.json();
+    fetch("/api/settings/model-profiles").then(async (response) => {
+      const data = await response.json();
       setConfig(data);
       setSelected(data.profiles?.[0]?.id ?? "");
       setMaxConcurrentDraft(String(Math.min(8, Math.max(1, Number(data.maxConcurrentSubagents) || 1))));
-      setArchivedSessions(await sessionsResponse.json());
     }).catch(() => setError(t("settingsLoadFailed")));
     return undefined;
   }, []);
+
+  useEffect(() => {
+    if (activeSection !== "archived" || archivedLoaded) return;
+    const controller = new AbortController();
+    setArchivedLoading(true);
+    fetch("/api/sessions?archived=true", { signal: controller.signal }).then(async (response) => {
+      const data = await response.json() as SessionSummary[] | { error?: string };
+      if (!response.ok) throw new Error(!Array.isArray(data) ? data.error : undefined);
+      setArchivedSessions(Array.isArray(data) ? data : []);
+      setArchivedLoaded(true);
+    }).catch((reason: unknown) => {
+      if (!controller.signal.aborted) setError(reason instanceof Error && reason.message ? reason.message : t("settingsLoadFailed"));
+    }).finally(() => {
+      if (!controller.signal.aborted) setArchivedLoading(false);
+    });
+    return () => controller.abort();
+  }, [activeSection, archivedLoaded, t]);
 
   if (!config) return <div className="settings-loading">{t("loadingSettings")}</div>;
 
@@ -116,7 +134,7 @@ export function SettingsPage() {
         </section>
         <section className="settings-card system-prompt-card"><div className="card-heading"><div><h2>{t("systemPrompt")}</h2><p>{t("systemPromptDesc")}</p></div>{sectionSaveButton("systemPrompt", () => void saveSection("systemPrompt", { systemPromptEnabled: config.systemPromptEnabled, systemPrompt: config.systemPrompt }))}</div><label className="toggle-row"><span><strong>{t("customSystemPromptEnabled")}</strong><small>{t("customSystemPromptEnabledDesc")}</small></span><input type="checkbox" checked={config.systemPromptEnabled} onChange={(event) => setConfig({ ...config, systemPromptEnabled: event.target.checked })} /></label>{config.systemPromptEnabled ? <Field label={t("customSystemPrompt")} hint={t("customSystemPromptHint")}><textarea className="settings-prompt-input" value={config.systemPrompt} onChange={(event) => setConfig({ ...config, systemPrompt: event.target.value })} placeholder={t("systemPromptPlaceholder")} rows={12} /></Field> : null}</section>
         <section className="settings-card"><div className="card-heading"><div><h2>{t("childAgent")}</h2><p>{t("childAgentDesc")}</p></div>{sectionSaveButton("childAgent", () => void saveSection("childAgent", { childProfileId: config.childProfileId, childInherit: config.childInherit, maxConcurrentSubagents: config.maxConcurrentSubagents, subagentAggressiveness: config.subagentAggressiveness }))}</div><label className="toggle-row"><span><strong>{t("inheritMain")}</strong><small>{t("inheritMainDesc")}</small></span><input type="checkbox" checked={config.childInherit} onChange={(event) => setConfig({ ...config, childInherit: event.target.checked })} /></label>{config.childInherit ? null : <Field label={t("independentProfile")}><SelectField value={config.childProfileId ?? profile.id} onValueChange={(value) => setConfig({ ...config, childProfileId: value })} options={config.profiles.map((item) => ({ value: item.id, label: item.name || item.model }))} /></Field>}<Field label={t("maxConcurrentSubagents")} hint={t("maxConcurrentSubagentsHint")}><input type="text" inputMode="numeric" maxLength={2} value={maxConcurrentDraft} onChange={(event) => updateMaxConcurrentDraft(event.target.value)} onFocus={(event) => { const input = event.currentTarget; const end = input.value.length; window.requestAnimationFrame(() => { if (input.isConnected) input.setSelectionRange(end, end); }); }} onBlur={normalizeMaxConcurrentDraft} /></Field><Field label={t("subagentAggressiveness")} hint={t("subagentAggressivenessDesc")}><SelectField value={config.subagentAggressiveness} onValueChange={(value) => setConfig({ ...config, subagentAggressiveness: value as SubagentAggressiveness })} options={SUBAGENT_AGGRESSIVENESS.map((value) => ({ value, label: value === "low" ? t("subagentLow") : value === "high" ? t("subagentHigh") : t("subagentDefault") }))} /></Field>{config.subagentAggressiveness === "high" ? <div className="safety-note"><Warning size={18} weight="regular" /><span>{t("subagentHighWarning")}</span></div> : null}<div className="field-hint subagent-new-session-note">{t("subagentNewSessionNote")}</div></section>
-        </> : <section id="archived" className="settings-card"><div className="card-heading"><div><h2>{t("archived")}</h2><p>{t("archivedDesc")}</p></div><Archive size={18} color="var(--muted)" /></div>{archivedSessions.length ? <div className="archived-session-list">{archivedSessions.map((session) => <div className="archived-session-row" key={session.id}><div className="session-copy"><strong>{session.name || t("newSessionEnglish")}</strong><small>{new Date(session.updatedAt).toLocaleString()}</small></div><button className="icon-button danger-icon" aria-label={`${t("deleteArchived")} ${session.name || t("archived")}`} title={t("deleteArchived")} onClick={() => void deleteArchived(session)}><Trash size={16} /></button></div>)}</div> : <div className="archived-empty">{t("noArchived")}</div>}</section>}
+        </> : <section id="archived" className="settings-card"><div className="card-heading"><div><h2>{t("archived")}</h2><p>{t("archivedDesc")}</p></div><Archive size={18} color="var(--muted)" /></div>{archivedLoading ? <div className="archived-empty">{t("loading")}</div> : archivedSessions.length ? <div className="archived-session-list">{archivedSessions.map((session) => <div className="archived-session-row" key={session.id}><div className="session-copy"><strong>{session.name || t("newSessionEnglish")}</strong><small>{new Date(session.updatedAt).toLocaleString()}</small></div><button className="icon-button danger-icon" aria-label={`${t("deleteArchived")} ${session.name || t("archived")}`} title={t("deleteArchived")} onClick={() => void deleteArchived(session)}><Trash size={16} /></button></div>)}</div> : <div className="archived-empty">{t("noArchived")}</div>}</section>}
       </div>
       {error ? <div className="inline-error">{error}</div> : null}
     </main>

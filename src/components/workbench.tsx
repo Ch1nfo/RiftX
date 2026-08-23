@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Archive, ArrowDown, ArrowUp, Brain, Command, FolderOpen, Gear, List, Plus, Stop, WarningCircle, X } from "@phosphor-icons/react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -15,6 +15,11 @@ import { isAlreadyProcessingError } from "@/lib/prompt-mode";
 import { summarizeToolResult } from "@/lib/tool-result";
 
 type Message = { id: string; role: "user" | "assistant" | "thinking" | "tool"; content: string; toolName?: string; toolCallId?: string; status?: string; isError?: boolean };
+type MessageDelta = { role: "assistant" | "thinking"; content: string };
+type MessageLabels = { you: string; thinking: string; thinkingNow: string; thinkingDone: string; running: string; failed: string; stopped: string; complete: string };
+
+const MESSAGE_BATCH_SIZE = 200;
+const MARKDOWN_PLUGINS = [remarkGfm];
 
 function makeEmptyUsage(contextWindow = 0): ContextUsage {
   const safeWindow = Number.isFinite(contextWindow) && contextWindow > 0 ? contextWindow : 0;
@@ -50,14 +55,33 @@ function containsToken(text: string, token: string) {
 
 type EvidenceTarget = { kind: "tool"; toolCallId: string } | { kind: "subagent"; taskId: string; logId: string };
 
-function ToolCard({ message }: { message: Message }) {
-  const { language, t } = useLanguage();
+const ToolCard = memo(function ToolCard({ message, labels }: { message: Message; labels: MessageLabels }) {
   const [open, setOpen] = useState(message.status === "running");
   useEffect(() => { setOpen(message.status === "running"); }, [message.status]);
   return <details id={message.toolCallId ? `tool-${encodeURIComponent(message.toolCallId)}` : undefined} className={`tool-card ${message.isError ? "error" : ""}`} open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
-    <summary className="tool-card-head"><span><Command size={14} />{message.toolName}</span><span className={`tool-status ${message.status}`}>{message.status === "running" ? t("running") : message.status === "error" ? t("failed") : message.status === "cancelled" ? t("stopped") : t("complete")}</span></summary>
+    <summary className="tool-card-head"><span><Command size={14} />{message.toolName}</span><span className={`tool-status ${message.status}`}>{message.status === "running" ? labels.running : message.status === "error" ? labels.failed : message.status === "cancelled" ? labels.stopped : labels.complete}</span></summary>
     <pre>{message.content}</pre>
   </details>;
+});
+
+const MessageItem = memo(function MessageItem({ message, labels }: { message: Message; labels: MessageLabels }) {
+  return <article className={`message ${message.role}${message.status === "error" ? " error" : ""}`}>
+    {message.role === "user" ? <div className="avatar user-avatar">{labels.you}</div> : message.role === "assistant" ? <div className="avatar assistant-avatar"><RiftxLogo decorative /></div> : null}
+    <div className="message-body">{message.role === "thinking" ? <details className="thinking-block" open={message.status === "streaming"}><summary><span className="thinking-title"><Brain size={14} weight="bold" />{labels.thinking}</span><span className="thinking-state">{message.status === "streaming" ? labels.thinkingNow : labels.thinkingDone}</span></summary><div className="thinking-copy">{message.content}</div></details> : message.role === "tool" ? <ToolCard message={message} labels={labels} /> : <div className="markdown"><ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>{message.content}</ReactMarkdown></div>}</div>
+  </article>;
+});
+
+function applyMessageDeltas(current: Message[], deltas: MessageDelta[]) {
+  return deltas.reduce((messages, delta) => {
+    let next = messages;
+    let last = next[next.length - 1];
+    if (delta.role === "assistant" && last?.role === "thinking" && last.status === "streaming") {
+      next = [...next.slice(0, -1), { ...last, status: "done" }];
+      last = next[next.length - 1];
+    }
+    if (last?.role === delta.role) return [...next.slice(0, -1), { ...last, content: last.content + delta.content, status: delta.role === "thinking" ? "streaming" : last.status }];
+    return [...next, { id: crypto.randomUUID(), role: delta.role, content: delta.content, status: delta.role === "thinking" ? "streaming" : undefined }];
+  }, current);
 }
 
 export function Workbench() {
@@ -66,6 +90,7 @@ export function Workbench() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [activeId, setActiveId] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
+  const [visibleMessageCount, setVisibleMessageCount] = useState(MESSAGE_BATCH_SIZE);
   const [usage, setUsage] = useState<ContextUsage>(() => makeEmptyUsage());
   const [modelName, setModelName] = useState("No model configured");
   const [modelProfiles, setModelProfiles] = useState<ModelProfile[]>([]);
@@ -98,6 +123,25 @@ export function Workbench() {
   const subagentFlushFrameRef = useRef<number | undefined>(undefined);
   const titleQueueRef = useRef<Promise<void>>(Promise.resolve());
   const titleRequestRef = useRef(0);
+  const messageDeltaQueueRef = useRef<MessageDelta[]>([]);
+  const messageDeltaFrameRef = useRef<number | undefined>(undefined);
+  const scrollFrameRef = useRef<number | undefined>(undefined);
+  const historyScrollRef = useRef<{ height: number; top: number } | null>(null);
+  const pendingToolScrollRef = useRef<string | null>(null);
+
+  const flushMessageDeltas = () => {
+    if (messageDeltaFrameRef.current !== undefined) cancelAnimationFrame(messageDeltaFrameRef.current);
+    messageDeltaFrameRef.current = undefined;
+    const pending = messageDeltaQueueRef.current.splice(0);
+    if (pending.length) setMessages((current) => applyMessageDeltas(current, pending));
+  };
+
+  const queueMessageDelta = (delta: MessageDelta) => {
+    const last = messageDeltaQueueRef.current[messageDeltaQueueRef.current.length - 1];
+    if (last?.role === delta.role) last.content += delta.content;
+    else messageDeltaQueueRef.current.push(delta);
+    if (messageDeltaFrameRef.current === undefined) messageDeltaFrameRef.current = requestAnimationFrame(flushMessageDeltas);
+  };
 
   useEffect(() => {
     tRef.current = t;
@@ -195,6 +239,7 @@ export function Workbench() {
 
   useEffect(() => {
     shouldAutoScrollRef.current = true;
+    setVisibleMessageCount(MESSAGE_BATCH_SIZE);
     setShowJumpToLatest(false);
     subagentsRef.current = [];
     setSubagents([]);
@@ -262,6 +307,12 @@ export function Workbench() {
       }
       if (!payload) return;
       if (payload.type === "connected") return;
+      if (payload.type === "text_delta" || payload.type === "thinking_delta") {
+        messageVersion += 1;
+        queueMessageDelta({ role: payload.type === "text_delta" ? "assistant" : "thinking", content: String(payload.delta ?? "") });
+        return;
+      }
+      flushMessageDeltas();
       if (payload.type === "finding" && payload.finding) {
         const finding = payload.finding as Finding;
         setFindings((current) => current.some((item) => item.id === finding.id) ? current.map((item) => item.id === finding.id ? finding : item) : [...current, finding]);
@@ -328,16 +379,6 @@ export function Workbench() {
       }
       if (payload.type === "session_state") { setMainAgentRunning(payload.state !== "idle"); return; }
       if (payload.type === "done") { setMainAgentRunning(false); setApprovalQueue((current) => current.filter(isSubagentApproval)); setMessages((current) => current.map((message) => message.role === "thinking" ? { ...message, status: "done" } : message.role === "tool" && message.status === "running" ? { ...message, status: "cancelled", isError: true, content: message.content ? `${message.content}\n\n${t("stopped")}` : t("stopped") } : message)); return; }
-      if (payload.type === "text_delta") {
-        const delta = String(payload.delta ?? "");
-        setMessages((current) => { const last = current[current.length - 1]; if (last?.role === "assistant") return [...current.slice(0, -1), { ...last, content: last.content + delta }]; return [...current, { id: crypto.randomUUID(), role: "assistant", content: delta }]; });
-        return;
-      }
-      if (payload.type === "thinking_delta") {
-        const delta = String(payload.delta ?? "");
-        setMessages((current) => { const last = current[current.length - 1]; if (last?.role === "thinking") return [...current.slice(0, -1), { ...last, content: last.content + delta, status: "streaming" }]; return [...current, { id: crypto.randomUUID(), role: "thinking", content: delta, status: "streaming" }]; });
-        return;
-      }
       if (payload.type === "tool_start") {
         const toolCallId = String(payload.toolCallId ?? crypto.randomUUID());
         setMessages((current) => {
@@ -378,6 +419,9 @@ export function Workbench() {
       disposed = true;
       controller.abort();
       source.close();
+      if (messageDeltaFrameRef.current !== undefined) cancelAnimationFrame(messageDeltaFrameRef.current);
+      messageDeltaFrameRef.current = undefined;
+      messageDeltaQueueRef.current = [];
       subagentQueueRef.current.clear();
       subagentPatchQueueRef.current.clear();
       if (subagentFlushFrameRef.current !== undefined) {
@@ -389,13 +433,46 @@ export function Workbench() {
 
   const subagentRunning = useMemo(() => subagents.filter((task) => task.status === "queued" || task.status === "running").length, [subagents]);
   const visibleMessages = useMemo(() => messages.filter((message) => message.toolName !== "spawn_subagent"), [messages]);
+  const displayedMessages = useMemo(() => visibleMessages.slice(-visibleMessageCount), [visibleMessages, visibleMessageCount]);
+  const hasEarlierMessages = displayedMessages.length < visibleMessages.length;
+  const messageLabels = useMemo<MessageLabels>(() => ({ you: t("you"), thinking: t("thinking"), thinkingNow: t("thinkingNow"), thinkingDone: t("thinkingDone"), running: t("running"), failed: t("failed"), stopped: t("stopped"), complete: t("complete") }), [t]);
   const running = mainAgentRunning || subagentRunning > 0 || approvalQueue.length > 0;
   const composerBusy = mainAgentRunning || approvalQueue.some((item) => !item.subagentId);
 
+  useEffect(() => {
+    if (!shouldAutoScrollRef.current || scrollFrameRef.current !== undefined) return;
+    scrollFrameRef.current = requestAnimationFrame(() => {
+      scrollFrameRef.current = undefined;
+      const conversation = conversationRef.current;
+      if (conversation && shouldAutoScrollRef.current) conversation.scrollTop = conversation.scrollHeight;
+    });
+  }, [messages]);
+
   useLayoutEffect(() => {
     const conversation = conversationRef.current;
-    if (conversation && shouldAutoScrollRef.current) conversation.scrollTop = conversation.scrollHeight;
-  }, [messages]);
+    const historyScroll = historyScrollRef.current;
+    if (conversation && historyScroll) conversation.scrollTop = historyScroll.top + conversation.scrollHeight - historyScroll.height;
+    historyScrollRef.current = null;
+    const toolCallId = pendingToolScrollRef.current;
+    if (!toolCallId) return;
+    pendingToolScrollRef.current = null;
+    const target = document.getElementById(`tool-${encodeURIComponent(toolCallId)}`);
+    if (target instanceof HTMLDetailsElement) target.open = true;
+    target?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [visibleMessageCount]);
+
+  useEffect(() => () => {
+    if (scrollFrameRef.current !== undefined) cancelAnimationFrame(scrollFrameRef.current);
+  }, []);
+
+  const loadEarlierMessages = () => {
+    const conversation = conversationRef.current;
+    if (conversation) historyScrollRef.current = { height: conversation.scrollHeight, top: conversation.scrollTop };
+    shouldAutoScrollRef.current = false;
+    if (scrollFrameRef.current !== undefined) cancelAnimationFrame(scrollFrameRef.current);
+    scrollFrameRef.current = undefined;
+    setVisibleMessageCount((current) => Math.min(visibleMessages.length, current + MESSAGE_BATCH_SIZE));
+  };
 
   const handleConversationScroll = () => {
     const conversation = conversationRef.current;
@@ -471,14 +548,22 @@ export function Workbench() {
   };
 
   const newSession = async () => {
-    const response = await fetch("/api/sessions", { method: "POST" });
-    const data = await response.json();
-    const nextSessions = await fetch("/api/sessions").then((item) => item.json()) as SessionSummary[];
-    const nextSession = nextSessions.find((session) => session.id === data.id);
-    setActiveId(data.id);
+    const previousActiveId = activeId;
+    setActiveId("");
     setMessages([]);
-    setUsage(usageFromSession(nextSession));
-    setSessions(nextSessions);
+    setUsage(makeEmptyUsage());
+    setError("");
+    try {
+      const response = await fetch("/api/sessions", { method: "POST" });
+      const data = await response.json() as SessionSummary & { error?: string };
+      if (!response.ok) throw new Error(data.error ?? t("sendFailed"));
+      setSessions((current) => [data, ...current.filter((session) => session.id !== data.id)]);
+      setActiveId(data.id);
+      setUsage(usageFromSession(data));
+    } catch (reason) {
+      setActiveId(previousActiveId);
+      setError(reason instanceof Error ? reason.message : t("sendFailed"));
+    }
   };
 
   const chooseWorkingDirectory = async () => {
@@ -567,6 +652,12 @@ export function Workbench() {
     if (target instanceof HTMLDetailsElement) {
       target.open = true;
       target.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
+    const hiddenIndex = visibleMessages.findIndex((message) => message.toolCallId === toolCallId);
+    if (hiddenIndex >= 0) {
+      pendingToolScrollRef.current = toolCallId;
+      setVisibleMessageCount(Math.max(visibleMessageCount, visibleMessages.length - hiddenIndex));
       return;
     }
     const scoped = subagentId ? subagents.filter((task) => task.id === subagentId) : subagents;
@@ -696,10 +787,7 @@ export function Workbench() {
     {mobileNav ? <button className="scrim mobile-only" onClick={() => setMobileNav(false)} aria-label={t("closeNav")} /> : null}
     <main className="main-panel">
       <header className="topbar"><button className="icon-button mobile-only" onClick={() => setMobileNav(true)} aria-label={t("settings")}><List size={19} /></button><button className="workspace workspace-button" type="button" disabled={bootstrapping || workspaceChoosing} aria-busy={workspaceChoosing} onClick={() => void chooseWorkingDirectory()} title={t("changeWorkingDirectory")} aria-label={workspaceChoosing ? t("choosingWorkingDirectory") : t("changeWorkingDirectory")}><FolderOpen size={16} /><span>{cwd || t("workingDirectory")}</span></button><div className="topbar-spacer" /><div className="topbar-actions"><LanguageToggle /><ThemeToggle /></div></header>
-      <section ref={conversationRef} className="conversation" onScroll={handleConversationScroll}><div ref={conversationInnerRef} className="conversation-inner">{visibleMessages.length === 0 ? <div className="empty-state"><div className="empty-orbit"><RiftxLogo decorative /></div><h1>{bootstrapping ? t("loadingWorkspace") : activeId ? t("ready") : t("noSession")}</h1><p>{bootstrapping ? t("readingWorkspace") : activeId ? t("readOrTest") : t("createSessionFirst")}</p>{activeId && !bootstrapping ? <div className="prompt-suggestions"><button onClick={() => setInput(t("overview"))}>{t("overview")}</button><button onClick={() => setInput(t("checkRisks"))}>{t("checkRisks")}</button></div> : null}</div> : visibleMessages.map((message) => <article key={message.id} className={`message ${message.role}${message.status === "error" ? " error" : ""}`}>
-        {message.role === "user" ? <div className="avatar user-avatar">{t("you")}</div> : message.role === "assistant" ? <div className="avatar assistant-avatar"><RiftxLogo decorative /></div> : null}
-        <div className="message-body">{message.role === "thinking" ? <details className="thinking-block" open={message.status === "streaming"}><summary><span className="thinking-title"><Brain size={14} weight="bold" />{t("thinking")}</span><span className="thinking-state">{message.status === "streaming" ? t("thinkingNow") : t("thinkingDone")}</span></summary><div className="thinking-copy">{message.content}</div></details> : message.role === "tool" ? <ToolCard key={`${message.id}-${message.status}`} message={message} /> : <div className="markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div>}</div>
-      </article>)}<div ref={endRef} /></div>{showJumpToLatest ? <button className="jump-latest" type="button" aria-label={t("jumpLatest")} title={t("jumpLatest")} onClick={jumpToLatest}><ArrowDown size={17} weight="bold" /></button> : null}</section>
+      <section ref={conversationRef} className="conversation" onScroll={handleConversationScroll}><div ref={conversationInnerRef} className="conversation-inner">{visibleMessages.length === 0 ? <div className="empty-state"><div className="empty-orbit"><RiftxLogo decorative /></div><h1>{bootstrapping ? t("loadingWorkspace") : activeId ? t("ready") : t("noSession")}</h1><p>{bootstrapping ? t("readingWorkspace") : activeId ? t("readOrTest") : t("createSessionFirst")}</p>{activeId && !bootstrapping ? <div className="prompt-suggestions"><button onClick={() => setInput(t("overview"))}>{t("overview")}</button><button onClick={() => setInput(t("checkRisks"))}>{t("checkRisks")}</button></div> : null}</div> : <>{hasEarlierMessages ? <button className="load-earlier" type="button" onClick={loadEarlierMessages}><ArrowUp size={14} />{t("loadEarlierMessages")}</button> : null}{displayedMessages.map((message) => <MessageItem key={message.id} message={message} labels={messageLabels} />)}</>}<div ref={endRef} /></div>{showJumpToLatest ? <button className="jump-latest" type="button" aria-label={t("jumpLatest")} title={t("jumpLatest")} onClick={jumpToLatest}><ArrowDown size={17} weight="bold" /></button> : null}</section>
       <footer className="composer-wrap">{approval ? <div className="approval-card"><div className="approval-card-main"><div className="approval-icon"><WarningCircle size={18} weight="bold" /></div><div className="approval-card-copy"><div className="approval-card-title"><span className="eyebrow">{approval.subagentId ? t("subagentApproval") : t("needConfirm")}</span><strong>{approval.subagentId ? approval.agentName : approval.toolName}</strong><span className="approval-card-risk">{t("highRisk")}</span></div>{approval.subagentId ? <p>{t("subagentRequestsTool", { agent: approval.agentName ?? "", tool: approval.toolName })}</p> : <p>{approval.toolName === "browser" ? t("browserApproval") : t("terminalApproval")}</p>}</div></div><details className="approval-command"><summary><code>{summarizeApprovalInput(approval.input)}</code><span>{t("expandCommand")}</span></summary><pre>{formatApprovalInput(approval.input)}</pre></details><div className="approval-actions"><button className="button reject" onClick={() => void decide(false)}>{t("reject")}</button><button className="button ghost" onClick={() => void decide(true, "task")}>{t("allowTask")}</button><button className="button primary" onClick={() => void decide(true)}>{t("allowOnce")}</button></div></div> : null}<div className="composer"><textarea ref={composerInputRef} value={input} disabled={!activeId || bootstrapping} onChange={(event) => setInput(event.target.value)} onCompositionStart={() => { compositionActiveRef.current = true; compositionEndedAtRef.current = 0; }} onCompositionEnd={() => { compositionActiveRef.current = false; compositionEndedAtRef.current = Date.now(); }} onKeyDown={(event) => { if (event.nativeEvent.isComposing || event.keyCode === 229 || compositionActiveRef.current) return; if (event.key === "Enter" && !event.shiftKey) { if (Date.now() - compositionEndedAtRef.current < 150) { compositionEndedAtRef.current = 0; return; } event.preventDefault(); void send(); } }} placeholder={bootstrapping ? t("loadingWorkspace") : composerBusy ? t("guide") : activeId ? t("ask") : t("createSessionFirst")} rows={1} /><div className="composer-bottom"><div className="composer-tools"><ApprovalModeMenu value={approvalMode} onValueChange={(mode) => void changeApprovalMode(mode)} disabled={bootstrapping || mainAgentRunning} /><span className="composer-hint"><span className="keycap">Shift</span> + <span className="keycap">Enter</span> {t("shiftEnter")}</span></div><div className="composer-actions"><ContextRing percent={bootstrapping ? null : usage.percent} label={bootstrapping ? "—" : usage.percent === null ? "—" : `${Math.round(usage.percent)}`} detail={detail} />{bootstrapping ? <span className="model-label">{t("loadingModel")}</span> : modelProfiles.length > 1 ? <ModelMenu value={activeProfileId} onValueChange={(profileId) => void changeModel(profileId)} options={modelProfiles.map((profile) => ({ value: profile.id, label: `${profile.provider}/${profile.model}` }))} disabled={mainAgentRunning} /> : <span className="model-label">{modelName}</span>}{composerBusy ? (input.trim() ? <button className="send-button" aria-label={t("sendGuide")} title={t("sendGuide")} onClick={() => void send("steer")}><ArrowUp size={18} weight="bold" /></button> : <button className="send-button stop" aria-label={t("stop")} title={t("stop")} onClick={stopAll}><Stop size={17} weight="fill" /></button>) : input.trim() ? <button className="send-button" aria-label={t("send")} title={t("send")} onClick={() => void send("prompt")} disabled={!activeId || bootstrapping}><ArrowUp size={18} weight="bold" /></button> : running ? <button className="send-button stop" aria-label={t("stop")} title={t("stop")} onClick={stopAll}><Stop size={17} weight="fill" /></button> : <button className="send-button" aria-label={t("send")} title={t("send")} onClick={() => void send("prompt")} disabled={!activeId || bootstrapping || !input.trim()}><ArrowUp size={18} weight="bold" /></button>}</div></div></div></footer>
     </main>
     <aside className="right-rail" aria-label={t("subagents")}><SubagentPanel tasks={subagents} running={subagentRunning} maxConcurrent={maxConcurrentSubagents} onCancel={(taskId) => void cancelSubagent(taskId)} onRetry={(taskId) => void retrySubagent(taskId)} focus={subagentFocus} /><FindingsPanel sessionId={activeId || undefined} findings={findings} onPatch={(id, patch) => void patchFindingInSession(id, patch)} onToolClick={scrollToTool} onRequestClick={scrollToRequest} /></aside>

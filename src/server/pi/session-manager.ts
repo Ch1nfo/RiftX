@@ -605,12 +605,24 @@ async function getOrCreateSession(id?: string) {
   return create();
 }
 
-export async function createSession() {
+export async function createSession(): Promise<SessionSummary> {
   const config = await readConfig();
   const profile = await profileFor();
   const created = await createRuntimeSession(profile, config.cwd, new ApprovalGate());
   sessions.set(created.id, created);
-  return created;
+  return {
+    id: created.id,
+    path: created.session.sessionFile ?? "",
+    name: summaryName(config, created.id, ""),
+    firstMessage: "",
+    updatedAt: new Date().toISOString(),
+    archived: false,
+    profileId: created.profile.id,
+    provider: created.profile.provider,
+    model: created.profile.model,
+    contextWindow: created.profile.contextWindow,
+    usage: usageFromRecord(created)
+  };
 }
 
 export async function setWorkingDirectory(input: string) {
