@@ -1,9 +1,11 @@
 import type { ApprovalRequest } from "@/lib/types";
 import type { ApprovalMode } from "@/lib/types";
 
+type ApprovalDecision = { approved: boolean; task: boolean };
+
 type PendingApproval = {
   request: ApprovalRequest;
-  resolve: (approved: boolean) => void;
+  resolve: (decision: ApprovalDecision) => void;
   timer: ReturnType<typeof setTimeout>;
   abortCleanup?: () => void;
 };
@@ -61,18 +63,19 @@ export class ApprovalGate {
     return () => this.decisionListeners.delete(listener);
   }
 
-  waitForApproval(request: ApprovalRequest, timeoutMs = 120_000, signal?: AbortSignal): Promise<boolean> {
+  waitForApproval(request: ApprovalRequest, timeoutMs = 120_000, signal?: AbortSignal): Promise<ApprovalDecision> {
     return new Promise((resolve) => {
+      const denied: ApprovalDecision = { approved: false, task: false };
       if (signal?.aborted) {
         for (const listener of this.decisionListeners) listener(request, false);
-        resolve(false);
+        resolve(denied);
         return;
       }
       const timer = setTimeout(() => {
         this.pending.delete(request.id);
         signal?.removeEventListener("abort", onAbort);
         for (const listener of this.decisionListeners) listener(request, false);
-        resolve(false);
+        resolve(denied);
       }, timeoutMs);
       const onAbort = () => this.decide(request.id, false);
       signal?.addEventListener("abort", onAbort, { once: true });
@@ -80,14 +83,14 @@ export class ApprovalGate {
     });
   }
 
-  decide(id: string, approved: boolean) {
+  decide(id: string, approved: boolean, task = false) {
     const pending = this.pending.get(id);
     if (!pending) return false;
     clearTimeout(pending.timer);
     pending.abortCleanup?.();
     this.pending.delete(id);
     for (const listener of this.decisionListeners) listener(pending.request, approved);
-    pending.resolve(approved);
+    pending.resolve({ approved, task });
     return true;
   }
 

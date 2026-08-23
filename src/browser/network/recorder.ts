@@ -1,10 +1,11 @@
 import type { Page, Request, Response } from "playwright";
 import { redactBody, redactHeaders, RequestStore } from "./request-store";
 
-function attach(page: Page, pageId: string, store: RequestStore) {
+function attach(page: Page, pageId: string, identity: string, store: RequestStore) {
   page.on("request", (request: Request) => {
     const record = store.start({
       pageId,
+      identity,
       method: request.method(),
       url: request.url(),
       resourceType: request.resourceType(),
@@ -38,6 +39,6 @@ function attach(page: Page, pageId: string, store: RequestStore) {
   });
 }
 
-export function attachRequestRecorder(page: Page, pageId: string, store: RequestStore) {
-  attach(page, pageId, store);
+export function attachRequestRecorder(page: Page, pageId: string, identity: string, store: RequestStore) {
+  attach(page, pageId, identity, store);
 }

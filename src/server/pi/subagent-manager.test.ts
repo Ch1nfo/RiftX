@@ -330,7 +330,7 @@ test("emits approval decisions when a child approval times out", async () => {
   await manager.initialize(async ({ gate, emit }) => {
     const request = { id: "approval-timeout", toolName: "bash" as const, input: { command: "id" }, createdAt: new Date().toISOString() };
     emit({ type: "approval_required", approval: request });
-    assert.equal(await gate.waitForApproval(request, 5), false);
+    assert.deepEqual(await gate.waitForApproval(request, 5), { approved: false, task: false });
     throw new Error("approval timed out");
   });
   try {

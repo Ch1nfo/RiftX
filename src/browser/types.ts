@@ -7,10 +7,19 @@ export type BrowserAction =
   | "select"
   | "back"
   | "reload"
+  | "evaluate"
+  | "console"
   | "requests"
   | "request_detail"
   | "response_body"
+  | "use_identity"
+  | "identities"
   | "cookies"
+  | "cookies_export"
+  | "cookies_import"
+  | "set_host_mappings"
+  | "set_user_agent"
+  | "set_extra_headers"
   | "storage"
   | "screenshot"
   | "tabs"
@@ -23,10 +32,26 @@ export type BrowserToolInput = {
   value?: string;
   key?: string;
   values?: string[];
+  expression?: string;
+  identity?: string;
+  cookies?: string;
+  userAgent?: string;
+  headers?: Record<string, string>;
+  mappings?: Record<string, string>;
+};
+
+export type BrowserConsoleKind = "log" | "warning" | "error" | "pageerror" | "dialog";
+
+export type BrowserConsoleEntry = {
+  id: string;
+  kind: BrowserConsoleKind;
+  text: string;
+  location?: string;
+  at: number;
 };
 
 export type BrowserScope = {
-  allowedOrigins?: string[];
+  rules?: string[];
 };
 
 export type ElementKind = "button" | "link" | "input" | "textarea" | "select" | "checkbox" | "radio";
@@ -57,6 +82,7 @@ export type PageSnapshot = {
 export type RecordedRequest = {
   ref: string;
   pageId: string;
+  identity: string;
   method: string;
   url: string;
   resourceType: string;
@@ -72,6 +98,7 @@ export type RecordedRequest = {
 
 export type BrowserPageInfo = {
   id: string;
+  identity: string;
   url: string;
   title: string;
   active: boolean;
@@ -81,4 +108,5 @@ export type BrowserManagerOptions = {
   scope?: BrowserScope;
   evidenceRoot?: string;
   evidenceSessionId?: string;
+  ignoreTlsErrors?: boolean;
 };

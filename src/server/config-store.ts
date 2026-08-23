@@ -27,7 +27,9 @@ const defaultConfig = (): AppConfig => ({
   maxConcurrentSubagents: 3,
   subagentAggressiveness: "default",
   systemPromptEnabled: false,
-  systemPrompt: ""
+  systemPrompt: "",
+  browserScope: [],
+  browserIgnoreTlsErrors: true
 });
 
 async function ensureAppDirs() {
@@ -72,7 +74,9 @@ export async function readConfig(): Promise<AppConfig> {
       maxConcurrentSubagents: Math.min(8, Math.max(1, Number.isFinite(parsed.maxConcurrentSubagents) ? Math.round(parsed.maxConcurrentSubagents as number) : 3)),
       subagentAggressiveness: SUBAGENT_AGGRESSIVENESS.includes(parsed.subagentAggressiveness as AppConfig["subagentAggressiveness"]) ? parsed.subagentAggressiveness as AppConfig["subagentAggressiveness"] : "default",
       systemPromptEnabled: parsed.systemPromptEnabled === true,
-      systemPrompt: typeof parsed.systemPrompt === "string" ? parsed.systemPrompt : ""
+      systemPrompt: typeof parsed.systemPrompt === "string" ? parsed.systemPrompt : "",
+      browserScope: Array.isArray(parsed.browserScope) ? parsed.browserScope.filter((rule): rule is string => typeof rule === "string" && Boolean(rule.trim())) : [],
+      browserIgnoreTlsErrors: parsed.browserIgnoreTlsErrors !== false
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;

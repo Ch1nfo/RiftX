@@ -156,13 +156,30 @@ RiftX 暴露的是单一统一的 `browser` 工具，而不是拆成多个独立
 - `requests`
 - `request_detail`
 - `response_body`
+- `use_identity`
+- `identities`
+- `evaluate`
+- `console`
 - `cookies`
+- `cookies_export`
+- `cookies_import`
+- `set_host_mappings`
+- `set_user_agent`
+- `set_extra_headers`
 - `storage`
 - `screenshot`
 - `tabs`
 - `close`
 
 快照会生成适合 Agent 消费的文本视图，并返回稳定元素引用，如 `e1`、`e2`、`e3`，因此模型可以按 ref 交互，而不是直接依赖原始 CSS Selector。
+
+基础导航之外的浏览器能力：
+
+- **范围授权**：`~/.riftx/config.json` 的 `browserScope` 规则（网段 `10.0.0.0/8`、主机任意端口 `10.0.181.248`、主机+端口、`*.target.com`、`https://target.com`）管控导航。无规则时首次导航锁定主机；出界导航会弹出授权确认，"允许本次任务"即为本会话放行该主机。子资源请求（脚本、fetch、图片）同样受范围检查：页面可能加载的任何主机都必须显式进入范围。
+- **运行时验证**：`evaluate` 在页面中执行 JavaScript；`console` 返回捕获的日志、未捕获异常和 alert/confirm/prompt 对话框 —— 捕获到的 dialog 即 DOM-XSS 的运行时证据。`navigate` 输出附带最近的 console 错误。
+- **多身份**：每个 identity 拥有独立的 cookie jar 和存储（匿名/低权限/管理员并行）。`cookies_export`/`cookies_import` 在浏览器与 curl 等脚本之间桥接认证状态。请求记录带有发起身份标签。
+- **网络控制**：`set_host_mappings` 通过本地回环代理实现 curl `--resolve` 语义（连接映射地址但保留 Host 头与 TLS SNI），用于虚拟主机探测；`set_user_agent` 与 `set_extra_headers` 定制身份指纹。默认接受自签证书（可通过 `browserIgnoreTlsErrors` 关闭）。
+- **视觉**：模型配置开启"支持图像输入"后，`screenshot` 将页面作为图像返回，模型可直接读取（验证码、仪表盘、视觉状态）。
 
 ## 会话发现
 

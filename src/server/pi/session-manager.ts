@@ -64,7 +64,7 @@ type SessionRecord = {
   loadedSkills: Set<string>;
 };
 
-const RUNTIME_VERSION = 13;
+const RUNTIME_VERSION = 25;
 
 type SessionSnapshotCacheEntry = {
   modifiedMs: number;
@@ -174,7 +174,9 @@ function registerProfileModel(authStorage: AuthStorage, modelRegistry: ModelRegi
         id: profile.model,
         name: profile.name,
         reasoning: profile.thinkingLevel !== "off",
-        input: ["text"],
+        // Providers drop image content unless the model declares image input,
+        // which silently disabled browser screenshots. Profiles opt in.
+        input: profile.supportsImages ? ["text", "image"] : ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: profile.contextWindow,
         maxTokens: profile.maxTokens
@@ -261,12 +263,6 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
     gate.onDecision((request, approved) => emitter.emit("event", { type: "approval_decided", approvalId: request.id, approval: request, approved }));
   }
   let record: SessionRecord | undefined;
-  const permission = createPermissionExtension(
-    gate,
-    (event) => emitter.emit("event", event),
-    (request) => evaluateApproval(record?.model ?? model, modelRegistry, request),
-    mutationLock
-  );
   const childProfile = config.childInherit ? profile : config.profiles.find((item) => item.id === config.childProfileId) ?? profile;
   // Keep title work on the configured child profile when available so it does
   // not consume the main Agent's provider quota during a live turn.
@@ -275,13 +271,27 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
   settingsManager.setTransport(profile.transport);
   const sessionManager = sessionManagerOverride ?? AgentSessionManager.create(cwd, child ? join(paths.subagents, "runtime") : paths.sessions);
   const evidenceSessionId = runtimeDeps?.evidenceSessionId ?? sessionManager.getSessionId();
+  const browser = new BrowserManager({ evidenceRoot: paths.evidence, evidenceSessionId, scope: { rules: config.browserScope }, ignoreTlsErrors: config.browserIgnoreTlsErrors });
+  const permission = createPermissionExtension(
+    gate,
+    (event) => emitter.emit("event", event),
+    (request) => evaluateApproval(record?.model ?? model, modelRegistry, request),
+    mutationLock,
+    {
+      check: (url) => browser.checkNavigationScope(url),
+      authorizeOnce: (url, identity) => browser.authorizeOnce(url, identity),
+      revokeOnce: (url, identity) => browser.revokeOnce(url, identity),
+      grantScope: (url, exactPort) => browser.grantScope(url, exactPort),
+      checkMappings: (mappings) => browser.checkHostMappingScope(mappings),
+      authorizeMappingsOnce: (mappings) => browser.authorizeMappingTargetsOnce(mappings)
+    }
+  );
   const evidenceStore = runtimeDeps?.evidenceStore ?? getEvidenceStore(evidenceSessionId, paths.evidence, (event) => emitter.emit("event", event));
   const subagentNameGenerator = !child ? async (task: string) => {
     return generateSessionTitle(modelRegistry, titleModel, task, "empty");
   } : undefined;
   const subagents = !child ? new SubagentManager(sessionManager.getSessionId(), paths.subagents, (event) => emitter.emit("event", event), config.maxConcurrentSubagents, config.approvalMode, subagentNameGenerator) : undefined;
   const getChildProfile = () => config.childInherit ? (record?.profile ?? profile) : childProfile;
-  const browser = new BrowserManager({ evidenceRoot: paths.evidence, evidenceSessionId });
   let evidenceSession: AgentSession | undefined;
   const customTools = [createTimedBashTool(cwd, { commandPrefix: settingsManager.getShellCommandPrefix(), shellPath: settingsManager.getShellPath() }) as unknown as ToolDefinition, createFindingTool(evidenceStore, findingSource, browser, () => evidenceSession), ...(subagents ? [createSubagentTool(subagents, getChildProfile, cwd, mutationLock, { authStorage, modelRegistry, evidenceStore, evidenceSessionId })] : [])];
   const browserExtension = createBrowserExtension({ evidenceRoot: paths.evidence, evidenceSessionId }, browser);
@@ -741,7 +751,7 @@ export async function decideApproval(id: string, approvalId: string, approved: b
   const record = await getOrCreateSession(id);
   const request = record.gate.pendingRequests().find((item) => item.id === approvalId);
   if (approved && scope === "task" && request) record.gate.allowForTask(request);
-  if (request) return record.gate.decide(approvalId, approved);
+  if (request) return record.gate.decide(approvalId, approved, scope === "task");
   return record.subagents?.decideApproval(approvalId, approved, scope) ?? false;
 }
 

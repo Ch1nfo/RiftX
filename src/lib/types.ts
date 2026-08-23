@@ -27,6 +27,7 @@ export type ModelProfile = {
   contextWindow: number;
   maxTokens: number;
   thinkingLevel: ThinkingLevel;
+  supportsImages?: boolean;
 };
 
 export type ContextUsage = {
@@ -215,6 +216,8 @@ export type AppConfig = {
   subagentAggressiveness: SubagentAggressiveness;
   systemPromptEnabled: boolean;
   systemPrompt: string;
+  browserScope: string[];
+  browserIgnoreTlsErrors: boolean;
 };
 
 export const DEFAULT_PROFILE: ModelProfile = {

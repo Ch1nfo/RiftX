@@ -153,16 +153,33 @@ Supported actions currently include:
 - `select`
 - `back`
 - `reload`
+- `evaluate`
+- `console`
 - `requests`
 - `request_detail`
 - `response_body`
+- `use_identity`
+- `identities`
 - `cookies`
+- `cookies_export`
+- `cookies_import`
+- `set_host_mappings`
+- `set_user_agent`
+- `set_extra_headers`
 - `storage`
 - `screenshot`
 - `tabs`
 - `close`
 
 Snapshots are agent-friendly text views with stable element refs such as `e1`, `e2`, and `e3`, so the model interacts with page elements by ref instead of raw selectors.
+
+Browser capabilities beyond basic navigation:
+
+- **Scope authorization**: `~/.riftx/config.json` `browserScope` rules (CIDR `10.0.0.0/8`, host any-port `10.0.181.248`, host+port, `*.target.com`, `https://target.com`) gate navigations. With no rules, the first navigation locks the host; out-of-scope navigations raise an approval where "allow for this task" grants the host for the session. Subresource requests (scripts, fetches, images) are scope-checked as well: any host a page may load from must be in scope explicitly.
+- **Runtime validation**: `evaluate` runs JavaScript in the page and `console` returns captured logs, uncaught errors, and alert/confirm/prompt dialogs - a captured dialog is the runtime proof for DOM-XSS payloads. `navigate` output includes recent console errors.
+- **Identities**: each identity is an isolated cookie jar and storage (anonymous / low-privilege / admin in parallel). `cookies_export`/`cookies_import` bridge authenticated state with CLI tools such as curl. Recorded requests are tagged with the identity that made them.
+- **Network control**: `set_host_mappings` applies curl `--resolve` semantics through a loopback proxy (connection goes to the mapped address while the Host header and TLS SNI are preserved) for virtual-host probing; `set_user_agent` and `set_extra_headers` customize the identity's fingerprint. Self-signed certificates are accepted by default (configurable via `browserIgnoreTlsErrors`).
+- **Vision**: with "supports image input" enabled on the model profile, `screenshot` returns the page as an image the model can read directly (CAPTCHAs, dashboards, visual state).
 
 ## Session Findings
 

@@ -341,7 +341,7 @@ export class SubagentManager {
       const request = runtime.gate.pendingRequests().find((item) => item.id === approvalId);
       if (!request) continue;
       if (approved && scope === "task") runtime.gate.allowForTask(request);
-      return runtime.gate.decide(approvalId, approved);
+      return runtime.gate.decide(approvalId, approved, scope === "task");
     }
     return false;
   }

@@ -1,6 +1,7 @@
 import { readConfig, updateConfig, updateProfiles } from "@/server/config-store";
 import { SUBAGENT_AGGRESSIVENESS, type ModelProfile, type SubagentAggressiveness } from "@/lib/types";
 import { setActiveProfile, setMaxConcurrentSubagents } from "@/server/pi/session-manager";
+import { parseScopeRule } from "@/browser/scope/scope-rules";
 
 export const runtime = "nodejs";
 
@@ -24,8 +25,16 @@ export async function PUT(request: Request) {
     subagentAggressiveness: SubagentAggressiveness;
     systemPromptEnabled: boolean;
     systemPrompt: string;
+    browserScope: string[];
+    browserIgnoreTlsErrors: boolean;
   }>;
   const current = await readConfig();
+  // Reject invalid scope rules up front: silently dropping them would leave
+  // the manager with an empty rule set that behaves like "no scope configured".
+  const invalidScopeRules = Array.isArray(body.browserScope)
+    ? body.browserScope.filter((rule) => typeof rule !== "string" || !rule.trim() || !parseScopeRule(rule))
+    : [];
+  if (invalidScopeRules.length) return Response.json({ error: `Invalid browser scope rules: ${invalidScopeRules.join(", ")}` }, { status: 400 });
   const incoming = Array.isArray(body.profiles) ? body.profiles : current.profiles;
   const requestedMax = Number(body.maxConcurrentSubagents);
   const maxConcurrentSubagents = body.maxConcurrentSubagents === undefined || !Number.isFinite(requestedMax)
@@ -56,7 +65,9 @@ export async function PUT(request: Request) {
     maxConcurrentSubagents,
     subagentAggressiveness,
     systemPromptEnabled: body.systemPromptEnabled === undefined ? current.systemPromptEnabled : body.systemPromptEnabled === true,
-    systemPrompt: typeof body.systemPrompt === "string" ? body.systemPrompt : current.systemPrompt
+    systemPrompt: typeof body.systemPrompt === "string" ? body.systemPrompt : current.systemPrompt,
+    browserScope: Array.isArray(body.browserScope) ? body.browserScope.filter((rule): rule is string => typeof rule === "string" && Boolean(rule.trim())) : current.browserScope,
+    browserIgnoreTlsErrors: body.browserIgnoreTlsErrors === undefined ? current.browserIgnoreTlsErrors : body.browserIgnoreTlsErrors === true
   });
   if (finalConfig.maxConcurrentSubagents !== current.maxConcurrentSubagents) await setMaxConcurrentSubagents(finalConfig.maxConcurrentSubagents);
   return Response.json({ ...finalConfig, profiles: finalConfig.profiles.map(publicProfile) });

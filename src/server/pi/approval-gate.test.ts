@@ -6,7 +6,14 @@ test("approval gate resolves an explicit decision", async () => {
   const gate = new ApprovalGate();
   const promise = gate.waitForApproval({ id: "a", toolName: "bash", input: { command: "pwd" }, createdAt: new Date().toISOString() });
   assert.equal(gate.decide("a", true), true);
-  assert.equal(await promise, true);
+  assert.deepEqual(await promise, { approved: true, task: false });
+});
+
+test("approval gate surfaces task-scope decisions to the awaiting caller", async () => {
+  const gate = new ApprovalGate();
+  const promise = gate.waitForApproval({ id: "task", toolName: "browser", input: { action: "navigate", url: "http://10.0.0.9/" }, createdAt: new Date().toISOString() });
+  assert.equal(gate.decide("task", true, true), true);
+  assert.deepEqual(await promise, { approved: true, task: true });
 });
 
 test("approval gate rejects unknown and timed out requests", async () => {
@@ -15,7 +22,7 @@ test("approval gate rejects unknown and timed out requests", async () => {
   gate.onDecision((request, approved) => decisions.push([request.id, approved]));
   assert.equal(gate.decide("missing", true), false);
   const promise = gate.waitForApproval({ id: "b", toolName: "write", input: { path: "x" }, createdAt: new Date().toISOString() }, 5);
-  assert.equal(await promise, false);
+  assert.deepEqual(await promise, { approved: false, task: false });
   assert.deepEqual(decisions, [["b", false]]);
 });
 
@@ -25,7 +32,7 @@ test("changing approval mode keeps pending requests unless switching to full", a
   gate.setMode("auto");
   assert.equal(gate.pendingRequests().length, 1);
   gate.setMode("full");
-  assert.equal(await pending, true);
+  assert.deepEqual(await pending, { approved: true, task: false });
   assert.deepEqual(gate.pendingRequests(), []);
 });
 
@@ -35,7 +42,7 @@ test("approval gate exposes pending requests for stream reconnection", async () 
   const pending = gate.waitForApproval(request, 1000);
   assert.deepEqual(gate.pendingRequests(), [request]);
   gate.rejectAll();
-  assert.equal(await pending, false);
+  assert.deepEqual(await pending, { approved: false, task: false });
   assert.deepEqual(gate.pendingRequests(), []);
 });
 
@@ -44,7 +51,7 @@ test("approval gate rejects an outstanding request when the agent is aborted", a
   const controller = new AbortController();
   const pending = gate.waitForApproval({ id: "abort", toolName: "bash", input: { command: "sleep 30" }, createdAt: new Date().toISOString() }, 1000, controller.signal);
   controller.abort();
-  assert.equal(await pending, false);
+  assert.deepEqual(await pending, { approved: false, task: false });
   assert.deepEqual(gate.pendingRequests(), []);
 });
 
