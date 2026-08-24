@@ -28,11 +28,24 @@ function attach(page: Page, pageId: string, identity: string, store: RequestStor
     const ref = request.__riftxRef;
     if (!ref) return;
     let responseBody: string | undefined;
-    try { responseBody = redactBody(await response.text()); } catch { /* opaque or already disposed */ }
+    // Only responses with a known, small length and a textual media type are
+    // captured automatically: response.text() buffers the whole body first,
+    // so chunked/large/unknown-size payloads would spike memory. A missing or
+    // unparsable Content-Length means skip — never assume it is small.
+    const headers = response.headers();
+    const contentType = String(headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
+    const lengthText = String(headers["content-length"] ?? "").trim();
+    const contentLength = /^\d+$/.test(lengthText) ? Number(lengthText) : NaN;
+    const binaryPayload = ["image", "media", "font"].includes(request.resourceType())
+      || /^(image|video|audio|font)\//.test(contentType)
+      || contentType === "application/octet-stream";
+    if (!binaryPayload && Number.isFinite(contentLength) && contentLength >= 0 && contentLength <= 262144) {
+      try { responseBody = redactBody(await response.text()); } catch { /* opaque or already disposed */ }
+    }
     store.update(ref, {
       status: response.status(),
       statusText: response.statusText(),
-      responseHeaders: redactHeaders(response.headers()),
+      responseHeaders: redactHeaders(headers),
       responseBody,
       durationMs: Date.now() - Date.parse(store.get(ref)?.startedAt ?? new Date().toISOString())
     });

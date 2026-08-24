@@ -1,7 +1,8 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { SUBAGENT_LOG_LIMITS, type ApprovalMode, type ApprovalRequest, type RiftxEvent, type SubagentLogEntry, type SubagentTask, type SubagentTaskPatch } from "@/lib/types";
+import { readJsonStore, writeJsonStoreAtomic } from "@/server/json-store";
 import { ApprovalGate } from "./approval-gate";
 import { summarizeToolResult } from "@/lib/tool-result";
 
@@ -100,22 +101,20 @@ export class SubagentManager {
     if (this.initialized) return;
     this.runner = runner;
     await mkdir(join(this.storageRoot, this.parentSessionId), { recursive: true, mode: 0o700 });
-    try {
-      const parsed = JSON.parse(await readFile(this.storagePath, "utf8")) as { tasks?: SubagentTask[] };
-      for (const task of Array.isArray(parsed.tasks) ? parsed.tasks : []) {
-        if (!task?.id || task.parentSessionId !== this.parentSessionId) continue;
-        delete (task as SubagentTask & { usage?: unknown }).usage;
-        if (task.status === "running") {
-          task.status = "interrupted";
-          task.error = "RiftX was restarted while this task was running.";
-          task.finishedAt = now();
-        }
-        task.logs = Array.isArray(task.logs) ? task.logs : [];
-        task.pendingApprovalCount = 0;
-        this.tasks.set(task.id, task);
+    // Corrupt files are backed up by readJsonStore and start empty; a missing
+    // file is a fresh workspace. Other I/O errors surface.
+    const parsed = await readJsonStore<{ tasks?: SubagentTask[] }>(this.storagePath);
+    for (const task of Array.isArray(parsed?.tasks) ? parsed!.tasks : []) {
+      if (!task?.id || task.parentSessionId !== this.parentSessionId) continue;
+      delete (task as SubagentTask & { usage?: unknown }).usage;
+      if (task.status === "running") {
+        task.status = "interrupted";
+        task.error = "RiftX was restarted while this task was running.";
+        task.finishedAt = now();
       }
-    } catch {
-      // A missing or malformed task file should not prevent the parent session from opening.
+      task.logs = Array.isArray(task.logs) ? task.logs : [];
+      task.pendingApprovalCount = 0;
+      this.tasks.set(task.id, task);
     }
     this.initialized = true;
     for (const task of this.tasks.values()) {
@@ -518,8 +517,12 @@ export class SubagentManager {
     }
     this.persistChain = this.persistChain.then(async () => {
       await mkdir(join(this.storageRoot, this.parentSessionId), { recursive: true, mode: 0o700 });
-      await writeFile(this.storagePath, `${JSON.stringify({ tasks: this.list() }, null, 2)}\n`, { mode: 0o600 });
-    }).catch(() => undefined);
+      await writeJsonStoreAtomic(this.storagePath, { tasks: this.list() });
+    }).catch((error: unknown) => {
+      // Persistence failures must be visible, never silently swallowed:
+      // task history would otherwise stop being written without a trace.
+      console.error(`RiftX failed to persist subagent tasks for ${this.parentSessionId}:`, error);
+    });
     return this.persistChain;
   }
 }

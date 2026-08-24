@@ -1,8 +1,8 @@
-import { mkdir, readFile, writeFile, chmod, rename, stat } from "node:fs/promises";
+import { mkdir, rename, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { randomUUID } from "node:crypto";
 import { APPROVAL_MODES, DEFAULT_PROFILE, SUBAGENT_AGGRESSIVENESS, type AppConfig, type ModelProfile } from "@/lib/types";
+import { readJsonStore, writeJsonStoreAtomic } from "@/server/json-store";
 
 const ROOT = join(homedir(), ".riftx");
 const CONFIG_PATH = join(ROOT, "config.json");
@@ -55,59 +55,36 @@ export function getAppPaths() {
 
 export async function readConfig(): Promise<AppConfig> {
   await ensureAppDirs();
-  try {
-    const parsed = JSON.parse(await readFile(CONFIG_PATH, "utf8")) as Partial<AppConfig>;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new SyntaxError("config must be an object");
-    const profiles = Array.isArray(parsed.profiles) && parsed.profiles.length ? parsed.profiles : [DEFAULT_PROFILE];
-    const approvalMode = APPROVAL_MODES.includes(parsed.approvalMode as AppConfig["approvalMode"]) ? parsed.approvalMode as AppConfig["approvalMode"] : "request";
-    return {
-      ...defaultConfig(),
-      ...parsed,
-      profiles,
-      activeProfileId: parsed.activeProfileId ?? profiles[0].id,
-      approvalMode,
-      archivedSessionIds: Array.isArray(parsed.archivedSessionIds) ? parsed.archivedSessionIds : [],
-      archivedSessions: Array.isArray(parsed.archivedSessions) ? parsed.archivedSessions : [],
-      sessionTitles: parsed.sessionTitles && typeof parsed.sessionTitles === "object"
-        ? Object.fromEntries(Object.entries(parsed.sessionTitles).filter(([, title]) => typeof title === "string"))
-        : {},
-      maxConcurrentSubagents: Math.min(8, Math.max(1, Number.isFinite(parsed.maxConcurrentSubagents) ? Math.round(parsed.maxConcurrentSubagents as number) : 3)),
-      subagentAggressiveness: SUBAGENT_AGGRESSIVENESS.includes(parsed.subagentAggressiveness as AppConfig["subagentAggressiveness"]) ? parsed.subagentAggressiveness as AppConfig["subagentAggressiveness"] : "default",
-      systemPromptEnabled: parsed.systemPromptEnabled === true,
-      systemPrompt: typeof parsed.systemPrompt === "string" ? parsed.systemPrompt : "",
-      browserScope: Array.isArray(parsed.browserScope) ? parsed.browserScope.filter((rule): rule is string => typeof rule === "string" && Boolean(rule.trim())) : [],
-      browserIgnoreTlsErrors: parsed.browserIgnoreTlsErrors !== false
-    };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
-    if (error instanceof SyntaxError) await rename(CONFIG_PATH, `${CONFIG_PATH}.bak`).catch(() => undefined);
-    const config = defaultConfig();
-    await writeConfig(config);
-    return config;
-  }
+  // readJsonStore treats ENOENT and unparsable files (backed up as
+  // .corrupt-*) as no data; other I/O errors surface.
+  const parsed = (await readJsonStore<Partial<AppConfig>>(CONFIG_PATH)) ?? {};
+  const profiles = Array.isArray(parsed.profiles) && parsed.profiles.length ? parsed.profiles : [DEFAULT_PROFILE];
+  const approvalMode = APPROVAL_MODES.includes(parsed.approvalMode as AppConfig["approvalMode"]) ? parsed.approvalMode as AppConfig["approvalMode"] : "request";
+  const config: AppConfig = {
+    ...defaultConfig(),
+    ...parsed,
+    profiles,
+    activeProfileId: parsed.activeProfileId ?? profiles[0].id,
+    approvalMode,
+    archivedSessionIds: Array.isArray(parsed.archivedSessionIds) ? parsed.archivedSessionIds : [],
+    archivedSessions: Array.isArray(parsed.archivedSessions) ? parsed.archivedSessions : [],
+    sessionTitles: parsed.sessionTitles && typeof parsed.sessionTitles === "object"
+      ? Object.fromEntries(Object.entries(parsed.sessionTitles).filter(([, title]) => typeof title === "string"))
+      : {},
+    maxConcurrentSubagents: Math.min(8, Math.max(1, Number.isFinite(parsed.maxConcurrentSubagents) ? Math.round(parsed.maxConcurrentSubagents as number) : 3)),
+    subagentAggressiveness: SUBAGENT_AGGRESSIVENESS.includes(parsed.subagentAggressiveness as AppConfig["subagentAggressiveness"]) ? parsed.subagentAggressiveness as AppConfig["subagentAggressiveness"] : "default",
+    systemPromptEnabled: parsed.systemPromptEnabled === true,
+    systemPrompt: typeof parsed.systemPrompt === "string" ? parsed.systemPrompt : "",
+    browserScope: Array.isArray(parsed.browserScope) ? parsed.browserScope.filter((rule): rule is string => typeof rule === "string" && Boolean(rule.trim())) : [],
+    browserIgnoreTlsErrors: parsed.browserIgnoreTlsErrors !== false
+  };
+  if (parsed && (!Array.isArray(parsed.profiles) || !parsed.profiles.length)) await writeConfig(config);
+  return config;
 }
 
 async function writeConfig(config: AppConfig) {
   await ensureAppDirs();
-  const temporaryPath = `${CONFIG_PATH}.tmp-${process.pid}-${randomUUID()}`;
-  await writeFile(temporaryPath, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
-  await chmod(temporaryPath, 0o600);
-  await rename(temporaryPath, CONFIG_PATH);
-}
-
-export async function updateProfiles(profiles: ModelProfile[], activeProfileId?: string) {
-  const result = configWriteChain.then(async () => {
-    const current = await readConfig();
-    const next: AppConfig = {
-      ...current,
-      profiles: profiles.length ? profiles : [DEFAULT_PROFILE],
-      activeProfileId: activeProfileId ?? profiles[0]?.id ?? DEFAULT_PROFILE.id
-    };
-    await writeConfig(next);
-    return next;
-  });
-  configWriteChain = result.then(() => undefined, () => undefined);
-  return result;
+  await writeJsonStoreAtomic(CONFIG_PATH, config);
 }
 
 export async function updateConfig(patch: Partial<AppConfig>) {

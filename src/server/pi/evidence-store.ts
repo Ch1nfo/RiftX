@@ -1,7 +1,8 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Finding, FindingInput, FindingPatch, FindingSource, RiftxEvent } from "@/lib/types";
+import { readJsonStore, writeJsonStoreAtomic } from "@/server/json-store";
 
 type FindingFile = { findings?: Finding[] };
 
@@ -93,20 +94,20 @@ export class EvidenceStore {
 
   private async load() {
     if (this.findings) return this.findings;
-    try {
-      const parsed = JSON.parse(await readFile(this.filePath, "utf8")) as FindingFile;
-      const rawFindings = Array.isArray(parsed.findings) ? parsed.findings.filter((finding) => finding?.id && finding?.title && finding?.asset) : [];
-      this.findings = rawFindings.map(cloneFinding);
-      if (JSON.stringify(rawFindings) !== JSON.stringify(this.findings)) await this.persist();
-    } catch {
-      this.findings = [];
-    }
+    // Corrupt or missing files start empty (corrupt ones are backed up by
+    // readJsonStore); any other I/O error surfaces instead of silently
+    // wiping findings.
+    const parsed = await readJsonStore<FindingFile>(this.filePath);
+    const rawFindings = Array.isArray(parsed?.findings) ? parsed!.findings.filter((finding) => finding?.id && finding?.title && finding?.asset) : [];
+    this.findings = rawFindings.map(cloneFinding);
+    // One-time migration: legacy fields are dropped from disk on load.
+    if (JSON.stringify(rawFindings) !== JSON.stringify(this.findings)) await this.persist();
     return this.findings;
   }
 
   private async persist() {
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
-    await writeFile(this.filePath, `${JSON.stringify({ findings: this.findings ?? [] }, null, 2)}\n`, { mode: 0o600 });
+    await writeJsonStoreAtomic(this.filePath, { findings: this.findings ?? [] });
   }
 
   private async locked<T>(operation: () => Promise<T>) {

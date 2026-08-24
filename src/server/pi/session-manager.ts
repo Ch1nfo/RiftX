@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { mkdir, readFile, stat, unlink, rm } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { Type } from "@sinclair/typebox";
 import {
   AuthStorage,
@@ -35,6 +35,9 @@ import { shouldDeliverSubagentCompletion, waitForSubagentsBeforeConclusion } fro
 import { setAgentTransport } from "./pi-internals";
 import { prepareSkillPrompt, type SkillDescriptor } from "./skill-router";
 import { createTimedBashTool } from "./bash-timeout";
+import { abortSessionRecord, shutdownSessionRecord } from "./session-shutdown";
+import { switchSessionProfile, withProfileSwitchLock } from "./apply-session-profile";
+import { registerTrackedProfile, registerProfileModel, restoreProviderRegistration, type ProviderRegistrations } from "./model-registration";
 
 type SessionRecord = {
   id: string;
@@ -53,7 +56,7 @@ type SessionRecord = {
   mutationLock: MutationLock;
   subagents?: SubagentManager;
   evidenceStore: EvidenceStore;
-  dispose?: () => void;
+  shutdownPromise?: Promise<void>;
   runtimeVersion?: number;
   abortPromise?: Promise<void>;
   aborting?: boolean;
@@ -62,9 +65,11 @@ type SessionRecord = {
   deliveredSubagentResults: Set<string>;
   skills: SkillDescriptor[];
   loadedSkills: Set<string>;
+  providerRegistrations: ProviderRegistrations;
+  profileSwitch?: Promise<unknown>;
 };
 
-const RUNTIME_VERSION = 25;
+const RUNTIME_VERSION = 26;
 
 type SessionSnapshotCacheEntry = {
   modifiedMs: number;
@@ -147,46 +152,6 @@ function eventPayload(event: AgentSessionEvent): RiftxEvent {
   return { type: "message", message: base };
 }
 
-function registerProfileModel(authStorage: AuthStorage, modelRegistry: ModelRegistry, profile: ModelProfile, replace = false) {
-  if (profile.apiKey) authStorage.setRuntimeApiKey(profile.provider, profile.apiKey);
-  if (replace || !modelRegistry.find(profile.provider, profile.model)) {
-    const models = modelRegistry.getAll()
-      .filter((model) => model.provider === profile.provider && model.id !== profile.model)
-      .map((model) => ({
-        id: model.id,
-        name: model.name,
-        api: model.api,
-        baseUrl: model.baseUrl,
-        reasoning: model.reasoning,
-        thinkingLevelMap: model.thinkingLevelMap,
-        input: model.input,
-        cost: model.cost,
-        contextWindow: model.contextWindow,
-        maxTokens: model.maxTokens,
-        headers: model.headers,
-        compat: model.compat
-      }));
-    modelRegistry.registerProvider(profile.provider, {
-      baseUrl: profile.baseUrl,
-      apiKey: profile.apiKey || "riftx-configured",
-      api: profile.api,
-      models: [...models, {
-        id: profile.model,
-        name: profile.name,
-        reasoning: profile.thinkingLevel !== "off",
-        // Providers drop image content unless the model declares image input,
-        // which silently disabled browser screenshots. Profiles opt in.
-        input: profile.supportsImages ? ["text", "image"] : ["text"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: profile.contextWindow,
-        maxTokens: profile.maxTokens
-      }]
-    });
-  }
-  const model = modelRegistry.find(profile.provider, profile.model) as Model<any> | undefined;
-  if (!model) throw new Error(`Model ${profile.provider}/${profile.model} could not be loaded`);
-  return model;
-}
 
 function createFindingTool(store: EvidenceStore, source: FindingSourceInfo, browser: BrowserManager, getSession: () => AgentSession | undefined): ToolDefinition {
   return defineTool({
@@ -254,7 +219,8 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
   await mkdir(paths.agent, { recursive: true, mode: 0o700 });
   const authStorage = runtimeDeps?.authStorage ?? AuthStorage.create(join(paths.agent, "auth.json"));
   const modelRegistry = runtimeDeps?.modelRegistry ?? ModelRegistry.create(authStorage, join(paths.agent, "models.json"));
-  const model = registerProfileModel(authStorage, modelRegistry, profile, !runtimeDeps);
+  const providerRegistrations: ProviderRegistrations = new Map();
+  const model = registerTrackedProfile(providerRegistrations, authStorage, modelRegistry, profile, !runtimeDeps);
 
   const config = await readConfig();
   gate.setMode(config.approvalMode);
@@ -266,7 +232,7 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
   const childProfile = config.childInherit ? profile : config.profiles.find((item) => item.id === config.childProfileId) ?? profile;
   // Keep title work on the configured child profile when available so it does
   // not consume the main Agent's provider quota during a live turn.
-  const titleModel = registerProfileModel(authStorage, modelRegistry, childProfile);
+  const titleModel = registerTrackedProfile(providerRegistrations, authStorage, modelRegistry, childProfile);
   const settingsManager = SettingsManager.create(cwd, paths.agent);
   settingsManager.setTransport(profile.transport);
   const sessionManager = sessionManagerOverride ?? AgentSessionManager.create(cwd, child ? join(paths.subagents, "runtime") : paths.sessions);
@@ -356,6 +322,7 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
     waitingForSubagents: false,
     deliveredSubagentResults: new Set(),
     skills: resourceLoader.getSkills().skills as SkillDescriptor[],
+    providerRegistrations,
     loadedSkills: new Set(),
     unsubscribe: () => undefined
   };
@@ -387,13 +354,6 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
     });
     await subagents.initialize((context) => runChildSession(getChildProfile(), cwd, mutationLock, context, { authStorage, modelRegistry, evidenceStore, evidenceSessionId }));
   }
-  record.dispose = () => {
-    gate.rejectAll();
-    void subagents?.abortAll();
-    unsubscribe();
-    void browser.close();
-    result.session.dispose();
-  };
   return record;
 }
 
@@ -430,7 +390,7 @@ async function runChildSession(profile: ModelProfile, cwd: string, mutationLock:
     unsubscribe();
     context.signal.removeEventListener("abort", abortChild);
     if (context.signal.aborted) await child.session.abort().catch(() => undefined);
-    child.dispose?.();
+    await shutdownSessionRecord(child);
   }
 }
 
@@ -583,12 +543,13 @@ async function getOrCreateSession(id?: string) {
       const existing = sessions.get(id)!;
       // Rebuild stale process-global session objects after a dev-server reload
       // or runtime-version bump, while keeping persisted history on disk.
-      if (existing.runtimeVersion === RUNTIME_VERSION && resolve(existing.cwd) === resolve(config.cwd)) return existing;
-      existing.gate.rejectAll();
-      await existing.subagents?.abortAll();
-      existing.unsubscribe();
-      await existing.browser?.close();
-      existing.session.dispose();
+      if (existing.runtimeVersion === RUNTIME_VERSION && resolve(existing.cwd) === resolve(config.cwd)) {
+        // A record being torn down must not be handed out again: archive has
+        // already claimed it and any prompt/abort would race its disposal.
+        if (existing.shutdownPromise) throw new RiftxError("Session is shutting down", "SESSION_BUSY", 409);
+        return existing;
+      }
+      await shutdownSessionRecord(existing);
       sessions.delete(id);
     }
     const currentConfig = await readConfig();
@@ -643,13 +604,7 @@ export async function setWorkingDirectory(input: string) {
   const config = await readConfig();
   if (config.cwd !== cwd) {
     for (const [id, record] of sessions) {
-      record.gate.rejectAll();
-      await record.subagents?.abortAll();
-      record.session.abortBash();
-      await record.session.abort().catch(() => undefined);
-      record.unsubscribe();
-      await record.browser?.close();
-      record.session.dispose();
+      await shutdownSessionRecord(record);
       sessions.delete(id);
     }
     await updateConfig({ cwd });
@@ -700,7 +655,7 @@ export async function summarizeSessionTitle(id: string, task: string) {
   const titleProfile = existingConfig.childInherit
     ? record.profile
     : existingConfig.profiles.find((item) => item.id === existingConfig.childProfileId) ?? record.profile;
-  const titleModel = registerProfileModel(record.authStorage, record.modelRegistry, titleProfile);
+  const titleModel = await withProfileSwitchLock(record, "wait", async () => registerTrackedProfile(record.providerRegistrations, record.authStorage, record.modelRegistry, titleProfile));
   const title = await generateSessionTitle(record.modelRegistry, titleModel, task);
   const config = await readConfig();
   const latestTitle = config.sessionTitles[id]?.trim();
@@ -721,30 +676,7 @@ export async function startPromptSession(id: string, text: string, mode: "prompt
 
 export async function abortSession(id: string) {
   const record = await getOrCreateSession(id);
-  if (record.abortPromise) return record.abortPromise;
-  record.aborting = true;
-  record.abortPromise = (async () => {
-    record.abortEpoch = (record.abortEpoch ?? 0) + 1;
-    record.waitingForSubagents = false;
-    // Release approval/mutation waits first, then explicitly stop the Agent's
-    // bash controller. AgentSession.abort() only aborts the model loop; bash
-    // has a separate controller in the runtime SDK.
-    record.gate.rejectAll();
-    const subagentAbort = record.subagents?.abortAll();
-    record.session.abortBash();
-    await Promise.allSettled([
-      record.session.abort(),
-      subagentAbort ?? Promise.resolve()
-    ]);
-    record.emitter.emit("event", { type: "session_state", state: "idle" });
-    record.emitter.emit("event", { type: "done", aborted: true });
-  })();
-  try {
-    await record.abortPromise;
-  } finally {
-    record.abortPromise = undefined;
-    record.aborting = false;
-  }
+  await abortSessionRecord(record, (event) => record.emitter.emit("event", event));
 }
 
 export async function decideApproval(id: string, approvalId: string, approved: boolean, scope: "once" | "task" = "once") {
@@ -955,8 +887,7 @@ export async function archiveSession(id: string) {
   }
   const record = sessions.get(id);
   if (record) {
-    record.dispose?.();
-    await record.subagents?.abortAll();
+    await shutdownSessionRecord(record);
     sessions.delete(id);
   }
   return listSessions();
@@ -968,8 +899,7 @@ export async function deleteArchivedSession(id: string) {
   const session = (await listSessions()).find((item) => item.id === id);
   const record = sessions.get(id);
   if (record) {
-    record.dispose?.();
-    await record.subagents?.abortAll();
+    await shutdownSessionRecord(record);
     sessions.delete(id);
   }
   if (session?.path) {
@@ -982,42 +912,65 @@ export async function deleteArchivedSession(id: string) {
   await removeEvidence(id, getAppPaths().evidence);
   const subagentPath = resolve(getAppPaths().subagents, id);
   const subagentRoot = resolve(getAppPaths().subagents);
-  if (subagentPath.startsWith(`${subagentRoot}/`)) await rm(subagentPath, { recursive: true, force: true });
+  // Containment via path.relative works on both separators; a string prefix
+  // check silently fails on Windows backslash paths.
+  const subagentRelative = relative(subagentRoot, subagentPath);
+  if (subagentRelative && !subagentRelative.startsWith("..") && !isAbsolute(subagentRelative)) {
+    await rm(subagentPath, { recursive: true, force: true });
+  }
   const { [id]: _removedTitle, ...sessionTitles } = config.sessionTitles;
   await updateConfig({ archivedSessionIds: config.archivedSessionIds.filter((item) => item !== id), archivedSessions: config.archivedSessions.filter((item) => item.id !== id), sessionTitles });
   return listSessions();
 }
 
-export async function setActiveProfile(profile: ModelProfile) {
-  const prepared = [...sessions.values()].map((record) => ({
-    record,
-    model: registerProfileModel(record.authStorage, record.modelRegistry, profile, true),
-    previousProfile: record.profile,
-    previousModel: record.model
+/**
+ * Switch the live model for one specific session (the global default is
+ * persisted separately by the settings route). A running session other than
+ * the target is never touched, and a streaming target keeps its current model
+ * until it is idle — switching mid-run would change cost and behavior under
+ * the caller's feet.
+ */
+/**
+ * Switch one live session's model. The decision compares against the target
+ * session's current profile (never the global default) and surfaces missing
+ * or busy sessions as typed errors instead of silently succeeding.
+ */
+export async function setActiveProfile(profile: ModelProfile, sessionId?: string) {
+  if (!sessionId) return false;
+  const record = sessions.get(sessionId);
+  if (!record) throw new RiftxError("Session not found", "SESSION_NOT_FOUND", 404);
+  // The whole switch — capture, staging, commit, or rollback — runs inside a
+  // per-session mutex: a second concurrent switch is rejected instead of
+  // racing the first one's rollback against its commit.
+  const switched = await withProfileSwitchLock(record, "reject", () => switchSessionProfile(record, profile, {
+    prepareModel: (target, next) => {
+      const sessionRecord = target as SessionRecord;
+      // Capture the provider's real pre-switch registration; the tracked map
+      // is only written on success, so it still holds this value on failure.
+      const captured = sessionRecord.providerRegistrations.get(next.provider);
+      // registerProfileModel writes the new key in TWO places: the record's
+      // runtime API key override and the registry's provider request config.
+      // restoreProviderRegistration undoes both — restoring the captured
+      // registration, or removing a provider this failed switch introduced.
+      const rollback = () => restoreProviderRegistration(
+        { authStorage: sessionRecord.authStorage, modelRegistry: sessionRecord.modelRegistry, registrations: sessionRecord.providerRegistrations },
+        next.provider,
+        captured
+      );
+      let model: Model<any>;
+      try {
+        model = registerProfileModel(sessionRecord.authStorage, sessionRecord.modelRegistry, next, true);
+      } catch (error) {
+        // A failure mid-registration must not leave the new key behind.
+        try { rollback(); } catch { /* restore is best-effort */ }
+        throw error;
+      }
+      return { model, rollback };
+    },
+    hasConfiguredAuth: (model) => record.modelRegistry.hasConfiguredAuth(model as Model<any>),
+    applyTransport: (session, transport) => setAgentTransport(session as AgentSession, transport)
   }));
-  for (const { record, model } of prepared) {
-    if (!record.modelRegistry.hasConfiguredAuth(model)) throw new Error(`No API key for ${model.provider}/${model.id}`);
-  }
-  const switched: typeof prepared = [];
-  try {
-    for (const item of prepared) {
-      await item.record.session.setModel(item.model);
-      switched.push(item);
-      item.record.session.setThinkingLevel(profile.thinkingLevel);
-      item.record.settingsManager.setTransport(profile.transport);
-      setAgentTransport(item.record.session, profile.transport);
-      item.record.profile = profile;
-      item.record.model = item.model;
-    }
-  } catch (error) {
-    for (const item of switched.reverse()) {
-      await item.record.session.setModel(item.previousModel).catch(() => undefined);
-      item.record.session.setThinkingLevel(item.previousProfile.thinkingLevel);
-      item.record.settingsManager.setTransport(item.previousProfile.transport);
-      setAgentTransport(item.record.session, item.previousProfile.transport);
-      item.record.profile = item.previousProfile;
-      item.record.model = item.previousModel;
-    }
-    throw error;
-  }
+  // Only a successful switch becomes the provider's tracked registration.
+  if (switched) record.providerRegistrations.set(profile.provider, profile);
+  return switched;
 }

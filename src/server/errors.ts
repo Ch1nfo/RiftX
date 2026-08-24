@@ -1,4 +1,4 @@
-export type RiftxErrorCode = "SESSION_ARCHIVED" | "SESSION_NOT_IN_WORKSPACE" | "SESSION_NOT_FOUND" | "SESSION_NOT_ARCHIVED" | "INVALID_WORKING_DIRECTORY";
+export type RiftxErrorCode = "SESSION_ARCHIVED" | "SESSION_NOT_IN_WORKSPACE" | "SESSION_NOT_FOUND" | "SESSION_NOT_ARCHIVED" | "SESSION_BUSY" | "MODEL_AUTH_MISSING" | "INVALID_WORKING_DIRECTORY";
 
 export class RiftxError extends Error {
   constructor(message: string, readonly code: RiftxErrorCode, readonly status: number) {

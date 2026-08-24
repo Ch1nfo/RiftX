@@ -65,7 +65,7 @@ conda run -n agent npm run dev
 
 Open <http://localhost:3000>, choose a working directory from the folder button in the workbench header, then open **Settings** to create or select a model profile. The initial working directory is the directory from which RiftX is started; changing it replaces the visible session list with sessions from the new directory.
 
-The composer model selector changes the current Agent session in place, including an empty session that has not yet written its first message. This keeps the session ID and history intact while updating the model and context window.
+The composer model selector changes the current Agent session in place, including an empty session that has not yet written its first message. This keeps the session ID and history intact while updating the model and context window. Switching is scoped to the selected session: other live sessions (including background ones) keep their model, and saving profiles in Settings only updates the stored default.
 
 For a production build:
 
