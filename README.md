@@ -56,29 +56,26 @@ RiftX currently does not include:
 
 ## Quick Start
 
-Install the production Web UI directly from GitHub:
-
-```bash
-npm install --global github:Ch1nfo/RiftX
-rx webui
-```
-
-Open <http://localhost:3000>, choose a working directory from the folder button in the workbench header, then open **Settings** to create or select a model profile. The initial working directory is the directory from which RiftX is started; changing it replaces the visible session list with sessions from the new directory.
-
-The install command builds the production application and installs Playwright Chromium. To use another port or listen address:
-
-```bash
-rx webui --port 4000
-rx webui --hostname 127.0.0.1
-```
-
-To install a local clone instead:
+Clone RiftX, install its dependencies and production build locally, then register the `rx` command in a user-owned directory:
 
 ```bash
 git clone https://github.com/Ch1nfo/RiftX.git
 cd RiftX
-npm install --global .
+npm install
+npm_config_prefix="$HOME/.local" npm link --ignore-scripts
+export PATH="$HOME/.local/bin:$PATH"
 rx webui
+```
+
+This flow does not require root. `npm install` installs Playwright Chromium and creates the production build; `npm link` only exposes the already-built clone as `rx`. Add `$HOME/.local/bin` to your shell profile to keep the command available in new terminals. On Windows or with a user-managed Node.js installation, run `npm link --ignore-scripts` without the temporary `npm_config_prefix` override.
+
+Open <http://localhost:3000>, choose a working directory from the folder button in the workbench header, then open **Settings** to create or select a model profile. The initial working directory is the directory from which RiftX is started; changing it replaces the visible session list with sessions from the new directory.
+
+To use another port or listen address:
+
+```bash
+rx webui --port 4000
+rx webui --hostname 127.0.0.1
 ```
 
 The composer model selector changes the current Agent session in place, including an empty session that has not yet written its first message. This keeps the session ID and history intact while updating the model and context window. Switching is scoped to the selected session: other live sessions (including background ones) keep their model, and saving profiles in Settings only updates the stored default.

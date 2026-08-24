@@ -56,29 +56,26 @@ RiftX 不需要数据库，也不需要远程 RiftX 账户。
 
 ## 快速开始
 
-直接从 GitHub 安装正式版 Web UI：
-
-```bash
-npm install --global github:Ch1nfo/RiftX
-rx webui
-```
-
-打开 <http://localhost:3000>，先点击工作台顶部的工作目录按钮，通过系统文件夹选择器选择目录，再进入“设置”创建或选择模型配置。初始工作目录是启动 RiftX 时所在的目录；切换目录后，左侧只显示新目录下的会话。
-
-安装命令会自动构建生产版本并安装 Playwright Chromium。可以按需修改端口或监听地址：
-
-```bash
-rx webui --port 4000
-rx webui --hostname 127.0.0.1
-```
-
-如需从本地 clone 安装：
+clone RiftX，在仓库内安装依赖并生成生产构建，再把 `rx` 命令注册到当前用户可写的目录：
 
 ```bash
 git clone https://github.com/Ch1nfo/RiftX.git
 cd RiftX
-npm install --global .
+npm install
+npm_config_prefix="$HOME/.local" npm link --ignore-scripts
+export PATH="$HOME/.local/bin:$PATH"
 rx webui
+```
+
+这套流程不需要 root。`npm install` 会安装 Playwright Chromium 并生成生产构建；`npm link` 只负责把已经构建好的 clone 注册为 `rx`。如需在新终端中继续直接使用该命令，请将 `$HOME/.local/bin` 加入 shell 配置文件。Windows 或由当前用户管理的 Node.js 直接运行 `npm link --ignore-scripts`，无需临时设置 `npm_config_prefix`。
+
+打开 <http://localhost:3000>，先点击工作台顶部的工作目录按钮，通过系统文件夹选择器选择目录，再进入“设置”创建或选择模型配置。初始工作目录是启动 RiftX 时所在的目录；切换目录后，左侧只显示新目录下的会话。
+
+可以按需修改端口或监听地址：
+
+```bash
+rx webui --port 4000
+rx webui --hostname 127.0.0.1
 ```
 
 输入框中的模型选择器会原地切换当前 Agent 会话，即使会话还没有发送过第一条消息也不会丢失会话 ID 或历史；模型和上下文窗口会同步更新。切换只作用于当前选中的会话：其他运行中的会话（包括后台会话）保持原模型；在设置中保存配置档案只更新全局默认值。
