@@ -1,13 +1,35 @@
 {
   "name": "riftx",
   "version": "0.1.0",
-  "private": true,
+  "description": "Local Web UI for the RiftX authorized security testing agent",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ch1nfo/RiftX.git"
+  },
+  "homepage": "https://github.com/Ch1nfo/RiftX#readme",
+  "engines": {
+    "node": ">=20.18.1"
+  },
+  "bin": {
+    "rx": "bin/rx.mjs"
+  },
+  "files": [
+    "bin/",
+    "public/",
+    "next.config.mjs",
+    ".next/",
+    "!.next/cache/",
+    "!.next/types/"
+  ],
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test 'src/**/*.test.ts'"
+    "test": "tsx --test 'src/**/*.test.ts'",
+    "postinstall": "playwright install chromium",
+    "prepare": "npm run build"
   },
   "dependencies": {
     "@mariozechner/pi-coding-agent": "^0.73.1",

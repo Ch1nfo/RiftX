@@ -1,5 +1,5 @@
 import { mkdir, rename, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { APPROVAL_MODES, DEFAULT_PROFILE, SUBAGENT_AGGRESSIVENESS, type AppConfig, type ModelProfile } from "@/lib/types";
 import { readJsonStore, writeJsonStoreAtomic } from "@/server/json-store";
@@ -14,12 +14,16 @@ const EVIDENCE_PATH = join(ROOT, "evidence");
 const SKILLS_PATH = join(ROOT, "skills");
 let configWriteChain = Promise.resolve();
 
+export function getLaunchDirectory() {
+  return resolve(process.env.RIFTX_LAUNCH_CWD || process.cwd());
+}
+
 const defaultConfig = (): AppConfig => ({
   profiles: [DEFAULT_PROFILE],
   activeProfileId: DEFAULT_PROFILE.id,
   childProfileId: null,
   childInherit: true,
-  cwd: process.cwd(),
+  cwd: getLaunchDirectory(),
   approvalMode: "request",
   archivedSessionIds: [],
   archivedSessions: [],

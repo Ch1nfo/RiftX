@@ -15,7 +15,7 @@ import {
   type ToolDefinition
 } from "@mariozechner/pi-coding-agent";
 import type { Model } from "@mariozechner/pi-ai";
-import { readConfig, getAppPaths, updateConfig } from "@/server/config-store";
+import { readConfig, getAppPaths, getLaunchDirectory, updateConfig } from "@/server/config-store";
 import { RiftxError } from "@/server/errors";
 import type { ApprovalMode, ArchivedSession, ContextUsage, FindingInput, FindingSource, ModelProfile, RiftxEvent, SessionSummary } from "@/lib/types";
 import { ApprovalGate } from "./approval-gate";
@@ -517,7 +517,7 @@ async function buildSessionSnapshot(id: string, path?: string) {
 async function listWorkspaceSessionInfos(cwd: string) {
   const target = resolve(cwd);
   const infos = await AgentSessionManager.list(cwd, getAppPaths().sessions);
-  const launchDirectory = resolve(process.cwd());
+  const launchDirectory = getLaunchDirectory();
   return infos.filter((info) => info.cwd ? resolve(info.cwd) === target : target === launchDirectory);
 }
 

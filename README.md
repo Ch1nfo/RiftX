@@ -30,10 +30,8 @@ RiftX is an MVP. It focuses on core agent capabilities and safe local operation;
 
 ## Requirements
 
-- Node.js compatible with the installed Next.js version.
-- A local conda environment named `agent` for development and verification.
+- Node.js 20.18.1 or newer (Node.js 22 LTS recommended).
 - An API-compatible model endpoint and API key configured from the Settings page.
-- Playwright Chromium installed once with `conda run -n agent npx playwright install chromium`.
 
 RiftX does not require a database or a remote RiftX account.
 
@@ -58,34 +56,49 @@ RiftX currently does not include:
 
 ## Quick Start
 
+Install the production Web UI directly from GitHub:
+
 ```bash
-conda run -n agent npm install
-conda run -n agent npm run dev
+npm install --global github:Ch1nfo/RiftX
+rx webui
 ```
 
 Open <http://localhost:3000>, choose a working directory from the folder button in the workbench header, then open **Settings** to create or select a model profile. The initial working directory is the directory from which RiftX is started; changing it replaces the visible session list with sessions from the new directory.
 
-The composer model selector changes the current Agent session in place, including an empty session that has not yet written its first message. This keeps the session ID and history intact while updating the model and context window. Switching is scoped to the selected session: other live sessions (including background ones) keep their model, and saving profiles in Settings only updates the stored default.
-
-For a production build:
+The install command builds the production application and installs Playwright Chromium. To use another port or listen address:
 
 ```bash
-conda run -n agent npm run build
-conda run -n agent npm start
+rx webui --port 4000
+rx webui --hostname 127.0.0.1
 ```
+
+To install a local clone instead:
+
+```bash
+git clone https://github.com/Ch1nfo/RiftX.git
+cd RiftX
+npm install --global .
+rx webui
+```
+
+The composer model selector changes the current Agent session in place, including an empty session that has not yet written its first message. This keeps the session ID and history intact while updating the model and context window. Switching is scoped to the selected session: other live sessions (including background ones) keep their model, and saving profiles in Settings only updates the stored default.
 
 ## Development Commands
 
 ```bash
-conda run -n agent npm run typecheck
-conda run -n agent npm test
-conda run -n agent npm run build
+npm install
+npm run dev
+npm run typecheck
+npm test
+npm run build
 ```
 
-Install Playwright Chromium once after dependencies are installed:
+`npm install` installs Playwright Chromium and creates a production build. Use `npm run dev` for hot reload; `rx webui` always runs the production build.
+
+On Linux, Playwright may also request operating-system browser dependencies. Install them once if prompted:
 
 ```bash
-conda run -n agent npx playwright install chromium
+npx playwright install-deps chromium
 ```
 
 ## Safety Model
