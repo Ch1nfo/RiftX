@@ -14,6 +14,7 @@ import { withSessionProfile } from "@/lib/session-profile-sync";
 import { useLanguage } from "@/lib/i18n";
 import { isAlreadyProcessingError } from "@/lib/prompt-mode";
 import { summarizeToolResult } from "@/lib/tool-result";
+import { resolveConversationScroll } from "@/lib/conversation-scroll";
 
 type Message = { id: string; role: "user" | "assistant" | "thinking" | "tool"; content: string; toolName?: string; toolCallId?: string; status?: string; isError?: boolean };
 type MessageDelta = { role: "assistant" | "thinking"; content: string };
@@ -130,6 +131,7 @@ export function Workbench() {
   const messageDeltaQueueRef = useRef<MessageDelta[]>([]);
   const messageDeltaFrameRef = useRef<number | undefined>(undefined);
   const scrollFrameRef = useRef<number | undefined>(undefined);
+  const lastScrollTopRef = useRef(0);
   const historyScrollRef = useRef<{ height: number; top: number } | null>(null);
   const pendingToolScrollRef = useRef<string | null>(null);
 
@@ -247,6 +249,7 @@ export function Workbench() {
 
   useEffect(() => {
     shouldAutoScrollRef.current = true;
+    lastScrollTopRef.current = 0;
     setVisibleMessageCount(MESSAGE_BATCH_SIZE);
     setShowJumpToLatest(false);
     subagentsRef.current = [];
@@ -455,7 +458,10 @@ export function Workbench() {
     scrollFrameRef.current = requestAnimationFrame(() => {
       scrollFrameRef.current = undefined;
       const conversation = conversationRef.current;
-      if (conversation && shouldAutoScrollRef.current) conversation.scrollTop = conversation.scrollHeight;
+      if (conversation && shouldAutoScrollRef.current) {
+        conversation.scrollTop = conversation.scrollHeight;
+        lastScrollTopRef.current = conversation.scrollTop;
+      }
     });
   }, [messages]);
 
@@ -488,10 +494,16 @@ export function Workbench() {
   const handleConversationScroll = () => {
     const conversation = conversationRef.current;
     if (!conversation) return;
-    const atLatest = conversation.scrollHeight - conversation.clientHeight - conversation.scrollTop <= 24;
-    shouldAutoScrollRef.current = atLatest;
+    const { shouldFollow } = resolveConversationScroll({
+      wasFollowing: shouldAutoScrollRef.current,
+      previousScrollTop: lastScrollTopRef.current,
+      scrollTop: conversation.scrollTop,
+      distanceFromBottom: conversation.scrollHeight - conversation.clientHeight - conversation.scrollTop
+    });
+    lastScrollTopRef.current = conversation.scrollTop;
+    shouldAutoScrollRef.current = shouldFollow;
     setShowJumpToLatest((current) => {
-      const next = !atLatest && messages.length > 0;
+      const next = !shouldFollow && messages.length > 0;
       return current === next ? current : next;
     });
   };
@@ -502,8 +514,10 @@ export function Workbench() {
     const conversation = conversationRef.current;
     if (!conversation) return;
     conversation.scrollTop = conversation.scrollHeight;
+    lastScrollTopRef.current = conversation.scrollTop;
     requestAnimationFrame(() => {
       conversation.scrollTop = conversation.scrollHeight;
+      lastScrollTopRef.current = conversation.scrollTop;
       handleConversationScroll();
     });
   };

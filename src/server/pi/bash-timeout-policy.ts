@@ -1,4 +1,4 @@
-export const DEFAULT_BASH_TIMEOUT_SECONDS = 5 * 60;
+export const DEFAULT_BASH_TIMEOUT_SECONDS = 90;
 export const MAX_BASH_TIMEOUT_SECONDS = 30 * 60;
 
 export function resolveBashTimeout(timeout?: number) {
