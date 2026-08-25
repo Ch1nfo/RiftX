@@ -168,6 +168,7 @@ RiftX 采用本机单进程 Web 应用结构：React 工作台通过 Next.js Rou
 
 - Node.js `20.18.1` 或更高版本，推荐 Node.js 22 LTS。
 - npm 10 或与所用 Node.js 版本配套的 npm。
+- Git 2.x 或更高版本，用于从 GitHub 安装或 clone 源码。
 - 一个可用的模型 API 端点与 API Key。
 - Playwright Chromium；安装时会自动下载。
 
@@ -191,6 +192,23 @@ rx webui
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
+#### Windows PowerShell
+
+上面的 `$HOME` 和 `export PATH` 是 Unix shell 语法，不能直接复制到 PowerShell。Windows 的 npm 通常使用当前用户可写的全局目录，因此直接执行：
+
+```powershell
+npm install --global git+https://github.com/Ch1nfo/RiftX.git
+rx webui
+```
+
+如果安装后 PowerShell 找不到 `rx`，先查看 npm 全局目录，并将它加入当前用户的 `PATH`：
+
+```powershell
+npm config get prefix
+```
+
+默认目录通常是 `$env:APPDATA\npm`。修改 `PATH` 后请重新打开 PowerShell。
+
 这里明确使用 `git+https://`，避免 `github:Ch1nfo/RiftX` 在部分 Git/npm 配置中被改写为 SSH。RiftX 暂未发布到 npm registry，因此目前不能使用 `npm install -g riftx`。
 
 ### 方式二：从源码安装
@@ -206,12 +224,14 @@ rx webui
 
 `npm install` 会安装依赖、下载 Chromium 并生成生产构建；`npm link --ignore-scripts` 只把当前构建注册为 `rx`，不会再次构建。整个流程不需要 root 或 `sudo`。
 
-Windows 或使用 nvm、fnm 等用户级 Node.js 管理器时，通常可直接运行：
+Windows PowerShell 中，`npm install` 完成构建并下载 Chromium 后，在源码目录执行：
 
-```bash
+```powershell
 npm link --ignore-scripts
 rx webui
 ```
+
+如果使用 nvm、fnm 等用户级 Node.js 管理器，同样使用上面的 PowerShell 命令即可。除非你修改过 npm 全局目录，否则不需要设置 `npm_config_prefix` 或执行 `export PATH`。
 
 ### 首次配置
 

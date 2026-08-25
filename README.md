@@ -168,6 +168,7 @@ RiftX is a local, single-process Web application. The React workbench uses Next.
 
 - Node.js `20.18.1` or newer; Node.js 22 LTS is recommended.
 - npm 10 or the npm version bundled with the chosen Node.js release.
+- Git 2.x or newer, required for GitHub installation.
 - A model API endpoint and API key.
 - Playwright Chromium, downloaded automatically during installation.
 
@@ -191,6 +192,23 @@ Add the following line to `~/.zshrc` or `~/.bashrc` so `rx` remains available in
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
+#### Windows PowerShell
+
+The Unix `$HOME` and `export PATH` syntax above is not PowerShell syntax. Windows npm normally uses a user-writable global prefix, so install directly with:
+
+```powershell
+npm install --global git+https://github.com/Ch1nfo/RiftX.git
+rx webui
+```
+
+If PowerShell cannot find `rx` after installation, check the global npm directory and add it to the user `PATH`:
+
+```powershell
+npm config get prefix
+```
+
+The default directory is commonly `$env:APPDATA\npm`. Reopen PowerShell after changing `PATH`.
+
 The explicit `git+https://` URL avoids Git/npm configurations that rewrite `github:Ch1nfo/RiftX` to SSH. RiftX is not yet published to the npm registry, so `npm install -g riftx` is not currently available.
 
 ### Option 2: Install from Source
@@ -206,12 +224,14 @@ rx webui
 
 `npm install` installs dependencies, downloads Chromium, and creates the production build. `npm link --ignore-scripts` only registers that build as the `rx` command and does not build it again. This flow does not require root or `sudo`.
 
-On Windows, or with a user-managed Node.js installation such as nvm or fnm, this is usually sufficient:
+On Windows PowerShell, after `npm install` has finished the build and downloaded Chromium, link the source checkout with:
 
-```bash
+```powershell
 npm link --ignore-scripts
 rx webui
 ```
+
+With a user-managed Node.js installation such as nvm or fnm, the same PowerShell commands apply. No `npm_config_prefix` or `export PATH` line is needed unless you changed the npm global prefix.
 
 ### First-Time Configuration
 
