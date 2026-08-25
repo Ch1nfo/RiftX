@@ -1,62 +1,199 @@
-# RiftX
+<div align="center">
 
-[中文文档](README_ZH.md)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="public/riftx-logo-dark-mark.png">
+  <source media="(prefers-color-scheme: light)" srcset="public/riftx-logo-light-mark.png">
+  <img alt="RiftX" src="public/riftx-logo-light-mark.png" width="420">
+</picture>
 
-RiftX is a local, single-user Web UI for an authorized Web penetration testing and vulnerability validation agent. It provides a compact command-center interface for controlled reconnaissance, analysis, and evidence-driven validation.
+### A local multi-agent workbench for authorized Web security testing
 
-RiftX is an MVP. It focuses on core agent capabilities and safe local operation; it does not ship dedicated scanners such as nmap, httpx, or subfinder.
+[![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](https://github.com/Ch1nfo/RiftX/releases)
+[![Node.js](https://img.shields.io/badge/Node.js-20.18.1%2B-339933.svg?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![Next.js](https://img.shields.io/badge/Next.js-15-000000.svg?logo=nextdotjs&logoColor=white)](https://nextjs.org/)
+[![React](https://img.shields.io/badge/React-19-149ECA.svg?logo=react&logoColor=white)](https://react.dev/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6.svg?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Playwright](https://img.shields.io/badge/Playwright-Chromium-2EAD33.svg?logo=playwright&logoColor=white)](https://playwright.dev/)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#requirements)
 
-## Highlights
+English | [中文](README_ZH.md)
 
-- Agent sessions with streaming text, thinking, tool execution, and errors.
-- Built-in read-only tools: `read`, `grep`, `find`, and `ls`.
-- Approval-controlled `bash`, `write`, `edit`, and browser mutation actions.
-- Three approval modes: request approval, AI-assisted approval, and full access.
-- Model profiles with provider, model ID, API key, base URL, protocol, transport, context window, output limit, and thinking level.
-- Clickable model switching from the workbench composer when multiple profiles exist.
-- Concurrent sub-agents with queueing, retry, cancellation, independent threads, independent approval gates, and configurable profile inheritance or override.
-- Session findings with confidence, impact, reproduction notes, and reviewable quote, tool-call, browser-request, or screenshot evidence from the main Agent and sub-agents.
-- Automatic mid-turn context compaction that keeps the active Agent run alive and updates context usage from the compacted conversation.
-- Reconnection restores sub-agent snapshots and pending approvals, while session streams reject archived or out-of-workspace sessions.
-- Session history, archive management, tool cards, Markdown rendering, context usage ring, and light/dark themes.
-- English/Chinese UI language toggle.
-- A system directory picker in the workbench header; session history is scoped to the selected working directory.
-- Separate Settings sections for model/agent configuration and archived sessions, with independent save actions.
-- Optional custom system prompt for the main Agent, with the built-in prompt used when disabled or empty.
-- Custom prompt changes apply when a session is newly created or reopened; an already loaded session keeps its current prompt.
-- AI-generated session titles that update immediately when a new task is sent.
-- SSE event streaming with local JSON/JSONL persistence.
-- A single action-based `browser` tool backed by Playwright/Chromium, with DOM refs (`e1`, `e2`), request history, cookies, storage, tabs, and screenshots.
+</div>
+
+---
+
+## Why RiftX?
+
+Web security validation is often split across terminals, browsers, proxies, notes, and several model conversations. Context must be moved by hand, independent work is difficult to parallelize, and conclusions can become detached from the requests, screenshots, and command output that support them.
+
+**RiftX** brings Agent conversations, controlled local tools, a Playwright browser, multi-agent collaboration, and evidence capture into one local workbench. It is designed for explicitly authorized Web testing, with an emphasis on operator control, visible execution, and reviewable conclusions. It does not replace dedicated scanners or decide the limits of an assessment for you.
+
+- **One workbench** - Follow streaming responses, reasoning, tool calls, approvals, context usage, subagents, and evidence in one interface.
+- **Parallel multi-agent work** - Delegate independent tasks to background subagents and consolidate the result after all required work completes.
+- **Browser-native validation** - Operate a real page and inspect DOM snapshots, network traffic, console output, cookies, storage, and screenshots.
+- **Evidence-backed findings** - Link findings to tool calls, browser requests, quotes, and screenshots with impact, confidence, and reproduction notes.
+- **Local first** - No database or RiftX cloud account. Configuration, sessions, Skills, and evidence stay in the current user's home directory.
+- **Flexible model access** - Connect OpenAI, Anthropic, Google, and compatible endpoints, with per-session model switching.
+
+## Interface Preview
+
+| Agent workbench | Model and Agent settings |
+| :---: | :---: |
+| ![RiftX Agent workbench](docs/images/riftx-workbench.png) | ![RiftX settings](docs/images/riftx-settings.png) |
+
+> The screenshots use demo data and contain no real API keys, targets, or session history.
+
+## Features
+
+### Agent Workbench
+
+- **Streaming sessions** - Render text, thinking, tool calls, errors, and task state as they happen; restore session state after reconnecting.
+- **Continuous guidance** - Send follow-up instructions while the Agent is running. The conversation follows new output while still allowing manual history review.
+- **Session management** - Scope sessions to a working directory, generate titles with AI, switch sessions, archive them, and permanently remove archived records.
+- **Context management** - Show input, output, cache, and remaining tokens. Compact context automatically near the limit and expose the compaction state in the conversation.
+- **Model switching** - Change the selected session's model from the composer without affecting other foreground or background sessions.
+- **Bilingual UI** - Switch between English and Chinese, with light and dark themes.
+
+### Multi-Agent Orchestration
+
+- The main Agent can delegate independent investigation tasks to background subagents while continuing the primary line of work.
+- Each subagent has an independent thread, approval gate, and BrowserContext while sharing the parent working directory.
+- Subagents inherit the main Agent model by default or can use a separate model profile.
+- Concurrency is configurable from `1-8`; excess tasks wait in the parent-session queue.
+- Low, default, and high scheduling modes balance parallelism against token usage.
+- Incremental logs, cancellation, and retry are available; reconnecting restores task snapshots and unresolved approvals.
+- Subagents cannot recursively create more subagents. The runtime waits for every required child task before requesting the final answer.
+
+### Browser Tool
+
+RiftX exposes one action-based `browser` tool backed by Playwright and Chromium:
+
+- **Page interaction** - `navigate`, `snapshot`, `click`, `fill`, `press`, `select`, `back`, `reload`
+- **Runtime inspection** - `evaluate`, `console`, `screenshot`
+- **Network evidence** - `requests`, `request_detail`, `response_body`
+- **Identity and state** - `use_identity`, `identities`, `cookies`, `cookies_export`, `cookies_import`, `storage`
+- **Network controls** - `set_host_mappings`, `set_user_agent`, `set_extra_headers`
+- **Page management** - `tabs`, `close`
+
+Snapshots produce an Agent-friendly text representation with stable element references such as `e1` and `e2`. Each identity has isolated cookies and storage, allowing anonymous, low-privilege, and high-privilege states to be tested in parallel. When image input is enabled for the model, screenshots can be sent directly as visual context.
+
+Browser scope accepts CIDR, host, host and port, wildcard domain, and scheme-restricted URL rules. With no configured rules, the first navigation locks the host; out-of-scope navigation requires approval. Host mappings preserve the Host header and TLS SNI for virtual-host testing, and self-signed or invalid certificates can be accepted for controlled internal environments.
+
+### Approvals and Operational Control
+
+RiftX provides three approval modes for actions that may change local or target state:
+
+| Mode | Behavior | Recommended use |
+| --- | --- | --- |
+| Request approval | Every guarded action waits for an explicit allow or reject decision | Default mode with step-by-step control |
+| AI-assisted | The Agent evaluates impact and rejects when it cannot determine the effect | Continuous validation within a known scope |
+| Full access | Bypasses the approval gate | Isolated, fully controlled environments only |
+
+Read-only operations such as `read`, `grep`, `find`, and `ls` run directly. `bash`, `write`, `edit`, and browser actions that change state go through the approval flow. Approval errors, timeouts, and client disconnects fail closed.
+
+### Findings and Evidence
+
+- The main Agent and subagents can write structured findings to the parent session.
+- A finding includes the affected asset, confidence, impact, reproduction notes, source, and timestamps.
+- Evidence can link a message quote, tool call, captured browser request, or retained screenshot.
+- Findings are deduplicated by normalized asset and title, then enriched with later evidence.
+- Operators can change confidence, dismiss a finding, or restore it without deleting the underlying evidence.
+
+### Agent Skills
+
+RiftX loads local Skills from:
+
+```text
+~/.riftx/skills/<skill-name>/SKILL.md
+```
+
+The `SKILL.md` frontmatter must contain a lowercase `name` matching its directory and a clear `description`. Every ordinary user message attempts Skill matching. A matching Skill is automatically injected only once per live session, and `/skill:<skill-name>` can be used for explicit invocation. RiftX reads this directory without modifying Skill files and does not implicitly load project or SDK Skill directories.
+
+### Model and Agent Configuration
+
+- Supports `openai-completions`, `openai-responses`, `anthropic-messages`, and `google-generative-ai` API protocols.
+- Each profile defines a provider, model ID, API key, base URL, transport, context window, output limit, thinking level, and image-input capability.
+- Main and child Agents can use different profiles. Live model changes are scoped to the selected session.
+- Configure a custom main Agent system prompt, subagent concurrency, and scheduling behavior.
+- API keys remain in local configuration; no RiftX account is required.
+
+### Persistence and Recovery
+
+- Sessions use local JSON/JSONL persistence and remain available after a restart.
+- Subagent tasks, logs, summaries, and approvals are restored with their parent. Tasks still running during a restart become `interrupted` and are not replayed automatically.
+- Findings and retained screenshots are stored separately. Corrupt JSON preserves a backup of the original bytes, and writes use temporary files with atomic replacement.
+- Stop, archive, working-directory changes, and deletion share one cleanup path that terminates Agent, Bash, and browser resources.
+
+## Architecture
+
+```text
++--------------------------------------------------------------+
+|                 Next.js 15 + React 19 WebUI                  |
+| Sessions / Stream / Approvals / Subagents / Evidence / i18n  |
++-----------------------------+--------------------------------+
+                              | REST + SSE
++-----------------------------v--------------------------------+
+|                     RiftX Server Runtime                     |
+| Session Manager - Approval Gate - Context Compaction         |
+|        |                 |                  |                |
+|        +-- Main Agent    +-- Local Tools    +-- JSONL Store  |
+|        +-- Subagents     +-- Browser Scope  +-- Evidence     |
+|        +-- Skills                                            |
++-----------------------------+--------------------------------+
+                              |
++-----------------------------v--------------------------------+
+|           Playwright / Chromium + Local File Tools           |
+| DOM Snapshot / Network / Identities / Screenshot / Bash      |
++--------------------------------------------------------------+
+```
+
+RiftX is a local, single-process Web application. The React workbench uses Next.js Route Handlers to call the Agent runtime, SSE continuously delivers session events to the UI, and runtime state is stored under `~/.riftx/` without a database or remote control plane.
+
+## Technology Stack
+
+| Layer | Technology | Purpose |
+| --- | --- | --- |
+| Web framework | Next.js 15 | UI, Route Handlers, and production server |
+| Frontend | React 19, TypeScript 5 | Workbench, settings, and live state |
+| Agent runtime | pi coding agent | Model sessions, tools, and context management |
+| Browser | Playwright, Chromium | Page interaction, network capture, and screenshots |
+| UI foundation | Radix Select, Phosphor Icons | Accessible controls and icons |
+| Content | react-markdown, remark-gfm | Agent Markdown output |
+| Validation | TypeBox, Zod | Tool and runtime schema validation |
+| Persistence | Node.js filesystem, JSON/JSONL | Local configuration, sessions, tasks, and evidence |
+| Tests | Node.js Test Runner, tsx | TypeScript unit and regression tests |
 
 ## Requirements
 
-- Node.js 20.18.1 or newer (Node.js 22 LTS recommended).
-- An API-compatible model endpoint and API key configured from the Settings page.
+- Node.js `20.18.1` or newer; Node.js 22 LTS is recommended.
+- npm 10 or the npm version bundled with the chosen Node.js release.
+- A model API endpoint and API key.
+- Playwright Chromium, downloaded automatically during installation.
 
-RiftX does not require a database or a remote RiftX account.
+RiftX does not require Conda, Python, a database, or a remote RiftX account. On Linux, Playwright system packages may need to be installed once if Chromium reports missing libraries.
 
-## Current MVP Scope
+## Installation and Launch
 
-RiftX currently focuses on:
+### Option 1: Install Directly from GitHub
 
-- Interactive agent sessions
-- Controlled local command/file execution
-- Approval-gated browser automation for authenticated or interactive Web flows
-- Concurrent child-agent delegation inside a single parent session
-- Persistent, reviewable findings linked to their supporting evidence
-- Automatic context compaction before the configured response reserve is exhausted
-- Persistent context usage and model metadata for active and historical sessions
+Install into a user-owned prefix without cloning the repository manually:
 
-RiftX currently does not include:
+```bash
+npm_config_prefix="$HOME/.local" npm install --global git+https://github.com/Ch1nfo/RiftX.git
+export PATH="$HOME/.local/bin:$PATH"
+rx webui
+```
 
-- bundled offensive scanners such as nmap, httpx, subfinder, nuclei, or ffuf
-- multi-user accounts, RBAC, or remote authentication
-- databases or remote task orchestration
-- automatic export of browser auth state into CLI tools
+Add the following line to `~/.zshrc` or `~/.bashrc` so `rx` remains available in new terminals:
 
-## Quick Start
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
 
-Clone RiftX, install its dependencies and production build locally, then register the `rx` command in a user-owned directory:
+The explicit `git+https://` URL avoids Git/npm configurations that rewrite `github:Ch1nfo/RiftX` to SSH. RiftX is not yet published to the npm registry, so `npm install -g riftx` is not currently available.
+
+### Option 2: Install from Source
 
 ```bash
 git clone https://github.com/Ch1nfo/RiftX.git
@@ -67,184 +204,182 @@ export PATH="$HOME/.local/bin:$PATH"
 rx webui
 ```
 
-This flow does not require root. `npm install` installs Playwright Chromium and creates the production build; `npm link` only exposes the already-built clone as `rx`. Add `$HOME/.local/bin` to your shell profile to keep the command available in new terminals. On Windows or with a user-managed Node.js installation, run `npm link --ignore-scripts` without the temporary `npm_config_prefix` override.
+`npm install` installs dependencies, downloads Chromium, and creates the production build. `npm link --ignore-scripts` only registers that build as the `rx` command and does not build it again. This flow does not require root or `sudo`.
 
-Open <http://localhost:3000>, choose a working directory from the folder button in the workbench header, then open **Settings** to create or select a model profile. The initial working directory is the directory from which RiftX is started; changing it replaces the visible session list with sessions from the new directory.
+On Windows, or with a user-managed Node.js installation such as nvm or fnm, this is usually sufficient:
 
-To use another port or listen address:
+```bash
+npm link --ignore-scripts
+rx webui
+```
+
+### First-Time Configuration
+
+1. Open <http://localhost:3000>.
+2. Select the working directory the Agent may access using the folder button in the workbench header.
+3. Open **Settings**, add a model profile, and enter its API key, base URL, protocol, and model ID.
+4. Save the settings, return to the workbench, create a session, and send a task.
+
+Change the port or listening address when needed:
 
 ```bash
 rx webui --port 4000
 rx webui --hostname 127.0.0.1
+rx webui --port 4000 --hostname 0.0.0.0
 ```
 
-The composer model selector changes the current Agent session in place, including an empty session that has not yet written its first message. This keeps the session ID and history intact while updating the model and context window. Switching is scoped to the selected session: other live sessions (including background ones) keep their model, and saving profiles in Settings only updates the stored default.
+### Linux Browser Dependencies
 
-## Development Commands
-
-```bash
-npm install
-npm run dev
-npm run typecheck
-npm test
-npm run build
-```
-
-`npm install` installs Playwright Chromium and creates a production build. Use `npm run dev` for hot reload; `rx webui` always runs the production build.
-
-On Linux, Playwright may also request operating-system browser dependencies. Install them once if prompted:
+If Chromium reports missing operating-system libraries, run:
 
 ```bash
 npx playwright install-deps chromium
 ```
 
-## Safety Model
+This installs system packages and may require administrator access. RiftX itself can still remain in a user-owned npm prefix.
 
-RiftX is intended for targets where the operator has explicit authorization.
+## Development Commands
 
-- `read`, `grep`, `find`, and `ls` are allowed by default.
-- `bash`, `write`, and `edit` are guarded by the approval extension.
-- `browser` is one unified action-based tool. Read-only actions can run directly; navigation, page changes, form submission, and browser teardown are approval-controlled.
-- Browser read actions (`snapshot`, `requests`, `cookies`, `storage`, `screenshot`, and `tabs`) are direct; navigation and page-mutating actions use the same approval gate.
-- Sub-agents use the same guarded tool surface as the main agent, but cannot create further sub-agents. They have their own approval gate and BrowserContext.
-- Set `RIFTX_BROWSER_ALLOWED_ORIGINS` to comma-separated authorized origins to enforce navigation scope. Without it, the first navigation locks the session to its origin. Out-of-scope requests and redirects are blocked.
-- Request approval pauses for an explicit human decision.
-- AI-assisted approval evaluates the proposed operation and blocks when local or target impact cannot be determined.
-- Full access bypasses the approval gate and should only be used in a controlled environment.
-- Approval failures, timeouts, and disconnected clients fail closed.
-- The selected approval mode applies to the main Agent and running sub-agents.
-
-The agent must not be used to access systems outside the authorized scope, disrupt services, delete data, steal credentials, or retain access. A model response is not a security guarantee; review evidence and commands before allowing impactful operations.
-
-## Configuration and Sensitive Data
-
-Runtime state is stored outside the repository under `~/.riftx/`:
-
-- `~/.riftx/config.json` stores model profiles and RiftX settings.
-- `~/.riftx/sessions/` stores Agent session JSONL history.
-- `~/.riftx/agent/` stores RiftX-isolated auth and model metadata.
-- `~/.riftx/subagents/<parent-session-id>/` stores child-agent task state, logs, summaries, and thread metadata. Running tasks are marked `interrupted` after a restart and are not replayed automatically.
-- `~/.riftx/evidence/<session-id>/` stores session findings and retained finding screenshots.
-- `~/.riftx/skills/` stores locally installed Agent Skills (`<skill-name>/SKILL.md`). Skills in this directory are loaded for new and reopened sessions.
-
-Each skill uses the Agent Skills format:
-
-```text
-~/.riftx/skills/<skill-name>/SKILL.md
+```bash
+npm install          # Install dependencies and Chromium, then build
+npm run dev          # Start the development server with hot reload
+npm run typecheck    # Run TypeScript type checking
+npm test             # Run unit and regression tests
+npm run build        # Create a production build
+npm start            # Start the production build directly
 ```
 
-The `SKILL.md` frontmatter must include a matching lowercase `name` and a `description`. RiftX exposes the skill catalog to the Agent, automatically loads the best lexical match for a specialized task, and supports `/skill:<skill-name>` for explicit invocation. Skill files are read-only from RiftX; their content is never rewritten. Only this explicit user skill directory is loaded; implicit SDK and project skill directories are ignored.
-On Windows, this resolves under `%USERPROFILE%\\.riftx\\skills` through the platform home directory.
+The development server and `rx webui` use <http://localhost:3000> by default. `rx webui` always serves the existing production build.
 
-API keys are stored locally with restricted file permissions. Never commit API keys, session history, authorization headers, cookies, target data, certificates, private keys, or generated reconnaissance artifacts. The repository `.gitignore` covers common secrets, runtime files, build output, and local caches, but always review `git status` before committing.
+## Runtime Data
+
+All RiftX runtime data is stored under `~/.riftx/` by default:
+
+| Path | Contents |
+| --- | --- |
+| `~/.riftx/config.json` | Model profiles, approval mode, browser scope, and Agent settings |
+| `~/.riftx/sessions/` | Agent session history in JSONL format |
+| `~/.riftx/agent/` | RiftX-isolated model and authentication metadata |
+| `~/.riftx/subagents/<session-id>/` | Subagent state, logs, summaries, and thread metadata |
+| `~/.riftx/evidence/<session-id>/` | Findings and retained screenshots |
+| `~/.riftx/skills/` | User-installed Agent Skills |
+
+Do not commit API keys, authorization headers, cookies, target data, certificates, private keys, session history, or generated assessment artifacts. Always inspect `git status` before committing.
 
 ## Project Layout
 
 ```text
-src/app/          Next.js pages and API routes
-src/components/   Workbench, settings, and shared UI
-src/server/       Agent runtime adapter, configuration, session lifecycle, approvals, usage, and persistence helpers
-src/lib/          Shared TypeScript types
-src/browser/      Unified Playwright browser tool, snapshots, scope guard, and network recorder
-public/           RiftX logo assets
+RiftX/
+|-- bin/                 # rx CLI entry point
+|-- docs/images/         # README interface screenshots
+|-- public/              # Logos and static assets
+|-- src/
+|   |-- app/             # Next.js pages and API Route Handlers
+|   |-- browser/         # Playwright tool, scope control, and recorder
+|   |-- components/      # Workbench, settings, and shared UI
+|   |-- lib/             # Shared types, i18n, and frontend helpers
+|   `-- server/          # Agent runtime, config, sessions, approvals, storage
+|-- package.json
+|-- README.md
+`-- README_ZH.md
 ```
-
-## Browser Tool
-
-RiftX exposes one unified `browser` tool rather than many separate tools.
-
-Supported actions currently include:
-
-- `navigate`
-- `snapshot`
-- `click`
-- `fill`
-- `press`
-- `select`
-- `back`
-- `reload`
-- `evaluate`
-- `console`
-- `requests`
-- `request_detail`
-- `response_body`
-- `use_identity`
-- `identities`
-- `cookies`
-- `cookies_export`
-- `cookies_import`
-- `set_host_mappings`
-- `set_user_agent`
-- `set_extra_headers`
-- `storage`
-- `screenshot`
-- `tabs`
-- `close`
-
-Snapshots are agent-friendly text views with stable element refs such as `e1`, `e2`, and `e3`, so the model interacts with page elements by ref instead of raw selectors.
-
-Browser capabilities beyond basic navigation:
-
-- **Scope authorization**: `~/.riftx/config.json` `browserScope` rules (CIDR `10.0.0.0/8`, host any-port `10.0.181.248`, host+port, `*.target.com`, `https://target.com`) gate navigations. With no rules, the first navigation locks the host; out-of-scope navigations raise an approval where "allow for this task" grants the host for the session. Subresource requests (scripts, fetches, images) are scope-checked as well: any host a page may load from must be in scope explicitly.
-- **Runtime validation**: `evaluate` runs JavaScript in the page and `console` returns captured logs, uncaught errors, and alert/confirm/prompt dialogs - a captured dialog is the runtime proof for DOM-XSS payloads. `navigate` output includes recent console errors.
-- **Identities**: each identity is an isolated cookie jar and storage (anonymous / low-privilege / admin in parallel). `cookies_export`/`cookies_import` bridge authenticated state with CLI tools such as curl. Recorded requests are tagged with the identity that made them.
-- **Network control**: `set_host_mappings` applies curl `--resolve` semantics through a loopback proxy (connection goes to the mapped address while the Host header and TLS SNI are preserved) for virtual-host probing; `set_user_agent` and `set_extra_headers` customize the identity's fingerprint. Self-signed certificates are accepted by default (configurable via `browserIgnoreTlsErrors`).
-- **Vision**: with "supports image input" enabled on the model profile, `screenshot` returns the page as an image the model can read directly (CAPTCHAs, dashboards, visual state).
-
-## Session Findings
-
-The main Agent and child agents can record evidence-backed conclusions into the selected parent session.
-
-- Findings include an affected asset, confidence (`confirmed`, `likely`, `suspected`, or `not_reproducible`), impact, reproduction notes, source, and timestamps.
-- Evidence can reference a short quote, tool call, captured browser request, or retained screenshot.
-- The workbench evidence panel links back to tool and request details and lazily loads screenshots.
-- Operators can adjust confidence, dismiss a finding, and restore dismissed findings without deleting the underlying record.
-- Findings are deduplicated by normalized asset and title, then merged with new evidence.
-
-## Sub-agents
-
-RiftX includes an application-level child-agent system on top of Agent sessions.
-
-- Child agents run in parallel up to the configured concurrency limit.
-- Extra tasks wait in the parent-session queue.
-- Child agents share the same working directory as the parent.
-- Child agents have independent threads, approval gates, and browser contexts.
-- Child agents inherit the main model by default, or can use an independent profile from Settings.
-- The maximum concurrent child-agent count is configurable from 1 to 8. Tasks beyond the limit wait in the parent-session queue.
-- Scheduling aggressiveness has `low`, `default`, and `high` modes. High mode favors broader delegation and warns about higher token and concurrency consumption; it still avoids duplicate or state-dependent tasks.
-- Child agents cannot recursively spawn more child agents.
-- Child approval requests surface in the main composer approval area, and child status/logs appear in the workbench panel.
-- Child results and incremental logs are persisted and restored with the selected parent session.
-- Every spawned child runs in the background so the main Agent can continue independent work. Completed child results are returned as they become available. All spawned children are mandatory for the assessment: if the main Agent reaches a conclusion while children are still active, RiftX waits for every child to reach a terminal state before requesting the final conclusion.
-- `spawn_subagent` has no optional wait mode. The main Agent must never poll child logs, `tasks.json`, or filesystem state with `bash`/`sleep`; the runtime performs the final join.
-- Reconnecting to a session replays current child task snapshots and unresolved approval requests.
 
 ## Web API
 
-The main endpoints include:
+<details>
+<summary><strong>Show the primary local endpoints</strong></summary>
 
-- `GET /api/bootstrap`
-- `GET/POST /api/sessions`
-- `DELETE /api/sessions/:id`
-- `POST /api/sessions/:id/archive`
-- `GET /api/sessions/:id/stream`
-- `GET /api/sessions/:id/messages`
-- `POST /api/sessions/:id/prompt`
-- `POST /api/sessions/:id/title`
-- `POST /api/sessions/:id/abort`
-- `POST /api/sessions/:id/approval`
-- `GET /api/sessions/:id/findings`
-- `PATCH /api/sessions/:id/findings/:findingId`
-- `GET /api/sessions/:id/findings/screenshot/:screenshotId`
-- `GET /api/sessions/:id/subagents`
-- `POST /api/sessions/:id/subagents/:taskId/cancel`
-- `POST /api/sessions/:id/subagents/:taskId/retry`
-- `PUT /api/settings/approval-mode`
-- `GET/PUT /api/settings/model-profiles`
-- `POST /api/workspace`
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/bootstrap` | Load the workspace, sessions, and settings |
+| `GET/POST` | `/api/sessions` | List or create sessions |
+| `DELETE` | `/api/sessions/:id` | Permanently delete an archived session |
+| `POST` | `/api/sessions/:id/archive` | Archive a session |
+| `GET` | `/api/sessions/:id/stream` | Subscribe to SSE session events |
+| `GET` | `/api/sessions/:id/messages` | Read session messages |
+| `POST` | `/api/sessions/:id/prompt` | Send a task or follow-up instruction |
+| `POST` | `/api/sessions/:id/abort` | Stop the running task |
+| `POST` | `/api/sessions/:id/approval` | Resolve an approval request |
+| `GET` | `/api/sessions/:id/findings` | Read session findings |
+| `PATCH` | `/api/sessions/:id/findings/:findingId` | Update a finding |
+| `GET` | `/api/sessions/:id/subagents` | Read subagent state |
+| `POST` | `/api/sessions/:id/subagents/:taskId/cancel` | Cancel a subagent |
+| `POST` | `/api/sessions/:id/subagents/:taskId/retry` | Retry a subagent |
+| `PUT` | `/api/settings/approval-mode` | Update the approval mode |
+| `GET/PUT` | `/api/settings/model-profiles` | Read or save model profiles |
+| `POST` | `/api/workspace` | Change the working directory |
 
-All endpoints are designed for local single-user operation and do not provide remote authentication.
+These endpoints are designed for local, single-user operation and do not provide remote user authentication. Do not expose the server directly to an untrusted network.
+
+</details>
+
+## Usage Boundaries
+
+Use RiftX only on systems for which the operator has explicit authorization. Do not use it to access out-of-scope targets, disrupt services, delete data, steal credentials, or maintain unauthorized access. Agent output is not a security guarantee; inspect the command, target, and evidence before allowing impactful operations.
+
+RiftX does not currently bundle dedicated scanners such as nmap, httpx, subfinder, nuclei, or ffuf. It also does not provide multi-user accounts, RBAC, remote task orchestration, or automatic export of browser authentication state into arbitrary CLI tools.
+
+## FAQ
+
+<details>
+<summary><strong>Why install under <code>~/.local</code>?</strong></summary>
+
+The system npm prefix often points to `/usr/local`, which is not writable by a regular user. `npm_config_prefix="$HOME/.local"` avoids `EACCES` without requiring `sudo`. Make sure `$HOME/.local/bin` is on `PATH`.
+
+</details>
+
+<details>
+<summary><strong>Why does installation download Chromium and run a build?</strong></summary>
+
+The Browser tool depends on Playwright Chromium, and `rx webui` serves a Next.js production build. `postinstall` installs the browser, while `prepare` creates the `.next` build, so the first installation takes longer than a typical CLI package.
+
+</details>
+
+<details>
+<summary><strong>Can I open the WebUI without an API key?</strong></summary>
+
+Yes, the interface and settings remain available, but the Agent cannot run model tasks. Add at least one valid model profile in **Settings**.
+
+</details>
+
+<details>
+<summary><strong>Are Skills selected only when a session starts?</strong></summary>
+
+No. Every ordinary user message attempts Skill matching, and a newly matched Skill can be injected into the active session. A Skill already injected automatically is not injected again; `/skill:<name>` can explicitly invoke one at any time.
+
+</details>
+
+<details>
+<summary><strong>Does RiftX upload data to a RiftX service?</strong></summary>
+
+RiftX has no cloud account or RiftX data service. Runtime state remains local. Content sent to the configured model provider is still governed by that provider's service and privacy terms.
+
+</details>
+
+## Contributing
+
+Issues and pull requests are welcome. Before submitting a change, run:
+
+```bash
+npm run typecheck
+npm test
+npm run build
+```
+
+For substantial features, open an [issue](https://github.com/Ch1nfo/RiftX/issues) first to align on scope. Do not commit local `~/.riftx/` data, API keys, target information, or development plan documents.
 
 ## License
 
-See [LICENSE](LICENSE).
+RiftX is open source under the [MIT License](LICENSE).
+
+## Contact
+
+- Email: [ch1nfo@foxmail.com](mailto:ch1nfo@foxmail.com)
+
+---
+
+<div align="center">
+
+**If RiftX helps you, please consider giving the project a Star.**
+
+</div>
