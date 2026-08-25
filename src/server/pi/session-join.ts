@@ -13,6 +13,7 @@ export type SubagentJoinRecord = {
   abortEpoch?: number;
   waitingForSubagents?: boolean;
   deliveredSubagentResults: Set<string>;
+  deliveringSubagentResults?: Set<string>;
   gate: { beginTask(): void };
   session: { prompt(message: string): Promise<void> };
 };
@@ -36,12 +37,25 @@ export function shouldDeliverSubagentCompletion(record: Pick<SubagentJoinRecord,
   return !record.waitingForSubagents && !record.abortPromise && !record.aborting;
 }
 
-export async function waitForSubagentsBeforeConclusion(record: SubagentJoinRecord, knownTaskIds: Set<string>, requiredTaskIds: Set<string>, abortEpoch: number) {
+export function claimSubagentResult(record: Pick<SubagentJoinRecord, "deliveredSubagentResults" | "deliveringSubagentResults">, taskId: string) {
+  if (record.deliveredSubagentResults.has(taskId)) return false;
+  const delivering = record.deliveringSubagentResults ?? (record.deliveringSubagentResults = new Set());
+  if (delivering.has(taskId)) return false;
+  delivering.add(taskId);
+  return true;
+}
+
+export function finishSubagentResult(record: Pick<SubagentJoinRecord, "deliveredSubagentResults" | "deliveringSubagentResults">, taskId: string, delivered: boolean) {
+  record.deliveringSubagentResults?.delete(taskId);
+  if (delivered) record.deliveredSubagentResults.add(taskId);
+}
+
+export async function waitForSubagentsBeforeConclusion(record: SubagentJoinRecord, _knownTaskIds: Set<string>, requiredTaskIds: Set<string>, abortEpoch: number) {
   const manager = record.subagents;
   if (!manager) return;
   if ((record.abortEpoch ?? 0) !== abortEpoch) return;
   for (const task of manager.list()) {
-    if (!knownTaskIds.has(task.id)) requiredTaskIds.add(task.id);
+    if (!record.deliveredSubagentResults.has(task.id) && terminalSubagent(task)) requiredTaskIds.add(task.id);
   }
   const hasUndeliveredTerminal = manager.list().some((task) => requiredTaskIds.has(task.id)
     && !record.deliveredSubagentResults.has(task.id)
@@ -52,15 +66,24 @@ export async function waitForSubagentsBeforeConclusion(record: SubagentJoinRecor
     if ((record.abortEpoch ?? 0) !== abortEpoch) return;
     const tasks = manager.list();
     for (const task of tasks) {
-      if (!knownTaskIds.has(task.id)) requiredTaskIds.add(task.id);
+      if (!record.deliveredSubagentResults.has(task.id) && terminalSubagent(task)) requiredTaskIds.add(task.id);
     }
-    const results = tasks.filter((task) => requiredTaskIds.has(task.id) && !record.deliveredSubagentResults.has(task.id) && terminalSubagent(task));
+    const results = tasks.filter((task) => requiredTaskIds.has(task.id)
+      && !record.deliveredSubagentResults.has(task.id)
+      && !record.deliveringSubagentResults?.has(task.id)
+      && terminalSubagent(task));
     if (results.length) {
       const message = results.map((task) => formatSubagentTerminalMessage(task, task.summary)).join("\n\n");
-      for (const task of results) record.deliveredSubagentResults.add(task.id);
+      for (const task of results) claimSubagentResult(record, task.id);
       record.waitingForSubagents = false;
       record.gate.beginTask();
-      await record.session.prompt(`${message}\n\nAll delegated child tasks required for this assessment have now reached a terminal state. Synthesize the final conclusion using these results. Do not start more child tasks or poll task files.`);
+      try {
+        await record.session.prompt(`${message}\n\nAll delegated child tasks required for this assessment have now reached a terminal state. Synthesize the final conclusion using these results. Do not start more child tasks or poll task files.`);
+        for (const task of results) finishSubagentResult(record, task.id, true);
+      } catch (error) {
+        for (const task of results) finishSubagentResult(record, task.id, false);
+        throw error;
+      }
     }
     // If no task is active and no recognized terminal result was produced,
     // stop rather than spinning forever on an unknown persisted status.

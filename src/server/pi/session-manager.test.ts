@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { SubagentTask } from "@/lib/types";
-import { formatSubagentTerminalMessage, shouldDeliverSubagentCompletion, waitForSubagentsBeforeConclusion } from "./session-join";
+import { claimSubagentResult, finishSubagentResult, formatSubagentTerminalMessage, shouldDeliverSubagentCompletion, waitForSubagentsBeforeConclusion } from "./session-join";
 
 function makeTask(status: SubagentTask["status"]): SubagentTask {
   return {
@@ -55,6 +55,27 @@ test("join does not re-synthesize a child already delivered during the parent tu
   await waitForSubagentsBeforeConclusion(record, new Set(), new Set(), 0);
 
   assert.equal(prompts.length, 0);
+});
+
+test("join delivers a known terminal child that was never delivered", async () => {
+  const task = makeTask("completed");
+  task.summary = "Late child result.";
+  const prompts: string[] = [];
+  const record = makeRecord(task, () => false, async () => undefined, prompts, new Set());
+
+  await waitForSubagentsBeforeConclusion(record, new Set([task.id]), new Set(), 0);
+
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0], /Late child result/);
+});
+
+test("a failed result delivery can be claimed again", () => {
+  const record = { deliveredSubagentResults: new Set<string>(), deliveringSubagentResults: new Set<string>() };
+  assert.equal(claimSubagentResult(record, "child-1"), true);
+  finishSubagentResult(record, "child-1", false);
+  assert.equal(claimSubagentResult(record, "child-1"), true);
+  finishSubagentResult(record, "child-1", true);
+  assert.equal(claimSubagentResult(record, "child-1"), false);
 });
 
 test("join reports an empty child as a status, not a fake result", () => {

@@ -39,7 +39,7 @@ import { abortSessionRecord, shutdownSessionRecord } from "./session-shutdown";
 import { switchSessionProfile, withProfileSwitchLock } from "./apply-session-profile";
 import { registerTrackedProfile, registerProfileModel, restoreProviderRegistration, type ProviderRegistrations } from "./model-registration";
 import { extractLastAssistantResult } from "./subagent-result";
-import { formatSubagentTerminalMessage } from "./session-join";
+import { claimSubagentResult, finishSubagentResult, formatSubagentTerminalMessage } from "./session-join";
 
 type SessionRecord = {
   id: string;
@@ -67,6 +67,7 @@ type SessionRecord = {
   abortEpoch?: number;
   waitingForSubagents?: boolean;
   deliveredSubagentResults: Set<string>;
+  deliveringSubagentResults: Set<string>;
   skills: SkillDescriptor[];
   loadedSkills: Set<string>;
   providerRegistrations: ProviderRegistrations;
@@ -347,6 +348,7 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
     abortEpoch: 0,
     waitingForSubagents: false,
     deliveredSubagentResults: new Set(),
+    deliveringSubagentResults: new Set(),
     skills: resourceLoader.getSkills().skills as SkillDescriptor[],
     providerRegistrations,
     loadedSkills: new Set(),
@@ -368,14 +370,18 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
   if (subagents) {
     subagents.setCompletionHandler((task, childResult) => {
       if (!shouldDeliverSubagentCompletion(record)) return;
-      record.deliveredSubagentResults.add(task.id);
+      if (!claimSubagentResult(record, task.id)) return;
       const message = formatSubagentTerminalMessage(task, childResult.summary);
       if (record.session.isStreaming) {
-        void record.session.steer(message).catch(() => undefined);
+        void record.session.steer(message)
+          .then(() => finishSubagentResult(record, task.id, true))
+          .catch(() => finishSubagentResult(record, task.id, false));
         return;
       }
       record.gate.beginTask();
-      void record.session.prompt(message).catch(() => undefined);
+      void record.session.prompt(message)
+        .then(() => finishSubagentResult(record, task.id, true))
+        .catch(() => finishSubagentResult(record, task.id, false));
     });
     await subagents.initialize((context) => runChildSession(getChildProfile(), cwd, mutationLock, bashConcurrency, context, { authStorage, modelRegistry, evidenceStore, evidenceSessionId }));
   }
