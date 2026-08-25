@@ -27,7 +27,6 @@ import { evaluateApproval } from "./approval-evaluator";
 import { createBrowserExtension, BrowserManager } from "@/browser";
 import { MutationLock } from "./mutation-lock";
 import { SubagentManager, type SubagentRunnerContext } from "./subagent-manager";
-import { textFromModelContent } from "./text-content";
 import { generateSessionTitle } from "./session-title";
 import { EvidenceStore, getEvidenceStore, removeEvidence } from "./evidence-store";
 import { estimateCompactedUsage, estimateMessagesContextUsage, installMidTurnCompaction } from "./mid-turn-compaction";
@@ -39,6 +38,8 @@ import { BashConcurrency } from "./bash-concurrency";
 import { abortSessionRecord, shutdownSessionRecord } from "./session-shutdown";
 import { switchSessionProfile, withProfileSwitchLock } from "./apply-session-profile";
 import { registerTrackedProfile, registerProfileModel, restoreProviderRegistration, type ProviderRegistrations } from "./model-registration";
+import { extractLastAssistantResult } from "./subagent-result";
+import { formatSubagentTerminalMessage } from "./session-join";
 
 type SessionRecord = {
   id: string;
@@ -368,9 +369,7 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
     subagents.setCompletionHandler((task, childResult) => {
       if (!shouldDeliverSubagentCompletion(record)) return;
       record.deliveredSubagentResults.add(task.id);
-      const summary = childResult.summary?.trim() || "No result";
-      const status = task.status === "completed" ? "completed" : task.status;
-      const message = `[RiftX subagent result]\nSubagent: ${task.name}\nStatus: ${status}\nSummary:\n${summary}\n\nUse this result in the current assessment. Do not repeat the same delegated task.`;
+      const message = formatSubagentTerminalMessage(task, childResult.summary);
       if (record.session.isStreaming) {
         void record.session.steer(message).catch(() => undefined);
         return;
@@ -409,9 +408,9 @@ async function runChildSession(profile: ModelProfile, cwd: string, mutationLock:
   })();
   try {
     await child.session.prompt(context.task.task);
-    const last = [...child.session.messages].reverse().find((message) => message.role === "assistant") as { content?: unknown } | undefined;
-    const summary = textFromModelContent(last?.content).trim() || "No result";
-    return { summary };
+    const result = extractLastAssistantResult(child.session.sessionManager.getBranch());
+    if (result.error) throw new Error(result.error);
+    return { summary: result.summary ?? "" };
   } finally {
     unsubscribe();
     context.signal.removeEventListener("abort", abortChild);
@@ -837,7 +836,7 @@ export async function getSessionMessages(id: string) {
       const id = `${record.id}-${messageIndex}-${partIndex}`;
       if (candidate.role === "user" && item.type === "text") {
         const content = String(item.text ?? "");
-        if (content.startsWith("[RiftX subagent result]")) return;
+        if (content.startsWith("[RiftX subagent result]") || content.startsWith("[RiftX subagent status]")) return;
         messages.push({ id, role: "user", content });
       } else if (candidate.role === "assistant" && item.type === "thinking") {
         messages.push({ id, role: "thinking", content: String(item.thinking ?? ""), status: "done" });

@@ -153,6 +153,24 @@ test("returns a background task immediately and reports its result on completion
   }
 });
 
+test("marks a runner without a summary as empty instead of completed", async () => {
+  const root = await mkdtemp(join(tmpdir(), "riftx-subagents-"));
+  const manager = new SubagentManager("parent", root, () => undefined, 1, "request");
+  let completionStatus: string | undefined;
+  manager.setCompletionHandler((task) => { completionStatus = task.status; });
+  await manager.initialize(async () => ({ summary: "" }));
+  try {
+    const result = await manager.submit("empty result");
+    assert.deepEqual(result, { summary: "" });
+    assert.equal(manager.list()[0]?.status, "empty");
+    assert.equal(completionStatus, "empty");
+    assert.match(manager.list()[0]?.error ?? "", /final text response/i);
+  } finally {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("waitForAll resolves only after every queued and running task reaches a terminal state", async () => {
   const root = await mkdtemp(join(tmpdir(), "riftx-subagents-"));
   const manager = new SubagentManager("parent", root, () => undefined, 1, "request");

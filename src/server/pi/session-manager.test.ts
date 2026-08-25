@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { SubagentTask } from "@/lib/types";
-import { shouldDeliverSubagentCompletion, waitForSubagentsBeforeConclusion } from "./session-join";
+import { formatSubagentTerminalMessage, shouldDeliverSubagentCompletion, waitForSubagentsBeforeConclusion } from "./session-join";
 
 function makeTask(status: SubagentTask["status"]): SubagentTask {
   return {
@@ -55,6 +55,17 @@ test("join does not re-synthesize a child already delivered during the parent tu
   await waitForSubagentsBeforeConclusion(record, new Set(), new Set(), 0);
 
   assert.equal(prompts.length, 0);
+});
+
+test("join reports an empty child as a status, not a fake result", () => {
+  const task = makeTask("empty");
+  task.error = "Child Agent completed without a final text response.";
+  const message = formatSubagentTerminalMessage(task, "");
+
+  assert.match(message, /^\[RiftX subagent status\]/);
+  assert.match(message, /Status: empty/);
+  assert.doesNotMatch(message, /No result/);
+  assert.doesNotMatch(message, /Summary:/);
 });
 
 test("join exits before terminal cancellation results when Stop advanced the abort epoch", async () => {

@@ -52,7 +52,7 @@ export type ApprovalRequest = {
   taskSummary?: string;
 };
 
-export type SubagentStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "interrupted";
+export type SubagentStatus = "queued" | "running" | "completed" | "empty" | "failed" | "cancelled" | "interrupted";
 
 export type SubagentLogEntry = {
   id: string;
@@ -120,7 +120,7 @@ export type ArchivedSession = Omit<SessionSummary, "archived">;
 
 const RIFTX_EVENT_TYPES = [
   "connected", "finding", "findingPatch", "usage", "session_state", "subagent_snapshot",
-  "subagent_queued", "subagent_start", "subagent_done", "subagent_failed", "subagent_cancelled",
+  "subagent_queued", "subagent_start", "subagent_done", "subagent_empty", "subagent_failed", "subagent_cancelled",
   "subagent_interrupted", "subagent_update", "approval_required", "approval_evaluated",
   "approval_evaluation_error", "approval_decided", "text_delta", "thinking_delta", "message",
   "tool_start", "tool_status", "tool_update", "tool_end", "done", "error"

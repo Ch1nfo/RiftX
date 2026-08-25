@@ -63,6 +63,12 @@ function markActiveLogs(task: SubagentTask, reason: string) {
   }
 }
 
+function markEmpty(task: SubagentTask) {
+  task.status = "empty";
+  task.finishedAt ??= now();
+  task.error = "Child Agent completed without a final text response.";
+}
+
 function cloneTask(task: SubagentTask): SubagentTask {
   return {
     ...task,
@@ -123,6 +129,9 @@ export class SubagentManager {
         task.finishedAt = now();
       }
       task.logs = Array.isArray(task.logs) ? task.logs : [];
+      if (task.status === "completed" && !task.summary?.trim()) {
+        markEmpty(task);
+      }
       task.pendingApprovalCount = 0;
       this.tasks.set(task.id, task);
     }
@@ -399,6 +408,11 @@ export class SubagentManager {
       const result = await runner(context);
       if ((task.status as string) === "cancelled") {
         item.reject?.(new Error(task.error ?? "Subagent task was cancelled."));
+      } else if (!result.summary?.trim()) {
+        markEmpty(task);
+        this.emitTask("subagent_empty", task);
+        this.completionHandler?.(task, result);
+        item.resolve?.(result);
       } else {
         task.status = "completed";
         task.finishedAt = now();
@@ -514,6 +528,7 @@ export class SubagentManager {
     const shouldSendFullTask = publicType === "subagent_queued"
       || publicType === "subagent_start"
       || publicType === "subagent_done"
+      || publicType === "subagent_empty"
       || publicType === "subagent_failed"
       || publicType === "subagent_cancelled"
       || publicType === "subagent_interrupted";

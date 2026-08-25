@@ -10,6 +10,15 @@ export function SubagentPanel({ tasks, running, maxConcurrent, onCancel, onRetry
   const [open, setOpen] = useState(true);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [openLogs, setOpenLogs] = useState<Record<string, boolean>>({});
+  const statusLabels = {
+    queued: "queued",
+    running: "running",
+    completed: "complete",
+    empty: "noFinalResult",
+    failed: "failed",
+    cancelled: "cancelled",
+    interrupted: "interrupted"
+  } as const satisfies Record<SubagentTask["status"], "queued" | "running" | "complete" | "noFinalResult" | "failed" | "cancelled" | "interrupted">;
   useEffect(() => {
     if (!focus?.taskId) return;
     setOpen(true);
@@ -25,7 +34,7 @@ export function SubagentPanel({ tasks, running, maxConcurrent, onCancel, onRetry
     {open ? <div className="subagent-list">{tasks.length ? tasks.slice().reverse().map((task) => {
       const isExpanded = Boolean(expanded[task.id]);
       const active = task.status === "queued" || task.status === "running";
-      const status = task.status === "queued" ? t("queued") : task.status === "running" ? t("running") : task.status === "completed" ? t("complete") : task.status === "failed" ? t("failed") : task.status === "cancelled" ? t("cancelled") : t("interrupted");
+      const status = t(statusLabels[task.status]);
       return <article className={`subagent-item ${task.status}`} key={task.id} id={`subagent-task-${task.id}`}>
         <button className="subagent-item-head" onClick={() => setExpanded((current) => ({ ...current, [task.id]: !isExpanded }))}>
           <span className="subagent-item-title"><span className={`subagent-status-dot ${task.status}`}>{task.status === "running" ? <CircleNotch size={12} className="spin" /> : null}</span><strong>{task.name}</strong></span>

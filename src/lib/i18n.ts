@@ -21,6 +21,18 @@ const text = {
   }
 } as const;
 
+const extraText = {
+  zh: { noFinalResult: "无最终结果" },
+  en: { noFinalResult: "No final result" }
+} as const;
+
+const translations = {
+  zh: { ...text.zh, ...extraText.zh },
+  en: { ...text.en, ...extraText.en }
+} as const;
+
+type TranslationKey = keyof typeof translations.zh;
+
 export function useLanguage() {
   const [language, setLanguage] = useState<Language>("zh");
   useEffect(() => {
@@ -45,8 +57,8 @@ export function useLanguage() {
     window.localStorage.setItem(STORAGE_KEY, next);
     window.dispatchEvent(new CustomEvent<Language>(EVENT_NAME, { detail: next }));
   };
-  const t = useMemo(() => (key: keyof typeof text.zh, vars?: Record<string, string>) => {
-    let value: string = text[language][key];
+  const t = useMemo(() => (key: TranslationKey, vars?: Record<string, string>) => {
+    let value: string = translations[language][key];
     for (const [name, replacement] of Object.entries(vars ?? {})) value = value.replace(`{${name}}`, replacement);
     return value;
   }, [language]);

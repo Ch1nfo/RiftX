@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildPentestSystemPrompt } from "./system-prompt";
+import { buildChildPentestSystemPrompt, buildPentestSystemPrompt } from "./system-prompt";
 
 test("pentest prompt actively selects browser and targeted testing methods", () => {
   const prompt = buildPentestSystemPrompt("default");
@@ -20,6 +20,12 @@ test("aggressiveness changes delegation policy", () => {
   assert.match(buildPentestSystemPrompt("high"), /without optimizing for token cost/);
   assert.match(buildPentestSystemPrompt("default"), /Delegate on demand/);
   assert.match(buildPentestSystemPrompt("low"), /Delegate conservatively/);
+});
+
+test("child prompt requires a final text summary", () => {
+  const prompt = buildChildPentestSystemPrompt();
+  assert.match(prompt, /Always finish the delegated task with a concise plain-text final summary/);
+  assert.match(prompt, /Do not stop immediately after a tool call/);
 });
 
 test("custom system prompt replaces the built-in base while retaining delegation policy", () => {

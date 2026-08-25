@@ -18,7 +18,18 @@ export type SubagentJoinRecord = {
 };
 
 function terminalSubagent(task: SubagentTask) {
-  return task.status === "completed" || task.status === "failed" || task.status === "cancelled" || task.status === "interrupted";
+  return task.status === "completed" || task.status === "empty" || task.status === "failed" || task.status === "cancelled" || task.status === "interrupted";
+}
+
+export function formatSubagentTerminalMessage(task: SubagentTask, summary?: string) {
+  const cleanSummary = summary?.trim();
+  if (task.status === "completed" && cleanSummary) {
+    return `[RiftX subagent result]\nSubagent: ${task.name}\nStatus: completed\nSummary:\n${cleanSummary}\n\nUse this result in the current assessment. Do not repeat the same delegated task.`;
+  }
+  const detail = task.status === "empty"
+    ? "The child Agent completed without a final text response. Do not treat this task as evidence."
+    : task.error?.trim() || `The child Agent ended with status: ${task.status}. Do not treat this task as evidence.`;
+  return `[RiftX subagent status]\nSubagent: ${task.name}\nStatus: ${task.status}\nDetails:\n${detail}\n\nDo not treat this task as evidence or repeat the same delegated task unless the parent explicitly requests a retry.`;
 }
 
 export function shouldDeliverSubagentCompletion(record: Pick<SubagentJoinRecord, "waitingForSubagents" | "abortPromise" | "aborting">) {
@@ -45,17 +56,14 @@ export async function waitForSubagentsBeforeConclusion(record: SubagentJoinRecor
     }
     const results = tasks.filter((task) => requiredTaskIds.has(task.id) && !record.deliveredSubagentResults.has(task.id) && terminalSubagent(task));
     if (results.length) {
-      const message = results.map((task) => {
-        const status = task.status === "completed" ? "completed" : task.status;
-        const summary = task.summary?.trim() || task.error?.trim() || "No result";
-        return `[RiftX subagent result]\nSubagent: ${task.name}\nStatus: ${status}\nSummary:\n${summary}`;
-      }).join("\n\n");
+      const message = results.map((task) => formatSubagentTerminalMessage(task, task.summary)).join("\n\n");
       for (const task of results) record.deliveredSubagentResults.add(task.id);
       record.waitingForSubagents = false;
       record.gate.beginTask();
       await record.session.prompt(`${message}\n\nAll delegated child tasks required for this assessment have now reached a terminal state. Synthesize the final conclusion using these results. Do not start more child tasks or poll task files.`);
     }
-    const pending = tasks.some((task) => requiredTaskIds.has(task.id) && !record.deliveredSubagentResults.has(task.id));
-    if (!manager.hasActiveTasks() && !pending) return;
+    // If no task is active and no recognized terminal result was produced,
+    // stop rather than spinning forever on an unknown persisted status.
+    if (!manager.hasActiveTasks()) return;
   }
 }
