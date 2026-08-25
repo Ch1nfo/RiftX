@@ -3,6 +3,7 @@ import type { ApprovalRequest } from "@/lib/types";
 import { ApprovalGate } from "./approval-gate";
 import type { ApprovalEvaluation } from "./approval-evaluator";
 import type { MutationLock } from "./mutation-lock";
+import type { BashConcurrency } from "./bash-concurrency";
 import type { ScopeDecision } from "@/browser/scope/scope-rules";
 
 const guardedTools = new Set(["bash", "write", "edit", "browser"]);
@@ -35,6 +36,7 @@ export function createPermissionExtension(
   onEvent: (event: Record<string, unknown>) => void,
   evaluate?: (request: ApprovalRequest) => Promise<ApprovalEvaluation>,
   mutationLock?: MutationLock,
+  bashConcurrency?: BashConcurrency,
   browserScope?: BrowserScopeGuard
 ): ExtensionFactory {
   return (agent) => {
@@ -173,7 +175,22 @@ export function createPermissionExtension(
       }
       let release: (() => void) | undefined;
       try {
-        release = mutationLock ? await mutationLock.acquire(ctx.signal) : undefined;
+        if (event.toolName === "bash") {
+          if (!bashConcurrency && !mutationLock) throw new Error("Bash concurrency limiter is required");
+          const bashRelease = bashConcurrency ? await bashConcurrency.acquire(ctx.signal) : undefined;
+          let mutationRelease: (() => void) | undefined;
+          try {
+            mutationRelease = mutationLock ? await mutationLock.acquireShared(ctx.signal) : undefined;
+          } catch (error) {
+            bashRelease?.();
+            throw error;
+          }
+          release = () => {
+            mutationRelease?.();
+            bashRelease?.();
+          };
+          onEvent({ type: "tool_status", toolName: "bash", toolCallId: event.toolCallId, toolStatus: "running" });
+        } else release = mutationLock ? await mutationLock.acquire(ctx.signal) : undefined;
         if (release) {
           const onAbort = () => releaseTool(event.toolCallId);
           ctx.signal?.addEventListener("abort", onAbort, { once: true });

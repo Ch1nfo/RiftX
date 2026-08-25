@@ -55,6 +55,14 @@ function trimLogContent(content: string) {
   return content.slice(-SUBAGENT_LOG_LIMITS.content);
 }
 
+function markActiveLogs(task: SubagentTask, reason: string) {
+  for (const log of task.logs) {
+    if (log.status !== "queued" && log.status !== "running") continue;
+    log.status = "error";
+    log.content = trimLogContent(log.content ? `${log.content}\n\n${reason}` : reason);
+  }
+}
+
 function cloneTask(task: SubagentTask): SubagentTask {
   return {
     ...task,
@@ -108,6 +116,8 @@ export class SubagentManager {
       if (!task?.id || task.parentSessionId !== this.parentSessionId) continue;
       delete (task as SubagentTask & { usage?: unknown }).usage;
       if (task.status === "running") {
+        task.logs = Array.isArray(task.logs) ? task.logs : [];
+        markActiveLogs(task, "RiftX was restarted before this tool completed.");
         task.status = "interrupted";
         task.error = "RiftX was restarted while this task was running.";
         task.finishedAt = now();
@@ -319,6 +329,7 @@ export class SubagentManager {
     task.status = "cancelled";
     task.finishedAt = now();
     task.error = "Cancelled by the user.";
+    markActiveLogs(task, task.error);
     runtime.gate.rejectAll();
     runtime.controller.abort();
     this.emitTask("subagent_cancelled", task);
@@ -444,9 +455,15 @@ export class SubagentManager {
       taskPatch = { id: task.id, pendingApprovalCount: task.pendingApprovalCount };
     }
     if (event?.type === "tool_start") {
-      const log: SubagentLogEntry = { id: String(event.toolCallId ?? randomUUID()), type: "tool", toolName: String(event.toolName ?? "tool"), content: JSON.stringify(event.args ?? {}, null, 2), status: "running", createdAt: now() };
+      const log: SubagentLogEntry = { id: String(event.toolCallId ?? randomUUID()), type: "tool", toolName: String(event.toolName ?? "tool"), content: JSON.stringify(event.args ?? {}, null, 2), status: event.toolStatus === "queued" ? "queued" : "running", createdAt: now() };
       task.logs.push(log);
       taskPatch = { id: task.id, appendLog: { ...log } };
+    } else if (event?.type === "tool_status") {
+      const log = task.logs.find((entry) => entry.id === String(event.toolCallId));
+      if (log && (event.toolStatus === "queued" || event.toolStatus === "running")) {
+        log.status = event.toolStatus;
+        taskPatch = { id: task.id, patchLog: { id: log.id, status: log.status } };
+      }
     } else if (event?.type === "tool_update") {
       const log = task.logs.find((entry) => entry.id === String(event.toolCallId));
       if (log) {

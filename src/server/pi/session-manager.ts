@@ -35,6 +35,7 @@ import { shouldDeliverSubagentCompletion, waitForSubagentsBeforeConclusion } fro
 import { setAgentTransport } from "./pi-internals";
 import { prepareSkillPrompt, type SkillDescriptor } from "./skill-router";
 import { createTimedBashTool } from "./bash-timeout";
+import { BashConcurrency } from "./bash-concurrency";
 import { abortSessionRecord, shutdownSessionRecord } from "./session-shutdown";
 import { switchSessionProfile, withProfileSwitchLock } from "./apply-session-profile";
 import { registerTrackedProfile, registerProfileModel, restoreProviderRegistration, type ProviderRegistrations } from "./model-registration";
@@ -51,9 +52,11 @@ type SessionRecord = {
   session: AgentSession;
   gate: ApprovalGate;
   emitter: EventEmitter;
+  toolStatuses: Map<string, "queued" | "running">;
   unsubscribe: () => void;
   browser?: BrowserManager;
   mutationLock: MutationLock;
+  bashConcurrency: BashConcurrency;
   subagents?: SubagentManager;
   evidenceStore: EvidenceStore;
   shutdownPromise?: Promise<void>;
@@ -69,7 +72,7 @@ type SessionRecord = {
   profileSwitch?: Promise<unknown>;
 };
 
-const RUNTIME_VERSION = 26;
+const RUNTIME_VERSION = 27;
 
 type SessionSnapshotCacheEntry = {
   modifiedMs: number;
@@ -135,7 +138,7 @@ function eventPayload(event: AgentSessionEvent): RiftxEvent {
     const assistant = base.assistantMessageEvent as Record<string, unknown> | undefined;
     return { type: assistant?.type === "text_delta" ? "text_delta" : assistant?.type === "thinking_delta" ? "thinking_delta" : "message", delta: assistant?.delta ?? "" };
   }
-  if (event.type === "tool_execution_start") return { type: "tool_start", toolName: base.toolName, toolCallId: base.toolCallId, args: base.args } as RiftxEvent;
+  if (event.type === "tool_execution_start") return { type: "tool_start", toolName: base.toolName, toolCallId: base.toolCallId, args: base.args, toolStatus: base.toolName === "bash" ? "queued" : "running" } as RiftxEvent;
   if (event.type === "tool_execution_update") {
     // The runtime's AgentToolUpdateCallback payload is exposed as `partialResult`.
     // Reading the old `update` name turns every streamed tool update into
@@ -189,7 +192,7 @@ function createFindingTool(store: EvidenceStore, source: FindingSourceInfo, brow
   });
 }
 
-function createSubagentTool(manager: SubagentManager, getChildProfile: () => ModelProfile, cwd: string, mutationLock: MutationLock, runtimeDeps: RuntimeDeps): ToolDefinition {
+function createSubagentTool(manager: SubagentManager, getChildProfile: () => ModelProfile, cwd: string, mutationLock: MutationLock, bashConcurrency: BashConcurrency, runtimeDeps: RuntimeDeps): ToolDefinition {
   return defineTool({
     name: "spawn_subagent",
     label: "Spawn subagent",
@@ -201,7 +204,7 @@ function createSubagentTool(manager: SubagentManager, getChildProfile: () => Mod
     }),
     async execute(_toolCallId, params, signal) {
       const childProfile = getChildProfile();
-      const submitted = manager.submitTask(params.task, (context) => runChildSession(childProfile, cwd, mutationLock, context, runtimeDeps));
+      const submitted = manager.submitTask(params.task, (context) => runChildSession(childProfile, cwd, mutationLock, bashConcurrency, context, runtimeDeps));
       void submitted.promise.catch(() => undefined);
       const taskLabel = submitted.task?.name || "subagent task";
       const state = submitted.task?.status || "queued";
@@ -214,7 +217,7 @@ function createSubagentTool(manager: SubagentManager, getChildProfile: () => Mod
   });
 }
 
-async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: ApprovalGate, child = false, sessionManagerOverride?: AgentSessionManager, mutationLock = new MutationLock(), runtimeDeps?: RuntimeDeps, findingSource: FindingSourceInfo = { source: "main" }) {
+async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: ApprovalGate, child = false, sessionManagerOverride?: AgentSessionManager, mutationLock = new MutationLock(), bashConcurrencyOverride?: BashConcurrency, runtimeDeps?: RuntimeDeps, findingSource: FindingSourceInfo = { source: "main" }) {
   const paths = getAppPaths();
   await mkdir(paths.agent, { recursive: true, mode: 0o700 });
   const authStorage = runtimeDeps?.authStorage ?? AuthStorage.create(join(paths.agent, "auth.json"));
@@ -223,8 +226,27 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
   const model = registerTrackedProfile(providerRegistrations, authStorage, modelRegistry, profile, !runtimeDeps);
 
   const config = await readConfig();
+  const bashConcurrency = bashConcurrencyOverride ?? new BashConcurrency(config.maxConcurrentSubagents + 1);
   gate.setMode(config.approvalMode);
   const emitter = new EventEmitter();
+  const toolStatuses = new Map<string, "queued" | "running">();
+  const trackToolStatus = (event: RiftxEvent) => {
+    if (event.type === "done" || event.type === "error") {
+      toolStatuses.clear();
+      return;
+    }
+    const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : undefined;
+    if (!toolCallId) return;
+    if (event.type === "tool_start" || event.type === "tool_status") {
+      if (event.toolStatus === "queued" || event.toolStatus === "running") toolStatuses.set(toolCallId, event.toolStatus);
+    } else if (event.type === "tool_end") {
+      toolStatuses.delete(toolCallId);
+    }
+  };
+  const emitRuntimeEvent = (event: RiftxEvent) => {
+    trackToolStatus(event);
+    emitter.emit("event", event);
+  };
   if (!child) {
     gate.onDecision((request, approved) => emitter.emit("event", { type: "approval_decided", approvalId: request.id, approval: request, approved }));
   }
@@ -240,9 +262,10 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
   const browser = new BrowserManager({ evidenceRoot: paths.evidence, evidenceSessionId, scope: { rules: config.browserScope }, ignoreTlsErrors: config.browserIgnoreTlsErrors });
   const permission = createPermissionExtension(
     gate,
-    (event) => emitter.emit("event", event),
+    (event) => emitRuntimeEvent(event as RiftxEvent),
     (request) => evaluateApproval(record?.model ?? model, modelRegistry, request),
     mutationLock,
+    bashConcurrency,
     {
       check: (url) => browser.checkNavigationScope(url),
       authorizeOnce: (url, identity) => browser.authorizeOnce(url, identity),
@@ -259,7 +282,7 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
   const subagents = !child ? new SubagentManager(sessionManager.getSessionId(), paths.subagents, (event) => emitter.emit("event", event), config.maxConcurrentSubagents, config.approvalMode, subagentNameGenerator) : undefined;
   const getChildProfile = () => config.childInherit ? (record?.profile ?? profile) : childProfile;
   let evidenceSession: AgentSession | undefined;
-  const customTools = [createTimedBashTool(cwd, { commandPrefix: settingsManager.getShellCommandPrefix(), shellPath: settingsManager.getShellPath() }) as unknown as ToolDefinition, createFindingTool(evidenceStore, findingSource, browser, () => evidenceSession), ...(subagents ? [createSubagentTool(subagents, getChildProfile, cwd, mutationLock, { authStorage, modelRegistry, evidenceStore, evidenceSessionId })] : [])];
+  const customTools = [createTimedBashTool(cwd, { commandPrefix: settingsManager.getShellCommandPrefix(), shellPath: settingsManager.getShellPath() }) as unknown as ToolDefinition, createFindingTool(evidenceStore, findingSource, browser, () => evidenceSession), ...(subagents ? [createSubagentTool(subagents, getChildProfile, cwd, mutationLock, bashConcurrency, { authStorage, modelRegistry, evidenceStore, evidenceSessionId })] : [])];
   const browserExtension = createBrowserExtension({ evidenceRoot: paths.evidence, evidenceSessionId }, browser);
   const resourceLoader = new DefaultResourceLoader({
     cwd,
@@ -289,9 +312,9 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
   });
   evidenceSession = result.session;
   installMidTurnCompaction(result.session);
-  // The runtime prepares parallel calls before executing them. Keep guarded mutation
-  // tools sequential so they cannot deadlock on the shared mutation lock, but
-  // allow independent spawn_subagent calls to run concurrently.
+  // The runtime prepares parallel calls before executing them. Keep mutation
+  // tools sequential so they cannot deadlock on the shared mutation lock.
+  // Bash uses its own shared concurrency limiter, while spawn_subagent remains parallel.
   const runtimeAgent = (result.session as unknown as { agent?: { toolExecution?: "parallel" | "sequential"; state?: { tools?: Array<{ name: string; executionMode?: "parallel" | "sequential" }> } } }).agent;
   if (runtimeAgent) {
     runtimeAgent.toolExecution = "parallel";
@@ -312,8 +335,10 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
     session: result.session,
     gate,
     emitter,
+    toolStatuses,
     browser,
     mutationLock,
+    bashConcurrency,
     subagents,
     evidenceStore,
     runtimeVersion: RUNTIME_VERSION,
@@ -331,6 +356,7 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
     const payload = event.type === "agent_end" && subagents?.hasActiveTasks()
       ? { type: "session_state", state: "waiting_for_subagents" }
       : eventPayload(event);
+    trackToolStatus(payload as RiftxEvent);
     emitter.emit("event", payload);
     const usage = event.type === "compaction_end" && event.result
       ? estimateCompactedUsage(result.session, record.profile.contextWindow)
@@ -352,17 +378,17 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
       record.gate.beginTask();
       void record.session.prompt(message).catch(() => undefined);
     });
-    await subagents.initialize((context) => runChildSession(getChildProfile(), cwd, mutationLock, context, { authStorage, modelRegistry, evidenceStore, evidenceSessionId }));
+    await subagents.initialize((context) => runChildSession(getChildProfile(), cwd, mutationLock, bashConcurrency, context, { authStorage, modelRegistry, evidenceStore, evidenceSessionId }));
   }
   return record;
 }
 
-async function runChildSession(profile: ModelProfile, cwd: string, mutationLock: MutationLock, context: SubagentRunnerContext, runtimeDeps: RuntimeDeps) {
+async function runChildSession(profile: ModelProfile, cwd: string, mutationLock: MutationLock, bashConcurrency: BashConcurrency, context: SubagentRunnerContext, runtimeDeps: RuntimeDeps) {
   const paths = getAppPaths();
   const threadDir = join(paths.subagents, context.task.parentSessionId, context.task.id);
   await mkdir(threadDir, { recursive: true, mode: 0o700 });
   const childSessionManager = AgentSessionManager.create(cwd, threadDir);
-  const child = await createRuntimeSession(profile, cwd, context.gate, true, childSessionManager, mutationLock, runtimeDeps, { source: "subagent", subagentId: context.task.id });
+  const child = await createRuntimeSession(profile, cwd, context.gate, true, childSessionManager, mutationLock, bashConcurrency, runtimeDeps, { source: "subagent", subagentId: context.task.id });
   context.task.model = `${profile.provider}/${profile.model}`;
   context.updateTaskMeta({ model: context.task.model, threadId: child.id });
   const abortChild = () => {
@@ -698,7 +724,10 @@ export async function setApprovalMode(mode: ApprovalMode) {
 
 export async function setMaxConcurrentSubagents(value: number) {
   const maxConcurrentSubagents = Math.min(8, Math.max(1, Math.round(Number(value) || 3)));
-  for (const session of sessions.values()) session.subagents?.setMaxConcurrent(maxConcurrentSubagents);
+  for (const session of sessions.values()) {
+    session.subagents?.setMaxConcurrent(maxConcurrentSubagents);
+    session.bashConcurrency.setLimit(maxConcurrentSubagents + 1);
+  }
   return maxConcurrentSubagents;
 }
 
@@ -778,7 +807,7 @@ export async function retrySubagent(id: string, taskId: string) {
 
 export async function getSessionMessages(id: string) {
   const record = await getOrCreateSession(id);
-  const messages: Array<{ id: string; role: "user" | "assistant" | "thinking" | "tool"; content: string; toolName?: string; toolCallId?: string; status?: "running" | "done" | "error"; isError?: boolean }> = [];
+  const messages: Array<{ id: string; role: "user" | "assistant" | "thinking" | "tool"; content: string; toolName?: string; toolCallId?: string; status?: "queued" | "running" | "done" | "error"; isError?: boolean }> = [];
   const toolIndexes = new Map<string, number>();
   const textFromContent = (content: unknown) => Array.isArray(content)
     ? content.map((part: unknown) => typeof part === "string" ? part : part && typeof part === "object" && "text" in part ? String((part as { text?: unknown }).text ?? "") : "").join("")
@@ -818,7 +847,7 @@ export async function getSessionMessages(id: string) {
         const toolCallId = String(item.id ?? id);
         const toolIndex = messages.length;
         toolIndexes.set(toolCallId, toolIndex);
-        messages.push({ id: toolCallId, role: "tool", toolCallId, toolName: String(item.name ?? "tool"), content: JSON.stringify(item.arguments ?? {}, null, 2), status: "running" });
+        messages.push({ id: toolCallId, role: "tool", toolCallId, toolName: String(item.name ?? "tool"), content: JSON.stringify(item.arguments ?? {}, null, 2), status: record.toolStatuses.get(toolCallId) ?? "running" });
       }
     });
   });

@@ -369,7 +369,10 @@ test("marks persisted running tasks interrupted and requeues queued tasks", asyn
   await mkdir(parentDir, { recursive: true });
   const now = new Date().toISOString();
   await writeFile(join(parentDir, "tasks.json"), JSON.stringify({ tasks: [
-    { id: "running", parentSessionId: "parent", threadId: "thread-1", name: "running", task: "running", status: "running", model: "m", createdAt: now, pendingApprovalCount: 2, logs: [] },
+    { id: "running", parentSessionId: "parent", threadId: "thread-1", name: "running", task: "running", status: "running", model: "m", createdAt: now, pendingApprovalCount: 2, logs: [
+      { id: "queued-bash", type: "tool", toolName: "bash", content: "echo pending", status: "queued", createdAt: now },
+      { id: "running-bash", type: "tool", toolName: "bash", content: "echo active", status: "running", createdAt: now }
+    ] },
     { id: "queued", parentSessionId: "parent", threadId: "", name: "queued", task: "queued", status: "queued", model: "m", createdAt: now, pendingApprovalCount: 0, logs: [] }
   ] }));
   const manager = new SubagentManager("parent", root, () => undefined, 1, "request");
@@ -377,6 +380,9 @@ test("marks persisted running tasks interrupted and requeues queued tasks", asyn
   await manager.initialize(async ({ task }) => { started.push(task.id); return { summary: task.task }; });
   try {
     assert.equal(manager.list().find((task) => task.id === "running")?.status, "interrupted");
+    const interrupted = manager.list().find((task) => task.id === "running");
+    assert.equal(interrupted?.logs.every((log) => log.status !== "queued" && log.status !== "running"), true);
+    assert.match(interrupted?.logs[0]?.content ?? "", /restarted/i);
     await waitFor(() => manager.list().find((task) => task.id === "queued")?.status === "completed");
     assert.deepEqual(started, ["queued"]);
   } finally {

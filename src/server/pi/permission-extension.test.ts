@@ -2,13 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ApprovalGate } from "./approval-gate";
 import { createPermissionExtension, type BrowserScopeGuard } from "./permission-extension";
+import { BashConcurrency } from "./bash-concurrency";
+import { MutationLock } from "./mutation-lock";
 import type { ScopeDecision } from "@/browser/scope/scope-rules";
 import type { RiftxEvent } from "@/lib/types";
 
 type ToolCallHandler = (event: { toolName: string; toolCallId: string; input: unknown }, ctx: { signal?: AbortSignal }) => Promise<unknown>;
 type ToolExecutionEndHandler = (event: { toolCallId: string; isError: boolean }) => unknown;
 
-function makeHarness(guard?: BrowserScopeGuard) {
+function makeHarness(guard?: BrowserScopeGuard, bashConcurrency?: BashConcurrency, mutationLock?: MutationLock) {
   const gate = new ApprovalGate("request");
   const events: RiftxEvent[] = [];
   let toolCallHandler: ToolCallHandler | undefined;
@@ -23,7 +25,8 @@ function makeHarness(guard?: BrowserScopeGuard) {
     gate,
     (event) => events.push(event as RiftxEvent),
     undefined,
-    undefined,
+    mutationLock,
+    bashConcurrency,
     guard
   );
   factory(agent as never);
@@ -40,6 +43,50 @@ function makeHarness(guard?: BrowserScopeGuard) {
     }
   };
 }
+
+test("Bash reports running only after acquiring its dedicated concurrency slot", async () => {
+  const limiter = new BashConcurrency(1);
+  const first = makeHarness(undefined, limiter);
+  const second = makeHarness(undefined, limiter);
+  const firstPending = first.call({ command: "echo first" }, "bash", "bash-1");
+  first.gate.decide("bash-1", true);
+  await firstPending;
+  const secondPending = second.call({ command: "echo second" }, "bash", "bash-2");
+  second.gate.decide("bash-2", true);
+  await Promise.resolve();
+  assert.equal(second.events.some((event) => event.type === "tool_status"), false);
+  first.end("bash-1");
+  await secondPending;
+  assert.deepEqual(second.events.find((event) => event.type === "tool_status"), { type: "tool_status", toolName: "bash", toolCallId: "bash-2", toolStatus: "running" });
+  second.end("bash-2");
+});
+
+test("Bash waits for an exclusive mutation and then reports running", async () => {
+  const mutationLock = new MutationLock();
+  const releaseMutation = await mutationLock.acquire();
+  const harness = makeHarness(undefined, new BashConcurrency(1), mutationLock);
+  const pending = harness.call({ command: "echo protected" }, "bash", "bash-mutation");
+  harness.gate.decide("bash-mutation", true);
+
+  await Promise.resolve();
+  assert.equal(harness.events.some((event) => event.type === "tool_status"), false);
+  releaseMutation();
+  await pending;
+  assert.deepEqual(harness.events.find((event) => event.type === "tool_status"), {
+    type: "tool_status",
+    toolName: "bash",
+    toolCallId: "bash-mutation",
+    toolStatus: "running"
+  });
+  harness.end("bash-mutation");
+});
+
+test("Bash without a limiter is blocked instead of running without coordination", async () => {
+  const harness = makeHarness();
+  const pending = harness.call({ command: "echo unguarded" }, "bash", "bash-no-limiter");
+  harness.gate.decide("bash-no-limiter", true);
+  assert.deepEqual(await pending, { block: true, reason: "Bash concurrency limiter is required" });
+});
 
 function scopeGuard(allowedHosts: string[]) {
   const granted: Array<{ url: string; exactPort?: boolean }> = [];

@@ -18,7 +18,7 @@ import { resolveConversationScroll } from "@/lib/conversation-scroll";
 
 type Message = { id: string; role: "user" | "assistant" | "thinking" | "tool"; content: string; toolName?: string; toolCallId?: string; status?: string; isError?: boolean };
 type MessageDelta = { role: "assistant" | "thinking"; content: string };
-type MessageLabels = { you: string; thinking: string; thinkingNow: string; thinkingDone: string; running: string; failed: string; stopped: string; complete: string };
+type MessageLabels = { you: string; thinking: string; thinkingNow: string; thinkingDone: string; queued: string; running: string; failed: string; stopped: string; complete: string };
 
 const MESSAGE_BATCH_SIZE = 200;
 const MARKDOWN_PLUGINS = [remarkGfm];
@@ -61,7 +61,7 @@ const ToolCard = memo(function ToolCard({ message, labels }: { message: Message;
   const [open, setOpen] = useState(message.status === "running");
   useEffect(() => { setOpen(message.status === "running"); }, [message.status]);
   return <details id={message.toolCallId ? `tool-${encodeURIComponent(message.toolCallId)}` : undefined} className={`tool-card ${message.isError ? "error" : ""}`} open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
-    <summary className="tool-card-head"><span><Command size={14} />{message.toolName}</span><span className={`tool-status ${message.status}`}>{message.status === "running" ? labels.running : message.status === "error" ? labels.failed : message.status === "cancelled" ? labels.stopped : labels.complete}</span></summary>
+    <summary className="tool-card-head"><span><Command size={14} />{message.toolName}</span><span className={`tool-status ${message.status}`}>{message.status === "queued" ? labels.queued : message.status === "running" ? labels.running : message.status === "error" ? labels.failed : message.status === "cancelled" ? labels.stopped : labels.complete}</span></summary>
     <pre>{message.content}</pre>
   </details>;
 });
@@ -389,17 +389,22 @@ export function Workbench() {
         return;
       }
       if (payload.type.startsWith("subagent_") || payload.type === "approval_decided") return;
-      if (["text_delta", "tool_start", "tool_update", "tool_end", "message", "done", "error"].includes(payload.type)) {
+      if (["text_delta", "tool_start", "tool_status", "tool_update", "tool_end", "message", "done", "error"].includes(payload.type)) {
         messageVersion += 1;
         setMessages((current) => current.map((message) => message.role === "thinking" && message.status === "streaming" ? { ...message, status: "done" } : message));
       }
       if (payload.type === "session_state") { setMainAgentRunning(payload.state !== "idle"); setContextCompacting(payload.state === "compacting"); return; }
-      if (payload.type === "done") { setMainAgentRunning(false); setContextCompacting(false); setApprovalQueue((current) => current.filter(isSubagentApproval)); setMessages((current) => current.map((message) => message.role === "thinking" ? { ...message, status: "done" } : message.role === "tool" && message.status === "running" ? { ...message, status: "cancelled", isError: true, content: message.content ? `${message.content}\n\n${t("stopped")}` : t("stopped") } : message)); return; }
+      if (payload.type === "done") { setMainAgentRunning(false); setContextCompacting(false); setApprovalQueue((current) => current.filter(isSubagentApproval)); setMessages((current) => current.map((message) => message.role === "thinking" ? { ...message, status: "done" } : message.role === "tool" && (message.status === "running" || message.status === "queued") ? { ...message, status: "cancelled", isError: true, content: message.content ? `${message.content}\n\n${t("stopped")}` : t("stopped") } : message)); return; }
+      if (payload.type === "tool_status") {
+        const toolCallId = String(payload.toolCallId ?? "");
+        if (payload.toolStatus === "queued" || payload.toolStatus === "running") setMessages((current) => current.map((message) => message.id === toolCallId ? { ...message, status: payload.toolStatus } : message));
+        return;
+      }
       if (payload.type === "tool_start") {
         const toolCallId = String(payload.toolCallId ?? crypto.randomUUID());
         setMessages((current) => {
           const existingIndex = current.findIndex((message) => message.toolCallId === toolCallId || message.id === toolCallId);
-          const nextMessage = { id: toolCallId, role: "tool" as const, toolCallId, toolName: String(payload.toolName ?? "tool"), content: JSON.stringify(payload.args ?? {}, null, 2), status: "running" };
+          const nextMessage = { id: toolCallId, role: "tool" as const, toolCallId, toolName: String(payload.toolName ?? "tool"), content: JSON.stringify(payload.args ?? {}, null, 2), status: payload.toolStatus === "queued" ? "queued" : "running" };
           if (existingIndex < 0) return [...current, nextMessage];
           return current.map((message, index) => index === existingIndex ? { ...message, ...nextMessage } : message);
         });
@@ -452,7 +457,7 @@ export function Workbench() {
   const visibleMessages = useMemo(() => messages.filter((message) => message.toolName !== "spawn_subagent"), [messages]);
   const displayedMessages = useMemo(() => visibleMessages.slice(-visibleMessageCount), [visibleMessages, visibleMessageCount]);
   const hasEarlierMessages = displayedMessages.length < visibleMessages.length;
-  const messageLabels = useMemo<MessageLabels>(() => ({ you: t("you"), thinking: t("thinking"), thinkingNow: t("thinkingNow"), thinkingDone: t("thinkingDone"), running: t("running"), failed: t("failed"), stopped: t("stopped"), complete: t("complete") }), [t]);
+  const messageLabels = useMemo<MessageLabels>(() => ({ you: t("you"), thinking: t("thinking"), thinkingNow: t("thinkingNow"), thinkingDone: t("thinkingDone"), queued: t("queued"), running: t("running"), failed: t("failed"), stopped: t("stopped"), complete: t("complete") }), [t]);
   const running = mainAgentRunning || subagentRunning > 0 || approvalQueue.length > 0;
   const composerBusy = mainAgentRunning || approvalQueue.some((item) => !item.subagentId);
 

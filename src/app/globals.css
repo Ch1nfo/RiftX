@@ -112,6 +112,7 @@ a { color: inherit; text-decoration: none; }
 .subagent-log-head-main { min-width: 0; display: inline-flex; align-items: center; gap: 8px; }
 .subagent-log-type { color: var(--text); text-transform: uppercase; }
 .subagent-log-status { color: var(--muted-2); }
+.subagent-log-status.queued { color: #d9b86c; }
 .subagent-log-status.running { color: var(--accent); }
 .subagent-log-status.error { color: var(--danger); }
 .subagent-log-status.done { color: var(--muted); }
@@ -226,6 +227,7 @@ a { color: inherit; text-decoration: none; }
 .tool-card-head span:first-child { display: inline-flex; align-items: center; gap: 7px; color: var(--text); }
 .tool-card pre { border: 0; border-top: 1px solid var(--line-soft); border-radius: 0; margin: 0; max-height: none; }
 .tool-status { color: var(--muted-2); }
+.tool-status.queued { color: #d9b86c; }
 .tool-status.running { color: var(--accent); }
 .tool-status.error { color: var(--danger); }
 .composer-wrap { position: fixed; z-index: 4; left: var(--sidebar-width); right: var(--right-rail-width); bottom: 0; padding: 0 24px 22px 36px; pointer-events: none; background: linear-gradient(transparent, rgba(12, 13, 14, .92) 32%); }
