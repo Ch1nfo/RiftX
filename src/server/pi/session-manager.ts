@@ -204,7 +204,7 @@ function createSubagentTool(manager: SubagentManager, getChildProfile: () => Mod
   return defineTool({
     name: "spawn_subagent",
     label: "Spawn subagent",
-    description: "Start one focused, independent Web penetration testing child Agent. The task runs in the background so the main Agent can continue independent work, and each completed child result is returned as soon as it is available. Every spawned child is mandatory for the final assessment: if the main Agent reaches a conclusion while any child is still active, RiftX waits for all spawned children to finish before requesting that final conclusion. Never poll child logs or task files with bash or sleep. Use only for meaningful independent work, never duplicate or state-dependent child work; the scheduler enforces the configured concurrency limit and queues excess tasks. The child cannot create another child.",
+    description: "Start one focused, independent Web penetration testing child Agent that runs in the background while you continue other work; each completed result is delivered to you automatically. Follow the session's subagent delegation policy: use it only for meaningful, non-duplicate, independent work, never poll child logs or task files, and remember every child is mandatory for the final assessment. The child cannot create another child.",
     promptSnippet: "spawn_subagent(task)",
     executionMode: "parallel",
     parameters: Type.Object({
@@ -270,7 +270,7 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
   const permission = createPermissionExtension(
     gate,
     (event) => emitRuntimeEvent(event as RiftxEvent),
-    (request) => evaluateApproval(record?.model ?? model, modelRegistry, request),
+    (request) => evaluateApproval(record?.model ?? model, modelRegistry, request, config.browserScope),
     mutationLock,
     bashConcurrency,
     {
@@ -409,7 +409,10 @@ async function runChildSession(profile: ModelProfile, cwd: string, mutationLock:
     return () => child.emitter.off("event", listener);
   })();
   try {
-    await child.session.prompt(context.task.task);
+    // Match and inline the relevant skill for the delegated task, mirroring the
+    // main session's prompt preparation, so children inherit domain guidance.
+    const prepared = await prepareSkillPrompt(context.task.task, child.skills, child.loadedSkills);
+    await child.session.prompt(prepared.prompt);
     const result = extractLastAssistantResult(child.session.sessionManager.getBranch());
     if (result.error) throw new Error(result.error);
     return { summary: result.summary ?? "" };

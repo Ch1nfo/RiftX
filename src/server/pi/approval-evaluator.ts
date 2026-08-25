@@ -7,7 +7,7 @@ const APPROVAL_EVALUATOR_PROMPT = `You are RiftX's internal approval evaluator f
 
 Decide based on one question: could this tool call materially harm either (1) the user's local computer, workspace, files, credentials, or services, or (2) the authorized system under test, its data, availability, users, or surrounding infrastructure?
 
-Approve actions when they are read-only, diagnostic, analytical, or bounded security testing and do not create meaningful impact to either side. Do not reject an action merely because it uses a particular tool or technique. Judge the actual command, arguments, scope, destination, rate, reversibility, and likely side effects.
+Approve actions when they are read-only, diagnostic, analytical, or bounded security testing and do not create meaningful impact to either side. Do not reject an action merely because it uses a particular tool or technique. Judge the actual command, arguments, scope, destination, rate, reversibility, and likely side effects. When authorized browser scope rules are provided, they define the targets browser actions may touch; traffic beyond them is out of scope.
 
 Reject actions that could delete or corrupt data, change system state without a clear safe rollback, establish persistence, expose or exfiltrate credentials or sensitive data, cause service disruption or resource exhaustion, send uncontrolled or out-of-scope traffic, affect real users, or expand beyond the authorized target. A clearly temporary, local, and reversible test artifact is acceptable when it cannot affect the target or the user's computer beyond the stated workspace.
 
@@ -28,14 +28,17 @@ function extractFirstJsonObject(raw: string) {
   return raw.slice(start, end + 1);
 }
 
-export async function evaluateApproval(model: Model<any>, modelRegistry: ModelRegistry, request: ApprovalRequest): Promise<ApprovalEvaluation> {
+export async function evaluateApproval(model: Model<any>, modelRegistry: ModelRegistry, request: ApprovalRequest, scopeRules: string[] = []): Promise<ApprovalEvaluation> {
   const auth = await modelRegistry.getApiKeyAndHeaders(model);
   if (!auth.ok) throw new Error(auth.error);
+  const scopeSection = scopeRules.length
+    ? `Authorized browser scope rules:\n${scopeRules.map((rule) => `- ${rule}`).join("\n")}\n\n`
+    : "";
   const response = await completeSimple(model, {
     systemPrompt: APPROVAL_EVALUATOR_PROMPT,
     messages: [{
       role: "user",
-      content: `Tool: ${request.toolName}\nInput:\n${JSON.stringify(request.input, null, 2)}`,
+      content: `${scopeSection}Tool: ${request.toolName}\nInput:\n${JSON.stringify(request.input, null, 2)}`,
       timestamp: Date.now()
     }]
   }, {
