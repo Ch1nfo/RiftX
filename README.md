@@ -63,7 +63,14 @@ Web security validation is often split across terminals, browsers, proxies, note
 - Concurrency is configurable from `1-8`; excess tasks wait in the parent-session queue.
 - Low, default, and high scheduling modes balance parallelism against token usage.
 - Incremental logs, cancellation, and retry are available; reconnecting restores task snapshots and unresolved approvals.
+- Tasks expose distinct `queued`, `running`, `completed`, `empty`, `failed`, `cancelled`, and `interrupted` states. Only a valid final summary is delivered as normal evidence to the parent Agent.
 - Subagents cannot recursively create more subagents. The runtime waits for every required child task before requesting the final answer.
+
+### Tool Concurrency and Timeouts
+
+- Bash has a shared concurrency limiter separate from subagent scheduling. Its default capacity is the configured maximum subagent count plus the main Agent, and excess Bash calls remain visibly queued until a slot is available.
+- Bash commands default to a 90-second timeout. A tool call may provide an explicit timeout, capped at 1,800 seconds (30 minutes).
+- State-changing `write`, `edit`, and browser operations use the shared mutation coordination path so they do not race with one another.
 
 ### Browser Tool
 
@@ -87,8 +94,8 @@ RiftX provides three approval modes for actions that may change local or target 
 | Mode | Behavior | Recommended use |
 | --- | --- | --- |
 | Request approval | Every guarded action waits for an explicit allow or reject decision | Default mode with step-by-step control |
-| AI-assisted | The Agent evaluates impact and rejects when it cannot determine the effect | Continuous validation within a known scope |
-| Full access | Bypasses the approval gate | Isolated, fully controlled environments only |
+| AI-assisted | The Agent evaluates impact; rejection or an unavailable evaluator blocks the action and explains how to switch to request approval or full access | Continuous validation within a known scope |
+| Full access | Bypasses all approval checks, including browser-scope expansion prompts | Isolated, fully controlled environments only |
 
 Read-only operations such as `read`, `grep`, `find`, and `ls` run directly. `bash`, `write`, `edit`, and browser actions that change state go through the approval flow. Approval errors, timeouts, and client disconnects fail closed.
 
@@ -176,42 +183,7 @@ RiftX does not require Conda, Python, a database, or a remote RiftX account. On 
 
 ## Installation and Launch
 
-### Option 1: Install Directly from GitHub
-
-Install into a user-owned prefix without cloning the repository manually:
-
-```bash
-npm_config_prefix="$HOME/.local" npm install --global git+https://github.com/Ch1nfo/RiftX.git
-export PATH="$HOME/.local/bin:$PATH"
-rx webui
-```
-
-Add the following line to `~/.zshrc` or `~/.bashrc` so `rx` remains available in new terminals:
-
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-#### Windows PowerShell
-
-The Unix `$HOME` and `export PATH` syntax above is not PowerShell syntax. Windows npm normally uses a user-writable global prefix, so install directly with:
-
-```powershell
-npm install --global git+https://github.com/Ch1nfo/RiftX.git
-rx webui
-```
-
-If PowerShell cannot find `rx` after installation, check the global npm directory and add it to the user `PATH`:
-
-```powershell
-npm config get prefix
-```
-
-The default directory is commonly `$env:APPDATA\npm`. Reopen PowerShell after changing `PATH`.
-
-The explicit `git+https://` URL avoids Git/npm configurations that rewrite `github:Ch1nfo/RiftX` to SSH. RiftX is not yet published to the npm registry, so `npm install -g riftx` is not currently available.
-
-### Option 2: Install from Source
+### Unix
 
 ```bash
 git clone https://github.com/Ch1nfo/RiftX.git
@@ -222,25 +194,17 @@ export PATH="$HOME/.local/bin:$PATH"
 rx webui
 ```
 
-`npm install` installs dependencies, downloads Chromium, and creates the production build. `npm link --ignore-scripts` only registers that build as the `rx` command and does not build it again. This flow does not require root or `sudo`.
-
-On Windows PowerShell, after `npm install` has finished the build and downloaded Chromium, link the source checkout with:
+### Windows PowerShell
 
 ```powershell
+git clone https://github.com/Ch1nfo/RiftX.git
+Set-Location RiftX
+npm install
 npm link --ignore-scripts
 rx webui
 ```
 
-With a user-managed Node.js installation such as nvm or fnm, the same PowerShell commands apply. No `npm_config_prefix` or `export PATH` line is needed unless you changed the npm global prefix.
-
-### First-Time Configuration
-
-1. Open <http://localhost:3000>.
-2. Select the working directory the Agent may access using the folder button in the workbench header.
-3. Open **Settings**, add a model profile, and enter its API key, base URL, protocol, and model ID.
-4. Save the settings, return to the workbench, create a session, and send a task.
-
-Change the port or listening address when needed:
+### Port and Host
 
 ```bash
 rx webui --port 4000
@@ -250,26 +214,20 @@ rx webui --port 4000 --hostname 0.0.0.0
 
 ### Linux Browser Dependencies
 
-If Chromium reports missing operating-system libraries, run:
-
 ```bash
 npx playwright install-deps chromium
 ```
 
-This installs system packages and may require administrator access. RiftX itself can still remain in a user-owned npm prefix.
-
 ## Development Commands
 
 ```bash
-npm install          # Install dependencies and Chromium, then build
-npm run dev          # Start the development server with hot reload
-npm run typecheck    # Run TypeScript type checking
-npm test             # Run unit and regression tests
-npm run build        # Create a production build
-npm start            # Start the production build directly
+npm install
+npm run dev
+npm run typecheck
+npm test
+npm run build
+npm start
 ```
-
-The development server and `rx webui` use <http://localhost:3000> by default. `rx webui` always serves the existing production build.
 
 ## Runtime Data
 
@@ -340,20 +298,6 @@ Use RiftX only on systems for which the operator has explicit authorization. Do 
 RiftX does not currently bundle dedicated scanners such as nmap, httpx, subfinder, nuclei, or ffuf. It also does not provide multi-user accounts, RBAC, remote task orchestration, or automatic export of browser authentication state into arbitrary CLI tools.
 
 ## FAQ
-
-<details>
-<summary><strong>Why install under <code>~/.local</code>?</strong></summary>
-
-The system npm prefix often points to `/usr/local`, which is not writable by a regular user. `npm_config_prefix="$HOME/.local"` avoids `EACCES` without requiring `sudo`. Make sure `$HOME/.local/bin` is on `PATH`.
-
-</details>
-
-<details>
-<summary><strong>Why does installation download Chromium and run a build?</strong></summary>
-
-The Browser tool depends on Playwright Chromium, and `rx webui` serves a Next.js production build. `postinstall` installs the browser, while `prepare` creates the `.next` build, so the first installation takes longer than a typical CLI package.
-
-</details>
 
 <details>
 <summary><strong>Can I open the WebUI without an API key?</strong></summary>

@@ -63,7 +63,14 @@ Web 安全验证通常散落在终端、浏览器、代理工具、笔记和多�
 - 最大并发数可配置为 `1–8`；超过上限的任务自动排队。
 - 调度积极性提供低、默认、高三档，用于平衡并行度与 Token 消耗。
 - 支持查看增量日志、取消与重试；重连后恢复任务快照和未处理审批。
+- 任务会明确区分 `queued`（排队）、`running`（运行中）、`completed`（完成）、`empty`（无最终结果）、`failed`（失败）、`cancelled`（取消）和 `interrupted`（中断）。只有真正有效的最终摘要才会作为正常结果交付给父 Agent。
 - 子 Agent 不能继续创建子 Agent；运行时会在最终回答前等待全部必需子任务结束。
+
+### 工具并发与超时
+
+- Bash 使用独立于子 Agent 调度的共享并发限制器。默认容量为“最大并发子 Agent 数 + 主 Agent”，超出的 Bash 调用会在界面显示为排队，直到有槽位释放。
+- Bash 默认超时为 90 秒。工具调用可以显式传入超时，但最大限制为 1,800 秒（30 分钟）。
+- `write`、`edit` 和会改变状态的浏览器操作使用共享变更协调机制，避免互相竞态。
 
 ### Browser 工具
 
@@ -87,8 +94,8 @@ RiftX 为可能改变本机或目标状态的操作提供三种审批模式：
 | 模式 | 行为 | 适用场景 |
 | --- | --- | --- |
 | 请求审批 | 每个受控操作等待人工允许或拒绝 | 默认模式，需要逐步确认 |
-| 帮我审批 | Agent 评估影响；无法确认时拒绝 | 已知范围内的连续验证 |
-| 完全访问 | 跳过审批门 | 仅限隔离且完全受控的环境 |
+| 帮我审批 | Agent 评估影响；评估器拒绝或不可用时会阻止操作，并提示切换到请求审批或完全访问 | 已知范围内的连续验证 |
+| 完全访问 | 跳过所有审批检查，包括浏览器范围扩展提示 | 仅限隔离且完全受控的环境 |
 
 `read`、`grep`、`find`、`ls` 等只读操作默认直接执行；`bash`、`write`、`edit` 和会改变浏览器状态的 action 进入审批流程。审批失败、超时或客户端断开时默认拒绝。
 
@@ -176,42 +183,7 @@ RiftX 不依赖 Conda、Python、数据库或远程 RiftX 账户。Linux 如果�
 
 ## 安装与启动
 
-### 方式一：直接从 GitHub 安装
-
-无需手动 clone，安装到当前用户目录：
-
-```bash
-npm_config_prefix="$HOME/.local" npm install --global git+https://github.com/Ch1nfo/RiftX.git
-export PATH="$HOME/.local/bin:$PATH"
-rx webui
-```
-
-把下面一行加入 `~/.zshrc` 或 `~/.bashrc`，新终端中即可直接使用 `rx`：
-
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-#### Windows PowerShell
-
-上面的 `$HOME` 和 `export PATH` 是 Unix shell 语法，不能直接复制到 PowerShell。Windows 的 npm 通常使用当前用户可写的全局目录，因此直接执行：
-
-```powershell
-npm install --global git+https://github.com/Ch1nfo/RiftX.git
-rx webui
-```
-
-如果安装后 PowerShell 找不到 `rx`，先查看 npm 全局目录，并将它加入当前用户的 `PATH`：
-
-```powershell
-npm config get prefix
-```
-
-默认目录通常是 `$env:APPDATA\npm`。修改 `PATH` 后请重新打开 PowerShell。
-
-这里明确使用 `git+https://`，避免 `github:Ch1nfo/RiftX` 在部分 Git/npm 配置中被改写为 SSH。RiftX 暂未发布到 npm registry，因此目前不能使用 `npm install -g riftx`。
-
-### 方式二：从源码安装
+### Unix
 
 ```bash
 git clone https://github.com/Ch1nfo/RiftX.git
@@ -222,25 +194,17 @@ export PATH="$HOME/.local/bin:$PATH"
 rx webui
 ```
 
-`npm install` 会安装依赖、下载 Chromium 并生成生产构建；`npm link --ignore-scripts` 只把当前构建注册为 `rx`，不会再次构建。整个流程不需要 root 或 `sudo`。
-
-Windows PowerShell 中，`npm install` 完成构建并下载 Chromium 后，在源码目录执行：
+### Windows PowerShell
 
 ```powershell
+git clone https://github.com/Ch1nfo/RiftX.git
+Set-Location RiftX
+npm install
 npm link --ignore-scripts
 rx webui
 ```
 
-如果使用 nvm、fnm 等用户级 Node.js 管理器，同样使用上面的 PowerShell 命令即可。除非你修改过 npm 全局目录，否则不需要设置 `npm_config_prefix` 或执行 `export PATH`。
-
-### 首次配置
-
-1. 打开 <http://localhost:3000>。
-2. 点击工作台顶部的文件夹按钮，选择 Agent 可以访问的工作目录。
-3. 进入“设置”，添加模型配置档案并填写 API Key、Base URL、协议和模型 ID。
-4. 保存设置，回到工作台新建会话并发送任务。
-
-可以修改端口和监听地址：
+### 端口与主机
 
 ```bash
 rx webui --port 4000
@@ -250,26 +214,20 @@ rx webui --port 4000 --hostname 0.0.0.0
 
 ### Linux 浏览器依赖
 
-如果 Chromium 启动时提示缺少系统库，执行：
-
 ```bash
 npx playwright install-deps chromium
 ```
 
-该命令安装操作系统级依赖，可能需要系统管理员权限；RiftX 本身仍可安装在普通用户目录。
-
 ## 开发命令
 
 ```bash
-npm install          # 安装依赖、Chromium，并执行生产构建
-npm run dev          # 开发服务器与热更新
-npm run typecheck    # TypeScript 类型检查
-npm test             # 单元与回归测试
-npm run build        # 生成生产构建
-npm start            # 直接启动生产构建
+npm install
+npm run dev
+npm run typecheck
+npm test
+npm run build
+npm start
 ```
-
-开发服务器和 `rx webui` 默认使用 <http://localhost:3000>。`rx webui` 始终启动已生成的生产构建。
 
 ## 运行时数据
 
@@ -340,20 +298,6 @@ RiftX 只应用于操作者已获得明确授权的系统。不得使用它访�
 RiftX 当前不内置 nmap、httpx、subfinder、nuclei、ffuf 等专用扫描器，也不提供多用户账户、RBAC、远程任务编排或浏览器认证态自动导出到任意 CLI 工具。
 
 ## 常见问题
-
-<details>
-<summary><strong>为什么推荐安装到 <code>~/.local</code>？</strong></summary>
-
-系统级 npm prefix 通常指向 `/usr/local`，普通用户没有写权限。使用 `npm_config_prefix="$HOME/.local"` 可以避免 `EACCES`，也不需要 `sudo`。确认 `$HOME/.local/bin` 已加入 `PATH` 即可。
-
-</details>
-
-<details>
-<summary><strong>为什么安装时会下载 Chromium 并执行构建？</strong></summary>
-
-RiftX 的 Browser 工具依赖 Playwright Chromium，`rx webui` 运行的是 Next.js 生产构建。`postinstall` 负责安装浏览器，`prepare` 负责生成 `.next` 构建，因此首次安装耗时会长于普通 CLI 包。
-
-</details>
 
 <details>
 <summary><strong>没有 API Key 能打开 WebUI 吗？</strong></summary>
