@@ -30,7 +30,7 @@ import { SubagentManager, type SubagentRunnerContext } from "./subagent-manager"
 import { generateSessionTitle } from "./session-title";
 import { EvidenceStore, getEvidenceStore, removeEvidence } from "./evidence-store";
 import { estimateCompactedUsage, estimateMessagesContextUsage, installMidTurnCompaction } from "./mid-turn-compaction";
-import { shouldDeliverSubagentCompletion, waitForSubagentsBeforeConclusion } from "./session-join";
+import { waitForSubagentsBeforeConclusion } from "./session-join";
 import { setAgentTransport } from "./pi-internals";
 import { prepareSkillPrompt, type SkillDescriptor } from "./skill-router";
 import { createTimedBashTool } from "./bash-timeout";
@@ -39,7 +39,7 @@ import { abortSessionRecord, shutdownSessionRecord } from "./session-shutdown";
 import { switchSessionProfile, withProfileSwitchLock } from "./apply-session-profile";
 import { registerTrackedProfile, registerProfileModel, restoreProviderRegistration, type ProviderRegistrations } from "./model-registration";
 import { extractLastAssistantResult } from "./subagent-result";
-import { claimSubagentResult, enqueueSessionAction, finishSubagentResult, formatSubagentTerminalMessage } from "./session-join";
+import { deliverSubagentCompletion, dispatchSessionAction } from "./session-join";
 
 type SessionRecord = {
   id: string;
@@ -377,24 +377,7 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
   record.unsubscribe = unsubscribe;
   if (subagents) {
     subagents.setCompletionHandler((task, childResult) => {
-      void enqueueSessionAction(record, async () => {
-        if (!shouldDeliverSubagentCompletion(record)) return;
-        if (!claimSubagentResult(record, task.id)) return;
-        const message = formatSubagentTerminalMessage(task, childResult.summary);
-        record.subagentDeliveryInProgress = true;
-        try {
-          if (record.session.isStreaming) await record.session.steer(message);
-          else {
-            record.gate.beginTask();
-            await record.session.prompt(message);
-          }
-          finishSubagentResult(record, task.id, true);
-        } catch {
-          finishSubagentResult(record, task.id, false);
-        } finally {
-          record.subagentDeliveryInProgress = false;
-        }
-      }).catch(() => undefined);
+      void deliverSubagentCompletion(record, task, childResult.summary);
     });
     await subagents.initialize((context) => runChildSession(getChildProfile(), cwd, mutationLock, bashConcurrency, context, { evidenceStore, evidenceSessionId }));
   }
@@ -667,7 +650,7 @@ async function promptSession(id: string, text: string, mode: "prompt" | "steer" 
   const activeBefore = new Set(record.subagents?.list().filter((task) => task.status === "queued" || task.status === "running").map((task) => task.id) ?? []);
   let skillInjected = false;
   try {
-    await enqueueSessionAction(record, async () => {
+    await dispatchSessionAction(record, resolvedMode, async () => {
       if (resolvedMode === "steer") await record.session.steer(prepared.prompt);
       else if (resolvedMode === "followUp") {
         record.gate.beginTask();

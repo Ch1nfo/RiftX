@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { SubagentTask } from "@/lib/types";
-import { claimSubagentResult, enqueueSessionAction, finishSubagentResult, formatSubagentTerminalMessage, shouldDeliverSubagentCompletion, waitForSubagentsBeforeConclusion } from "./session-join";
+import { claimSubagentResult, deliverSubagentCompletion, dispatchSessionAction, enqueueSessionAction, finishSubagentResult, formatSubagentTerminalMessage, shouldDeliverSubagentCompletion, waitForSubagentsBeforeConclusion } from "./session-join";
 
 function makeTask(status: SubagentTask["status"]): SubagentTask {
   return {
@@ -139,4 +139,51 @@ test("session prompt actions are serialized", async () => {
   releaseFirst();
   await Promise.all([first, second]);
   assert.deepEqual(order, ["first-start", "first-end", "second"]);
+});
+
+test("steering and follow-up actions bypass the prompt run queue", async () => {
+  const record = { promptChain: undefined as Promise<void> | undefined };
+  const order: string[] = [];
+  let releaseQueue!: () => void;
+  const queueGate = new Promise<void>((resolve) => { releaseQueue = resolve; });
+  record.promptChain = queueGate;
+  const prompt = enqueueSessionAction(record, async () => {
+    order.push("prompt-start");
+    order.push("prompt-end");
+  });
+  const steer = dispatchSessionAction(record, "steer", async () => { order.push("steer"); });
+  const followUp = dispatchSessionAction(record, "followUp", async () => { order.push("follow-up"); });
+  await Promise.all([steer, followUp]);
+  assert.deepEqual(order, ["steer", "follow-up"]);
+  releaseQueue();
+  await prompt;
+  assert.deepEqual(order, ["steer", "follow-up", "prompt-start", "prompt-end"]);
+});
+
+test("a completed child steers an active parent immediately despite a pending prompt queue", async () => {
+  const task = makeTask("completed");
+  task.summary = "Child found a useful result.";
+  const order: string[] = [];
+  let releaseQueue!: () => void;
+  const queueGate = new Promise<void>((resolve) => { releaseQueue = resolve; });
+  const record = {
+    promptChain: queueGate,
+    waitingForSubagents: false,
+    deliveredSubagentResults: new Set<string>(),
+    deliveringSubagentResults: new Set<string>(),
+    gate: { beginTask: () => order.push("begin-task") },
+    session: {
+      isStreaming: true,
+      steer: async () => { order.push("steer-result"); },
+      prompt: async () => { order.push("prompt-result"); }
+    }
+  } as unknown as Parameters<typeof deliverSubagentCompletion>[0];
+  const existingPrompt = enqueueSessionAction(record, async () => { order.push("existing-prompt-start"); });
+
+  assert.equal(await deliverSubagentCompletion(record, task, task.summary), true);
+  assert.deepEqual(order, ["steer-result"]);
+  assert.equal(record.deliveredSubagentResults.has(task.id), true);
+  releaseQueue();
+  await existingPrompt;
+  assert.deepEqual(order, ["steer-result", "existing-prompt-start"]);
 });

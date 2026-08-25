@@ -1,4 +1,5 @@
 import type { SubagentTask } from "@/lib/types";
+import type { PromptMode } from "@/lib/prompt-mode";
 
 type JoinManager = {
   list(): SubagentTask[];
@@ -17,7 +18,11 @@ export type SubagentJoinRecord = {
   promptChain?: Promise<void>;
   subagentDeliveryInProgress?: boolean;
   gate: { beginTask(): void };
-  session: { prompt(message: string): Promise<void> };
+  session: {
+    isStreaming: boolean;
+    prompt(message: string): Promise<void>;
+    steer(message: string): Promise<void>;
+  };
 };
 
 /** Serialize SDK prompt-like calls; AgentSession rejects overlapping runs. */
@@ -26,6 +31,11 @@ export function enqueueSessionAction(record: Pick<SubagentJoinRecord, "promptCha
   const next = previous.catch(() => undefined).then(action);
   record.promptChain = next.catch(() => undefined);
   return next;
+}
+
+/** SDK steering queues are safe during an active run; only new prompts need the run mutex. */
+export function dispatchSessionAction(record: Pick<SubagentJoinRecord, "promptChain">, mode: PromptMode, action: () => Promise<void>) {
+  return mode === "prompt" ? enqueueSessionAction(record, action) : action();
 }
 
 function terminalSubagent(task: SubagentTask) {
@@ -58,6 +68,32 @@ export function claimSubagentResult(record: Pick<SubagentJoinRecord, "deliveredS
 export function finishSubagentResult(record: Pick<SubagentJoinRecord, "deliveredSubagentResults" | "deliveringSubagentResults">, taskId: string, delivered: boolean) {
   record.deliveringSubagentResults?.delete(taskId);
   if (delivered) record.deliveredSubagentResults.add(taskId);
+}
+
+export async function deliverSubagentCompletion(record: SubagentJoinRecord, task: SubagentTask, summary?: string) {
+  if (!shouldDeliverSubagentCompletion(record)) return false;
+  if (!claimSubagentResult(record, task.id)) return false;
+  const message = formatSubagentTerminalMessage(task, summary);
+  const mode: PromptMode = record.session.isStreaming ? "steer" : "prompt";
+  try {
+    await dispatchSessionAction(record, mode, async () => {
+      record.subagentDeliveryInProgress = true;
+      try {
+        if (mode === "steer") await record.session.steer(message);
+        else {
+          record.gate.beginTask();
+          await record.session.prompt(message);
+        }
+      } finally {
+        record.subagentDeliveryInProgress = false;
+      }
+    });
+    finishSubagentResult(record, task.id, true);
+    return true;
+  } catch {
+    finishSubagentResult(record, task.id, false);
+    return false;
+  }
 }
 
 export async function waitForSubagentsBeforeConclusion(record: SubagentJoinRecord, knownTaskIds: Set<string>, requiredTaskIds: Set<string>, abortEpoch: number) {
