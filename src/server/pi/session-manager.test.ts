@@ -57,16 +57,31 @@ test("join does not re-synthesize a child already delivered during the parent tu
   assert.equal(prompts.length, 0);
 });
 
-test("join delivers a known terminal child that was never delivered", async () => {
-  const task = makeTask("completed");
+test("join waits for a child spawned during the current turn", async () => {
+  const task = makeTask("running");
   task.summary = "Late child result.";
+  const prompts: string[] = [];
+  let active = true;
+  const record = makeRecord(task, () => active, async () => {
+    task.status = "completed";
+    active = false;
+  }, prompts, new Set());
+
+  await waitForSubagentsBeforeConclusion(record, new Set(), new Set(), 0);
+
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0], /Late child result/);
+});
+
+test("join does not re-deliver historical terminal children after restart", async () => {
+  const task = makeTask("completed");
+  task.summary = "Historical result.";
   const prompts: string[] = [];
   const record = makeRecord(task, () => false, async () => undefined, prompts, new Set());
 
   await waitForSubagentsBeforeConclusion(record, new Set([task.id]), new Set(), 0);
 
-  assert.equal(prompts.length, 1);
-  assert.match(prompts[0], /Late child result/);
+  assert.equal(prompts.length, 0);
 });
 
 test("a failed result delivery can be claimed again", () => {

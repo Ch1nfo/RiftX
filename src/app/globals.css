@@ -99,6 +99,7 @@ a { color: inherit; text-decoration: none; }
 .subagent-status-dot { width: 16px; height: 16px; display: grid; place-items: center; color: var(--muted); }
 .subagent-status-dot.running { color: var(--accent); }
 .subagent-status-dot.completed { color: var(--accent); }
+.subagent-status-dot.empty { color: var(--muted); }
 .subagent-status-dot.failed, .subagent-status-dot.cancelled, .subagent-status-dot.interrupted { color: var(--danger); }
 .subagent-task-summary { display: -webkit-box; margin: 5px 0 6px 23px; overflow: hidden; color: var(--muted); font-size: 11px; line-height: 1.4; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .subagent-meta { justify-content: space-between; gap: 8px; margin-left: 23px; color: var(--muted-2); font: 10px var(--font-mono); }

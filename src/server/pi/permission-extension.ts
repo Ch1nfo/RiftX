@@ -8,6 +8,8 @@ import type { ScopeDecision } from "@/browser/scope/scope-rules";
 
 const guardedTools = new Set(["bash", "write", "edit", "browser"]);
 const readOnlyBrowserActions = new Set(["snapshot", "console", "requests", "request_detail", "response_body", "identities", "cookies", "cookies_export", "storage", "screenshot", "tabs"]);
+type ResolvedApproval = { approved: boolean; task: boolean; reason?: string };
+const AUTO_APPROVAL_UNAVAILABLE = "Automatic approval is unavailable. Switch approval mode to request approval or full access, then retry.";
 
 function mappingTargetUrl(target: string) {
   const needsBrackets = (target.match(/:/g) ?? []).length > 1 && !target.startsWith("[");
@@ -65,12 +67,13 @@ export function createPermissionExtension(
       let scopeAuthorized = false;
       if (event.toolName === "browser") {
         const action = (event.input as { action?: unknown }).action;
-        if (typeof action === "string" && readOnlyBrowserActions.has(action)) return;
-        // Expanding the browser scope is a human-only decision in every mode:
-        // out-of-scope navigations and host-mapping targets raise a scope
-        // approval whose "allow for this task" grants the host for the rest of
-        // the session. Mapping targets are checked because they are the
-        // physical destinations the proxy actually connects to.
+        if (typeof action === "string" && readOnlyBrowserActions.has(action)) {
+          onEvent({ type: "tool_status", toolName: event.toolName, toolCallId: event.toolCallId, toolStatus: "running" });
+          return;
+        }
+        // Scope expansion follows the selected approval mode just like every
+        // other guarded tool: full access bypasses it, auto delegates it to
+        // the evaluator, and request mode waits for the user.
         if (browserScope && action === "navigate") {
           const url = (event.input as { url?: unknown }).url;
           if (typeof url === "string") {
@@ -82,10 +85,9 @@ export function createPermissionExtension(
                 input: { action: "navigate", url, scopeExpansion: true, suggestedRule: scope.suggestedRule, reason: scope.reason },
                 createdAt: new Date().toISOString()
               };
-              onEvent({ type: "approval_required", approval: scopeRequest });
-              const decision = await gate.waitForApproval(scopeRequest, 120_000, ctx.signal);
+              const decision = await resolveApproval(scopeRequest, gate, evaluate, onEvent, ctx.signal);
               if (!decision.approved) {
-                return { block: true, reason: `Navigation to ${scope.host} is outside the authorized browser scope and the user rejected expanding it. Continue with in-scope targets only.` };
+                return { block: true, reason: decision.reason ?? `Navigation to ${scope.host} is outside the authorized browser scope and the user rejected expanding it. Continue with in-scope targets only.` };
               }
               const identityInput = (event.input as { identity?: unknown }).identity;
               const identity = typeof identityInput === "string" ? identityInput : undefined;
@@ -122,10 +124,9 @@ export function createPermissionExtension(
                 input: { action: "set_host_mappings", mappings, scopeExpansion: true, suggestedRule: violating.map((item) => item.target), reason: "mapping targets are outside the authorized browser scope" },
                 createdAt: new Date().toISOString()
               };
-              onEvent({ type: "approval_required", approval: scopeRequest });
-              const decision = await gate.waitForApproval(scopeRequest, 120_000, ctx.signal);
+              const decision = await resolveApproval(scopeRequest, gate, evaluate, onEvent, ctx.signal);
               if (!decision.approved) {
-                return { block: true, reason: `Host-mapping target(s) ${targets} are outside the authorized browser scope and the user rejected expanding it. Map only authorized destinations.` };
+                return { block: true, reason: decision.reason ?? `Host-mapping target(s) ${targets} are outside the authorized browser scope and the user rejected expanding it. Map only authorized destinations.` };
               }
               // setHostMappings itself does not need the expanded scope. Commit
               // its authorization only after the mutation succeeds.
@@ -153,31 +154,15 @@ export function createPermissionExtension(
         input: event.input,
         createdAt: new Date().toISOString()
       };
-      let allowed = scopeAuthorized || gate.shouldBypass(request);
-      if (!allowed && gate.approvalMode === "auto" && evaluate) {
-        try {
-          const evaluation = await evaluate(request);
-          onEvent({ type: "approval_evaluated", approval: request, evaluation });
-          if (evaluation.approved) allowed = true;
-          else return { block: true, reason: `Rejected by RiftX approval evaluator: ${evaluation.reason}` };
-        } catch (error) {
-          const reason = error instanceof Error ? error.message : "Approval evaluator failed";
-          onEvent({ type: "approval_evaluation_error", approval: request, error: reason });
-          return { block: true, reason: "Blocked because automatic approval could not be evaluated" };
-        }
-      }
-      if (!allowed) {
-        onEvent({ type: "approval_required", approval: request });
-        const decision = await gate.waitForApproval(request, 120_000, ctx.signal);
-        if (!decision.approved) {
-          return { block: true, reason: "Blocked by RiftX safety gate" };
-        }
+      if (!scopeAuthorized) {
+        const decision = await resolveApproval(request, gate, evaluate, onEvent, ctx.signal);
+        if (!decision.approved) return { block: true, reason: decision.reason ?? "Blocked by RiftX safety gate" };
       }
       let release: (() => void) | undefined;
       try {
         if (event.toolName === "bash") {
-          if (!bashConcurrency && !mutationLock) throw new Error("Bash concurrency limiter is required");
-          const bashRelease = bashConcurrency ? await bashConcurrency.acquire(ctx.signal) : undefined;
+          if (!bashConcurrency) throw new Error("Bash concurrency limiter is required");
+          const bashRelease = await bashConcurrency.acquire(ctx.signal);
           let mutationRelease: (() => void) | undefined;
           try {
             mutationRelease = mutationLock ? await mutationLock.acquireShared(ctx.signal) : undefined;
@@ -189,7 +174,6 @@ export function createPermissionExtension(
             mutationRelease?.();
             bashRelease?.();
           };
-          onEvent({ type: "tool_status", toolName: "bash", toolCallId: event.toolCallId, toolStatus: "running" });
         } else release = mutationLock ? await mutationLock.acquire(ctx.signal) : undefined;
         if (release) {
           const onAbort = () => releaseTool(event.toolCallId);
@@ -199,10 +183,37 @@ export function createPermissionExtension(
             cleanupAbort: () => ctx.signal?.removeEventListener("abort", onAbort)
           });
         }
+        onEvent({ type: "tool_status", toolName: event.toolName, toolCallId: event.toolCallId, toolStatus: "running" });
       } catch (error) {
         settleScopeEffect(event.toolCallId, false);
+        releaseTool(event.toolCallId);
         return { block: true, reason: error instanceof Error ? error.message : "Mutation was blocked" };
       }
     });
   };
+}
+
+async function resolveApproval(
+  request: ApprovalRequest,
+  gate: ApprovalGate,
+  evaluate: ((request: ApprovalRequest) => Promise<ApprovalEvaluation>) | undefined,
+  onEvent: (event: Record<string, unknown>) => void,
+  signal?: AbortSignal
+): Promise<ResolvedApproval> {
+  if (gate.shouldBypass(request)) return { approved: true, task: false };
+  if (gate.approvalMode === "full") return { approved: true, task: false };
+  if (gate.approvalMode === "auto") {
+    if (!evaluate) return { approved: false, task: false, reason: AUTO_APPROVAL_UNAVAILABLE };
+    try {
+      const evaluation = await evaluate(request);
+      onEvent({ type: "approval_evaluated", approval: request, evaluation });
+      return { approved: evaluation.approved, task: false, reason: evaluation.approved ? undefined : `Rejected by RiftX approval evaluator: ${evaluation.reason}` };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Approval evaluator failed";
+      onEvent({ type: "approval_evaluation_error", approval: request, error: reason });
+      return { approved: false, task: false, reason: AUTO_APPROVAL_UNAVAILABLE };
+    }
+  }
+  onEvent({ type: "approval_required", approval: request });
+  return gate.waitForApproval(request, 120_000, signal);
 }

@@ -50,12 +50,15 @@ export function finishSubagentResult(record: Pick<SubagentJoinRecord, "delivered
   if (delivered) record.deliveredSubagentResults.add(taskId);
 }
 
-export async function waitForSubagentsBeforeConclusion(record: SubagentJoinRecord, _knownTaskIds: Set<string>, requiredTaskIds: Set<string>, abortEpoch: number) {
+export async function waitForSubagentsBeforeConclusion(record: SubagentJoinRecord, knownTaskIds: Set<string>, requiredTaskIds: Set<string>, abortEpoch: number) {
   const manager = record.subagents;
   if (!manager) return;
   if ((record.abortEpoch ?? 0) !== abortEpoch) return;
   for (const task of manager.list()) {
-    if (!record.deliveredSubagentResults.has(task.id) && terminalSubagent(task)) requiredTaskIds.add(task.id);
+    // Only wait for tasks that were already active before this turn or were
+    // created during it. Historical terminal tasks are already represented in
+    // the transcript and must not be re-injected after a restart.
+    if (!knownTaskIds.has(task.id)) requiredTaskIds.add(task.id);
   }
   const hasUndeliveredTerminal = manager.list().some((task) => requiredTaskIds.has(task.id)
     && !record.deliveredSubagentResults.has(task.id)
@@ -66,7 +69,7 @@ export async function waitForSubagentsBeforeConclusion(record: SubagentJoinRecor
     if ((record.abortEpoch ?? 0) !== abortEpoch) return;
     const tasks = manager.list();
     for (const task of tasks) {
-      if (!record.deliveredSubagentResults.has(task.id) && terminalSubagent(task)) requiredTaskIds.add(task.id);
+      if (!knownTaskIds.has(task.id)) requiredTaskIds.add(task.id);
     }
     const results = tasks.filter((task) => requiredTaskIds.has(task.id)
       && !record.deliveredSubagentResults.has(task.id)

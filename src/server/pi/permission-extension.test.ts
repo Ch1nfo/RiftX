@@ -5,14 +5,16 @@ import { createPermissionExtension, type BrowserScopeGuard } from "./permission-
 import { BashConcurrency } from "./bash-concurrency";
 import { MutationLock } from "./mutation-lock";
 import type { ScopeDecision } from "@/browser/scope/scope-rules";
-import type { RiftxEvent } from "@/lib/types";
+import type { ApprovalRequest, RiftxEvent } from "@/lib/types";
+import type { ApprovalEvaluation } from "./approval-evaluator";
 
 type ToolCallHandler = (event: { toolName: string; toolCallId: string; input: unknown }, ctx: { signal?: AbortSignal }) => Promise<unknown>;
 type ToolExecutionEndHandler = (event: { toolCallId: string; isError: boolean }) => unknown;
 
-function makeHarness(guard?: BrowserScopeGuard, bashConcurrency?: BashConcurrency, mutationLock?: MutationLock) {
-  const gate = new ApprovalGate("request");
+function makeHarness(guard?: BrowserScopeGuard, bashConcurrency?: BashConcurrency, mutationLock?: MutationLock, mode: "request" | "auto" | "full" = "request", evaluate?: (request: ApprovalRequest) => Promise<ApprovalEvaluation>, emit?: (event: Record<string, unknown>) => void) {
+  const gate = new ApprovalGate(mode);
   const events: RiftxEvent[] = [];
+  const onEvent = emit ?? ((event: Record<string, unknown>) => events.push(event as RiftxEvent));
   let toolCallHandler: ToolCallHandler | undefined;
   let toolExecutionEndHandler: ToolExecutionEndHandler | undefined;
   const agent = {
@@ -23,8 +25,8 @@ function makeHarness(guard?: BrowserScopeGuard, bashConcurrency?: BashConcurrenc
   };
   const factory = createPermissionExtension(
     gate,
-    (event) => events.push(event as RiftxEvent),
-    undefined,
+    onEvent,
+    evaluate,
     mutationLock,
     bashConcurrency,
     guard
@@ -88,6 +90,26 @@ test("Bash without a limiter is blocked instead of running without coordination"
   assert.deepEqual(await pending, { block: true, reason: "Bash concurrency limiter is required" });
 });
 
+test("Bash does not treat the shared mutation lock as its concurrency limiter", async () => {
+  const harness = makeHarness(undefined, undefined, new MutationLock());
+  const pending = harness.call({ command: "echo unguarded" }, "bash", "bash-only-mutation-lock");
+  harness.gate.decide("bash-only-mutation-lock", true);
+
+  assert.deepEqual(await pending, { block: true, reason: "Bash concurrency limiter is required" });
+});
+
+test("a tool status listener failure releases Bash and mutation slots", async () => {
+  const bashConcurrency = new BashConcurrency(1);
+  const mutationLock = new MutationLock();
+  const harness = makeHarness(undefined, bashConcurrency, mutationLock, "full", undefined, () => { throw new Error("status listener failed"); });
+  const result = await harness.call({ command: "echo release" }, "bash", "bash-status-listener");
+
+  assert.deepEqual(result, { block: true, reason: "status listener failed" });
+  assert.equal(bashConcurrency.running, 0);
+  const release = await mutationLock.acquire();
+  release();
+});
+
 function scopeGuard(allowedHosts: string[]) {
   const granted: Array<{ url: string; exactPort?: boolean }> = [];
   const authorizedOnce: Array<{ url: string; identity?: string }> = [];
@@ -129,6 +151,92 @@ test("out-of-scope navigation asks for scope approval and grants the host on tas
   harness.end("nav-1");
   assert.deepEqual(scope.granted, [{ url: "http://10.0.0.9:8000/", exactPort: undefined }]);
   assert.deepEqual(scope.revokedOnce, [{ url: "http://10.0.0.9:8000/", identity: undefined }]);
+});
+
+test("full access bypasses both regular and browser-scope approvals", async () => {
+  const scope = scopeGuard(["authorized.test"]);
+  const harness = makeHarness(scope.guard, undefined, undefined, "full");
+  const pending = harness.call({ action: "navigate", url: "http://10.0.0.9:8000/" }, "browser", "full-nav");
+
+  assert.equal(await pending, undefined);
+  assert.equal(harness.gate.pendingRequests().length, 0);
+  assert.equal(harness.events.some((event) => event.type === "approval_required"), false);
+  assert.deepEqual(scope.authorizedOnce, [{ url: "http://10.0.0.9:8000/", identity: undefined }]);
+});
+
+test("full access bypasses every guarded tool without an approval event", async () => {
+  for (const [toolName, input] of [["write", { path: "file.txt", content: "x" }], ["edit", { path: "file.txt", oldText: "x", newText: "y" }]] as const) {
+    const harness = makeHarness(undefined, undefined, undefined, "full");
+    assert.equal(await harness.call(input, toolName, `full-${toolName}`), undefined);
+    assert.equal(harness.gate.pendingRequests().length, 0);
+    assert.equal(harness.events.some((event) => event.type === "approval_required"), false);
+  }
+  const bash = makeHarness(undefined, new BashConcurrency(1), new MutationLock(), "full");
+  assert.equal(await bash.call({ command: "echo full" }, "bash", "full-bash"), undefined);
+  assert.equal(bash.gate.pendingRequests().length, 0);
+  assert.equal(bash.events.some((event) => event.type === "approval_required"), false);
+  bash.end("full-bash");
+});
+
+test("full access bypasses out-of-scope host mapping approval", async () => {
+  const scope = scopeGuard(["authorized.test"]);
+  const harness = makeHarness(scope.guard, undefined, undefined, "full");
+  const pending = harness.call({ action: "set_host_mappings", mappings: { "vhost.authorized.test": "10.0.0.9:8000" } }, "browser", "full-map");
+
+  assert.equal(await pending, undefined);
+  assert.equal(harness.gate.pendingRequests().length, 0);
+  assert.equal(harness.events.some((event) => event.type === "approval_required"), false);
+  harness.end("full-map");
+  assert.equal(scope.mappingsOnce, 1);
+});
+
+test("auto approval evaluates browser scope expansion without human approval", async () => {
+  const scope = scopeGuard(["authorized.test"]);
+  const evaluations: ApprovalRequest[] = [];
+  const harness = makeHarness(scope.guard, undefined, undefined, "auto", async (request) => {
+    evaluations.push(request);
+    return { approved: true, reason: "approved by test evaluator" };
+  });
+  const pending = harness.call({ action: "navigate", url: "http://10.0.0.9/" }, "browser", "auto-nav");
+
+  assert.equal(await pending, undefined);
+  assert.equal(harness.gate.pendingRequests().length, 0);
+  assert.equal(harness.events.some((event) => event.type === "approval_required"), false);
+  assert.equal(evaluations.length, 1, "the scope evaluator authorizes the complete out-of-scope navigation call");
+});
+
+test("auto approval blocks when its evaluator rejects scope expansion", async () => {
+  const scope = scopeGuard(["authorized.test"]);
+  const harness = makeHarness(scope.guard, undefined, undefined, "auto", async () => ({ approved: false, reason: "outside test scope" }));
+  const result = await harness.call({ action: "navigate", url: "http://10.0.0.9/" }, "browser", "auto-reject");
+
+  assert.deepEqual(result, { block: true, reason: "Rejected by RiftX approval evaluator: outside test scope" });
+  assert.equal(harness.gate.pendingRequests().length, 0);
+  assert.equal(harness.events.some((event) => event.type === "approval_required"), false);
+});
+
+test("auto approval explains how to recover when its evaluator is unavailable", async () => {
+  const harness = makeHarness(undefined, undefined, undefined, "auto");
+  const result = await harness.call({ path: "file.txt", content: "x" }, "write", "auto-no-evaluator");
+
+  assert.deepEqual(result, {
+    block: true,
+    reason: "Automatic approval is unavailable. Switch approval mode to request approval or full access, then retry."
+  });
+  assert.equal(harness.gate.pendingRequests().length, 0);
+  assert.equal(harness.events.some((event) => event.type === "approval_required"), false);
+});
+
+test("auto approval evaluates host mapping scope without human approval", async () => {
+  const scope = scopeGuard(["authorized.test"]);
+  const harness = makeHarness(scope.guard, undefined, undefined, "auto", async () => ({ approved: true, reason: "approved by test evaluator" }));
+  const pending = harness.call({ action: "set_host_mappings", mappings: { "vhost.authorized.test": "10.0.0.9:8000" } }, "browser", "auto-map");
+
+  assert.equal(await pending, undefined);
+  assert.equal(harness.gate.pendingRequests().length, 0);
+  assert.equal(harness.events.some((event) => event.type === "approval_required"), false);
+  harness.end("auto-map");
+  assert.equal(scope.mappingsOnce, 1);
 });
 
 test("out-of-scope navigation uses a one-shot authorization on once approval", async () => {

@@ -140,7 +140,10 @@ function eventPayload(event: AgentSessionEvent): RiftxEvent {
     const assistant = base.assistantMessageEvent as Record<string, unknown> | undefined;
     return { type: assistant?.type === "text_delta" ? "text_delta" : assistant?.type === "thinking_delta" ? "thinking_delta" : "message", delta: assistant?.delta ?? "" };
   }
-  if (event.type === "tool_execution_start") return { type: "tool_start", toolName: base.toolName, toolCallId: base.toolCallId, args: base.args, toolStatus: base.toolName === "bash" ? "queued" : "running" } as RiftxEvent;
+  if (event.type === "tool_execution_start") {
+    const guarded = ["bash", "write", "edit", "browser"].includes(String(base.toolName));
+    return { type: "tool_start", toolName: base.toolName, toolCallId: base.toolCallId, args: base.args, toolStatus: guarded ? "queued" : "running" } as RiftxEvent;
+  }
   if (event.type === "tool_execution_update") {
     // The runtime's AgentToolUpdateCallback payload is exposed as `partialResult`.
     // Reading the old `update` name turns every streamed tool update into
@@ -321,7 +324,7 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
   if (runtimeAgent) {
     runtimeAgent.toolExecution = "parallel";
     for (const tool of runtimeAgent.state?.tools ?? []) {
-      if (["bash", "write", "edit", "browser"].includes(tool.name)) tool.executionMode = "sequential";
+      if (["write", "edit", "browser"].includes(tool.name)) tool.executionMode = "sequential";
       if (tool.name === "spawn_subagent") tool.executionMode = "parallel";
     }
   }
