@@ -7,12 +7,24 @@ import { chromium, type Browser, type BrowserContext } from "playwright";
  */
 export class ContextManager {
   private browser?: Browser;
+  private browserPromise?: Promise<Browser>;
   private defaultUA?: string;
   private readonly contexts = new Map<string, BrowserContext>();
+  private readonly contextPromises = new Map<string, Promise<BrowserContext>>();
 
   private async ensureBrowser() {
-    if (!this.browser) this.browser = await chromium.launch({ headless: true });
-    return this.browser;
+    if (this.browser) return this.browser;
+    if (!this.browserPromise) {
+      const launch = chromium.launch({ headless: true });
+      this.browserPromise = launch.then((browser) => {
+        this.browser = browser;
+        return browser;
+      }).catch((error) => {
+        this.browserPromise = undefined;
+        throw error;
+      });
+    }
+    return this.browserPromise;
   }
 
   /** The browser's stock User-Agent, used to restore pages after an override is cleared. */
@@ -32,21 +44,36 @@ export class ContextManager {
   async getContext(identity: string, options?: { ignoreHTTPSErrors?: boolean; proxyUrl?: string }): Promise<BrowserContext> {
     const existing = this.contexts.get(identity);
     if (existing) return existing;
-    const browser = await this.ensureBrowser();
-    const context = await browser.newContext({
+    const pending = this.contextPromises.get(identity);
+    if (pending) return pending;
+    const creation = this.ensureBrowser().then((browser) => browser.newContext({
       serviceWorkers: "block",
       ignoreHTTPSErrors: options?.ignoreHTTPSErrors ?? true,
       ...(options?.proxyUrl ? { proxy: { server: options.proxyUrl } } : {})
+    })).then(async (context) => {
+      if (this.contextPromises.get(identity) !== creation) {
+        await context.close().catch(() => undefined);
+        throw new Error("Browser context was closed during initialization");
+      }
+      this.contextPromises.delete(identity);
+      this.contexts.set(identity, context);
+      return context;
+    }).catch((error) => {
+      if (this.contextPromises.get(identity) === creation) this.contextPromises.delete(identity);
+      throw error;
     });
-    this.contexts.set(identity, context);
-    return context;
+    this.contextPromises.set(identity, creation);
+    return creation;
   }
 
   async close() {
     const contexts = [...this.contexts.values()];
     this.contexts.clear();
+    this.contextPromises.clear();
     await Promise.all(contexts.map((context) => context.close().catch(() => undefined)));
-    await this.browser?.close().catch(() => undefined);
+    const browser = this.browser ?? await this.browserPromise?.catch(() => undefined);
+    await browser?.close().catch(() => undefined);
+    this.browserPromise = undefined;
     this.browser = undefined;
   }
 }

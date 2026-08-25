@@ -91,13 +91,13 @@ export function SettingsPage() {
   const addProfile = () => {
     const id = `profile-${Date.now()}`;
     const next = { ...profile, id, name: t("newModelProfile"), apiKey: "" };
-    setConfig({ ...config, profiles: [...config.profiles, next], activeProfileId: id });
+    setConfig({ ...config, profiles: [...config.profiles, next] });
     setSelected(id);
   };
   const removeProfile = () => {
     if (config.profiles.length < 2) return;
     const next = config.profiles.filter((item) => item.id !== profile.id);
-    setConfig({ ...config, profiles: next, activeProfileId: next[0].id });
+    setConfig({ ...config, profiles: next, activeProfileId: config.activeProfileId === profile.id ? next[0].id : config.activeProfileId });
     setSelected(next[0].id);
   };
   const deleteArchived = async (session: SessionSummary) => {

@@ -3,6 +3,7 @@ import { SUBAGENT_AGGRESSIVENESS, type ModelProfile, type SubagentAggressiveness
 import { setActiveProfile, setMaxConcurrentSubagents } from "@/server/pi/session-manager";
 import { parseScopeRule } from "@/browser/scope/scope-rules";
 import { errorStatus } from "@/server/errors";
+import { isJsonObject } from "@/lib/api-validation";
 
 export const runtime = "nodejs";
 
@@ -45,7 +46,7 @@ function profileValidationError(profile: Partial<ModelProfile>): string | null {
 }
 
 export async function PUT(request: Request) {
-  const body = (await request.json()) as Partial<{
+  let body: Partial<{
     profiles: ModelProfile[];
     activeProfileId: string;
     sessionId: string;
@@ -58,6 +59,13 @@ export async function PUT(request: Request) {
     browserScope: string[];
     browserIgnoreTlsErrors: boolean;
   }>;
+  try {
+    const parsed = await request.json();
+    if (!isJsonObject(parsed)) return Response.json({ error: "JSON body must be an object" }, { status: 400 });
+    body = parsed as typeof body;
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
   const current = await readConfig();
   // Reject invalid scope rules up front: silently dropping them would leave
   // the manager with an empty rule set that behaves like "no scope configured".
@@ -71,41 +79,56 @@ export async function PUT(request: Request) {
   const duplicateIds = incoming.map((profile) => profile.id).filter((id, index, all) => all.indexOf(id) !== index);
   if (duplicateIds.length) return Response.json({ error: `Duplicate profile ids: ${[...new Set(duplicateIds)].join(", ")}` }, { status: 400 });
   const requestedMax = Number(body.maxConcurrentSubagents);
-  const maxConcurrentSubagents = body.maxConcurrentSubagents === undefined || !Number.isFinite(requestedMax)
-    ? current.maxConcurrentSubagents
-    : Math.min(8, Math.max(1, Math.round(requestedMax)));
   const subagentAggressiveness = SUBAGENT_AGGRESSIVENESS.includes(body.subagentAggressiveness as SubagentAggressiveness)
     ? body.subagentAggressiveness as SubagentAggressiveness
     : current.subagentAggressiveness;
-  const profiles = incoming.map((profile) => ({
-    ...profile,
-    apiKey: profile.apiKey && profile.apiKey !== "••••••••" ? profile.apiKey : current.profiles.find((item) => item.id === profile.id)?.apiKey
-  }));
-  const activeProfileId = body.activeProfileId ?? current.activeProfileId;
-  const activeProfile = profiles.find((profile) => profile.id === activeProfileId);
-  if (!activeProfile) return Response.json({ error: "Model profile not found" }, { status: 400 });
   // Persist FIRST in a single atomic write, then switch the live session. If
   // the disk write fails, the live session was never touched; if the switch
   // then fails, only the stored default changed (a recoverable state) and the
   // caller gets an explicit error — a failed request can never leave the UI,
   // config, and live session in three different states.
-  const finalConfig = await updateConfig({
-    profiles,
-    activeProfileId,
-    childProfileId: body.childProfileId === undefined ? current.childProfileId : body.childProfileId,
-    childInherit: body.childInherit === undefined ? current.childInherit : body.childInherit,
-    maxConcurrentSubagents,
-    subagentAggressiveness,
-    systemPromptEnabled: body.systemPromptEnabled === undefined ? current.systemPromptEnabled : body.systemPromptEnabled === true,
-    systemPrompt: typeof body.systemPrompt === "string" ? body.systemPrompt : current.systemPrompt,
-    browserScope: Array.isArray(body.browserScope) ? body.browserScope.filter((rule): rule is string => typeof rule === "string" && Boolean(rule.trim())) : current.browserScope,
-    browserIgnoreTlsErrors: body.browserIgnoreTlsErrors === undefined ? current.browserIgnoreTlsErrors : body.browserIgnoreTlsErrors === true
-  });
+  let finalConfig;
+  try {
+    finalConfig = await updateConfig((latest) => {
+      const latestIncoming = Array.isArray(body.profiles) ? body.profiles : latest.profiles;
+      const profiles = latestIncoming.map((profile) => ({
+        ...profile,
+        ...(profile.apiKey === undefined || profile.apiKey === "••••••••"
+          ? (() => {
+              const previousKey = latest.profiles.find((item) => item.id === profile.id)?.apiKey;
+              return previousKey ? { apiKey: previousKey } : {};
+            })()
+          : profile.apiKey ? { apiKey: profile.apiKey } : {})
+      }));
+      const activeProfileId = body.activeProfileId ?? latest.activeProfileId;
+      if (!profiles.some((profile) => profile.id === activeProfileId)) throw new Error("Model profile not found");
+      const latestMax = body.maxConcurrentSubagents === undefined || !Number.isFinite(requestedMax)
+        ? latest.maxConcurrentSubagents
+        : Math.min(8, Math.max(1, Math.round(requestedMax)));
+      return {
+        profiles,
+        activeProfileId,
+        childProfileId: body.childProfileId === undefined ? latest.childProfileId : body.childProfileId,
+        childInherit: body.childInherit === undefined ? latest.childInherit : body.childInherit,
+        maxConcurrentSubagents: latestMax,
+        subagentAggressiveness: SUBAGENT_AGGRESSIVENESS.includes(body.subagentAggressiveness as SubagentAggressiveness) ? body.subagentAggressiveness as SubagentAggressiveness : latest.subagentAggressiveness,
+        systemPromptEnabled: body.systemPromptEnabled === undefined ? latest.systemPromptEnabled : body.systemPromptEnabled === true,
+        systemPrompt: typeof body.systemPrompt === "string" ? body.systemPrompt : latest.systemPrompt,
+        browserScope: Array.isArray(body.browserScope) ? body.browserScope.filter((rule): rule is string => typeof rule === "string" && Boolean(rule.trim())) : latest.browserScope,
+        browserIgnoreTlsErrors: body.browserIgnoreTlsErrors === undefined ? latest.browserIgnoreTlsErrors : body.browserIgnoreTlsErrors === true
+      };
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === "Model profile not found") return Response.json({ error: error.message }, { status: 400 });
+    throw error;
+  }
   // Switching is an explicit per-session operation (composer sends sessionId)
   // and is decided against the target session's current profile, so a request
   // can never report success without actually switching.
   if (typeof body.sessionId === "string" && body.sessionId) {
     try {
+      const activeProfile = finalConfig.profiles.find((profile) => profile.id === finalConfig.activeProfileId);
+      if (!activeProfile) throw new Error("Model profile not found");
       await setActiveProfile(activeProfile, body.sessionId);
     } catch (error) {
       return Response.json({ error: error instanceof Error ? error.message : "Model switch failed" }, { status: errorStatus(error, 400) });

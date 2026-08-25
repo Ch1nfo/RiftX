@@ -5,12 +5,14 @@ function trimLogContent(content: string) {
 }
 
 export function sameSubagentTask(left: SubagentTask, right: SubagentTask) {
-  const leftLog = left.logs.at(-1);
-  const rightLog = right.logs.at(-1);
+  const logsEqual = left.logs.length === right.logs.length && left.logs.every((log, index) => {
+    const other = right.logs[index];
+    return log.id === other?.id && log.type === other.type && log.content === other.content
+      && log.toolName === other.toolName && log.status === other.status && log.createdAt === other.createdAt;
+  });
   return left.name === right.name && left.status === right.status && left.threadId === right.threadId
     && left.model === right.model && left.summary === right.summary && left.error === right.error
-    && left.pendingApprovalCount === right.pendingApprovalCount && left.logs.length === right.logs.length
-    && leftLog?.content === rightLog?.content && leftLog?.status === rightLog?.status;
+    && left.pendingApprovalCount === right.pendingApprovalCount && logsEqual;
 }
 
 export function cloneSubagentTask(task: SubagentTask): SubagentTask {

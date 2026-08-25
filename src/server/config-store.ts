@@ -57,7 +57,7 @@ export function getAppPaths() {
   return { root: ROOT, config: CONFIG_PATH, sessions: SESSION_PATH, agent: AGENT_PATH, subagents: SUBAGENT_PATH, evidence: EVIDENCE_PATH, skills: SKILLS_PATH };
 }
 
-export async function readConfig(): Promise<AppConfig> {
+export async function readConfig(repair = true): Promise<AppConfig> {
   await ensureAppDirs();
   // readJsonStore treats ENOENT and unparsable files (backed up as
   // .corrupt-*) as no data; other I/O errors surface.
@@ -82,7 +82,9 @@ export async function readConfig(): Promise<AppConfig> {
     browserScope: Array.isArray(parsed.browserScope) ? parsed.browserScope.filter((rule): rule is string => typeof rule === "string" && Boolean(rule.trim())) : [],
     browserIgnoreTlsErrors: parsed.browserIgnoreTlsErrors !== false
   };
-  if (parsed && (!Array.isArray(parsed.profiles) || !parsed.profiles.length)) await writeConfig(config);
+  if (repair && parsed && (!Array.isArray(parsed.profiles) || !parsed.profiles.length)) {
+    await enqueueConfigWrite(() => writeConfig(config));
+  }
   return config;
 }
 
@@ -91,12 +93,20 @@ async function writeConfig(config: AppConfig) {
   await writeJsonStoreAtomic(CONFIG_PATH, config);
 }
 
-export async function updateConfig(patch: Partial<AppConfig>) {
-  const result = configWriteChain.then(async () => {
-    const next = { ...(await readConfig()), ...patch };
+export type ConfigPatch = Partial<AppConfig> | ((current: AppConfig) => Partial<AppConfig> | Promise<Partial<AppConfig>>);
+
+function enqueueConfigWrite<T>(operation: () => Promise<T>) {
+  const result = configWriteChain.then(operation);
+  configWriteChain = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+export async function updateConfig(patch: ConfigPatch) {
+  return enqueueConfigWrite(async () => {
+    const current = await readConfig(false);
+    const resolvedPatch = typeof patch === "function" ? await patch(current) : patch;
+    const next = { ...current, ...resolvedPatch };
     await writeConfig(next);
     return next;
   });
-  configWriteChain = result.then(() => undefined, () => undefined);
-  return result;
 }

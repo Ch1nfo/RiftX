@@ -39,7 +39,7 @@ import { abortSessionRecord, shutdownSessionRecord } from "./session-shutdown";
 import { switchSessionProfile, withProfileSwitchLock } from "./apply-session-profile";
 import { registerTrackedProfile, registerProfileModel, restoreProviderRegistration, type ProviderRegistrations } from "./model-registration";
 import { extractLastAssistantResult } from "./subagent-result";
-import { claimSubagentResult, finishSubagentResult, formatSubagentTerminalMessage } from "./session-join";
+import { claimSubagentResult, enqueueSessionAction, finishSubagentResult, formatSubagentTerminalMessage } from "./session-join";
 
 type SessionRecord = {
   id: string;
@@ -66,6 +66,8 @@ type SessionRecord = {
   aborting?: boolean;
   abortEpoch?: number;
   waitingForSubagents?: boolean;
+  promptChain?: Promise<void>;
+  subagentDeliveryInProgress?: boolean;
   deliveredSubagentResults: Set<string>;
   deliveringSubagentResults: Set<string>;
   skills: SkillDescriptor[];
@@ -106,8 +108,6 @@ const sessions = globalThis.__riftxSessions ?? (globalThis.__riftxSessions = new
 const sessionCreation = globalThis.__riftxSessionCreation ?? (globalThis.__riftxSessionCreation = new Map<string, Promise<SessionRecord>>());
 
 type RuntimeDeps = {
-  authStorage: AuthStorage;
-  modelRegistry: ModelRegistry;
   evidenceStore: EvidenceStore;
   evidenceSessionId: string;
 };
@@ -116,12 +116,15 @@ type FindingSourceInfo = { source: FindingSource; subagentId?: string };
 
 type ToolEvidenceSnapshot = { toolCallId: string; toolName: string; content: string };
 
+function textFromContent(content: unknown) {
+  return Array.isArray(content)
+    ? content.map((part: unknown) => typeof part === "string" ? part : part && typeof part === "object" && "text" in part ? String((part as { text?: unknown }).text ?? "") : "").join("")
+    : String(content ?? "");
+}
+
 function resolveToolEvidence(session: AgentSession | undefined, requestedId: string): ToolEvidenceSnapshot | undefined {
   if (!session) return undefined;
   const messages = session.messages as unknown as Array<{ role?: string; content?: unknown; toolCallId?: string }>;
-  const textFromContent = (content: unknown) => Array.isArray(content)
-    ? content.map((part: unknown) => typeof part === "string" ? part : part && typeof part === "object" && "text" in part ? String((part as { text?: unknown }).text ?? "") : "").join("")
-    : String(content ?? "");
   const calls = messages.flatMap((message) => {
     const parts = Array.isArray(message.content) ? message.content : [];
     return parts.filter((part): part is { type?: string; id?: string; name?: string } => Boolean(part && typeof part === "object" && (part as { type?: string }).type === "toolCall"))
@@ -225,10 +228,10 @@ function createSubagentTool(manager: SubagentManager, getChildProfile: () => Mod
 async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: ApprovalGate, child = false, sessionManagerOverride?: AgentSessionManager, mutationLock = new MutationLock(), bashConcurrencyOverride?: BashConcurrency, runtimeDeps?: RuntimeDeps, findingSource: FindingSourceInfo = { source: "main" }) {
   const paths = getAppPaths();
   await mkdir(paths.agent, { recursive: true, mode: 0o700 });
-  const authStorage = runtimeDeps?.authStorage ?? AuthStorage.create(join(paths.agent, "auth.json"));
-  const modelRegistry = runtimeDeps?.modelRegistry ?? ModelRegistry.create(authStorage, join(paths.agent, "models.json"));
+  const authStorage = AuthStorage.create(join(paths.agent, "auth.json"));
+  const modelRegistry = ModelRegistry.create(authStorage, join(paths.agent, "models.json"));
   const providerRegistrations: ProviderRegistrations = new Map();
-  const model = registerTrackedProfile(providerRegistrations, authStorage, modelRegistry, profile, !runtimeDeps);
+  const model = registerTrackedProfile(providerRegistrations, authStorage, modelRegistry, profile, true);
 
   const config = await readConfig();
   const bashConcurrency = bashConcurrencyOverride ?? new BashConcurrency(config.maxConcurrentSubagents + 1);
@@ -259,7 +262,6 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
   const childProfile = config.childInherit ? profile : config.profiles.find((item) => item.id === config.childProfileId) ?? profile;
   // Keep title work on the configured child profile when available so it does
   // not consume the main Agent's provider quota during a live turn.
-  const titleModel = registerTrackedProfile(providerRegistrations, authStorage, modelRegistry, childProfile);
   const settingsManager = SettingsManager.create(cwd, paths.agent);
   settingsManager.setTransport(profile.transport);
   const sessionManager = sessionManagerOverride ?? AgentSessionManager.create(cwd, child ? join(paths.subagents, "runtime") : paths.sessions);
@@ -282,12 +284,15 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
   );
   const evidenceStore = runtimeDeps?.evidenceStore ?? getEvidenceStore(evidenceSessionId, paths.evidence, (event) => emitter.emit("event", event));
   const subagentNameGenerator = !child ? async (task: string) => {
-    return generateSessionTitle(modelRegistry, titleModel, task, "empty");
+    const titleAuthStorage = AuthStorage.inMemory();
+    const titleModelRegistry = ModelRegistry.inMemory(titleAuthStorage);
+    const titleModel = registerProfileModel(titleAuthStorage, titleModelRegistry, childProfile, true);
+    return generateSessionTitle(titleModelRegistry, titleModel, task, "empty");
   } : undefined;
   const subagents = !child ? new SubagentManager(sessionManager.getSessionId(), paths.subagents, (event) => emitter.emit("event", event), config.maxConcurrentSubagents, config.approvalMode, subagentNameGenerator) : undefined;
   const getChildProfile = () => config.childInherit ? (record?.profile ?? profile) : childProfile;
   let evidenceSession: AgentSession | undefined;
-  const customTools = [createTimedBashTool(cwd, { commandPrefix: settingsManager.getShellCommandPrefix(), shellPath: settingsManager.getShellPath() }) as unknown as ToolDefinition, createFindingTool(evidenceStore, findingSource, browser, () => evidenceSession), ...(subagents ? [createSubagentTool(subagents, getChildProfile, cwd, mutationLock, bashConcurrency, { authStorage, modelRegistry, evidenceStore, evidenceSessionId })] : [])];
+  const customTools = [createTimedBashTool(cwd, { commandPrefix: settingsManager.getShellCommandPrefix(), shellPath: settingsManager.getShellPath() }) as unknown as ToolDefinition, createFindingTool(evidenceStore, findingSource, browser, () => evidenceSession), ...(subagents ? [createSubagentTool(subagents, getChildProfile, cwd, mutationLock, bashConcurrency, { evidenceStore, evidenceSessionId })] : [])];
   const browserExtension = createBrowserExtension({ evidenceRoot: paths.evidence, evidenceSessionId }, browser);
   const resourceLoader = new DefaultResourceLoader({
     cwd,
@@ -358,8 +363,8 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
     unsubscribe: () => undefined
   };
   const unsubscribe = result.session.subscribe((event) => {
-    if (event.type === "agent_end" && subagents?.hasActiveTasks()) record.waitingForSubagents = true;
-    const payload = event.type === "agent_end" && subagents?.hasActiveTasks()
+    if (event.type === "agent_end" && subagents?.hasActiveTasks() && !record.subagentDeliveryInProgress) record.waitingForSubagents = true;
+    const payload = event.type === "agent_end" && subagents?.hasActiveTasks() && !record.subagentDeliveryInProgress
       ? { type: "session_state", state: "waiting_for_subagents" }
       : eventPayload(event);
     trackToolStatus(payload as RiftxEvent);
@@ -372,21 +377,26 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
   record.unsubscribe = unsubscribe;
   if (subagents) {
     subagents.setCompletionHandler((task, childResult) => {
-      if (!shouldDeliverSubagentCompletion(record)) return;
-      if (!claimSubagentResult(record, task.id)) return;
-      const message = formatSubagentTerminalMessage(task, childResult.summary);
-      if (record.session.isStreaming) {
-        void record.session.steer(message)
-          .then(() => finishSubagentResult(record, task.id, true))
-          .catch(() => finishSubagentResult(record, task.id, false));
-        return;
-      }
-      record.gate.beginTask();
-      void record.session.prompt(message)
-        .then(() => finishSubagentResult(record, task.id, true))
-        .catch(() => finishSubagentResult(record, task.id, false));
+      void enqueueSessionAction(record, async () => {
+        if (!shouldDeliverSubagentCompletion(record)) return;
+        if (!claimSubagentResult(record, task.id)) return;
+        const message = formatSubagentTerminalMessage(task, childResult.summary);
+        record.subagentDeliveryInProgress = true;
+        try {
+          if (record.session.isStreaming) await record.session.steer(message);
+          else {
+            record.gate.beginTask();
+            await record.session.prompt(message);
+          }
+          finishSubagentResult(record, task.id, true);
+        } catch {
+          finishSubagentResult(record, task.id, false);
+        } finally {
+          record.subagentDeliveryInProgress = false;
+        }
+      }).catch(() => undefined);
     });
-    await subagents.initialize((context) => runChildSession(getChildProfile(), cwd, mutationLock, bashConcurrency, context, { authStorage, modelRegistry, evidenceStore, evidenceSessionId }));
+    await subagents.initialize((context) => runChildSession(getChildProfile(), cwd, mutationLock, bashConcurrency, context, { evidenceStore, evidenceSessionId }));
   }
   return record;
 }
@@ -655,24 +665,27 @@ async function promptSession(id: string, text: string, mode: "prompt" | "steer" 
   const promptAbortEpoch = record.abortEpoch ?? 0;
   const knownTaskIds = new Set(record.subagents?.list().map((task) => task.id) ?? []);
   const activeBefore = new Set(record.subagents?.list().filter((task) => task.status === "queued" || task.status === "running").map((task) => task.id) ?? []);
-  if (resolvedMode !== "steer") record.gate.beginTask();
   let skillInjected = false;
   try {
-    if (resolvedMode === "steer") await record.session.steer(prepared.prompt);
-    else if (resolvedMode === "followUp") {
-      if (prepared.skillContext) {
-        await record.session.sendCustomMessage({ customType: "riftx_skill_context", content: prepared.skillContext, display: false }, { deliverAs: "followUp" });
-        skillInjected = true;
+    await enqueueSessionAction(record, async () => {
+      if (resolvedMode === "steer") await record.session.steer(prepared.prompt);
+      else if (resolvedMode === "followUp") {
+        record.gate.beginTask();
+        if (prepared.skillContext) {
+          await record.session.sendCustomMessage({ customType: "riftx_skill_context", content: prepared.skillContext, display: false }, { deliverAs: "followUp" });
+          skillInjected = true;
+        }
+        await record.session.followUp(text);
       }
-      await record.session.followUp(text);
-    }
-    else {
-      if (prepared.skillContext) {
-        await record.session.sendCustomMessage({ customType: "riftx_skill_context", content: prepared.skillContext, display: false });
-        skillInjected = true;
+      else {
+        record.gate.beginTask();
+        if (prepared.skillContext) {
+          await record.session.sendCustomMessage({ customType: "riftx_skill_context", content: prepared.skillContext, display: false });
+          skillInjected = true;
+        }
+        await record.session.prompt(text);
       }
-      await record.session.prompt(text);
-    }
+    });
   } catch (error) {
     if (!skillInjected) prepared.loaded.forEach((name) => record.loadedSkills.delete(name));
     throw error;
@@ -689,12 +702,14 @@ export async function summarizeSessionTitle(id: string, task: string) {
   const titleProfile = existingConfig.childInherit
     ? record.profile
     : existingConfig.profiles.find((item) => item.id === existingConfig.childProfileId) ?? record.profile;
-  const titleModel = await withProfileSwitchLock(record, "wait", async () => registerTrackedProfile(record.providerRegistrations, record.authStorage, record.modelRegistry, titleProfile));
-  const title = await generateSessionTitle(record.modelRegistry, titleModel, task);
+  const titleAuthStorage = AuthStorage.inMemory();
+  const titleModelRegistry = ModelRegistry.inMemory(titleAuthStorage);
+  const titleModel = registerProfileModel(titleAuthStorage, titleModelRegistry, titleProfile, true);
+  const title = await generateSessionTitle(titleModelRegistry, titleModel, task);
   const config = await readConfig();
   const latestTitle = config.sessionTitles[id]?.trim();
   if (latestTitle) return { title: latestTitle, sessions: (await listSessions()).filter((session) => !session.archived) };
-  await updateConfig({ sessionTitles: { ...config.sessionTitles, [id]: title } });
+  await updateConfig((current) => ({ sessionTitles: { ...current.sessionTitles, [id]: title } }));
   return { title, sessions: (await listSessions()).filter((session) => !session.archived) };
 }
 
@@ -817,10 +832,6 @@ export async function getSessionMessages(id: string) {
   const record = await getOrCreateSession(id);
   const messages: Array<{ id: string; role: "user" | "assistant" | "thinking" | "tool"; content: string; toolName?: string; toolCallId?: string; status?: "queued" | "running" | "done" | "error"; isError?: boolean }> = [];
   const toolIndexes = new Map<string, number>();
-  const textFromContent = (content: unknown) => Array.isArray(content)
-    ? content.map((part: unknown) => typeof part === "string" ? part : part && typeof part === "object" && "text" in part ? String((part as { text?: unknown }).text ?? "") : "").join("")
-    : String(content ?? "");
-
   const entries = record.sessionManager.getBranch();
   entries.forEach((entry, messageIndex) => {
     if (entry.type !== "message") return;
@@ -920,7 +931,10 @@ export async function archiveSession(id: string) {
       firstMessage: summary.firstMessage,
       updatedAt: summary.updatedAt
     };
-    await updateConfig({ archivedSessionIds: [...config.archivedSessionIds, id], archivedSessions: [...config.archivedSessions.filter((item) => item.id !== id), metadata] });
+    await updateConfig((current) => current.archivedSessionIds.includes(id) ? {} : {
+      archivedSessionIds: [...current.archivedSessionIds, id],
+      archivedSessions: [...current.archivedSessions.filter((item) => item.id !== id), metadata]
+    });
   }
   const record = sessions.get(id);
   if (record) {
@@ -955,8 +969,14 @@ export async function deleteArchivedSession(id: string) {
   if (subagentRelative && !subagentRelative.startsWith("..") && !isAbsolute(subagentRelative)) {
     await rm(subagentPath, { recursive: true, force: true });
   }
-  const { [id]: _removedTitle, ...sessionTitles } = config.sessionTitles;
-  await updateConfig({ archivedSessionIds: config.archivedSessionIds.filter((item) => item !== id), archivedSessions: config.archivedSessions.filter((item) => item.id !== id), sessionTitles });
+  await updateConfig((current) => {
+    const { [id]: _removedTitle, ...sessionTitles } = current.sessionTitles;
+    return {
+      archivedSessionIds: current.archivedSessionIds.filter((item) => item !== id),
+      archivedSessions: current.archivedSessions.filter((item) => item.id !== id),
+      sessionTitles
+    };
+  });
   return listSessions();
 }
 

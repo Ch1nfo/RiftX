@@ -4,6 +4,10 @@ export function requiredText(value: unknown, error: string) {
   return typeof value === "string" && value.trim() ? null : error;
 }
 
+export function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
 export function validateApprovalMode(value: unknown): value is ApprovalMode {
   return typeof value === "string" && APPROVAL_MODES.includes(value as ApprovalMode);
 }

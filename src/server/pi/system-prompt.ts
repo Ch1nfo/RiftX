@@ -52,7 +52,7 @@ Label every result as:
 - confirmed: independently reproduced and impact validated
 - likely: highly probable, but evidence is incomplete
 - suspected: an initial signal requiring further validation
-- not reproducible: previously observed but not reproduced now
+- not_reproducible: previously observed but not reproduced now
 
 For a completed assessment, report:
 
@@ -106,7 +106,7 @@ Report conclusions using:
 - confirmed
 - likely
 - suspected
-- not reproducible
+- not_reproducible
 
 Always finish the delegated task with a concise plain-text final summary for the parent Agent, even when no issue is found or the result is not reproducible. Do not stop immediately after a tool call. State what you checked, the outcome, and the key evidence or limitation. This final text is required for task completion.`;
   return `${basePrompt}\n\n${SKILL_POLICY}\n\n## Session Findings\nWhen a conclusion has concrete, reviewable evidence, use \`record_finding\` to save it to the parent session. Include the affected asset, confidence, a short impact and reproduction note, and minimum quote, tool-call, browser request, or screenshot evidence. Do not record findings to fill a quota; incomplete validation may use likely or suspected.`;

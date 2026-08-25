@@ -14,9 +14,19 @@ export type SubagentJoinRecord = {
   waitingForSubagents?: boolean;
   deliveredSubagentResults: Set<string>;
   deliveringSubagentResults?: Set<string>;
+  promptChain?: Promise<void>;
+  subagentDeliveryInProgress?: boolean;
   gate: { beginTask(): void };
   session: { prompt(message: string): Promise<void> };
 };
+
+/** Serialize SDK prompt-like calls; AgentSession rejects overlapping runs. */
+export function enqueueSessionAction(record: Pick<SubagentJoinRecord, "promptChain">, action: () => Promise<void>) {
+  const previous = record.promptChain ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(action);
+  record.promptChain = next.catch(() => undefined);
+  return next;
+}
 
 function terminalSubagent(task: SubagentTask) {
   return task.status === "completed" || task.status === "empty" || task.status === "failed" || task.status === "cancelled" || task.status === "interrupted";
@@ -79,13 +89,18 @@ export async function waitForSubagentsBeforeConclusion(record: SubagentJoinRecor
       const message = results.map((task) => formatSubagentTerminalMessage(task, task.summary)).join("\n\n");
       for (const task of results) claimSubagentResult(record, task.id);
       record.waitingForSubagents = false;
-      record.gate.beginTask();
       try {
-        await record.session.prompt(`${message}\n\nAll delegated child tasks required for this assessment have now reached a terminal state. Synthesize the final conclusion using these results. Do not start more child tasks or poll task files.`);
+        record.subagentDeliveryInProgress = true;
+        await enqueueSessionAction(record, async () => {
+          record.gate.beginTask();
+          await record.session.prompt(`${message}\n\nAll delegated child tasks required for this assessment have now reached a terminal state. Synthesize the final conclusion using these results. Do not start more child tasks or poll task files.`);
+        });
         for (const task of results) finishSubagentResult(record, task.id, true);
       } catch (error) {
         for (const task of results) finishSubagentResult(record, task.id, false);
         throw error;
+      } finally {
+        record.subagentDeliveryInProgress = false;
       }
     }
     // If no task is active and no recognized terminal result was produced,

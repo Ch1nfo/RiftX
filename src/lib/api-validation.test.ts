@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { requiredText, validateApprovalMode, validateDismissed, validateFindingConfidence } from "./api-validation";
+import { isJsonObject, requiredText, validateApprovalMode, validateDismissed, validateFindingConfidence } from "./api-validation";
 
 test("API text validation rejects blank prompt and title input", () => {
   assert.equal(requiredText("   ", "text is required"), "text is required");
@@ -16,4 +16,10 @@ test("API enum validation accepts only supported protocol values", () => {
   assert.equal(validateDismissed(undefined), true);
   assert.equal(validateDismissed(false), true);
   assert.equal(validateDismissed("false"), false);
+});
+
+test("JSON body validation rejects null and array payloads", () => {
+  assert.equal(isJsonObject({}), true);
+  assert.equal(isJsonObject(null), false);
+  assert.equal(isJsonObject([]), false);
 });

@@ -15,8 +15,9 @@ import { useLanguage } from "@/lib/i18n";
 import { isAlreadyProcessingError } from "@/lib/prompt-mode";
 import { summarizeToolResult } from "@/lib/tool-result";
 import { resolveConversationScroll } from "@/lib/conversation-scroll";
+import { mergeFetchedMessages, type MergeableMessage } from "@/lib/message-merge";
 
-type Message = { id: string; role: "user" | "assistant" | "thinking" | "tool"; content: string; toolName?: string; toolCallId?: string; status?: string; isError?: boolean };
+type Message = MergeableMessage;
 type MessageDelta = { role: "assistant" | "thinking"; content: string };
 type MessageLabels = { you: string; thinking: string; thinkingNow: string; thinkingDone: string; queued: string; running: string; failed: string; stopped: string; complete: string };
 
@@ -84,6 +85,10 @@ function applyMessageDeltas(current: Message[], deltas: MessageDelta[]) {
     if (last?.role === delta.role) return [...next.slice(0, -1), { ...last, content: last.content + delta.content, status: delta.role === "thinking" ? "streaming" : last.status }];
     return [...next, { id: crypto.randomUUID(), role: delta.role, content: delta.content, status: delta.role === "thinking" ? "streaming" : undefined }];
   }, current);
+}
+
+function normalizeMessages(items: Message[]) {
+  return items.filter((item) => ["user", "assistant", "thinking", "tool"].includes(item.role)).map((item) => ({ ...item, role: item.role as Message["role"] }));
 }
 
 export function Workbench() {
@@ -287,11 +292,10 @@ export function Workbench() {
       if (controller.signal.aborted) return;
       setFindings(data.findings ?? []);
     }).catch(() => undefined);
-    let messageVersion = 0;
-    const initialMessageVersion = messageVersion;
     fetch(`/api/sessions/${activeId}/messages`, { signal: controller.signal }).then((response) => response.json()).then((items: Message[]) => {
-      if (controller.signal.aborted || initialMessageVersion !== messageVersion) return;
-      setMessages(items.filter((item) => ["user", "assistant", "thinking", "tool"].includes(item.role)).map((item) => ({ ...item, role: item.role as Message["role"] })));
+      if (controller.signal.aborted) return;
+      flushMessageDeltas();
+      setMessages((current) => mergeFetchedMessages(current, normalizeMessages(items)));
     }).catch(() => undefined);
     let disposed = false;
     let reconnectAttempts = 0;
@@ -303,12 +307,12 @@ export function Workbench() {
         hasOpened = true;
         return;
       }
-      const requestedVersion = messageVersion;
       void fetch(`/api/sessions/${activeId}/messages`, { signal: controller.signal })
         .then((response) => response.ok ? response.json() as Promise<Message[]> : [])
         .then((items) => {
-          if (disposed || controller.signal.aborted || requestedVersion !== messageVersion) return;
-          setMessages(items.filter((item) => ["user", "assistant", "thinking", "tool"].includes(item.role)).map((item) => ({ ...item, role: item.role as Message["role"] })));
+          if (disposed || controller.signal.aborted) return;
+          flushMessageDeltas();
+          setMessages((current) => mergeFetchedMessages(current, normalizeMessages(items)));
         })
         .catch(() => undefined);
     };
@@ -324,7 +328,6 @@ export function Workbench() {
       if (!payload) return;
       if (payload.type === "connected") return;
       if (payload.type === "text_delta" || payload.type === "thinking_delta") {
-        messageVersion += 1;
         queueMessageDelta({ role: payload.type === "text_delta" ? "assistant" : "thinking", content: String(payload.delta ?? "") });
         return;
       }
@@ -390,7 +393,6 @@ export function Workbench() {
       }
       if (payload.type.startsWith("subagent_") || payload.type === "approval_decided") return;
       if (["text_delta", "tool_start", "tool_status", "tool_update", "tool_end", "message", "done", "error"].includes(payload.type)) {
-        messageVersion += 1;
         setMessages((current) => current.map((message) => message.role === "thinking" && message.status === "streaming" ? { ...message, status: "done" } : message));
       }
       if (payload.type === "session_state") { setMainAgentRunning(payload.state !== "idle"); setContextCompacting(payload.state === "compacting"); return; }

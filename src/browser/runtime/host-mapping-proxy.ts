@@ -121,14 +121,26 @@ export class HostMappingProxy {
         path = rawUrl;
       }
       const upstream = this.trackUpstream(httpRequest({ host: target.host, port: target.port, method: request.method, path, headers: request.headers }));
+      let failed = false;
+      const failResponse = (message: string) => {
+        if (failed) return;
+        failed = true;
+        if (!response.headersSent) {
+          response.writeHead(502, { "content-type": "text/plain" });
+          response.end(message);
+        } else {
+          // The body is already partly delivered; appending an error string
+          // would corrupt the upstream payload.
+          response.destroy();
+        }
+      };
       upstream.on("response", (upstreamResponse) => {
         response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
+        upstreamResponse.on("error", () => failResponse("riftx proxy: upstream connection failed"));
         upstreamResponse.pipe(response);
       });
-      upstream.on("error", () => {
-        if (!response.headersSent) response.writeHead(502, { "content-type": "text/plain" });
-        response.end("riftx proxy: upstream connection failed");
-      });
+      upstream.on("error", () => failResponse("riftx proxy: upstream connection failed"));
+      request.on("error", () => upstream.destroy());
       request.pipe(upstream);
     } catch {
       if (!response.headersSent) response.writeHead(502, { "content-type": "text/plain" });

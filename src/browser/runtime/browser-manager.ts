@@ -352,7 +352,9 @@ export class BrowserManager {
       if (extra && Object.keys(extra).length) await route.continue({ headers: { ...request.headers(), ...extra } });
       else await route.continue();
     } catch {
-      await route.abort("blockedbyclient");
+      // A route may already be handled or its target may have closed. Never
+      // let cleanup failure escape the fire-and-forget Playwright callback.
+      try { await route.abort("blockedbyclient"); } catch { /* already handled */ }
     }
   }
 

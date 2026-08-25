@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { SubagentTask } from "@/lib/types";
-import { claimSubagentResult, finishSubagentResult, formatSubagentTerminalMessage, shouldDeliverSubagentCompletion, waitForSubagentsBeforeConclusion } from "./session-join";
+import { claimSubagentResult, enqueueSessionAction, finishSubagentResult, formatSubagentTerminalMessage, shouldDeliverSubagentCompletion, waitForSubagentsBeforeConclusion } from "./session-join";
 
 function makeTask(status: SubagentTask["status"]): SubagentTask {
   return {
@@ -121,4 +121,22 @@ test("completion delivery is suppressed while a session is stopping or joining",
   assert.equal(shouldDeliverSubagentCompletion({ waitingForSubagents: true }), false);
   assert.equal(shouldDeliverSubagentCompletion({ aborting: true }), false);
   assert.equal(shouldDeliverSubagentCompletion({ abortPromise: Promise.resolve() }), false);
+});
+
+test("session prompt actions are serialized", async () => {
+  const record = { promptChain: undefined as Promise<void> | undefined };
+  const order: string[] = [];
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const first = enqueueSessionAction(record, async () => {
+    order.push("first-start");
+    await firstGate;
+    order.push("first-end");
+  });
+  const second = enqueueSessionAction(record, async () => { order.push("second"); });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(order, ["first-start"]);
+  releaseFirst();
+  await Promise.all([first, second]);
+  assert.deepEqual(order, ["first-start", "first-end", "second"]);
 });
