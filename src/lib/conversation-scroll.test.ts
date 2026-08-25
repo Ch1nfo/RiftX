@@ -11,6 +11,22 @@ test("content growth does not disable an active conversation follow", () => {
   }), { atLatest: false, shouldFollow: true });
 });
 
+test("content collapse at the bottom does not pause following", () => {
+  assert.deepEqual(resolveConversationScroll({
+    wasFollowing: true,
+    previousScrollTop: 800,
+    scrollTop: 640,
+    distanceFromBottom: 0
+  }), { atLatest: true, shouldFollow: true });
+
+  assert.deepEqual(resolveConversationScroll({
+    wasFollowing: true,
+    previousScrollTop: 800,
+    scrollTop: 640,
+    distanceFromBottom: 12
+  }), { atLatest: true, shouldFollow: true });
+});
+
 test("moving upward pauses following until the user returns to the bottom", () => {
   assert.deepEqual(resolveConversationScroll({
     wasFollowing: true,

@@ -9,6 +9,10 @@ export function resolveConversationScroll(input: {
 }) {
   const atLatest = input.distanceFromBottom <= LATEST_THRESHOLD;
   const movedUp = input.scrollTop < input.previousScrollTop - SCROLL_DIRECTION_TOLERANCE;
-  const shouldFollow = movedUp ? false : atLatest ? true : input.wasFollowing;
+  // Collapsing a thinking/tool details block can reduce scrollHeight and make
+  // the browser clamp scrollTop downward while the user is still at the end.
+  // Being at the latest position is authoritative; only an upward move away
+  // from the end represents an intentional pause.
+  const shouldFollow = atLatest ? true : movedUp ? false : input.wasFollowing;
   return { atLatest, shouldFollow };
 }
