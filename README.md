@@ -44,6 +44,14 @@ Web security validation is often split across terminals, browsers, proxies, note
 
 > The screenshots use demo data and contain no real API keys, targets, or session history.
 
+## Benchmark Performance
+
+RiftX has been evaluated on TSECBENCH's XBW Validation Benchmarks. The screenshot below shows a benchmark run and the Agent's overall completion performance on security validation tasks.
+
+![RiftX TSECBENCH benchmark result](docs/images/riftx-benchmark.jpg)
+
+> Example run: `22520` total points, `79.58` composite score, `85.6%` completion rate, and `89/104` completed items.
+
 ## Features
 
 ### Agent Workbench

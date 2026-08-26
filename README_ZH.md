@@ -44,6 +44,14 @@ Web 安全验证通常散落在终端、浏览器、代理工具、笔记和多�
 
 > 截图使用演示数据生成，不包含真实 API Key、目标或会话历史。
 
+## 跑分表现
+
+RiftX 已参与 TSECBENCH 的 XBW Validation Benchmarks。下面是一次公开跑分记录，用于展示 Agent 在安全验证任务中的整体完成情况：
+
+![RiftX TSECBENCH 跑分结果](docs/images/riftx-benchmark.jpg)
+
+> 示例记录：总得分 `22520`，综合得分 `79.58`，完成率 `85.6%`，完成 `89/104` 道题。
+
 ## 功能特性
 
 ### Agent 工作台
