@@ -207,6 +207,17 @@ export class SubagentManager {
     this.completionHandler = handler;
   }
 
+  /** Persist the parent-transcript delivery mark so restarts retry undelivered results. */
+  markDelivered(taskId: string, delivered: boolean) {
+    const task = this.tasks.get(taskId);
+    if (!task || task.delivered === delivered) return;
+    // Legacy records without a mark are treated as already delivered; a
+    // failed delivery attempt must not retroactively flip them to retry.
+    if (task.delivered === undefined && !delivered) return;
+    task.delivered = delivered;
+    this.schedulePersist();
+  }
+
   private schedulePersist(delayMs = 150) {
     if (this.persistTimer) return;
     this.persistTimer = setTimeout(() => {
@@ -226,6 +237,7 @@ export class SubagentManager {
       status: "queued",
       model: "",
       createdAt: now(),
+      delivered: false,
       pendingApprovalCount: 0,
       logs: []
     };

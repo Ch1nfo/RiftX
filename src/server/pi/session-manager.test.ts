@@ -84,6 +84,85 @@ test("join does not re-deliver historical terminal children after restart", asyn
   assert.equal(prompts.length, 0);
 });
 
+test("join retries a known terminal child whose result was never delivered", async () => {
+  const task = makeTask("completed");
+  task.summary = "Completed right before the server restarted.";
+  task.delivered = false;
+  const prompts: string[] = [];
+  const record = makeRecord(task, () => false, async () => undefined, prompts, new Set());
+
+  await waitForSubagentsBeforeConclusion(record, new Set([task.id]), new Set(), 0);
+
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0], /Completed right before the server restarted/);
+});
+
+test("finishSubagentResult persists the delivery mark on the task record", () => {
+  const marks: Array<[string, boolean]> = [];
+  const task = makeTask("completed");
+  const record = {
+    subagents: {
+      list: () => [task],
+      hasActiveTasks: () => false,
+      waitForAll: async () => undefined,
+      markDelivered: (id: string, delivered: boolean) => marks.push([id, delivered])
+    },
+    deliveredSubagentResults: new Set<string>(),
+    deliveringSubagentResults: new Set<string>()
+  };
+  claimSubagentResult(record, task.id);
+  finishSubagentResult(record, task.id, true);
+  assert.deepEqual(marks, [[task.id, true]]);
+});
+
+test("a transient delivery failure is retried automatically", async () => {
+  const task = makeTask("completed");
+  task.summary = "Retry this delivery.";
+  let calls = 0;
+  const record = {
+    session: {
+      isStreaming: false,
+      prompt: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("transient SDK rejection");
+      },
+      steer: async () => { throw new Error("steer must not be used while idle"); }
+    },
+    deliveredSubagentResults: new Set<string>(),
+    deliveringSubagentResults: new Set<string>(),
+    gate: { beginTask: () => undefined },
+    promptChain: undefined as Promise<void> | undefined
+  } as unknown as Parameters<typeof deliverSubagentCompletion>[0];
+
+  assert.equal(await deliverSubagentCompletion(record, task, task.summary, { retries: 2, retryDelayMs: 1 }), true);
+  assert.equal(calls, 2);
+  assert.equal(record.deliveredSubagentResults.has(task.id), true);
+});
+
+test("delivery retries are bounded and leave the result undelivered", async () => {
+  const task = makeTask("failed");
+  task.error = "Keeps failing.";
+  let calls = 0;
+  const record = {
+    session: {
+      isStreaming: false,
+      prompt: async () => {
+        calls += 1;
+        throw new Error("persistent SDK rejection");
+      },
+      steer: async () => undefined
+    },
+    deliveredSubagentResults: new Set<string>(),
+    deliveringSubagentResults: new Set<string>(),
+    gate: { beginTask: () => undefined },
+    promptChain: undefined as Promise<void> | undefined
+  } as unknown as Parameters<typeof deliverSubagentCompletion>[0];
+
+  assert.equal(await deliverSubagentCompletion(record, task, task.summary, { retries: 1, retryDelayMs: 1 }), false);
+  assert.equal(calls, 2);
+  assert.equal(record.deliveredSubagentResults.has(task.id), false);
+});
+
 test("a failed result delivery can be claimed again", () => {
   const record = { deliveredSubagentResults: new Set<string>(), deliveringSubagentResults: new Set<string>() };
   assert.equal(claimSubagentResult(record, "child-1"), true);

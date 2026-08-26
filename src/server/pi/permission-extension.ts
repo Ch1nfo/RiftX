@@ -6,7 +6,8 @@ import type { MutationLock } from "./mutation-lock";
 import type { BashConcurrency } from "./bash-concurrency";
 import type { ScopeDecision } from "@/browser/scope/scope-rules";
 
-const guardedTools = new Set(["bash", "write", "edit", "browser"]);
+/** Tools whose calls require permission evaluation. Shared with the event mapper so tool_status stays consistent with gating. */
+export const guardedTools = new Set(["bash", "write", "edit", "browser"]);
 const readOnlyBrowserActions = new Set(["snapshot", "console", "requests", "request_detail", "response_body", "identities", "cookies", "cookies_export", "storage", "screenshot", "tabs"]);
 type ResolvedApproval = { approved: boolean; task: boolean; reason?: string };
 const AUTO_APPROVAL_UNAVAILABLE = "Automatic approval is unavailable. Switch approval mode to request approval or full access, then retry.";

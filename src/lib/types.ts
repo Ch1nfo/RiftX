@@ -88,6 +88,10 @@ export type SubagentTask = {
   finishedAt?: string;
   summary?: string;
   error?: string;
+  // Delivery mark for the parent transcript: false means the terminal result
+  // has not reached the model yet (persisted so a restart retries it);
+  // undefined marks legacy records, treated as already delivered.
+  delivered?: boolean;
   pendingApprovalCount: number;
   logs: SubagentLogEntry[];
 };

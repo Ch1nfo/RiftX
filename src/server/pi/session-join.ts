@@ -5,6 +5,7 @@ type JoinManager = {
   list(): SubagentTask[];
   hasActiveTasks(): boolean;
   waitForAll(): Promise<void>;
+  markDelivered?(taskId: string, delivered: boolean): void;
 };
 
 export type SubagentJoinRecord = {
@@ -66,12 +67,24 @@ export function claimSubagentResult(record: Pick<SubagentJoinRecord, "deliveredS
   return true;
 }
 
-export function finishSubagentResult(record: Pick<SubagentJoinRecord, "deliveredSubagentResults" | "deliveringSubagentResults">, taskId: string, delivered: boolean) {
+export function finishSubagentResult(record: Pick<SubagentJoinRecord, "deliveredSubagentResults" | "deliveringSubagentResults" | "subagents">, taskId: string, delivered: boolean) {
   record.deliveringSubagentResults?.delete(taskId);
   if (delivered) record.deliveredSubagentResults.add(taskId);
+  // Persist the delivery mark with the task record so a restart retries
+  // undelivered results instead of treating them as already represented.
+  record.subagents?.markDelivered?.(taskId, delivered);
 }
 
-export async function deliverSubagentCompletion(record: SubagentJoinRecord, task: SubagentTask, summary?: string) {
+function delay(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+const SUBAGENT_DELIVERY_RETRIES = 3;
+const SUBAGENT_DELIVERY_RETRY_DELAY_MS = 1000;
+
+export async function deliverSubagentCompletion(record: SubagentJoinRecord, task: SubagentTask, summary?: string, options: { retries?: number; retryDelayMs?: number } = {}): Promise<boolean> {
+  const retries = options.retries ?? SUBAGENT_DELIVERY_RETRIES;
+  const retryDelayMs = options.retryDelayMs ?? SUBAGENT_DELIVERY_RETRY_DELAY_MS;
   if (!shouldDeliverSubagentCompletion(record)) return false;
   if (!claimSubagentResult(record, task.id)) return false;
   const message = formatSubagentTerminalMessage(task, summary);
@@ -91,10 +104,31 @@ export async function deliverSubagentCompletion(record: SubagentJoinRecord, task
     });
     finishSubagentResult(record, task.id, true);
     return true;
-  } catch {
+  } catch (error) {
     finishSubagentResult(record, task.id, false);
+    if (retries > 0) {
+      // A transient SDK rejection (e.g. a mid-abort race) must not strand the
+      // result until the user's next prompt. The next attempt re-evaluates
+      // delivery suppression, and if it stays suppressed the conclusion wait
+      // path still owns the delivery later.
+      await delay(retryDelayMs);
+      return deliverSubagentCompletion(record, task, summary, { retries: retries - 1, retryDelayMs });
+    }
+    // The result stays marked undelivered, so the next turn still retries it
+    // via waitForSubagentsBeforeConclusion; failing silently would strand it.
+    console.warn(`RiftX failed to deliver subagent result for ${task.id} (${task.name}):`, error);
     return false;
   }
+}
+
+function requiresDelivery(record: SubagentJoinRecord, task: SubagentTask, knownTaskIds: Set<string>) {
+  if (!knownTaskIds.has(task.id)) return true;
+  // A task that terminated but whose result never reached the model (a crash
+  // between completion and delivery, or a swallowed delivery failure) is not
+  // in the transcript: it must be delivered even though it predates this
+  // turn. Legacy records without a delivery mark are treated as already
+  // represented and must not be re-injected after an upgrade.
+  return task.delivered === false && !record.deliveredSubagentResults.has(task.id);
 }
 
 export async function waitForSubagentsBeforeConclusion(record: SubagentJoinRecord, knownTaskIds: Set<string>, requiredTaskIds: Set<string>, abortEpoch: number) {
@@ -102,10 +136,7 @@ export async function waitForSubagentsBeforeConclusion(record: SubagentJoinRecor
   if (!manager) return;
   if ((record.abortEpoch ?? 0) !== abortEpoch) return;
   for (const task of manager.list()) {
-    // Only wait for tasks that were already active before this turn or were
-    // created during it. Historical terminal tasks are already represented in
-    // the transcript and must not be re-injected after a restart.
-    if (!knownTaskIds.has(task.id)) requiredTaskIds.add(task.id);
+    if (requiresDelivery(record, task, knownTaskIds)) requiredTaskIds.add(task.id);
   }
   const hasUndeliveredTerminal = manager.list().some((task) => requiredTaskIds.has(task.id)
     && !record.deliveredSubagentResults.has(task.id)
@@ -116,7 +147,7 @@ export async function waitForSubagentsBeforeConclusion(record: SubagentJoinRecor
     if ((record.abortEpoch ?? 0) !== abortEpoch) return;
     const tasks = manager.list();
     for (const task of tasks) {
-      if (!knownTaskIds.has(task.id)) requiredTaskIds.add(task.id);
+      if (requiresDelivery(record, task, knownTaskIds)) requiredTaskIds.add(task.id);
     }
     const results = tasks.filter((task) => requiredTaskIds.has(task.id)
       && !record.deliveredSubagentResults.has(task.id)

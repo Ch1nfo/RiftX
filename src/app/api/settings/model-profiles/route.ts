@@ -3,13 +3,14 @@ import { SUBAGENT_AGGRESSIVENESS, type ModelProfile, type SubagentAggressiveness
 import { setActiveProfile, setMaxConcurrentSubagents } from "@/server/pi/session-manager";
 import { parseScopeRule } from "@/browser/scope/scope-rules";
 import { errorStatus } from "@/server/errors";
-import { isJsonObject } from "@/lib/api-validation";
+import { parseJsonBody } from "@/lib/api-validation";
+import { MASKED_API_KEY, resolveProfileApiKey } from "@/server/profile-api-key";
 
 export const runtime = "nodejs";
 
 function publicProfile(profile: ModelProfile) {
   const { apiKey, ...rest } = profile;
-  return { ...rest, apiKey: apiKey ? "••••••••" : "" };
+  return { ...rest, apiKey: apiKey ? MASKED_API_KEY : "" };
 }
 
 export async function GET() {
@@ -46,7 +47,9 @@ function profileValidationError(profile: Partial<ModelProfile>): string | null {
 }
 
 export async function PUT(request: Request) {
-  let body: Partial<{
+  const parsed = await parseJsonBody(request);
+  if (parsed instanceof Response) return parsed;
+  const body = parsed as Partial<{
     profiles: ModelProfile[];
     activeProfileId: string;
     sessionId: string;
@@ -59,29 +62,20 @@ export async function PUT(request: Request) {
     browserScope: string[];
     browserIgnoreTlsErrors: boolean;
   }>;
-  try {
-    const parsed = await request.json();
-    if (!isJsonObject(parsed)) return Response.json({ error: "JSON body must be an object" }, { status: 400 });
-    body = parsed as typeof body;
-  } catch {
-    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
-  }
-  const current = await readConfig();
   // Reject invalid scope rules up front: silently dropping them would leave
   // the manager with an empty rule set that behaves like "no scope configured".
   const invalidScopeRules = Array.isArray(body.browserScope)
     ? body.browserScope.filter((rule) => typeof rule !== "string" || !rule.trim() || !parseScopeRule(rule))
     : [];
   if (invalidScopeRules.length) return Response.json({ error: `Invalid browser scope rules: ${invalidScopeRules.join(", ")}` }, { status: 400 });
-  const incoming = Array.isArray(body.profiles) ? body.profiles : current.profiles;
+  // Only validate profiles the request actually carries: stored ones were
+  // validated on write, and re-reading config here would race the update.
+  const incoming = Array.isArray(body.profiles) ? body.profiles : [];
   const invalidProfiles = incoming.map(profileValidationError).filter((error): error is string => Boolean(error));
   if (invalidProfiles.length) return Response.json({ error: `Invalid model profiles: ${invalidProfiles.join("; ")}` }, { status: 400 });
   const duplicateIds = incoming.map((profile) => profile.id).filter((id, index, all) => all.indexOf(id) !== index);
   if (duplicateIds.length) return Response.json({ error: `Duplicate profile ids: ${[...new Set(duplicateIds)].join(", ")}` }, { status: 400 });
   const requestedMax = Number(body.maxConcurrentSubagents);
-  const subagentAggressiveness = SUBAGENT_AGGRESSIVENESS.includes(body.subagentAggressiveness as SubagentAggressiveness)
-    ? body.subagentAggressiveness as SubagentAggressiveness
-    : current.subagentAggressiveness;
   // Persist FIRST in a single atomic write, then switch the live session. If
   // the disk write fails, the live session was never touched; if the switch
   // then fails, only the stored default changed (a recoverable state) and the
@@ -91,15 +85,10 @@ export async function PUT(request: Request) {
   try {
     finalConfig = await updateConfig((latest) => {
       const latestIncoming = Array.isArray(body.profiles) ? body.profiles : latest.profiles;
-      const profiles = latestIncoming.map((profile) => ({
-        ...profile,
-        ...(profile.apiKey === undefined || profile.apiKey === "••••••••"
-          ? (() => {
-              const previousKey = latest.profiles.find((item) => item.id === profile.id)?.apiKey;
-              return previousKey ? { apiKey: previousKey } : {};
-            })()
-          : profile.apiKey ? { apiKey: profile.apiKey } : {})
-      }));
+      const profiles = latestIncoming.map((profile) => {
+        const apiKey = resolveProfileApiKey(profile, latest.profiles.find((item) => item.id === profile.id));
+        return apiKey === profile.apiKey ? profile : { ...profile, apiKey };
+      });
       const activeProfileId = body.activeProfileId ?? latest.activeProfileId;
       if (!profiles.some((profile) => profile.id === activeProfileId)) throw new Error("Model profile not found");
       const latestMax = body.maxConcurrentSubagents === undefined || !Number.isFinite(requestedMax)
@@ -134,6 +123,8 @@ export async function PUT(request: Request) {
       return Response.json({ error: error instanceof Error ? error.message : "Model switch failed" }, { status: errorStatus(error, 400) });
     }
   }
-  if (finalConfig.maxConcurrentSubagents !== current.maxConcurrentSubagents) await setMaxConcurrentSubagents(finalConfig.maxConcurrentSubagents);
+  // Apply the limit whenever the request explicitly carries it — comparing
+  // against a pre-write snapshot would race a concurrent config write.
+  if (body.maxConcurrentSubagents !== undefined && Number.isFinite(requestedMax)) await setMaxConcurrentSubagents(finalConfig.maxConcurrentSubagents);
   return Response.json({ ...finalConfig, profiles: finalConfig.profiles.map(publicProfile) });
 }

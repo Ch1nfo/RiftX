@@ -19,7 +19,7 @@ import { readConfig, getAppPaths, getLaunchDirectory, updateConfig } from "@/ser
 import { RiftxError } from "@/server/errors";
 import type { ApprovalMode, ArchivedSession, ContextUsage, FindingInput, FindingSource, ModelProfile, RiftxEvent, SessionSummary } from "@/lib/types";
 import { ApprovalGate } from "./approval-gate";
-import { createPermissionExtension } from "./permission-extension";
+import { createPermissionExtension, guardedTools } from "./permission-extension";
 import { resolvePromptMode } from "@/lib/prompt-mode";
 import { emptyContextUsage, normalizeContextUsage } from "./usage";
 import { buildChildPentestSystemPrompt, buildPentestSystemPrompt } from "./system-prompt";
@@ -37,7 +37,7 @@ import { createTimedBashTool } from "./bash-timeout";
 import { BashConcurrency } from "./bash-concurrency";
 import { abortSessionRecord, shutdownSessionRecord } from "./session-shutdown";
 import { switchSessionProfile, withProfileSwitchLock } from "./apply-session-profile";
-import { registerTrackedProfile, registerProfileModel, restoreProviderRegistration, type ProviderRegistrations } from "./model-registration";
+import { registerTrackedProfile, registerProfileModel, restoreProviderRegistration, memoizedTitleRuntime, type ProviderRegistrations } from "./model-registration";
 import { extractLastAssistantResult } from "./subagent-result";
 import { deliverSubagentCompletion, dispatchSessionAction } from "./session-join";
 
@@ -144,7 +144,7 @@ function eventPayload(event: AgentSessionEvent): RiftxEvent {
     return { type: assistant?.type === "text_delta" ? "text_delta" : assistant?.type === "thinking_delta" ? "thinking_delta" : "message", delta: assistant?.delta ?? "" };
   }
   if (event.type === "tool_execution_start") {
-    const guarded = ["bash", "write", "edit", "browser"].includes(String(base.toolName));
+    const guarded = guardedTools.has(String(base.toolName));
     return { type: "tool_start", toolName: base.toolName, toolCallId: base.toolCallId, args: base.args, toolStatus: guarded ? "queued" : "running" } as RiftxEvent;
   }
   if (event.type === "tool_execution_update") {
@@ -284,9 +284,11 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
   );
   const evidenceStore = runtimeDeps?.evidenceStore ?? getEvidenceStore(evidenceSessionId, paths.evidence, (event) => emitter.emit("event", event));
   const subagentNameGenerator = !child ? async (task: string) => {
-    const titleAuthStorage = AuthStorage.inMemory();
-    const titleModelRegistry = ModelRegistry.inMemory(titleAuthStorage);
-    const titleModel = registerProfileModel(titleAuthStorage, titleModelRegistry, childProfile, true);
+    const { titleModelRegistry, titleModel } = memoizedTitleRuntime(childProfile, () => {
+      const titleAuthStorage = AuthStorage.inMemory();
+      const titleModelRegistry = ModelRegistry.inMemory(titleAuthStorage);
+      return { titleModelRegistry, titleModel: registerProfileModel(titleAuthStorage, titleModelRegistry, childProfile, true) };
+    });
     return generateSessionTitle(titleModelRegistry, titleModel, task, "empty");
   } : undefined;
   const subagents = !child ? new SubagentManager(sessionManager.getSessionId(), paths.subagents, (event) => emitter.emit("event", event), config.maxConcurrentSubagents, config.approvalMode, subagentNameGenerator) : undefined;
@@ -688,9 +690,11 @@ export async function summarizeSessionTitle(id: string, task: string) {
   const titleProfile = existingConfig.childInherit
     ? record.profile
     : existingConfig.profiles.find((item) => item.id === existingConfig.childProfileId) ?? record.profile;
-  const titleAuthStorage = AuthStorage.inMemory();
-  const titleModelRegistry = ModelRegistry.inMemory(titleAuthStorage);
-  const titleModel = registerProfileModel(titleAuthStorage, titleModelRegistry, titleProfile, true);
+  const { titleModelRegistry, titleModel } = memoizedTitleRuntime(titleProfile, () => {
+    const titleAuthStorage = AuthStorage.inMemory();
+    const titleModelRegistry = ModelRegistry.inMemory(titleAuthStorage);
+    return { titleModelRegistry, titleModel: registerProfileModel(titleAuthStorage, titleModelRegistry, titleProfile, true) };
+  });
   const title = await generateSessionTitle(titleModelRegistry, titleModel, task);
   const config = await readConfig();
   const latestTitle = config.sessionTitles[id]?.trim();

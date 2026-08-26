@@ -52,6 +52,20 @@ export function registerProfileModel(authStorage: AuthStorage, modelRegistry: Mo
  * all update it; a failed switch's rollback restores the captured previous
  * entry (or unregisters a provider this switch introduced).
  */
+const titleRuntimeCache = new Map<string, unknown>();
+
+/**
+ * Build the isolated title/name-generation runtime once per distinct profile.
+ * ModelRegistry construction loads the full catalog and registerProfileModel
+ * with `replace` rebuilds the provider list, so per-task name generation and
+ * title summarization must not repeat that work on every call.
+ */
+export function memoizedTitleRuntime<T>(profile: ModelProfile, build: () => T): T {
+  const key = JSON.stringify([profile.provider, profile.model, profile.name, profile.baseUrl, profile.api, profile.apiKey ?? "", profile.transport, profile.thinkingLevel, profile.supportsImages ?? false, profile.contextWindow, profile.maxTokens]);
+  if (!titleRuntimeCache.has(key)) titleRuntimeCache.set(key, build());
+  return titleRuntimeCache.get(key) as T;
+}
+
 export type ProviderRegistrations = Map<string, ModelProfile>;
 
 export function registerTrackedProfile(registrations: ProviderRegistrations, authStorage: AuthStorage, modelRegistry: ModelRegistry, profile: ModelProfile, replace = false) {

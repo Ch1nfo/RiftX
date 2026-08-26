@@ -14,7 +14,7 @@ import { withSessionProfile } from "@/lib/session-profile-sync";
 import { useLanguage } from "@/lib/i18n";
 import { isAlreadyProcessingError } from "@/lib/prompt-mode";
 import { summarizeToolResult } from "@/lib/tool-result";
-import { resolveConversationScroll } from "@/lib/conversation-scroll";
+import { resolveConversationScroll, willCenterScrollMove } from "@/lib/conversation-scroll";
 import { mergeFetchedMessages, type MergeableMessage } from "@/lib/message-merge";
 
 type Message = MergeableMessage;
@@ -121,7 +121,6 @@ export function Workbench() {
   const conversationRef = useRef<HTMLElement>(null);
   const conversationInnerRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(true);
-  const endRef = useRef<HTMLDivElement>(null);
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
   const compositionActiveRef = useRef(false);
   const compositionEndedAtRef = useRef(0);
@@ -162,6 +161,15 @@ export function Workbench() {
   useEffect(() => {
     activeIdRef.current = activeId;
   }, [activeId]);
+
+  // Session switches must update the ref synchronously, ahead of React's
+  // commit: a fetch response from the previous session can land between the
+  // sidebar click and the effect cleanup, and the ref is the only guard that
+  // is already up to date inside that window.
+  const selectSession = (id: string) => {
+    activeIdRef.current = id;
+    setActiveId(id);
+  };
 
   useLayoutEffect(() => {
     const textarea = composerInputRef.current;
@@ -237,7 +245,7 @@ export function Workbench() {
       const initialSessions = (data.sessions ?? []) as SessionSummary[];
       setSessions(initialSessions);
       backfillMissingTitles(initialSessions);
-      setActiveId(data.activeSessionId ?? "");
+      selectSession(data.activeSessionId ?? "");
       setCwd(data.cwd ?? "");
       const profiles = (data.profiles ?? []) as ModelProfile[];
       setModelProfiles(profiles);
@@ -273,7 +281,7 @@ export function Workbench() {
     if (!activeId) return;
     const controller = new AbortController();
     fetch(`/api/sessions/${activeId}`, { signal: controller.signal }).then((response) => response.json()).then((data: Partial<SessionSummary>) => {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || activeIdRef.current !== activeId) return;
       const nextUsage = data.usage && typeof data.usage === "object"
         ? { ...makeEmptyUsage(Number(data.contextWindow ?? (data.usage as ContextUsage).contextWindow ?? 0)), ...(data.usage as ContextUsage) }
         : makeEmptyUsage(Number(data.contextWindow ?? 0));
@@ -284,16 +292,16 @@ export function Workbench() {
       }
     }).catch(() => undefined);
     fetch(`/api/sessions/${activeId}/subagents`, { signal: controller.signal }).then((response) => response.json()).then((data: { tasks?: SubagentTask[]; running?: number; maxConcurrent?: number }) => {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || activeIdRef.current !== activeId) return;
       for (const task of (data.tasks ?? []).map(cloneSubagentTask)) queueSubagentTask(task, "snapshot");
       setMaxConcurrentSubagents(Number(data.maxConcurrent ?? 3));
     }).catch(() => undefined);
     fetch(`/api/sessions/${activeId}/findings`, { signal: controller.signal }).then((response) => response.json()).then((data: { findings?: Finding[] }) => {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || activeIdRef.current !== activeId) return;
       setFindings(data.findings ?? []);
     }).catch(() => undefined);
     fetch(`/api/sessions/${activeId}/messages`, { signal: controller.signal }).then((response) => response.json()).then((items: Message[]) => {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || activeIdRef.current !== activeId) return;
       flushMessageDeltas();
       setMessages((current) => mergeFetchedMessages(current, normalizeMessages(items)));
     }).catch(() => undefined);
@@ -310,14 +318,16 @@ export function Workbench() {
       void fetch(`/api/sessions/${activeId}/messages`, { signal: controller.signal })
         .then((response) => response.ok ? response.json() as Promise<Message[]> : [])
         .then((items) => {
-          if (disposed || controller.signal.aborted) return;
+          if (disposed || controller.signal.aborted || activeIdRef.current !== activeId) return;
           flushMessageDeltas();
           setMessages((current) => mergeFetchedMessages(current, normalizeMessages(items)));
         })
         .catch(() => undefined);
     };
     source.onmessage = (event) => {
-      if (disposed) return;
+      // Same pre-cleanup window as the fetch guards: events from the previous
+      // session's stream must not write into the newly selected one.
+      if (disposed || activeIdRef.current !== activeId) return;
       reconnectAttempts = 0;
       let payload: RiftxEvent | null;
       try {
@@ -433,7 +443,7 @@ export function Workbench() {
       }
     };
     source.onerror = () => {
-      if (disposed) return;
+      if (disposed || activeIdRef.current !== activeId) return;
       reconnectAttempts += 1;
       if (source.readyState === EventSource.CLOSED || reconnectAttempts >= 3) {
         setError(t("connectionLostRefresh"));
@@ -501,19 +511,77 @@ export function Workbench() {
     const toolCallId = pendingToolScrollRef.current;
     if (!toolCallId) return;
     pendingToolScrollRef.current = null;
-    const target = document.getElementById(`tool-${encodeURIComponent(toolCallId)}`);
-    if (target instanceof HTMLDetailsElement) target.open = true;
-    target?.scrollIntoView({ behavior: "smooth", block: "center" });
+    // Only the deferred reveal pauses follow before its target exists, so
+    // only its failure needs reconciling: a target that vanished before
+    // rendering (refetch/compaction) must not strand that pause with no
+    // scroll event coming.
+    if (!revealToolCard(toolCallId)) scheduleFollowReconcile();
   }, [visibleMessageCount]);
 
   useEffect(() => () => {
     if (scrollFrameRef.current !== undefined) cancelAnimationFrame(scrollFrameRef.current);
   }, []);
 
+  // Pausing auto-follow deliberately does not touch the jump button: the
+  // button derives from shouldFollow on the next scroll event, so a
+  // navigation that ends up not scrolling never flashes the button nor
+  // strands follow off with no event to reconcile it.
+  const pauseAutoFollow = () => {
+    shouldAutoScrollRef.current = false;
+  };
+
+  const resumeAutoFollow = () => {
+    shouldAutoScrollRef.current = true;
+    setShowJumpToLatest(false);
+  };
+
+  // Reconcile follow state from real geometry two frames later: if a path
+  // paused optimistically (the batched-away tool reveal) and nothing actually
+  // scrolled — or its target vanished before rendering, which a refetch or
+  // compaction can do — this restores or keeps follow correctly instead of
+  // leaving it frozen with no scroll event to re-evaluate it.
+  const scheduleFollowReconcile = () => {
+    requestAnimationFrame(() => requestAnimationFrame(() => handleConversationScroll()));
+  };
+
+  // Shared by the direct evidence click and the deferred (batched-away tool)
+  // reveal so both pause follow under the same rule: only when the centering
+  // scroll will actually move the viewport, decided with the browser's own
+  // clamping applied — a fully-visible or edge-clamped target is a true no-op
+  // (no pause, no sub-pixel nudge that could flip follow near the threshold).
+  // A missing target returns false with no side effects: the direct probe
+  // must not touch follow state (subagent tools legitimately have no main-
+  // conversation card), and callers that paused before rendering own the
+  // reconciliation themselves.
+  const revealToolCard = (toolCallId: string) => {
+    const target = document.getElementById(`tool-${encodeURIComponent(toolCallId)}`);
+    if (!(target instanceof HTMLDetailsElement)) return false;
+    target.open = true;
+    const conversation = conversationRef.current;
+    if (!conversation) {
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+      return true;
+    }
+    const viewportTop = conversation.getBoundingClientRect().top;
+    const rect = target.getBoundingClientRect();
+    if (willCenterScrollMove({
+      scrollTop: conversation.scrollTop,
+      scrollHeight: conversation.scrollHeight,
+      clientHeight: conversation.clientHeight,
+      targetTop: conversation.scrollTop + rect.top - viewportTop,
+      targetHeight: rect.height
+    })) {
+      pauseAutoFollow();
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+    scheduleFollowReconcile();
+    return true;
+  };
+
   const loadEarlierMessages = () => {
     const conversation = conversationRef.current;
     if (conversation) historyScrollRef.current = { height: conversation.scrollHeight, top: conversation.scrollTop };
-    shouldAutoScrollRef.current = false;
+    pauseAutoFollow();
     if (scrollFrameRef.current !== undefined) cancelAnimationFrame(scrollFrameRef.current);
     scrollFrameRef.current = undefined;
     setVisibleMessageCount((current) => Math.min(visibleMessages.length, current + MESSAGE_BATCH_SIZE));
@@ -537,15 +605,13 @@ export function Workbench() {
   };
 
   const jumpToLatest = () => {
-    shouldAutoScrollRef.current = true;
-    setShowJumpToLatest(false);
+    resumeAutoFollow();
     const conversation = conversationRef.current;
     if (!conversation) return;
     conversation.scrollTop = conversation.scrollHeight;
     lastScrollTopRef.current = conversation.scrollTop;
     requestAnimationFrame(() => {
       conversation.scrollTop = conversation.scrollHeight;
-      lastScrollTopRef.current = conversation.scrollTop;
       handleConversationScroll();
     });
   };
@@ -578,8 +644,7 @@ export function Workbench() {
     const messageId = crypto.randomUUID();
     const markMessageFailed = () => setMessages((current) => current.map((message) => message.id === messageId ? { ...message, status: "error", isError: true } : message));
     setInput("");
-    shouldAutoScrollRef.current = true;
-    setShowJumpToLatest(false);
+    resumeAutoFollow();
     setMessages((current) => [...current, { id: messageId, role: "user", content: text }]);
     const currentSession = sessions.find((session) => session.id === activeId);
     const hasExistingUserMessage = Boolean(currentSession?.firstMessage?.trim()) || messages.some((message) => message.role === "user");
@@ -602,7 +667,7 @@ export function Workbench() {
 
   const newSession = async () => {
     const previousActiveId = activeId;
-    setActiveId("");
+    selectSession("");
     setMessages([]);
     setUsage(makeEmptyUsage());
     setError("");
@@ -611,10 +676,10 @@ export function Workbench() {
       const data = await response.json() as SessionSummary & { error?: string };
       if (!response.ok) throw new Error(data.error ?? t("sendFailed"));
       setSessions((current) => [data, ...current.filter((session) => session.id !== data.id)]);
-      setActiveId(data.id);
+      selectSession(data.id);
       setUsage(usageFromSession(data));
     } catch (reason) {
-      setActiveId(previousActiveId);
+      selectSession(previousActiveId);
       setError(reason instanceof Error ? reason.message : t("sendFailed"));
     }
   };
@@ -629,7 +694,7 @@ export function Workbench() {
       const nextSessions = data.sessions ?? [];
       setCwd(data.cwd ?? cwd);
       setSessions(nextSessions);
-      setActiveId(data.activeSessionId ?? "");
+      selectSession(data.activeSessionId ?? "");
       setMessages([]);
       setUsage(makeEmptyUsage());
       setMainAgentRunning(false);
@@ -651,7 +716,7 @@ export function Workbench() {
     setSessions(nextSessions);
     if (id !== activeId) return;
     const next = nextSessions[0];
-    setActiveId(next?.id ?? "");
+    selectSession(next?.id ?? "");
     setMessages([]);
     setUsage(usageFromSession(next));
   };
@@ -692,7 +757,10 @@ export function Workbench() {
       return null;
     };
     const searchMain = () => {
-      const tool = messages.find((message) => message.role === "tool" && containsToken(message.content, requestRef));
+      // Search only what the conversation can render: spawn_subagent calls
+      // carry the subagent prompt, so a request ref echoed into it would
+      // otherwise resolve to a message that is never displayed.
+      const tool = visibleMessages.find((message) => message.role === "tool" && containsToken(message.content, requestRef));
       return tool?.toolCallId ? { kind: "tool", toolCallId: tool.toolCallId } as const : null;
     };
     if (finding.source === "subagent") return finding.subagentId ? searchSubagent(finding.subagentId) : null;
@@ -701,21 +769,22 @@ export function Workbench() {
   };
 
   const scrollToTool = (toolCallId: string, toolName?: string, subagentId?: string) => {
-    const target = document.getElementById(`tool-${encodeURIComponent(toolCallId)}`);
-    if (target instanceof HTMLDetailsElement) {
-      target.open = true;
-      target.scrollIntoView({ behavior: "smooth", block: "center" });
-      return;
-    }
+    if (revealToolCard(toolCallId)) return;
     const hiddenIndex = visibleMessages.findIndex((message) => message.toolCallId === toolCallId);
     if (hiddenIndex >= 0) {
+      pauseAutoFollow();
       pendingToolScrollRef.current = toolCallId;
       setVisibleMessageCount(Math.max(visibleMessageCount, visibleMessages.length - hiddenIndex));
       return;
     }
+    // Exact log-id matches are unambiguous. The tool-name fallback is only
+    // valid inside a finding's own subagent: without a scope, a stale main
+    // toolCallId (compaction can drop it from the loaded branch) must not
+    // silently navigate to an unrelated subagent that happens to share the
+    // generic tool name — fall through to the unavailable error instead.
     const scoped = subagentId ? subagents.filter((task) => task.id === subagentId) : subagents;
     const subagent = scoped.find((task) => task.logs.some((log) => log.id === toolCallId))
-      ?? (toolName ? scoped.find((task) => task.logs.some((log) => log.toolName === toolName)) : undefined);
+      ?? (subagentId && toolName ? scoped.find((task) => task.logs.some((log) => log.toolName === toolName)) : undefined);
     if (subagent) {
       const log = subagent.logs.find((entry) => entry.id === toolCallId)
         ?? (toolName ? [...subagent.logs].reverse().find((entry) => entry.toolName === toolName) : undefined);
@@ -768,7 +837,7 @@ export function Workbench() {
     setApprovalQueue([]);
     setMessages((current) => current.map((message) => message.role === "thinking"
       ? { ...message, status: "done" }
-      : message.role === "tool" && message.status === "running"
+      : message.role === "tool" && (message.status === "running" || message.status === "queued")
         ? { ...message, status: "cancelled", isError: true, content: message.content ? `${message.content}\n\n${t("stopped")}` : t("stopped") }
         : message));
     void fetch(`/api/sessions/${activeId}/abort`, { method: "POST" });
@@ -852,13 +921,13 @@ export function Workbench() {
       <div className="brand-row"><div className="brand-mark"><RiftxLogo /></div><span>RiftX</span><button className="icon-button mobile-only" onClick={() => setMobileNav(false)}><X size={17} /></button></div>
       <button className="new-session" onClick={newSession}><Plus size={17} weight="bold" />{t("newSession")}<span className="shortcut">⌘ N</span></button>
       <div className="sidebar-label">{t("recentSessions")}</div>
-      <div className="session-list">{bootstrapping ? <span className="session-loading">{t("loading")}</span> : sessions.map((session) => <div key={session.id} className="session-item-row"><button className={`session-item ${activeId === session.id ? "active" : ""}`} onClick={() => { setActiveId(session.id); setMessages([]); setMobileNav(false); }}><span className="session-dot" /><span className="session-copy">{session.name === t("summarizeTitle") ? <span className="session-title-loading" role="status" aria-label={t("summarizeTitle")} title={t("summarizeTitle")} /> : <strong>{session.name || t("newSessionEnglish")}</strong>}<small>{new Date(session.updatedAt).toLocaleDateString()}</small></span></button><button className="session-archive" aria-label={`${t("archive")} ${session.name || t("archived")}`} title={t("archive")} onClick={(event) => { event.stopPropagation(); void archiveSession(session.id); }}><Archive size={14} /></button></div>)}</div>
+      <div className="session-list">{bootstrapping ? <span className="session-loading">{t("loading")}</span> : sessions.map((session) => <div key={session.id} className="session-item-row"><button className={`session-item ${activeId === session.id ? "active" : ""}`} onClick={() => { selectSession(session.id); setMessages([]); setMobileNav(false); }}><span className="session-dot" /><span className="session-copy">{session.name === t("summarizeTitle") ? <span className="session-title-loading" role="status" aria-label={t("summarizeTitle")} title={t("summarizeTitle")} /> : <strong>{session.name || t("newSessionEnglish")}</strong>}<small>{new Date(session.updatedAt).toLocaleDateString()}</small></span></button><button className="session-archive" aria-label={`${t("archive")} ${session.name || t("archived")}`} title={t("archive")} onClick={(event) => { event.stopPropagation(); void archiveSession(session.id); }}><Archive size={14} /></button></div>)}</div>
       <div className="sidebar-bottom"><div className="sidebar-settings-row"><Link href="/settings" className="sidebar-link"><Gear size={17} />{t("settings")}</Link></div></div>
     </aside>
     {mobileNav ? <button className="scrim mobile-only" onClick={() => setMobileNav(false)} aria-label={t("closeNav")} /> : null}
     <main className="main-panel">
       <header className="topbar"><button className="icon-button mobile-only" onClick={() => setMobileNav(true)} aria-label={t("settings")}><List size={19} /></button><button className="workspace workspace-button" type="button" disabled={bootstrapping || workspaceChoosing} aria-busy={workspaceChoosing} onClick={() => void chooseWorkingDirectory()} title={t("changeWorkingDirectory")} aria-label={workspaceChoosing ? t("choosingWorkingDirectory") : t("changeWorkingDirectory")}><FolderOpen size={16} /><span>{cwd || t("workingDirectory")}</span></button><div className="topbar-spacer" /><div className="topbar-actions"><LanguageToggle /><ThemeToggle /></div></header>
-      <section ref={conversationRef} className="conversation" onScroll={handleConversationScroll}><div ref={conversationInnerRef} className="conversation-inner">{visibleMessages.length === 0 ? <div className="empty-state"><div className="empty-orbit"><RiftxLogo decorative /></div><h1>{bootstrapping ? t("loadingWorkspace") : activeId ? t("ready") : t("noSession")}</h1><p>{bootstrapping ? t("readingWorkspace") : activeId ? t("readOrTest") : t("createSessionFirst")}</p>{activeId && !bootstrapping ? <div className="prompt-suggestions"><button onClick={() => setInput(t("overview"))}>{t("overview")}</button><button onClick={() => setInput(t("checkRisks"))}>{t("checkRisks")}</button></div> : null}</div> : <>{hasEarlierMessages ? <button className="load-earlier" type="button" onClick={loadEarlierMessages}><ArrowUp size={14} />{t("loadEarlierMessages")}</button> : null}{displayedMessages.map((message) => <MessageItem key={message.id} message={message} labels={messageLabels} />)}</>}{contextCompacting ? <article className="message thinking context-compaction-message" role="status" aria-live="polite"><div className="message-body"><div className="thinking-copy"><span className="thinking-title"><Brain size={14} weight="bold" />{t("contextCompacting")}</span></div></div></article> : null}<div ref={endRef} /></div>{showJumpToLatest ? <button className="jump-latest" type="button" aria-label={t("jumpLatest")} title={t("jumpLatest")} onClick={jumpToLatest}><ArrowDown size={17} weight="bold" /></button> : null}</section>
+      <section ref={conversationRef} className="conversation" onScroll={handleConversationScroll}><div ref={conversationInnerRef} className="conversation-inner">{visibleMessages.length === 0 ? <div className="empty-state"><div className="empty-orbit"><RiftxLogo decorative /></div><h1>{bootstrapping ? t("loadingWorkspace") : activeId ? t("ready") : t("noSession")}</h1><p>{bootstrapping ? t("readingWorkspace") : activeId ? t("readOrTest") : t("createSessionFirst")}</p>{activeId && !bootstrapping ? <div className="prompt-suggestions"><button onClick={() => setInput(t("overview"))}>{t("overview")}</button><button onClick={() => setInput(t("checkRisks"))}>{t("checkRisks")}</button></div> : null}</div> : <>{hasEarlierMessages ? <button className="load-earlier" type="button" onClick={loadEarlierMessages}><ArrowUp size={14} />{t("loadEarlierMessages")}</button> : null}{displayedMessages.map((message) => <MessageItem key={message.id} message={message} labels={messageLabels} />)}</>}{contextCompacting ? <article className="message thinking context-compaction-message" role="status" aria-live="polite"><div className="message-body"><div className="thinking-copy"><span className="thinking-title"><Brain size={14} weight="bold" />{t("contextCompacting")}</span></div></div></article> : null}</div>{showJumpToLatest ? <button className="jump-latest" type="button" aria-label={t("jumpLatest")} title={t("jumpLatest")} onClick={jumpToLatest}><ArrowDown size={17} weight="bold" /></button> : null}</section>
       <footer className="composer-wrap">{approval ? <div className="approval-card"><div className="approval-card-main"><div className="approval-icon"><WarningCircle size={18} weight="bold" /></div><div className="approval-card-copy"><div className="approval-card-title"><span className="eyebrow">{approval.subagentId ? t("subagentApproval") : t("needConfirm")}</span><strong>{approval.subagentId ? approval.agentName : approval.toolName}</strong><span className="approval-card-risk">{t("highRisk")}</span></div>{scopeExpansion ? <p>{t("browserScopeApproval")}</p> : approval.subagentId ? <p>{t("subagentRequestsTool", { agent: approval.agentName ?? "", tool: approval.toolName })}</p> : <p>{approval.toolName === "browser" ? t("browserApproval") : t("terminalApproval")}</p>}</div></div><details className="approval-command"><summary><code>{summarizeApprovalInput(approval.input)}</code><span>{t("expandCommand")}</span></summary><pre>{formatApprovalInput(approval.input)}</pre></details><div className="approval-actions"><button className="button reject" onClick={() => void decide(false)}>{t("reject")}</button><button className="button ghost" onClick={() => void decide(true, "task")}>{t(scopeExpansion ? "allowScopeTask" : "allowTask")}</button><button className="button primary" onClick={() => void decide(true)}>{t(scopeExpansion ? "allowScopeOnce" : "allowOnce")}</button></div></div> : null}<div className="composer"><textarea ref={composerInputRef} value={input} disabled={!activeId || bootstrapping} onChange={(event) => setInput(event.target.value)} onCompositionStart={() => { compositionActiveRef.current = true; compositionEndedAtRef.current = 0; }} onCompositionEnd={() => { compositionActiveRef.current = false; compositionEndedAtRef.current = Date.now(); }} onKeyDown={(event) => { if (event.nativeEvent.isComposing || event.keyCode === 229 || compositionActiveRef.current) return; if (event.key === "Enter" && !event.shiftKey) { if (Date.now() - compositionEndedAtRef.current < 150) { compositionEndedAtRef.current = 0; return; } event.preventDefault(); void send(); } }} placeholder={bootstrapping ? t("loadingWorkspace") : composerBusy ? t("guide") : activeId ? t("ask") : t("createSessionFirst")} rows={1} /><div className="composer-bottom"><div className="composer-tools"><ApprovalModeMenu value={approvalMode} onValueChange={(mode) => void changeApprovalMode(mode)} disabled={bootstrapping || mainAgentRunning} /><span className="composer-hint"><span className="keycap">Shift</span> + <span className="keycap">Enter</span> {t("shiftEnter")}</span></div><div className="composer-actions"><ContextRing percent={bootstrapping ? null : usage.percent} label={bootstrapping ? "—" : usage.percent === null ? "—" : `${Math.round(usage.percent)}`} detail={detail} />{bootstrapping ? <span className="model-label">{t("loadingModel")}</span> : modelProfiles.length > 1 ? <ModelMenu value={activeProfileId} onValueChange={(profileId) => void changeModel(profileId)} options={modelProfiles.map((profile) => ({ value: profile.id, label: `${profile.provider}/${profile.model}` }))} disabled={mainAgentRunning || modelSwitching} /> : <span className="model-label">{modelName}</span>}{composerBusy ? (input.trim() ? <button className="send-button" aria-label={t("sendGuide")} title={t("sendGuide")} onClick={() => void send("steer")}><ArrowUp size={18} weight="bold" /></button> : <button className="send-button stop" aria-label={t("stop")} title={t("stop")} onClick={stopAll}><Stop size={17} weight="fill" /></button>) : input.trim() ? <button className="send-button" aria-label={t("send")} title={t("send")} onClick={() => void send("prompt")} disabled={!activeId || bootstrapping}><ArrowUp size={18} weight="bold" /></button> : running ? <button className="send-button stop" aria-label={t("stop")} title={t("stop")} onClick={stopAll}><Stop size={17} weight="fill" /></button> : <button className="send-button" aria-label={t("send")} title={t("send")} onClick={() => void send("prompt")} disabled={!activeId || bootstrapping || !input.trim()}><ArrowUp size={18} weight="bold" /></button>}</div></div></div></footer>
     </main>
     <aside className="right-rail" aria-label={t("subagents")}><SubagentPanel tasks={subagents} running={subagentRunning} maxConcurrent={maxConcurrentSubagents} onCancel={(taskId) => void cancelSubagent(taskId)} onRetry={(taskId) => void retrySubagent(taskId)} focus={subagentFocus} /><FindingsPanel sessionId={activeId || undefined} findings={findings} onPatch={(id, patch) => void patchFindingInSession(id, patch)} onToolClick={scrollToTool} onRequestClick={scrollToRequest} /></aside>

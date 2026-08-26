@@ -25,7 +25,10 @@ export function SubagentPanel({ tasks, running, maxConcurrent, onCancel, onRetry
     setExpanded((current) => ({ ...current, [focus.taskId]: true }));
     const logId = focus.logId;
     if (logId) setOpenLogs((current) => ({ ...current, [logId]: true }));
-  }, [focus?.taskId, focus?.logId]);
+    // Key on the focus object, not its fields: re-clicking the same evidence
+    // link must re-expand a since-collapsed item/panel, and only a fresh
+    // click produces a fresh object.
+  }, [focus]);
   return <aside className={`subagent-panel ${open ? "open" : "collapsed"}`} aria-label={t("subagents")}>
     <button className="subagent-panel-head" onClick={() => setOpen((value) => !value)}>
       <span><UsersThree size={15} />{t("subagents")}</span>
