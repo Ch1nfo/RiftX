@@ -631,3 +631,82 @@ test("clearing mappings closes both ends of websockets routed through the old se
   assert.deepEqual(closed.sort(), ["page", "server"]);
   assert.equal(routed.size, 0);
 });
+
+test("run serializes operations on the manager instance", async () => {
+  const manager = new BrowserManager({ scope: { rules: ["10.0.0.0/8"] } });
+  const order: string[] = [];
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const first = manager.run(async () => {
+    order.push("first-start");
+    await firstGate;
+    order.push("first-end");
+  });
+  const second = manager.run(async () => {
+    order.push("second-start");
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.deepEqual(order, ["first-start"]);
+  releaseFirst();
+  await Promise.all([first, second]);
+  assert.deepEqual(order, ["first-start", "first-end", "second-start"]);
+});
+
+test("a failed run operation does not block the chain", async () => {
+  const manager = new BrowserManager({ scope: { rules: ["10.0.0.0/8"] } });
+  await assert.rejects(manager.run(async () => { throw new Error("boom"); }), /boom/);
+  const order: string[] = [];
+  await manager.run(async () => { order.push("ran"); });
+  assert.deepEqual(order, ["ran"]);
+});
+
+test("queued operations never start after shutdown", async () => {
+  const manager = new BrowserManager({ scope: { rules: ["10.0.0.0/8"] } });
+  const order: string[] = [];
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const first = manager.run(async () => {
+    order.push("first-start");
+    await firstGate;
+    order.push("first-end");
+  });
+  const second = manager.run(async () => {
+    order.push("second-start");
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  await manager.shutdown();
+  releaseFirst();
+  await first;
+  await assert.rejects(second, /closed/i);
+  assert.deepEqual(order, ["first-start", "first-end"]);
+});
+
+test("close stays reopenable while shutdown is permanent", async () => {
+  const manager = new BrowserManager({ scope: { rules: ["10.0.0.0/8"] } });
+  await manager.close();
+  const order: string[] = [];
+  await manager.run(async () => { order.push("ran-after-close"); });
+  assert.deepEqual(order, ["ran-after-close"]);
+  await manager.shutdown();
+  await assert.rejects(manager.run(async () => { order.push("must-not-run"); }), /closed/i);
+  assert.deepEqual(order, ["ran-after-close"]);
+});
+
+test("a queued operation whose signal aborts before it starts is dropped", async () => {
+  const manager = new BrowserManager({ scope: { rules: ["10.0.0.0/8"] } });
+  const controller = new AbortController();
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const first = manager.run(async () => {
+    await firstGate;
+  });
+  const second = manager.run(async () => {
+    throw new Error("queued operation must not run after abort");
+  }, controller.signal);
+  controller.abort();
+  releaseFirst();
+  await first;
+  await assert.rejects(second, /abort/i);
+});

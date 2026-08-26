@@ -1,9 +1,10 @@
 /**
  * Idempotent full shutdown of a live session record: rejects approvals,
- * aborts the main agent and every subagent (including bash), closes the
- * browser, then detaches the SDK session. Archive, delete, workspace switch,
- * and stale-record rebuild all go through this single entry point so a
- * running task can never survive its session being torn down.
+ * aborts the main agent and every subagent (including bash), permanently
+ * shuts down the browser, then detaches the SDK session. Archive, delete,
+ * workspace switch, and stale-record rebuild all go through this single
+ * entry point so a running task can never survive its session being torn
+ * down.
  *
  * Kept free of SDK imports so the ordering contract is unit-testable. Every
  * cleanup step is best-effort: one failing step is logged and the remaining
@@ -24,7 +25,8 @@ export type ShutdownTarget = {
     dispose(): void;
   };
   subagents?: { abortAll(): Promise<unknown> };
-  browser?: { close(): Promise<unknown> };
+  /** close cancels in-flight Playwright work but keeps the manager reopenable; shutdown is permanent. */
+  browser?: { close(): Promise<unknown>; shutdown(): Promise<unknown> };
   unsubscribe(): void;
 };
 
@@ -49,7 +51,10 @@ export async function shutdownSessionRecord(record: ShutdownTarget) {
     await safe("abortBash", () => session.abortBash());
     await safe("abortAgent", () => session.abort());
     if (record.subagents) await safe("abortSubagents", () => record.subagents!.abortAll());
-    if (record.browser) await safe("closeBrowser", () => record.browser!.close());
+    // The session is being destroyed: the browser must shut down permanently
+    // so queued operations reject instead of relaunching resources after
+    // cleanup. close() alone would leave the manager reopenable.
+    if (record.browser) await safe("shutdownBrowser", () => record.browser!.shutdown());
     await safe("unsubscribe", () => record.unsubscribe());
     await safe("dispose", () => session.dispose());
   })().finally(() => {
@@ -81,7 +86,10 @@ export async function abortSessionRecord(record: ShutdownTarget, emit: (event: {
       record.subagents?.abortAll() ?? Promise.resolve()
     ]);
     // The browser tool only races an abort flag; closing the manager is what
-    // genuinely cancels in-flight Playwright operations.
+    // genuinely cancels in-flight Playwright operations. Stop uses the
+    // reopenable close, not the permanent shutdown: the session record
+    // survives a Stop and the next prompt must be able to relaunch the
+    // browser. Queued operations are already dropped by their AbortSignals.
     await record.browser?.close().catch(() => undefined);
     emit({ type: "session_state", state: "idle" });
     emit({ type: "done", aborted: true });

@@ -33,7 +33,7 @@ export function createBrowserExtension(options: BrowserManagerOptions, existingM
       label: "Browser",
       description: "Control the scoped Playwright browser with one action-based tool. Navigation/interaction: navigate (open a URL; recent console errors are appended), snapshot (element refs), click/fill/press/select, back/reload. Runtime observation: evaluate (run JavaScript for DOM-XSS, prototype pollution, or front-end logic), console (captured logs, uncaught errors, alert/confirm/prompt dialogs), requests/request_detail/response_body (recorded network), screenshot (visible to you as an image). Identities: use_identity/identities switch or list isolated cookie jars (anonymous / low-privilege / admin in parallel; pass identity on any action), cookies/cookies_export/cookies_import move authenticated state between the browser and scripts such as curl. Network control: set_host_mappings (curl --resolve semantics for virtual-host probing while keeping the Host header; IPv6 targets with ports use [address]:port), set_user_agent, set_extra_headers (per identity). Also storage, tabs, close. Self-signed certificates are accepted.",
       promptSnippet: "browser(action, ...)",
-      executionMode: "sequential",
+      executionMode: "parallel",
       promptGuidelines: [
         "Use browser proactively when the task involves a live Web page, login, DOM, form, authenticated workflow, screenshot, cookie, storage, or browser network evidence; do not wait for an explicit browser request.",
         "When a target URL is available, call navigate first, then snapshot; use the returned element refs before click, fill, press, or select.",
@@ -57,7 +57,11 @@ export function createBrowserExtension(options: BrowserManagerOptions, existingM
           if (signal?.aborted) onAbort();
           else signal?.addEventListener("abort", onAbort, { once: true });
         });
-        const operation = (async () => {
+        // Serialized on the manager's per-instance chain: parallel tool
+        // lanes must not interleave read-only and mutating page operations.
+        // The signal lets a queued call be dropped when its tool call is
+        // aborted or the manager closes before the call starts.
+        const operation = manager.run(async () => {
           let result: unknown;
           switch (params.action) {
             case "navigate": {
@@ -102,7 +106,7 @@ export function createBrowserExtension(options: BrowserManagerOptions, existingM
             case "close": await manager.close(); result = "Browser closed"; break;
           }
           return { content: [{ type: "text" as const, text: typeof result === "string" ? result : JSON.stringify(result, null, 2) }], details: { action: params.action, url: manager.currentUrl } };
-        })();
+        }, signal);
         try {
           return await Promise.race([operation, aborted]);
         } finally {
@@ -114,6 +118,6 @@ export function createBrowserExtension(options: BrowserManagerOptions, existingM
       }
     });
     agent.registerTool(browserTool);
-    agent.on("session_shutdown", async () => { await manager.close(); });
+    agent.on("session_shutdown", async () => { await manager.shutdown(); });
   };
 }

@@ -14,7 +14,7 @@ function makeFakeRecord(id: string, calls: Calls): ShutdownTarget {
       dispose: () => calls.push("dispose")
     },
     subagents: { abortAll: async () => calls.push("subagents-abortAll") },
-    browser: { close: async () => calls.push("browser-close") },
+    browser: { close: async () => calls.push("browser-close"), shutdown: async () => calls.push("browser-shutdown") },
     unsubscribe: () => calls.push("unsubscribe")
   };
 }
@@ -24,12 +24,12 @@ test("shutdown aborts the running main agent before detaching, exactly once", as
   const record = makeFakeRecord("s1", calls);
   await shutdownSessionRecord(record);
   // Archiving a running session must actually terminate it: approvals are
-  // released first, the main agent (and bash) stops before the browser closes
-  // and the SDK session is disposed last.
+  // released first, the main agent (and bash) stops before the browser shuts
+  // down permanently and the SDK session is disposed last.
   assert.equal(calls[0], "rejectAll");
   assert.ok(calls.indexOf("abortBash") < calls.indexOf("abort"), "abortBash precedes abort");
-  assert.ok(calls.indexOf("abort") < calls.indexOf("browser-close"), "abort precedes browser close");
-  assert.ok(calls.indexOf("browser-close") < calls.indexOf("unsubscribe"), "browser close precedes unsubscribe");
+  assert.ok(calls.indexOf("abort") < calls.indexOf("browser-shutdown"), "abort precedes browser shutdown");
+  assert.ok(calls.indexOf("browser-shutdown") < calls.indexOf("unsubscribe"), "browser shutdown precedes unsubscribe");
   assert.equal(calls[calls.length - 1], "dispose");
   assert.ok(calls.includes("subagents-abortAll"));
   // Idempotent: a second shutdown does not repeat any side effect.
@@ -45,9 +45,9 @@ test("a failing cleanup step never skips the remaining ones", async () => {
     calls.push("abort");
     throw new Error("agent abort blew up");
   };
-  record.browser!.close = async () => {
-    calls.push("browser-close");
-    throw new Error("browser close blew up");
+  record.browser!.shutdown = async () => {
+    calls.push("browser-shutdown");
+    throw new Error("browser shutdown blew up");
   };
   record.unsubscribe = () => {
     calls.push("unsubscribe");
@@ -55,7 +55,7 @@ test("a failing cleanup step never skips the remaining ones", async () => {
   };
   await shutdownSessionRecord(record);
   // Every later step still ran and shutdown resolved instead of rejecting.
-  assert.deepEqual(calls, ["rejectAll", "abortBash", "abort", "subagents-abortAll", "browser-close", "unsubscribe", "dispose"]);
+  assert.deepEqual(calls, ["rejectAll", "abortBash", "abort", "subagents-abortAll", "browser-shutdown", "unsubscribe", "dispose"]);
 });
 
 test("shutdown waits for an in-flight stop before cleaning up", async () => {
@@ -117,4 +117,16 @@ test("concurrent stops share a single abort round", async () => {
   await Promise.all([first, second]);
   assert.deepEqual(emitted, ["session_state", "done"], "exactly one idle/done pair");
   assert.equal(record.aborting, false);
+});
+
+test("a user Stop cancels browser work without permanently closing it", async () => {
+  const calls: string[] = [];
+  const record = makeFakeRecord("s6", calls);
+  const emitted: string[] = [];
+  await abortSessionRecord(record, (event) => emitted.push(event.type));
+  // Stop uses the reopenable close (the session survives and must be able to
+  // relaunch the browser on the next prompt), never the permanent shutdown.
+  assert.ok(calls.includes("browser-close"), "stop cancels in-flight Playwright work");
+  assert.equal(calls.includes("browser-shutdown"), false, "stop must not permanently close the browser");
+  assert.deepEqual(emitted, ["session_state", "done"]);
 });

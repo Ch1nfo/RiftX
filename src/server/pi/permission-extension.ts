@@ -175,7 +175,13 @@ export function createPermissionExtension(
             mutationRelease?.();
             bashRelease?.();
           };
-        } else release = mutationLock ? await mutationLock.acquire(ctx.signal) : undefined;
+        } else if (event.toolName !== "browser") {
+          // Browser state is serialized inside BrowserManager's per-instance
+          // operation chain, so browser calls coordinate no cross-tool lock:
+          // routing them through the file lock would stall browser work
+          // behind long Bash scans again.
+          release = mutationLock ? await mutationLock.acquire(ctx.signal) : undefined;
+        }
         if (release) {
           const onAbort = () => releaseTool(event.toolCallId);
           ctx.signal?.addEventListener("abort", onAbort, { once: true });

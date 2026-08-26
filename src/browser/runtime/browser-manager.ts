@@ -91,6 +91,32 @@ function parseHostMappingEntries(mappings: Record<string, string>): ParsedHostMa
 }
 
 export class BrowserManager {
+  private operationChain: Promise<unknown> = Promise.resolve();
+  private closed = false;
+
+  /**
+   * Serialize every browser operation on this manager instance. Playwright
+   * pages must not be driven concurrently and the manager's own state
+   * (pages, identities, network log) is mutable, so read-only and mutating
+   * actions alike run through one chain. This is the guarantee that lets the
+   * browser tool execute in the parallel lane without read/write
+   * interleaving; instances are per-session, so chains never cross sessions.
+   * A queued operation re-checks its AbortSignal and the closed flag when
+   * dequeued: an aborted caller or a closed manager must never let a stale
+   * operation start, or it would relaunch browser resources and perform side
+   * effects the user already stopped.
+   */
+  run<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    const start = async () => {
+      if (this.closed) throw new Error("Browser session is closed");
+      signal?.throwIfAborted();
+      return operation();
+    };
+    const next = this.operationChain.then(start, start);
+    this.operationChain = next.then(() => undefined, () => undefined);
+    return next;
+  }
+
   private readonly contextManager = new ContextManager();
   private readonly requests = new RequestStore();
   private readonly pages = new Map<string, PageManager>();
@@ -720,7 +746,28 @@ export class BrowserManager {
     }
   }
 
-  async close() {
+  /**
+   * Release the browser and all tracked state, but stay usable: the
+   * model-facing browser "close" action expects a later navigate to lazily
+   * relaunch everything. Queued operations still run afterwards.
+   */
+  close() {
+    return this.teardown();
+  }
+
+  /**
+   * Permanent teardown for session shutdown/abort. The closed flag barriers
+   * the operation chain: every queued operation rejects at its dequeue check
+   * instead of starting against torn-down (or re-launched) resources. The
+   * in-flight operation fails naturally against the teardown rather than
+   * delaying shutdown.
+   */
+  async shutdown() {
+    this.closed = true;
+    await this.teardown();
+  }
+
+  private async teardown() {
     // Tear down routed WebSockets first: closing the browser while a routed
     // WebSocket is still live can hang the Playwright context shutdown.
     for (const entry of [...this.routedWebSockets]) this.closeRoutedWebSocket(entry);

@@ -235,6 +235,9 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
 
   const config = await readConfig();
   const bashConcurrency = bashConcurrencyOverride ?? new BashConcurrency(config.maxConcurrentSubagents + 1);
+  // Browser state changes have their own lock. Bash still shares the file
+  // mutation lock with write/edit, but a long read-heavy Bash scan must not
+  // block navigation or interaction in the Browser runtime.
   gate.setMode(config.approvalMode);
   const emitter = new EventEmitter();
   const toolStatuses = new Map<string, "queued" | "running">();
@@ -324,14 +327,17 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
   });
   evidenceSession = result.session;
   installMidTurnCompaction(result.session);
-  // The runtime prepares parallel calls before executing them. Keep mutation
-  // tools sequential so they cannot deadlock on the shared mutation lock.
-  // Bash uses its own shared concurrency limiter, while spawn_subagent remains parallel.
+  // The runtime prepares parallel calls before executing them. write/edit
+  // share one sequential lane because they take the exclusive file lock in
+  // beforeToolCall and must not head-of-line-stall each other's lock waits.
+  // Bash uses its own shared concurrency limiter; browser and spawn_subagent
+  // run in parallel lanes (BrowserManager serializes its own state per
+  // instance, so browser never queues behind file mutations).
   const runtimeAgent = (result.session as unknown as { agent?: { toolExecution?: "parallel" | "sequential"; state?: { tools?: Array<{ name: string; executionMode?: "parallel" | "sequential" }> } } }).agent;
   if (runtimeAgent) {
     runtimeAgent.toolExecution = "parallel";
     for (const tool of runtimeAgent.state?.tools ?? []) {
-      if (["write", "edit", "browser"].includes(tool.name)) tool.executionMode = "sequential";
+      if (tool.name === "write" || tool.name === "edit") tool.executionMode = "sequential";
       if (tool.name === "spawn_subagent") tool.executionMode = "parallel";
     }
   }
@@ -397,7 +403,7 @@ async function runChildSession(profile: ModelProfile, cwd: string, mutationLock:
   const abortChild = () => {
     child.gate.rejectAll();
     child.session.abortBash();
-    void child.browser?.close();
+    void child.browser?.shutdown();
     void child.session.abort().catch(() => undefined);
   };
   if (context.signal.aborted) {

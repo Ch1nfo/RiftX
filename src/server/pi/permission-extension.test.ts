@@ -11,6 +11,11 @@ import type { ApprovalEvaluation } from "./approval-evaluator";
 type ToolCallHandler = (event: { toolName: string; toolCallId: string; input: unknown }, ctx: { signal?: AbortSignal }) => Promise<unknown>;
 type ToolExecutionEndHandler = (event: { toolCallId: string; isError: boolean }) => unknown;
 
+/** Fail fast with a clear message instead of hanging when lock coupling regresses. */
+function stallGuard<T>(promise: Promise<T>, message: string, ms = 250): Promise<T> {
+  return Promise.race([promise, new Promise<never>((_, reject) => setTimeout(() => reject(new Error(message)), ms))]);
+}
+
 function makeHarness(guard?: BrowserScopeGuard, bashConcurrency?: BashConcurrency, mutationLock?: MutationLock, mode: "request" | "auto" | "full" = "request", evaluate?: (request: ApprovalRequest) => Promise<ApprovalEvaluation>, emit?: (event: Record<string, unknown>) => void) {
   const gate = new ApprovalGate(mode);
   const events: RiftxEvent[] = [];
@@ -81,6 +86,54 @@ test("Bash waits for an exclusive mutation and then reports running", async () =
     toolStatus: "running"
   });
   harness.end("bash-mutation");
+});
+
+test("a running Bash scan does not block a browser call", async () => {
+  const mutationLock = new MutationLock();
+  const bash = makeHarness(undefined, new BashConcurrency(1), mutationLock, "full");
+  const browser = makeHarness(undefined, undefined, mutationLock, "full");
+
+  const bashPending = bash.call({ command: "find . -type f" }, "bash", "bash-scan");
+  await bashPending;
+  assert.deepEqual(bash.events.find((event) => event.type === "tool_status"), { type: "tool_status", toolName: "bash", toolCallId: "bash-scan", toolStatus: "running" });
+
+  // Browser coordinates no cross-tool lock (BrowserManager serializes its own
+  // state per instance), so it must complete while the Bash scan still holds
+  // the shared file lock.
+  const browserPending = browser.call({ action: "navigate", url: "http://authorized.test/" }, "browser", "browser-nav");
+  await stallGuard(browserPending, "browser call stalled behind the Bash-held file lock");
+  assert.deepEqual(browser.events.find((event) => event.type === "tool_status"), { type: "tool_status", toolName: "browser", toolCallId: "browser-nav", toolStatus: "running" });
+
+  bash.end("bash-scan");
+  browser.end("browser-nav");
+});
+
+test("an approved browser call does not block Bash or file mutations", async () => {
+  const mutationLock = new MutationLock();
+  const browser = makeHarness(undefined, undefined, mutationLock, "full");
+  await browser.call({ action: "navigate", url: "http://authorized.test/" }, "browser", "browser-nav");
+
+  const bash = makeHarness(undefined, new BashConcurrency(1), mutationLock, "full");
+  await stallGuard(bash.call({ command: "echo probe" }, "bash", "bash-1"), "Bash stalled behind a pending browser call");
+  bash.end("bash-1");
+
+  const write = makeHarness(undefined, undefined, mutationLock, "full");
+  await stallGuard(write.call({ path: "a.txt", content: "x" }, "write", "write-1"), "write stalled behind a pending browser call");
+  write.end("write-1");
+  browser.end("browser-nav");
+});
+
+test("write still waits for shared Bash holders on the file lock", async () => {
+  const mutationLock = new MutationLock();
+  const releaseShared = await mutationLock.acquireShared();
+  const harness = makeHarness(undefined, undefined, mutationLock, "full");
+  const pending = harness.call({ path: "a.txt", content: "x" }, "write", "write-shared");
+  await Promise.resolve();
+  assert.equal(harness.events.some((event) => event.type === "tool_status"), false);
+  releaseShared();
+  await pending;
+  assert.deepEqual(harness.events.find((event) => event.type === "tool_status"), { type: "tool_status", toolName: "write", toolCallId: "write-shared", toolStatus: "running" });
+  harness.end("write-shared");
 });
 
 test("Bash without a limiter is blocked instead of running without coordination", async () => {
