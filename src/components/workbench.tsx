@@ -135,7 +135,6 @@ export function Workbench() {
   const [modelSwitching, setModelSwitching] = useState(false);
   const messageDeltaQueueRef = useRef<MessageDelta[]>([]);
   const messageDeltaFrameRef = useRef<number | undefined>(undefined);
-  const scrollFrameRef = useRef<number | undefined>(undefined);
   const lastScrollTopRef = useRef(0);
   const historyScrollRef = useRef<{ height: number; top: number } | null>(null);
   const pendingToolScrollRef = useRef<string | null>(null);
@@ -473,31 +472,36 @@ export function Workbench() {
   const running = mainAgentRunning || subagentRunning > 0 || approvalQueue.length > 0;
   const composerBusy = mainAgentRunning || approvalQueue.some((item) => !item.subagentId);
 
-  useEffect(() => {
-    if (!shouldAutoScrollRef.current || scrollFrameRef.current !== undefined) return;
-    scrollFrameRef.current = requestAnimationFrame(() => {
-      scrollFrameRef.current = undefined;
-      const conversation = conversationRef.current;
-      if (conversation && shouldAutoScrollRef.current) {
-        conversation.scrollTop = conversation.scrollHeight;
-        lastScrollTopRef.current = conversation.scrollTop;
-      }
-    });
+  // Pin synchronously, never through a rAF hop. A deferred pin leaves one
+  // frame where the viewport trails the streamed content (distance can grow
+  // past the latest threshold), and a native scroll-anchoring adjustment in
+  // that window — a thinking/tool block auto-collapsing above the viewport,
+  // or the 200-message window sliding when a long conversation grows —
+  // arrives as a scroll event that preserves the distance to the bottom
+  // while moving scrollTop up: indistinguishable from an intentional upward
+  // scroll, it permanently killed auto-follow until the next user action.
+  // Pinning inside the commit (layout effect) and directly in the
+  // ResizeObserver callback (post-layout, pre-paint) keeps the viewport
+  // bottomed before the next frame's scroll events are dispatched — scroll
+  // steps run before rAF callbacks, so a deferred pin always lost that race.
+  // Whatever residual window late layout (fonts, images) leaves open is
+  // covered by the atLatest rule.
+  const pinToLatest = () => {
+    const conversation = conversationRef.current;
+    if (!conversation || !shouldAutoScrollRef.current) return;
+    conversation.scrollTop = conversation.scrollHeight;
+    lastScrollTopRef.current = conversation.scrollTop;
+  };
+
+  useLayoutEffect(() => {
+    pinToLatest();
   }, [messages]);
 
   useEffect(() => {
     const content = conversationInnerRef.current;
     if (!content || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => {
-      if (!shouldAutoScrollRef.current || scrollFrameRef.current !== undefined) return;
-      scrollFrameRef.current = requestAnimationFrame(() => {
-        scrollFrameRef.current = undefined;
-        const conversation = conversationRef.current;
-        if (conversation && shouldAutoScrollRef.current) {
-          conversation.scrollTop = conversation.scrollHeight;
-          lastScrollTopRef.current = conversation.scrollTop;
-        }
-      });
+      pinToLatest();
     });
     observer.observe(content);
     return () => observer.disconnect();
@@ -517,10 +521,6 @@ export function Workbench() {
     // scroll event coming.
     if (!revealToolCard(toolCallId)) scheduleFollowReconcile();
   }, [visibleMessageCount]);
-
-  useEffect(() => () => {
-    if (scrollFrameRef.current !== undefined) cancelAnimationFrame(scrollFrameRef.current);
-  }, []);
 
   // Pausing auto-follow deliberately does not touch the jump button: the
   // button derives from shouldFollow on the next scroll event, so a
@@ -582,8 +582,6 @@ export function Workbench() {
     const conversation = conversationRef.current;
     if (conversation) historyScrollRef.current = { height: conversation.scrollHeight, top: conversation.scrollTop };
     pauseAutoFollow();
-    if (scrollFrameRef.current !== undefined) cancelAnimationFrame(scrollFrameRef.current);
-    scrollFrameRef.current = undefined;
     setVisibleMessageCount((current) => Math.min(visibleMessages.length, current + MESSAGE_BATCH_SIZE));
   };
 
