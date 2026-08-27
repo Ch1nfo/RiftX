@@ -4,7 +4,7 @@ import { ApprovalGate } from "./approval-gate";
 import { createPermissionExtension, type BrowserScopeGuard } from "./permission-extension";
 import { BashConcurrency } from "./bash-concurrency";
 import { MutationLock } from "./mutation-lock";
-import type { ScopeDecision } from "@/browser/scope/scope-rules";
+import type { ScopeDecision } from "@/lib/scope-rules";
 import type { ApprovalRequest, RiftxEvent } from "@/lib/types";
 import type { ApprovalEvaluation } from "./approval-evaluator";
 

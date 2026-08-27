@@ -17,11 +17,11 @@ import {
 import type { Model } from "@mariozechner/pi-ai";
 import { readConfig, getAppPaths, getLaunchDirectory, updateConfig } from "@/server/config-store";
 import { RiftxError } from "@/server/errors";
-import { clampConcurrency, type AppConfig, type ApprovalMode, type ArchivedSession, type ContextUsage, type FindingInput, type FindingSource, type ModelProfile, type RiftxEvent, type SessionSummary } from "@/lib/types";
+import { clampConcurrency, type ApprovalMode, type ArchivedSession, type ModelProfile, type RiftxEvent, type SessionSummary } from "@/lib/types";
 import { ApprovalGate } from "./approval-gate";
 import { createPermissionExtension, guardedTools } from "./permission-extension";
 import { resolvePromptMode } from "@/lib/prompt-mode";
-import { emptyContextUsage, normalizeContextUsage } from "./usage";
+import { normalizeContextUsage } from "./usage";
 import { buildChildPentestSystemPrompt, buildPentestSystemPrompt } from "./system-prompt";
 import { evaluateApproval } from "./approval-evaluator";
 import { createBrowserExtension, BrowserManager } from "@/browser";
@@ -29,7 +29,7 @@ import { MutationLock } from "./mutation-lock";
 import { SubagentManager, type SubagentRunnerContext } from "./subagent-manager";
 import { generateSessionTitle } from "./session-title";
 import { EvidenceStore, getEvidenceStore, removeEvidence } from "./evidence-store";
-import { estimateCompactedUsage, estimateMessagesContextUsage, installMidTurnCompaction } from "./mid-turn-compaction";
+import { estimateCompactedUsage, installMidTurnCompaction } from "./mid-turn-compaction";
 import { waitForSubagentsBeforeConclusion } from "./session-join";
 import { setAgentTransport } from "./pi-internals";
 import { prepareSkillPrompt, type SkillDescriptor } from "./skill-router";
@@ -41,103 +41,17 @@ import { abortSessionRecord, shutdownSessionRecord } from "./session-shutdown";
 import { switchSessionProfile, withProfileSwitchLock } from "./apply-session-profile";
 import { registerTrackedProfile, registerProfileModel, restoreProviderRegistration, memoizedTitleRuntime, type ProviderRegistrations } from "./model-registration";
 import { extractLastAssistantResult } from "./subagent-result";
+import { sessions, sessionCreation, RUNTIME_VERSION, type RuntimeDeps, type SessionRecord } from "./session-registry";
+import { createFindingTool, type FindingSourceInfo } from "./tools/finding-tool";
+import { createSubagentTool } from "./tools/subagent-tool";
+import { listSessions, getSessionSnapshot, getSessionMessages as getMessages, summaryName, usageFromRecord, listWorkspaceSessionInfos, findSessionPath } from "./session-snapshot";
+
+// Facade re-exports: the API routes import everything from this module.
+export { listSessions, getSessionSnapshot };
+export async function getSessionMessages(id: string) {
+  return getMessages(id, () => getOrCreateSession(id));
+}
 import { deliverSubagentCompletion, dispatchSessionAction } from "./session-join";
-
-type SessionRecord = {
-  id: string;
-  cwd: string;
-  profile: ModelProfile;
-  authStorage: AuthStorage;
-  model: Model<any>;
-  modelRegistry: ModelRegistry;
-  settingsManager: SettingsManager;
-  sessionManager: AgentSessionManager;
-  session: AgentSession;
-  gate: ApprovalGate;
-  emitter: EventEmitter;
-  toolStatuses: Map<string, "queued" | "running">;
-  unsubscribe: () => void;
-  browser?: BrowserManager;
-  mutationLock: MutationLock;
-  bashConcurrency: BashConcurrency;
-  subagents?: SubagentManager;
-  evidenceStore: EvidenceStore;
-  shutdownPromise?: Promise<void>;
-  runtimeVersion?: number;
-  abortPromise?: Promise<void>;
-  aborting?: boolean;
-  abortEpoch?: number;
-  waitingForSubagents?: boolean;
-  promptChain?: Promise<void>;
-  subagentDeliveryInProgress?: boolean;
-  deliveredSubagentResults: Set<string>;
-  deliveringSubagentResults: Set<string>;
-  skills: SkillDescriptor[];
-  loadedSkills: Set<string>;
-  providerRegistrations: ProviderRegistrations;
-  profileSwitch?: Promise<unknown>;
-};
-
-const RUNTIME_VERSION = 27;
-
-type SessionSnapshotCacheEntry = {
-  modifiedMs: number;
-  size: number;
-  profileKey: string;
-  snapshot: SessionSnapshot | null;
-};
-
-const sessionSnapshotCache = new Map<string, SessionSnapshotCacheEntry>();
-const SESSION_SNAPSHOT_CACHE_LIMIT = 256;
-
-type SessionSnapshot = {
-  id: string;
-  provider?: string;
-  model?: string;
-  profileId?: string;
-  contextWindow: number;
-  usage: ContextUsage;
-};
-
-declare global {
-  // eslint-disable-next-line no-var
-  var __riftxSessions: Map<string, SessionRecord> | undefined;
-  // eslint-disable-next-line no-var
-  var __riftxSessionCreation: Map<string, Promise<SessionRecord>> | undefined;
-}
-
-const sessions = globalThis.__riftxSessions ?? (globalThis.__riftxSessions = new Map<string, SessionRecord>());
-const sessionCreation = globalThis.__riftxSessionCreation ?? (globalThis.__riftxSessionCreation = new Map<string, Promise<SessionRecord>>());
-
-type RuntimeDeps = {
-  evidenceStore: EvidenceStore;
-  evidenceSessionId: string;
-};
-
-type FindingSourceInfo = { source: FindingSource; subagentId?: string };
-
-type ToolEvidenceSnapshot = { toolCallId: string; toolName: string; content: string };
-
-function textFromContent(content: unknown) {
-  return Array.isArray(content)
-    ? content.map((part: unknown) => typeof part === "string" ? part : part && typeof part === "object" && "text" in part ? String((part as { text?: unknown }).text ?? "") : "").join("")
-    : String(content ?? "");
-}
-
-function resolveToolEvidence(session: AgentSession | undefined, requestedId: string): ToolEvidenceSnapshot | undefined {
-  if (!session) return undefined;
-  const messages = session.messages as unknown as Array<{ role?: string; content?: unknown; toolCallId?: string }>;
-  const calls = messages.flatMap((message) => {
-    const parts = Array.isArray(message.content) ? message.content : [];
-    return parts.filter((part): part is { type?: string; id?: string; name?: string } => Boolean(part && typeof part === "object" && (part as { type?: string }).type === "toolCall"))
-      .map((part) => ({ id: String(part.id ?? ""), name: String(part.name ?? "tool") }));
-  });
-  const selected = calls.find((call) => call.id === requestedId);
-  if (!selected) return undefined;
-  const result = messages.find((message) => message.role === "toolResult" && message.toolCallId === selected.id);
-  const content = textFromContent(result?.content);
-  return content ? { toolCallId: selected.id, toolName: selected.name, content } : undefined;
-}
 
 function eventPayload(event: AgentSessionEvent): RiftxEvent {
   const base = event as unknown as Record<string, unknown>;
@@ -165,69 +79,6 @@ function eventPayload(event: AgentSessionEvent): RiftxEvent {
   return { type: "message", message: base };
 }
 
-
-function createFindingTool(store: EvidenceStore, source: FindingSourceInfo, browser: BrowserManager, getSession: () => AgentSession | undefined): ToolDefinition {
-  return defineTool({
-    name: "record_finding",
-    label: "Record finding",
-    description: "Record one evidence-backed finding in the parent session. Use only when there is a concrete, reviewable conclusion; use likely or suspected when validation is incomplete and never create findings to fill a quota.",
-    promptSnippet: "record_finding(title, asset, confidence, impact, reproduction, evidence)",
-    parameters: Type.Object({
-      title: Type.String({ description: "Short finding title." }),
-      asset: Type.String({ description: "Affected URL, host, route, or other asset." }),
-      confidence: Type.Union([Type.Literal("confirmed"), Type.Literal("likely"), Type.Literal("suspected"), Type.Literal("not_reproducible")]),
-      impact: Type.String({ description: "Short description of the actual or expected impact." }),
-      reproduction: Type.String({ description: "Short reproducible validation steps or the reason reproduction is incomplete." }),
-      evidence: Type.Array(Type.Union([
-        Type.Object({ type: Type.Literal("quote"), quote: Type.String() }),
-        Type.Object({ type: Type.Literal("tool"), toolCallId: Type.String(), toolName: Type.String() }),
-        Type.Object({ type: Type.Literal("request"), requestRef: Type.String() }),
-        Type.Object({ type: Type.Literal("screenshot"), screenshotId: Type.String() })
-      ]), { minItems: 1 })
-    }),
-    async execute(_toolCallId, params) {
-      const input = params as FindingInput;
-      const evidence = await Promise.all(input.evidence.map(async (item) => {
-        if (item.type === "tool") {
-          const snapshot = resolveToolEvidence(getSession(), item.toolCallId);
-          return snapshot ? { ...item, ...snapshot } : item;
-        }
-        if (item.type === "request") return browser.requestEvidence(item.requestRef);
-        if (item.type === "screenshot") return browser.screenshotEvidence(item.screenshotId);
-        return item;
-      }));
-      const finding = await store.upsert({ ...input, evidence }, source.source, source.subagentId);
-      return { content: [{ type: "text", text: `Finding recorded: ${finding.title}` }], details: { findingId: finding.id } };
-    }
-  });
-}
-
-function createSubagentTool(manager: SubagentManager, getChildProfile: () => ModelProfile, cwd: string, mutationLock: MutationLock, bashConcurrency: BashConcurrency, runtimeDeps: RuntimeDeps): ToolDefinition {
-  return defineTool({
-    name: "spawn_subagent",
-    label: "Spawn subagent",
-    description: "Start one focused, independent Web penetration testing child Agent that runs in the background while you continue other work; each completed result is delivered to you automatically. Follow the session's subagent delegation policy: use it only for meaningful, non-duplicate, independent work, never poll child logs or task files, and remember every child is mandatory for the final assessment. The child cannot create another child.",
-    promptSnippet: "spawn_subagent(task)",
-    executionMode: "parallel",
-    parameters: Type.Object({
-      task: Type.String({ description: "A unique, self-contained task with a clear target surface, evidence goal, and no dependency on another child task." })
-    }),
-    async execute(_toolCallId, params, signal) {
-      const childProfile = getChildProfile();
-      const submitted = manager.submitTask(params.task, (context) => runChildSession(childProfile, cwd, mutationLock, bashConcurrency, context, runtimeDeps));
-      void submitted.promise.catch(() => undefined);
-      const taskLabel = submitted.task?.name || "subagent task";
-      const state = submitted.task?.status || "queued";
-      const text = submitted.duplicate
-        ? `A matching subagent task is already ${state}. Its existing result will be delivered when complete.`
-        : `Subagent task accepted in the background (${state}): ${taskLabel}. Continue independent work. RiftX will return its result when it completes and will wait for it before a final conclusion if needed.`;
-      // A duplicate submission shares the original task: aborting THIS call
-      // must not cancel the task owned by the first spawn.
-      if (signal?.aborted && submitted.task?.id && !submitted.duplicate) manager.cancel(submitted.task.id);
-      return { content: [{ type: "text", text }], details: { model: `${childProfile.provider}/${childProfile.model}`, taskId: submitted.task?.id, status: state, background: true } };
-    }
-  });
-}
 
 async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: ApprovalGate, child = false, sessionManagerOverride?: AgentSessionManager, mutationLock = new MutationLock(), bashConcurrencyOverride?: BashConcurrency, runtimeDeps?: RuntimeDeps, findingSource: FindingSourceInfo = { source: "main" }) {
   const paths = getAppPaths();
@@ -305,7 +156,7 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
         // Read per call: saving a key in settings applies to already-running
         // sessions on their next search, with no re-open needed.
         getTavilyApiKey: async () => (await readConfig()).webSearch?.tavilyApiKey
-      }), ...(subagents ? [createSubagentTool(subagents, getChildProfile, cwd, mutationLock, bashConcurrency, { evidenceStore, evidenceSessionId })] : [])];
+      }), ...(subagents ? [createSubagentTool(subagents, getChildProfile, cwd, mutationLock, bashConcurrency, { evidenceStore, evidenceSessionId }, runChildSession)] : [])];
   const browserExtension = createBrowserExtension({ evidenceRoot: paths.evidence, evidenceSessionId }, browser);
   const resourceLoader = new DefaultResourceLoader({
     cwd,
@@ -445,137 +296,6 @@ async function runChildSession(profile: ModelProfile, cwd: string, mutationLock:
 async function profileFor(id?: string) {
   const config = await readConfig();
   return config.profiles.find((profile) => profile.id === (id ?? config.activeProfileId)) ?? config.profiles[0];
-}
-
-function summaryName(config: Awaited<ReturnType<typeof readConfig>>, id: string, firstMessage: string, archived = false) {
-  if (config.sessionTitles[id]) return config.sessionTitles[id];
-  if (firstMessage) return "Untitled task";
-  return archived ? "Archived session" : "New session";
-}
-
-function usageFromRecord(record: SessionRecord): ContextUsage {
-  const usage = record.session.getContextUsage();
-  if (!usage) return emptyContextUsage(record.profile.contextWindow);
-  if (usage.percent === null) return estimateCompactedUsage(record.session, record.profile.contextWindow);
-  return normalizeContextUsage(usage, record.profile.contextWindow);
-}
-
-async function sessionSnapshotFromFile(path: string, profiles: ModelProfile[]): Promise<SessionSnapshot | null> {
-  const profileKey = profiles.map((profile) => `${profile.id}:${profile.provider}:${profile.model}:${profile.contextWindow}`).join("|");
-  try {
-    const fileInfo = await stat(path);
-    const cached = sessionSnapshotCache.get(path);
-    if (cached && cached.modifiedMs === fileInfo.mtimeMs && cached.size === fileInfo.size && cached.profileKey === profileKey) {
-      return cached.snapshot ? { ...cached.snapshot, usage: { ...cached.snapshot.usage } } : null;
-    }
-    const text = await readFile(path, "utf8");
-    const lines = text.split(/\r?\n/).filter(Boolean);
-    let sessionId = "";
-    let provider = "";
-    let model = "";
-    let usage: ContextUsage | undefined;
-    let postCompactionMessages: unknown[] | undefined;
-    let hasPostCompactionUsage = false;
-    for (const line of lines) {
-      let entry: Record<string, unknown>;
-      try {
-        entry = JSON.parse(line) as Record<string, unknown>;
-      } catch {
-        continue;
-      }
-      if (!sessionId && entry.type === "session" && typeof entry.id === "string") sessionId = entry.id;
-      if (entry.type === "model_change") {
-        if (typeof entry.provider === "string") provider = entry.provider;
-        if (typeof entry.modelId === "string") model = entry.modelId;
-      }
-      if (entry.type === "compaction") {
-        postCompactionMessages = [{ role: "compactionSummary", summary: String(entry.summary ?? "") }];
-        hasPostCompactionUsage = false;
-      }
-      if (entry.type === "branch_summary" && postCompactionMessages) {
-        postCompactionMessages.push({ role: "branchSummary", summary: String(entry.summary ?? "") });
-      }
-      if (entry.type === "message") {
-        const message = entry.message as Record<string, unknown> | undefined;
-        if (postCompactionMessages && message) postCompactionMessages.push(message);
-        if (message?.usage) {
-          if (typeof message.provider === "string") provider = message.provider;
-          if (typeof message.model === "string") model = message.model;
-          const matchedProfile = profiles.find((profile) => profile.provider === provider && profile.model === model);
-          const contextWindow = matchedProfile?.contextWindow ?? 0;
-          usage = normalizeContextUsage(message.usage, contextWindow);
-          if (postCompactionMessages && message.role === "assistant" && message.stopReason !== "aborted" && message.stopReason !== "error") {
-            hasPostCompactionUsage = true;
-          }
-        }
-      }
-    }
-    const matchedProfile = profiles.find((profile) => profile.provider === provider && profile.model === model);
-    const contextWindow = matchedProfile?.contextWindow ?? usage?.contextWindow ?? 0;
-    if (postCompactionMessages && !hasPostCompactionUsage) {
-      usage = estimateMessagesContextUsage(postCompactionMessages, contextWindow);
-    }
-    const snapshot = {
-      id: sessionId,
-      provider: provider || matchedProfile?.provider,
-      model: model || matchedProfile?.model,
-      profileId: matchedProfile?.id,
-      contextWindow,
-      usage: usage ? {
-        ...usage,
-        contextWindow,
-        remaining: usage.percent === null ? contextWindow : Math.max(0, contextWindow - usage.tokens),
-        percent: usage.percent === null ? null : contextWindow > 0 ? Math.min(100, (usage.tokens / contextWindow) * 100) : null
-      } : emptyContextUsage(contextWindow)
-    };
-    sessionSnapshotCache.set(path, { modifiedMs: fileInfo.mtimeMs, size: fileInfo.size, profileKey, snapshot });
-    while (sessionSnapshotCache.size > SESSION_SNAPSHOT_CACHE_LIMIT) sessionSnapshotCache.delete(sessionSnapshotCache.keys().next().value!);
-    return { ...snapshot, usage: { ...snapshot.usage } };
-  } catch {
-    return null;
-  }
-}
-
-async function buildSessionSnapshot(id: string, path: string | undefined, config: AppConfig) {
-  const live = sessions.get(id);
-  if (live) {
-    return {
-      id,
-      provider: live.profile.provider,
-      model: live.profile.model,
-      profileId: live.profile.id,
-      contextWindow: live.profile.contextWindow,
-      usage: usageFromRecord(live)
-    } satisfies SessionSnapshot;
-  }
-  const fromFile = path ? await sessionSnapshotFromFile(path, config.profiles) : null;
-  if (fromFile) return fromFile;
-  const fallbackProfile = config.profiles.find((profile) => profile.id === config.activeProfileId) ?? config.profiles[0];
-  return {
-    id,
-    provider: fallbackProfile?.provider,
-    model: fallbackProfile?.model,
-    profileId: fallbackProfile?.id,
-    contextWindow: fallbackProfile?.contextWindow ?? 0,
-    usage: emptyContextUsage(fallbackProfile?.contextWindow ?? 0)
-  } satisfies SessionSnapshot;
-}
-
-async function listWorkspaceSessionInfos(cwd: string) {
-  const target = resolve(cwd);
-  const infos = await AgentSessionManager.list(cwd, getAppPaths().sessions);
-  const launchDirectory = getLaunchDirectory();
-  return infos.filter((info) => info.cwd ? resolve(info.cwd) === target : target === launchDirectory);
-}
-
-async function findSessionPath(id: string, cwd?: string) {
-  const config = await readConfig();
-  const rootCwd = cwd ?? config.cwd;
-  const info = (await listWorkspaceSessionInfos(rootCwd)).find((item) => item.id === id);
-  if (info?.path) return info.path;
-  const archived = config.archivedSessions.find((item) => item.id === id);
-  if (archived?.path) return archived.path;
-  return "";
 }
 
 async function getOrCreateSession(id?: string) {
@@ -826,23 +546,6 @@ export async function listSubagents(id: string) {
   return { tasks: record.subagents?.list() ?? [], running: record.subagents?.runningCount ?? 0, maxConcurrent: record.subagents?.maxConcurrentSubagents ?? 0 };
 }
 
-export async function getSessionSnapshot(id: string) {
-  const live = sessions.get(id);
-  const path = await findSessionPath(id);
-  // An unknown id must 404 like every sibling route, never fabricate a
-  // default-profile snapshot for a session that does not exist.
-  if (!live && !path) throw new RiftxError("Session not found", "SESSION_NOT_FOUND", 404);
-  const snapshot = await buildSessionSnapshot(id, path, await readConfig());
-  return {
-    id,
-    provider: snapshot.provider ?? "",
-    model: snapshot.model ?? "",
-    profileId: snapshot.profileId ?? "",
-    contextWindow: snapshot.contextWindow,
-    usage: snapshot.usage
-  };
-}
-
 export async function cancelSubagent(id: string, taskId: string) {
   const record = await getOrCreateSession(id);
   return record.subagents?.cancel(taskId) ?? false;
@@ -851,96 +554,6 @@ export async function cancelSubagent(id: string, taskId: string) {
 export async function retrySubagent(id: string, taskId: string) {
   const record = await getOrCreateSession(id);
   return await record.subagents?.retry(taskId) ?? null;
-}
-
-export async function getSessionMessages(id: string) {
-  const record = await getOrCreateSession(id);
-  const messages: Array<{ id: string; role: "user" | "assistant" | "thinking" | "tool"; content: string; toolName?: string; toolCallId?: string; status?: "queued" | "running" | "done" | "error" | "cancelled"; isError?: boolean }> = [];
-  const toolIndexes = new Map<string, number>();
-  const entries = record.sessionManager.getBranch();
-  entries.forEach((entry, messageIndex) => {
-    if (entry.type !== "message") return;
-    const message = entry.message;
-    const candidate = message as unknown as { role?: string; content?: unknown; toolCallId?: string; toolName?: string; isError?: boolean };
-    if (candidate.role === "toolResult") {
-      const toolCallId = candidate.toolCallId ?? `${record.id}-${messageIndex}`;
-      const result = textFromContent(candidate.content);
-      const toolIndex = toolIndexes.get(toolCallId);
-      if (toolIndex === undefined) {
-        messages.push({ id: `${record.id}-${messageIndex}`, role: "tool", toolCallId, toolName: candidate.toolName ?? "tool", content: result, status: candidate.isError ? "error" : "done", isError: Boolean(candidate.isError) });
-      } else {
-        messages[toolIndex] = { ...messages[toolIndex], content: result, status: candidate.isError ? "error" : "done", isError: Boolean(candidate.isError) };
-      }
-      return;
-    }
-
-    const parts = Array.isArray(candidate.content) ? candidate.content : [{ type: "text", text: String(candidate.content ?? "") }];
-    parts.forEach((part: unknown, partIndex: number) => {
-      if (!part || typeof part !== "object") return;
-      const item = part as { type?: string; text?: unknown; thinking?: unknown; id?: string; name?: string; arguments?: unknown };
-      const id = `${record.id}-${messageIndex}-${partIndex}`;
-      if (candidate.role === "user" && item.type === "text") {
-        const content = String(item.text ?? "");
-        if (content.startsWith("[RiftX subagent result]") || content.startsWith("[RiftX subagent status]")) return;
-        messages.push({ id, role: "user", content });
-      } else if (candidate.role === "assistant" && item.type === "thinking") {
-        messages.push({ id, role: "thinking", content: String(item.thinking ?? ""), status: "done" });
-      } else if (candidate.role === "assistant" && item.type === "text") {
-        messages.push({ id, role: "assistant", content: String(item.text ?? "") });
-      } else if (candidate.role === "assistant" && item.type === "toolCall") {
-        const toolCallId = String(item.id ?? id);
-        const toolIndex = messages.length;
-        toolIndexes.set(toolCallId, toolIndex);
-        messages.push({ id: toolCallId, role: "tool", toolCallId, toolName: String(item.name ?? "tool"), content: JSON.stringify(item.arguments ?? {}, null, 2), status: record.toolStatuses.get(toolCallId) ?? "cancelled" });
-      }
-    });
-  });
-  return messages;
-}
-
-export async function listSessions(): Promise<SessionSummary[]> {
-  const config = await readConfig();
-  const archived = new Set(config.archivedSessionIds);
-  const infos = await listWorkspaceSessionInfos(config.cwd);
-  const persisted = await Promise.all(infos.map(async (info) => {
-    const snapshot = await buildSessionSnapshot(info.id, info.path, config);
-    return {
-      id: info.id,
-      path: info.path,
-      name: summaryName(config, info.id, info.firstMessage, archived.has(info.id)),
-      firstMessage: info.firstMessage,
-      updatedAt: info.modified.toISOString(),
-      archived: archived.has(info.id),
-      profileId: snapshot.profileId,
-      provider: snapshot.provider,
-      model: snapshot.model,
-      contextWindow: snapshot.contextWindow,
-      usage: snapshot.usage
-    } satisfies SessionSummary;
-  }));
-  const seen = new Set(persisted.map((item) => item.id));
-  const live = [...sessions.values()]
-    .filter((session) => resolve(session.cwd) === resolve(config.cwd) && !seen.has(session.id))
-    .map((session) => ({
-      id: session.id,
-      path: session.session.sessionFile ?? "",
-      name: summaryName(config, session.id, "", archived.has(session.id)),
-      firstMessage: "",
-      updatedAt: new Date().toISOString(),
-      archived: archived.has(session.id),
-      profileId: session.profile.id,
-      provider: session.profile.provider,
-      model: session.profile.model,
-      contextWindow: session.profile.contextWindow,
-      usage: usageFromRecord(session)
-    } satisfies SessionSummary));
-  const archivedMetadata = config.archivedSessions
-    .filter((session) => !seen.has(session.id) && !live.some((item) => item.id === session.id))
-    .map((session) => ({ ...session, name: summaryName(config, session.id, session.firstMessage, true), archived: true } satisfies SessionSummary));
-  const archivedFallback = config.archivedSessionIds
-    .filter((id) => !seen.has(id) && !archivedMetadata.some((session) => session.id === id))
-    .map((id) => ({ id, path: "", name: summaryName(config, id, "", true), firstMessage: "", updatedAt: new Date().toISOString(), archived: true } satisfies SessionSummary));
-  return [...live, ...persisted, ...archivedMetadata, ...archivedFallback];
 }
 
 export async function archiveSession(id: string) {

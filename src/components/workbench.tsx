@@ -12,13 +12,12 @@ import { parseRiftxEvent, type ApprovalMode, type ApprovalRequest, type ContextU
 import { cloneSubagentTask, mergeSubagentTaskPatch, mergeSubagentTasks } from "@/lib/subagent-merge";
 import { withSessionProfile } from "@/lib/session-profile-sync";
 import { useLanguage } from "@/lib/i18n";
-import { isAlreadyProcessingError } from "@/lib/prompt-mode";
-import { summarizeToolResult } from "@/lib/tool-result";
-import { resolveConversationScroll, willCenterScrollMove } from "@/lib/conversation-scroll";
 import { mergeFetchedMessages, type MergeableMessage } from "@/lib/message-merge";
+import { applyRiftxEvent, applyMessageDeltas, isSubagentApproval, normalizeMessages, type MessageDelta, type SessionEventContext } from "@/lib/session-events";
+import { containsToken, findRequestTarget, type EvidenceTarget } from "@/lib/evidence-navigation";
+import { useConversationScroll } from "./use-conversation-scroll";
 
 type Message = MergeableMessage;
-type MessageDelta = { role: "assistant" | "thinking"; content: string };
 type MessageLabels = { you: string; thinking: string; thinkingNow: string; thinkingDone: string; queued: string; running: string; failed: string; stopped: string; complete: string };
 
 const MESSAGE_BATCH_SIZE = 200;
@@ -34,10 +33,6 @@ function usageFromSession(session?: SessionSummary | null): ContextUsage {
   return makeEmptyUsage(session?.contextWindow ?? 0);
 }
 
-function isSubagentApproval(request: ApprovalRequest) {
-  return Boolean(request.subagentId);
-}
-
 function formatApprovalInput(input: unknown) {
   if (input && typeof input === "object" && typeof (input as { command?: unknown }).command === "string") return (input as { command: string }).command;
   try {
@@ -50,13 +45,6 @@ function formatApprovalInput(input: unknown) {
 function summarizeApprovalInput(input: unknown) {
   return formatApprovalInput(input).replace(/\s+/g, " ").trim();
 }
-
-function containsToken(text: string, token: string) {
-  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?:^|[^\\w])${escaped}(?:[^\\w]|$)`).test(text);
-}
-
-type EvidenceTarget = { kind: "tool"; toolCallId: string } | { kind: "subagent"; taskId: string; logId: string };
 
 const ToolCard = memo(function ToolCard({ message, labels }: { message: Message; labels: MessageLabels }) {
   const [open, setOpen] = useState(message.status === "running");
@@ -74,30 +62,12 @@ const MessageItem = memo(function MessageItem({ message, labels }: { message: Me
   </article>;
 });
 
-function applyMessageDeltas(current: Message[], deltas: MessageDelta[]) {
-  return deltas.reduce((messages, delta) => {
-    let next = messages;
-    let last = next[next.length - 1];
-    if (delta.role === "assistant" && last?.role === "thinking" && last.status === "streaming") {
-      next = [...next.slice(0, -1), { ...last, status: "done" }];
-      last = next[next.length - 1];
-    }
-    if (last?.role === delta.role) return [...next.slice(0, -1), { ...last, content: last.content + delta.content, status: delta.role === "thinking" ? "streaming" : last.status }];
-    return [...next, { id: crypto.randomUUID(), role: delta.role, content: delta.content, status: delta.role === "thinking" ? "streaming" : undefined }];
-  }, current);
-}
-
-function normalizeMessages(items: Message[]) {
-  return items.filter((item) => ["user", "assistant", "thinking", "tool"].includes(item.role)).map((item) => ({ ...item, role: item.role as Message["role"] }));
-}
-
 export function Workbench() {
   const { language, t } = useLanguage();
   const tRef = useRef(t);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [activeId, setActiveId] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
-  const [visibleMessageCount, setVisibleMessageCount] = useState(MESSAGE_BATCH_SIZE);
   const [usage, setUsage] = useState<ContextUsage>(() => makeEmptyUsage());
   const [modelName, setModelName] = useState("No model configured");
   const [modelProfiles, setModelProfiles] = useState<ModelProfile[]>([]);
@@ -116,11 +86,7 @@ export function Workbench() {
   const [subagentFocus, setSubagentFocus] = useState<{ taskId: string; logId?: string } | null>(null);
   const [error, setError] = useState("");
   const [mobileNav, setMobileNav] = useState(false);
-  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [streamGeneration, setStreamGeneration] = useState(0);
-  const conversationRef = useRef<HTMLElement>(null);
-  const conversationInnerRef = useRef<HTMLDivElement>(null);
-  const shouldAutoScrollRef = useRef(true);
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
   const compositionActiveRef = useRef(false);
   const compositionEndedAtRef = useRef(0);
@@ -135,9 +101,6 @@ export function Workbench() {
   const [modelSwitching, setModelSwitching] = useState(false);
   const messageDeltaQueueRef = useRef<MessageDelta[]>([]);
   const messageDeltaFrameRef = useRef<number | undefined>(undefined);
-  const lastScrollTopRef = useRef(0);
-  const historyScrollRef = useRef<{ height: number; top: number } | null>(null);
-  const pendingToolScrollRef = useRef<string | null>(null);
 
   const flushMessageDeltas = () => {
     if (messageDeltaFrameRef.current !== undefined) cancelAnimationFrame(messageDeltaFrameRef.current);
@@ -261,10 +224,7 @@ export function Workbench() {
   }, [subagents]);
 
   useEffect(() => {
-    shouldAutoScrollRef.current = true;
-    lastScrollTopRef.current = 0;
-    setVisibleMessageCount(MESSAGE_BATCH_SIZE);
-    setShowJumpToLatest(false);
+    resetConversationView();
     subagentsRef.current = [];
     setSubagents([]);
     setFindings([]);
@@ -334,112 +294,7 @@ export function Workbench() {
       } catch {
         return;
       }
-      if (!payload) return;
-      if (payload.type === "connected") return;
-      if (payload.type === "text_delta" || payload.type === "thinking_delta") {
-        queueMessageDelta({ role: payload.type === "text_delta" ? "assistant" : "thinking", content: String(payload.delta ?? "") });
-        return;
-      }
-      flushMessageDeltas();
-      if (payload.type === "finding" && payload.finding) {
-        const finding = payload.finding as Finding;
-        setFindings((current) => current.some((item) => item.id === finding.id) ? current.map((item) => item.id === finding.id ? finding : item) : [...current, finding]);
-        return;
-      }
-      if (payload.type === "findingPatch" && payload.findingPatch) {
-        const findingPatch = payload.findingPatch as FindingPatch;
-        setFindings((current) => current.map((item) => item.id === findingPatch.id ? { ...item, ...findingPatch } : item));
-        return;
-      }
-      if ((payload.type.startsWith("subagent_") || payload.type === "approval_decided") && payload.task) {
-        const task = payload.task as SubagentTask;
-        queueSubagentTask(task);
-      }
-      if ((payload.type.startsWith("subagent_") || payload.type === "approval_decided") && payload.taskPatch) {
-        queueSubagentTaskPatch(payload.taskPatch as SubagentTaskPatch);
-      }
-      if (payload.type === "approval_decided" && typeof payload.approvalId === "string") {
-        setApprovalQueue((current) => current.filter((item) => item.id !== payload.approvalId));
-      }
-      if (payload.type === "usage") {
-        const next = payload.usage as Partial<ContextUsage>;
-        setUsage((current) => ({
-          ...current,
-          ...next,
-          tokens: Number(next.tokens ?? current.tokens),
-          contextWindow: Number(next.contextWindow ?? current.contextWindow),
-          percent: next.percent === null ? null : Math.min(100, Math.max(0, Number(next.percent ?? current.percent ?? 0))),
-          input: next.input === null ? null : next.input === undefined ? current.input : Number(next.input),
-          output: next.output === null ? null : next.output === undefined ? current.output : Number(next.output),
-          cacheRead: next.cacheRead === null ? null : next.cacheRead === undefined ? current.cacheRead : Number(next.cacheRead),
-          cacheWrite: next.cacheWrite === null ? null : next.cacheWrite === undefined ? current.cacheWrite : Number(next.cacheWrite),
-          remaining: Number(next.remaining ?? current.remaining)
-        }));
-        setSessions((current) => current.map((session) => session.id === activeId ? {
-          ...session,
-          contextWindow: Number(next.contextWindow ?? session.contextWindow ?? 0),
-          usage: {
-            ...(session.usage ?? makeEmptyUsage(Number(next.contextWindow ?? session.contextWindow ?? 0))),
-            ...next,
-            tokens: Number(next.tokens ?? session.usage?.tokens ?? 0),
-            contextWindow: Number(next.contextWindow ?? session.usage?.contextWindow ?? session.contextWindow ?? 0),
-            percent: next.percent === null ? null : Math.min(100, Math.max(0, Number(next.percent ?? session.usage?.percent ?? 0))),
-            input: next.input === null ? null : next.input === undefined ? session.usage?.input ?? null : Number(next.input),
-            output: next.output === null ? null : next.output === undefined ? session.usage?.output ?? null : Number(next.output),
-            cacheRead: next.cacheRead === null ? null : next.cacheRead === undefined ? session.usage?.cacheRead ?? null : Number(next.cacheRead),
-            cacheWrite: next.cacheWrite === null ? null : next.cacheWrite === undefined ? session.usage?.cacheWrite ?? null : Number(next.cacheWrite),
-            remaining: Number(next.remaining ?? session.usage?.remaining ?? 0)
-          }
-        } : session));
-        return;
-      }
-      if (payload.type === "approval_required") {
-        const request = payload.approval as ApprovalRequest;
-        if (payload.taskPatch) queueSubagentTaskPatch(payload.taskPatch as SubagentTaskPatch);
-        setApprovalQueue((current) => current.some((item) => item.id === request.id) ? current : [...current, request]);
-        if (!request.subagentId) setMainAgentRunning(true);
-        return;
-      }
-      if (payload.type.startsWith("subagent_") || payload.type === "approval_decided") return;
-      if (["text_delta", "tool_start", "tool_status", "tool_update", "tool_end", "message", "done", "error"].includes(payload.type)) {
-        setMessages((current) => current.map((message) => message.role === "thinking" && message.status === "streaming" ? { ...message, status: "done" } : message));
-      }
-      if (payload.type === "session_state") { setMainAgentRunning(payload.state !== "idle"); setContextCompacting(payload.state === "compacting"); return; }
-      if (payload.type === "done") { setMainAgentRunning(false); setContextCompacting(false); setApprovalQueue((current) => current.filter(isSubagentApproval)); setMessages((current) => current.map((message) => message.role === "thinking" ? { ...message, status: "done" } : message.role === "tool" && (message.status === "running" || message.status === "queued") ? { ...message, status: "cancelled", isError: true, content: message.content ? `${message.content}\n\n${t("stopped")}` : t("stopped") } : message)); return; }
-      if (payload.type === "tool_status") {
-        const toolCallId = String(payload.toolCallId ?? "");
-        if (payload.toolStatus === "queued" || payload.toolStatus === "running") setMessages((current) => current.map((message) => message.id === toolCallId ? { ...message, status: payload.toolStatus } : message));
-        return;
-      }
-      if (payload.type === "tool_start") {
-        const toolCallId = String(payload.toolCallId ?? crypto.randomUUID());
-        setMessages((current) => {
-          const existingIndex = current.findIndex((message) => message.toolCallId === toolCallId || message.id === toolCallId);
-          const nextMessage = { id: toolCallId, role: "tool" as const, toolCallId, toolName: String(payload.toolName ?? "tool"), content: JSON.stringify(payload.args ?? {}, null, 2), status: payload.toolStatus === "queued" ? "queued" : "running" };
-          if (existingIndex < 0) return [...current, nextMessage];
-          return current.map((message, index) => index === existingIndex ? { ...message, ...nextMessage } : message);
-        });
-        return;
-      }
-      if (payload.type === "tool_update") {
-        // Keep the tool detail stable while a command is running. Streaming
-        // partial tool output causes the approval-opened card to flash and
-        // reshape continuously; only the final tool result should replace the
-        // original argument preview.
-        return;
-      }
-      if (payload.type === "tool_end") {
-        const toolCallId = String(payload.toolCallId ?? "");
-        setMessages((current) => current.map((message) => message.id === toolCallId ? { ...message, status: payload.isError ? "error" : "done", isError: Boolean(payload.isError), content: summarizeToolResult(payload.result) } : message)); return;
-      }
-      if (payload.type === "error") {
-        const message = String(payload.error ?? "Agent error");
-        if (isAlreadyProcessingError(message)) return;
-        setMainAgentRunning(false);
-        setContextCompacting(false);
-        setApprovalQueue((current) => current.filter(isSubagentApproval));
-        setError(message);
-      }
+      if (payload) applyRiftxEvent(payload, eventContext);
     };
     source.onerror = () => {
       if (disposed || activeIdRef.current !== activeId) return;
@@ -466,153 +321,13 @@ export function Workbench() {
 
   const subagentRunning = useMemo(() => subagents.filter((task) => task.status === "queued" || task.status === "running").length, [subagents]);
   const visibleMessages = useMemo(() => messages.filter((message) => message.toolName !== "spawn_subagent"), [messages]);
+  const { conversationRef, conversationInnerRef, showJumpToLatest, visibleMessageCount, handleConversationScroll, revealToolCard, requestToolReveal, expandVisibleMessages, loadEarlierMessages, jumpToLatest, pauseAutoFollow, resumeAutoFollow, resetConversationView } = useConversationScroll(messages, visibleMessages.length, MESSAGE_BATCH_SIZE);
+  const eventContext: SessionEventContext = { activeId, t, queueMessageDelta, flushMessageDeltas, setMessages, setFindings, queueSubagentTask, queueSubagentTaskPatch, setApprovalQueue, setUsage, setSessions, setMainAgentRunning, setContextCompacting, setError };
   const displayedMessages = useMemo(() => visibleMessages.slice(-visibleMessageCount), [visibleMessages, visibleMessageCount]);
   const hasEarlierMessages = displayedMessages.length < visibleMessages.length;
   const messageLabels = useMemo<MessageLabels>(() => ({ you: t("you"), thinking: t("thinking"), thinkingNow: t("thinkingNow"), thinkingDone: t("thinkingDone"), queued: t("queued"), running: t("running"), failed: t("failed"), stopped: t("stopped"), complete: t("complete") }), [t]);
   const running = mainAgentRunning || subagentRunning > 0 || approvalQueue.length > 0;
   const composerBusy = mainAgentRunning || approvalQueue.some((item) => !item.subagentId);
-
-  // Pin synchronously, never through a rAF hop. A deferred pin leaves one
-  // frame where the viewport trails the streamed content (distance can grow
-  // past the latest threshold), and a native scroll-anchoring adjustment in
-  // that window — a thinking/tool block auto-collapsing above the viewport,
-  // or the 200-message window sliding when a long conversation grows —
-  // arrives as a scroll event that preserves the distance to the bottom
-  // while moving scrollTop up: indistinguishable from an intentional upward
-  // scroll, it permanently killed auto-follow until the next user action.
-  // Pinning inside the commit (layout effect) and directly in the
-  // ResizeObserver callback (post-layout, pre-paint) keeps the viewport
-  // bottomed before the next frame's scroll events are dispatched — scroll
-  // steps run before rAF callbacks, so a deferred pin always lost that race.
-  // Whatever residual window late layout (fonts, images) leaves open is
-  // covered by the atLatest rule.
-  const pinToLatest = () => {
-    const conversation = conversationRef.current;
-    if (!conversation || !shouldAutoScrollRef.current) return;
-    conversation.scrollTop = conversation.scrollHeight;
-    lastScrollTopRef.current = conversation.scrollTop;
-  };
-
-  useLayoutEffect(() => {
-    pinToLatest();
-  }, [messages]);
-
-  useEffect(() => {
-    const content = conversationInnerRef.current;
-    if (!content || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => {
-      pinToLatest();
-    });
-    observer.observe(content);
-    return () => observer.disconnect();
-  }, []);
-
-  useLayoutEffect(() => {
-    const conversation = conversationRef.current;
-    const historyScroll = historyScrollRef.current;
-    if (conversation && historyScroll) conversation.scrollTop = historyScroll.top + conversation.scrollHeight - historyScroll.height;
-    historyScrollRef.current = null;
-    const toolCallId = pendingToolScrollRef.current;
-    if (!toolCallId) return;
-    pendingToolScrollRef.current = null;
-    // Only the deferred reveal pauses follow before its target exists, so
-    // only its failure needs reconciling: a target that vanished before
-    // rendering (refetch/compaction) must not strand that pause with no
-    // scroll event coming.
-    if (!revealToolCard(toolCallId)) scheduleFollowReconcile();
-  }, [visibleMessageCount]);
-
-  // Pausing auto-follow deliberately does not touch the jump button: the
-  // button derives from shouldFollow on the next scroll event, so a
-  // navigation that ends up not scrolling never flashes the button nor
-  // strands follow off with no event to reconcile it.
-  const pauseAutoFollow = () => {
-    shouldAutoScrollRef.current = false;
-  };
-
-  const resumeAutoFollow = () => {
-    shouldAutoScrollRef.current = true;
-    setShowJumpToLatest(false);
-  };
-
-  // Reconcile follow state from real geometry two frames later: if a path
-  // paused optimistically (the batched-away tool reveal) and nothing actually
-  // scrolled — or its target vanished before rendering, which a refetch or
-  // compaction can do — this restores or keeps follow correctly instead of
-  // leaving it frozen with no scroll event to re-evaluate it.
-  const scheduleFollowReconcile = () => {
-    requestAnimationFrame(() => requestAnimationFrame(() => handleConversationScroll()));
-  };
-
-  // Shared by the direct evidence click and the deferred (batched-away tool)
-  // reveal so both pause follow under the same rule: only when the centering
-  // scroll will actually move the viewport, decided with the browser's own
-  // clamping applied — a fully-visible or edge-clamped target is a true no-op
-  // (no pause, no sub-pixel nudge that could flip follow near the threshold).
-  // A missing target returns false with no side effects: the direct probe
-  // must not touch follow state (subagent tools legitimately have no main-
-  // conversation card), and callers that paused before rendering own the
-  // reconciliation themselves.
-  const revealToolCard = (toolCallId: string) => {
-    const target = document.getElementById(`tool-${encodeURIComponent(toolCallId)}`);
-    if (!(target instanceof HTMLDetailsElement)) return false;
-    target.open = true;
-    const conversation = conversationRef.current;
-    if (!conversation) {
-      target.scrollIntoView({ behavior: "smooth", block: "center" });
-      return true;
-    }
-    const viewportTop = conversation.getBoundingClientRect().top;
-    const rect = target.getBoundingClientRect();
-    if (willCenterScrollMove({
-      scrollTop: conversation.scrollTop,
-      scrollHeight: conversation.scrollHeight,
-      clientHeight: conversation.clientHeight,
-      targetTop: conversation.scrollTop + rect.top - viewportTop,
-      targetHeight: rect.height
-    })) {
-      pauseAutoFollow();
-      target.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
-    scheduleFollowReconcile();
-    return true;
-  };
-
-  const loadEarlierMessages = () => {
-    const conversation = conversationRef.current;
-    if (conversation) historyScrollRef.current = { height: conversation.scrollHeight, top: conversation.scrollTop };
-    pauseAutoFollow();
-    setVisibleMessageCount((current) => Math.min(visibleMessages.length, current + MESSAGE_BATCH_SIZE));
-  };
-
-  const handleConversationScroll = () => {
-    const conversation = conversationRef.current;
-    if (!conversation) return;
-    const { shouldFollow } = resolveConversationScroll({
-      wasFollowing: shouldAutoScrollRef.current,
-      previousScrollTop: lastScrollTopRef.current,
-      scrollTop: conversation.scrollTop,
-      distanceFromBottom: conversation.scrollHeight - conversation.clientHeight - conversation.scrollTop
-    });
-    lastScrollTopRef.current = conversation.scrollTop;
-    shouldAutoScrollRef.current = shouldFollow;
-    setShowJumpToLatest((current) => {
-      const next = !shouldFollow && messages.length > 0;
-      return current === next ? current : next;
-    });
-  };
-
-  const jumpToLatest = () => {
-    resumeAutoFollow();
-    const conversation = conversationRef.current;
-    if (!conversation) return;
-    conversation.scrollTop = conversation.scrollHeight;
-    lastScrollTopRef.current = conversation.scrollTop;
-    requestAnimationFrame(() => {
-      conversation.scrollTop = conversation.scrollHeight;
-      handleConversationScroll();
-    });
-  };
 
   const queueSessionTitle = (text: string) => {
     const requestId = ++titleRequestRef.current;
@@ -745,34 +460,13 @@ export function Workbench() {
     setSubagentFocus({ taskId, logId });
   };
 
-  const findRequestTarget = (requestRef: string, finding: Finding): EvidenceTarget | null => {
-    const searchSubagent = (taskId?: string) => {
-      const tasks = taskId ? subagents.filter((task) => task.id === taskId) : subagents;
-      for (const task of tasks) {
-        const log = task.logs.find((entry) => containsToken(entry.content, requestRef));
-        if (log) return { kind: "subagent", taskId: task.id, logId: log.id } as const;
-      }
-      return null;
-    };
-    const searchMain = () => {
-      // Search only what the conversation can render: spawn_subagent calls
-      // carry the subagent prompt, so a request ref echoed into it would
-      // otherwise resolve to a message that is never displayed.
-      const tool = visibleMessages.find((message) => message.role === "tool" && containsToken(message.content, requestRef));
-      return tool?.toolCallId ? { kind: "tool", toolCallId: tool.toolCallId } as const : null;
-    };
-    if (finding.source === "subagent") return finding.subagentId ? searchSubagent(finding.subagentId) : null;
-    if (finding.subagentId) return searchSubagent(finding.subagentId) ?? searchMain();
-    return searchMain();
-  };
-
   const scrollToTool = (toolCallId: string, toolName?: string, subagentId?: string) => {
     if (revealToolCard(toolCallId)) return;
     const hiddenIndex = visibleMessages.findIndex((message) => message.toolCallId === toolCallId);
     if (hiddenIndex >= 0) {
       pauseAutoFollow();
-      pendingToolScrollRef.current = toolCallId;
-      setVisibleMessageCount(Math.max(visibleMessageCount, visibleMessages.length - hiddenIndex));
+      requestToolReveal(toolCallId);
+      expandVisibleMessages(visibleMessages.length - hiddenIndex + 1);
       return;
     }
     // Exact log-id matches are unambiguous. The tool-name fallback is only
@@ -793,7 +487,7 @@ export function Workbench() {
   };
 
   const scrollToRequest = (requestRef: string, finding: Finding) => {
-    const target = findRequestTarget(requestRef, finding);
+    const target = findRequestTarget(requestRef, finding, messages, subagents);
     if (!target) {
       setError(t("evidenceTargetUnavailable"));
       return;

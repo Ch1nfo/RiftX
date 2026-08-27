@@ -48,3 +48,4 @@ logs/
 .LSOverride
 .idea/
 .vscode/
+test-results/

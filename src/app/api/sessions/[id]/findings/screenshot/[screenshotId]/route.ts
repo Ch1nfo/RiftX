@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { getAppPaths } from "@/server/config-store";
 import { assertSessionInCurrentWorkspace } from "@/server/pi/session-manager";
-import { getScreenshotPath } from "@/server/pi/evidence-path";
+import { getScreenshotPath } from "@/lib/evidence-path";
 
 export const runtime = "nodejs";
 

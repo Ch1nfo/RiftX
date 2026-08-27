@@ -4,7 +4,7 @@ import { ApprovalGate } from "./approval-gate";
 import type { ApprovalEvaluation } from "./approval-evaluator";
 import type { MutationLock } from "./mutation-lock";
 import type { BashConcurrency } from "./bash-concurrency";
-import type { ScopeDecision } from "@/browser/scope/scope-rules";
+import type { ScopeDecision } from "@/lib/scope-rules";
 
 /** Tools whose calls require permission evaluation. Shared with the event mapper so tool_status stays consistent with gating. */
 export const guardedTools = new Set(["bash", "write", "edit", "browser"]);

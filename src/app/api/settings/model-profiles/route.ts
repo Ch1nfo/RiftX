@@ -1,7 +1,7 @@
 import { readConfig, updateConfig } from "@/server/config-store";
 import { SUBAGENT_AGGRESSIVENESS, clampConcurrency, type ModelProfile, type SubagentAggressiveness } from "@/lib/types";
 import { setActiveProfile, setMaxConcurrentSubagents } from "@/server/pi/session-manager";
-import { parseScopeRule } from "@/browser/scope/scope-rules";
+import { parseScopeRule } from "@/lib/scope-rules";
 import { errorStatus } from "@/server/errors";
 import { parseJsonBody } from "@/lib/api-validation";
 import { MASKED_API_KEY, publicWebSearch, resolveProfileApiKey } from "@/server/profile-api-key";
