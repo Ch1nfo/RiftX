@@ -67,6 +67,9 @@ export async function readConfig(repair = true): Promise<AppConfig> {
   const config: AppConfig = {
     ...defaultConfig(),
     ...parsed,
+    webSearch: parsed.webSearch && typeof parsed.webSearch === "object"
+      ? { tavilyApiKey: typeof parsed.webSearch.tavilyApiKey === "string" ? parsed.webSearch.tavilyApiKey : "" }
+      : undefined,
     profiles,
     activeProfileId: parsed.activeProfileId ?? profiles[0].id,
     approvalMode,

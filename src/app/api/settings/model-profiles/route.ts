@@ -4,7 +4,7 @@ import { setActiveProfile, setMaxConcurrentSubagents } from "@/server/pi/session
 import { parseScopeRule } from "@/browser/scope/scope-rules";
 import { errorStatus } from "@/server/errors";
 import { parseJsonBody } from "@/lib/api-validation";
-import { MASKED_API_KEY, resolveProfileApiKey } from "@/server/profile-api-key";
+import { MASKED_API_KEY, publicWebSearch, resolveProfileApiKey } from "@/server/profile-api-key";
 
 export const runtime = "nodejs";
 
@@ -15,7 +15,7 @@ function publicProfile(profile: ModelProfile) {
 
 export async function GET() {
   const config = await readConfig();
-  return Response.json({ ...config, profiles: config.profiles.map(publicProfile) });
+  return Response.json({ ...config, profiles: config.profiles.map(publicProfile), webSearch: publicWebSearch(config.webSearch) });
 }
 
 const API_TYPES_LIST = ["openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai"] as const;
@@ -61,7 +61,8 @@ export async function PUT(request: Request) {
     systemPrompt: string;
     browserScope: string[];
     browserIgnoreTlsErrors: boolean;
-  }>;
+    webSearch?: { tavilyApiKey?: string };
+ }>;
   // Reject invalid scope rules up front: silently dropping them would leave
   // the manager with an empty rule set that behaves like "no scope configured".
   const invalidScopeRules = Array.isArray(body.browserScope)
@@ -95,6 +96,13 @@ export async function PUT(request: Request) {
         ? latest.maxConcurrentSubagents
         : Math.min(8, Math.max(1, Math.round(requestedMax)));
       return {
+        // undefined or a masked echo keeps the stored key; an empty string
+        // clears it (falling back to the keyless default provider).
+        webSearch: {
+          tavilyApiKey: body.webSearch?.tavilyApiKey === undefined || body.webSearch.tavilyApiKey === MASKED_API_KEY
+            ? (latest.webSearch?.tavilyApiKey ?? "")
+            : body.webSearch.tavilyApiKey
+        },
         profiles,
         activeProfileId,
         childProfileId: body.childProfileId === undefined ? latest.childProfileId : body.childProfileId,
@@ -126,5 +134,5 @@ export async function PUT(request: Request) {
   // Apply the limit whenever the request explicitly carries it — comparing
   // against a pre-write snapshot would race a concurrent config write.
   if (body.maxConcurrentSubagents !== undefined && Number.isFinite(requestedMax)) await setMaxConcurrentSubagents(finalConfig.maxConcurrentSubagents);
-  return Response.json({ ...finalConfig, profiles: finalConfig.profiles.map(publicProfile) });
+  return Response.json({ ...finalConfig, profiles: finalConfig.profiles.map(publicProfile), webSearch: publicWebSearch(finalConfig.webSearch) });
 }

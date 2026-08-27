@@ -95,6 +95,13 @@ Snapshots produce an Agent-friendly text representation with stable element refe
 
 Browser scope accepts CIDR, host, host and port, wildcard domain, and scheme-restricted URL rules. With no configured rules, the first navigation locks the host; out-of-scope navigation requires approval. Host mappings preserve the Host header and TLS SNI for virtual-host testing, and self-signed or invalid certificates can be accepted for controlled internal environments.
 
+### Web Research
+
+- `web_search` and `web_fetch` tools let the Agent research the public web: known vulnerabilities for a fingerprinted product version, CVE details (a bare CVE id also returns structured data from a keyless CVE API), exploit references, and product documentation.
+- Keyless DuckDuckGo search works out of the box; an optional Tavily API key in settings switches to a more stable provider.
+- Queries are screened before they leave the machine — credential-shaped queries (API keys, tokens, JWTs, secrets) are rejected so engagement material never reaches third-party engines.
+- Pages are fetched as clean text via a reader service with a local extraction fallback, and truncated to a fixed budget.
+
 ### Approvals and Operational Control
 
 RiftX provides three approval modes for actions that may change local or target state:

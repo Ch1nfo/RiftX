@@ -208,7 +208,13 @@ export type Finding = {
 export type FindingInput = Pick<Finding, "title" | "asset" | "confidence" | "impact" | "reproduction" | "evidence">;
 export type FindingPatch = { id: string; confidence?: FindingConfidence; status?: FindingStatus; updatedAt?: string };
 
+export type WebSearchConfig = {
+  /** Optional Tavily key; absent/empty means the keyless DuckDuckGo default. */
+  tavilyApiKey?: string;
+};
+
 export type AppConfig = {
+  webSearch?: WebSearchConfig;
   profiles: ModelProfile[];
   activeProfileId: string;
   childProfileId: string | null;

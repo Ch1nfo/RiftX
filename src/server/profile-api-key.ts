@@ -16,3 +16,8 @@ export function resolveProfileApiKey(incoming: Pick<ModelProfile, "id" | "apiKey
   if (incoming.apiKey === undefined || incoming.apiKey === MASKED_API_KEY) return previous?.apiKey ?? "";
   return incoming.apiKey;
 }
+
+/** Masked projection for every config response (GET and PUT): plaintext keys never leave the API. */
+export function publicWebSearch(webSearch?: { tavilyApiKey?: string }) {
+  return { tavilyApiKey: webSearch?.tavilyApiKey ? MASKED_API_KEY : "" };
+}
