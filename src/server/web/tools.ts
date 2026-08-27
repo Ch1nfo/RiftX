@@ -1,5 +1,6 @@
 import { Type } from "@sinclair/typebox";
 import { defineTool, type ToolDefinition } from "@mariozechner/pi-coding-agent";
+import { WEB_TOOL_NAMES } from "@/server/session-tools";
 import { webSearch } from "./search";
 import { fetchPage } from "./fetch-page";
 
@@ -15,7 +16,7 @@ export type WebToolOptions = {
 
 export function createWebTools(options: WebToolOptions = {}): ToolDefinition[] {
   const webSearchTool = defineTool({
-    name: "web_search",
+    name: WEB_TOOL_NAMES[0],
     label: "Web search",
     description:
       "Search the public web for research: known vulnerabilities for a fingerprinted product/version, CVE details (a bare CVE id also returns structured CVE data), exploit references, product documentation, unfamiliar error triage. OPSEC: queries go to third-party engines — include identifiers only (CVE ids, product names, versions); never credentials, cookies, tokens, or target-internal hostnames. Queries that look like secrets are rejected. The default provider is keyless DuckDuckGo and can rate-limit; a Tavily API key can be configured in settings for a more stable provider.",
@@ -39,7 +40,7 @@ export function createWebTools(options: WebToolOptions = {}): ToolDefinition[] {
   });
 
   const webFetchTool = defineTool({
-    name: "web_fetch",
+    name: WEB_TOOL_NAMES[1],
     label: "Web fetch",
     description:
       "Fetch a public web page or document as clean text for research (CVE advisories, exploit write-ups, product docs, API references). Use it for out-of-target research URLs; use the browser tool for interactions with the target. Long pages are truncated; use web_search first when you do not have a URL.",

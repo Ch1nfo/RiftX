@@ -35,6 +35,7 @@ import { setAgentTransport } from "./pi-internals";
 import { prepareSkillPrompt, type SkillDescriptor } from "./skill-router";
 import { createTimedBashTool } from "./bash-timeout";
 import { createWebTools } from "@/server/web/tools";
+import { sessionToolNames } from "@/server/session-tools";
 import { BashConcurrency } from "./bash-concurrency";
 import { abortSessionRecord, shutdownSessionRecord } from "./session-shutdown";
 import { switchSessionProfile, withProfileSwitchLock } from "./apply-session-profile";
@@ -326,7 +327,9 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
     modelRegistry,
     model,
     thinkingLevel: profile.thinkingLevel,
-    tools: ["read", "grep", "find", "ls", "bash", "write", "edit", "browser", "record_finding", ...(subagents ? ["spawn_subagent"] : [])],
+    // Hard whitelist (see src/server/session-tools.ts): the SDK silently
+    // drops any tool — built-in or custom — whose name is absent here.
+    tools: sessionToolNames(Boolean(subagents)),
     customTools,
     resourceLoader,
     sessionManager,
