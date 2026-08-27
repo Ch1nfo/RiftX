@@ -63,3 +63,18 @@ test("automatically injects a matching skill once per session", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("routes authz, upload, API, and SSRF tasks to the gap-filling skills", () => {
+  const skills = [
+    skill("exploit-authz", "Broken access control / IDOR 越权测试：水平越权、垂直越权、功能级访问控制。privilege escalation."),
+    skill("exploit-file-upload", "文件上传漏洞：扩展名校验绕过、图片马、SVG XSS、webshell 部署。upload bypass."),
+    skill("api-testing", "API 安全测试 接口安全测试：REST、GraphQL、JWT、swagger。"),
+    skill("exploit-ssrf", "Server-side request forgery SSRF 服务端请求伪造测试。")
+  ];
+  assert.equal(rankSkills("越权测试", skills, 1)[0]?.name, "exploit-authz");
+  assert.equal(rankSkills("水平越权对比", skills, 1)[0]?.name, "exploit-authz");
+  assert.equal(rankSkills("文件上传绕过", skills, 1)[0]?.name, "exploit-file-upload");
+  assert.equal(rankSkills("接口安全测试", skills, 1)[0]?.name, "api-testing");
+  assert.equal(rankSkills("API测试", skills, 1)[0]?.name, "api-testing");
+  assert.equal(rankSkills("SSRF测试", skills, 1)[0]?.name, "exploit-ssrf");
+});

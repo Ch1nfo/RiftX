@@ -38,7 +38,15 @@ const TERM_ALIASES: Record<string, string[]> = {
   "模糊测试": ["fuzz", "fuzzing"],
   "载荷": ["payload"],
   "提示词": ["prompt"],
-  "大模型": ["llm", "model"]
+  "大模型": ["llm", "model"],
+  "越权": ["authz", "idor", "authorization"],
+  "权限": ["authz", "authorization", "privilege"],
+  "上传": ["upload"],
+  "接口": ["api", "endpoint"],
+  "api": ["接口"],
+  "ssrf": ["server", "side", "forgery"],
+  "jwt": ["token", "api"],
+  "graphql": ["api"]
 };
 
 function expandAliases(term: string) {
