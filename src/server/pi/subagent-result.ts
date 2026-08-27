@@ -35,6 +35,3 @@ export function extractLastAssistantResult(branch: readonly unknown[]): Extracte
 }
 
 /** Finds the final non-empty assistant text, if the branch ended with one. */
-export function extractLastAssistantText(branch: readonly unknown[]) {
-  return extractLastAssistantResult(branch).summary;
-}

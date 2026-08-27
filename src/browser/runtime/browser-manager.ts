@@ -11,6 +11,7 @@ import { RequestStore, redactHeaders } from "../network/request-store";
 import { hostMatches, matchScopeUrl, parseScopeRule, parseScopeRules, parseScopeTarget, type ParsedScopeRule, type ScopeDecision, type ScopeTarget } from "../scope/scope-rules";
 import type { BrowserManagerOptions, BrowserPageInfo, BrowserScope, PageSnapshot } from "../types";
 import { getScreenshotPath } from "@/server/pi/evidence-path";
+import { createSerializer } from "@/server/serializer";
 
 const EVALUATION_OUTPUT_LIMIT = 8000;
 const IDENTITY_PATTERN = /^[a-z0-9_-]{1,32}$/;
@@ -91,7 +92,7 @@ function parseHostMappingEntries(mappings: Record<string, string>): ParsedHostMa
 }
 
 export class BrowserManager {
-  private operationChain: Promise<unknown> = Promise.resolve();
+  private readonly serialize = createSerializer();
   private closed = false;
 
   /**
@@ -112,9 +113,7 @@ export class BrowserManager {
       signal?.throwIfAborted();
       return operation();
     };
-    const next = this.operationChain.then(start, start);
-    this.operationChain = next.then(() => undefined, () => undefined);
-    return next;
+    return this.serialize(start);
   }
 
   private readonly contextManager = new ContextManager();
@@ -786,6 +785,9 @@ export class BrowserManager {
     this.tempAuthorizations = [];
     this.screenshotUrls.clear();
     this.latestScreenshotId = undefined;
+    // Reset the proxy's mapping table first: close() alone leaves entries in
+    // place, and a later lazy relaunch would silently re-apply them.
+    this.mappingProxy.reset();
     // Close the browser before the proxy: killing the proxy first makes the
     // still-live browser reconnect, leaving TCP handles behind.
     await this.contextManager.close();

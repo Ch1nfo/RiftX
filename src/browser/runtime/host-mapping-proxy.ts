@@ -204,6 +204,18 @@ export class HostMappingProxy {
     this.clients.clear();
   }
 
+  /**
+   * Drop all mappings. Used on full manager teardown: without this, a browser
+   * "close" leaves the entries in place and the next lazy relaunch silently
+   * re-applies them — routing traffic to previously approved physical targets
+   * while the manager-side state (and the scope check feeding on it) reports
+   * no mappings.
+   */
+  reset() {
+    this.mappings.clear();
+    this.closeUpstreams();
+  }
+
   close() {
     this.closeUpstreams();
     this.server?.closeAllConnections?.();

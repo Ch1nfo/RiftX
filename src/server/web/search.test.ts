@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isCveLookup, parseDuckDuckGoHtml, screenQuery, webSearch } from "./search";
+import { parseDuckDuckGoHtml, screenQuery, webSearch } from "./search";
 
 const DDG_HTML = `
 <div class="result results_links">
@@ -80,6 +80,26 @@ test("a configured tavily key is used as the provider", async () => {
     assert.equal(outcome.results[0].url, "https://example.org/advisory");
     assert.equal(seen!.url, "https://api.tavily.com/search");
     assert.equal((seen!.init.headers as Record<string, string>).authorization, "Bearer tvly-test");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("an unknown CVE id keeps the single search call and its results", async () => {
+  const original = globalThis.fetch;
+  let searchCalls = 0;
+  globalThis.fetch = (async (input: string | URL) => {
+    const url = String(input);
+    if (url.includes("cve.circl.lu")) return new Response("not found", { status: 404 });
+    searchCalls += 1;
+    return new Response(DDG_HTML, { status: 200 });
+  }) as typeof fetch;
+  try {
+    const outcome = await webSearch("CVE-2099-99999 exploit refs");
+    assert.equal(searchCalls, 1, "provider search must run exactly once");
+    assert.equal(outcome.provider, "duckduckgo+cve");
+    assert.equal(outcome.cveDetail, undefined);
+    assert.equal(outcome.results.length, 2);
   } finally {
     globalThis.fetch = original;
   }

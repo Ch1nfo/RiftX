@@ -13,6 +13,11 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
 export const APPROVAL_MODES = ["request", "auto", "full"] as const;
 export type ApprovalMode = (typeof APPROVAL_MODES)[number];
 export const SUBAGENT_AGGRESSIVENESS = ["low", "default", "high"] as const;
+
+/** Clamp the configurable subagent/bash concurrency to the supported 1-8 range. */
+export function clampConcurrency(value: number) {
+  return Math.min(8, Math.max(1, Math.round(value)));
+}
 export type SubagentAggressiveness = (typeof SUBAGENT_AGGRESSIVENESS)[number];
 
 export type ModelProfile = {

@@ -20,16 +20,13 @@ export type ProfileSwitchLock = {
  * Per-session mutex around profile registration and switching. Two switches
  * racing on one session otherwise interleave their capture/commit/rollback
  * phases, and the loser's rollback undoes the winner's already-committed
- * result. "reject" mode throws SESSION_BUSY (user-initiated switches);
- * "wait" mode serializes behind the in-flight operation (background title
- * registrations). The critical section runs from state capture through commit
- * or rollback.
+ * result. A concurrent switch is a SESSION_BUSY 409. The critical section
+ * runs from state capture through commit or rollback.
  */
-export async function withProfileSwitchLock<T>(record: ProfileSwitchLock, mode: "reject" | "wait", run: () => Promise<T>): Promise<T> {
-  if (record.profileSwitch && mode === "reject") {
+export async function withProfileSwitchLock<T>(record: ProfileSwitchLock, run: () => Promise<T>): Promise<T> {
+  if (record.profileSwitch) {
     throw new RiftxError("A model switch is already in progress for this session", "SESSION_BUSY", 409);
   }
-  while (record.profileSwitch) await record.profileSwitch.catch(() => undefined);
   const operation = (async () => run())();
   record.profileSwitch = operation;
   try {

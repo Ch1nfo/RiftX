@@ -25,6 +25,11 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       controller.enqueue(encoder.encode(encode({ type: "connected", sessionId: id })));
+      // The SSE headers are already committed, so a failure here (archive
+      // race, corrupt session file, model registration error) must surface as
+      // an in-stream error event — otherwise the browser just reconnect-loops
+      // with no typed feedback.
+      try {
       unsubscribe = await subscribeSession(id, (event) => {
         try {
           controller.enqueue(encoder.encode(encode(event)));
@@ -32,6 +37,12 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
           cleanup();
         }
       });
+      } catch (error) {
+        controller.enqueue(encoder.encode(encode({ type: "error", error: errorMessage(error, "读取会话失败") })));
+        controller.close();
+        cleanup();
+        return;
+      }
       heartbeat = setInterval(() => {
         try {
           controller.enqueue(encoder.encode(": keep-alive\n\n"));

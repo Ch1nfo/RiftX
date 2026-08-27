@@ -102,3 +102,14 @@ test("changing mappings forces CONNECT tunnels to re-establish", async () => {
   await new Promise<void>((resolve) => a.server.close(() => resolve()));
   await new Promise<void>((resolve) => b.server.close(() => resolve()));
 });
+
+test("reset drops every mapping so a later relaunch starts clean", async () => {
+  const proxy = new HostMappingProxy();
+  proxy.mappings.set("target.internal", { host: "10.0.9.9", port: 8443 });
+  proxy.mappings.set("other.internal", { host: "10.0.9.10" });
+  assert.equal(proxy.mappings.size, 2);
+  proxy.reset();
+  assert.equal(proxy.mappings.size, 0);
+  // close() after reset keeps the object usable (fresh start on next start()).
+  proxy.close();
+});

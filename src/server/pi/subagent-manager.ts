@@ -1,10 +1,11 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { SUBAGENT_LOG_LIMITS, type ApprovalMode, type ApprovalRequest, type RiftxEvent, type SubagentLogEntry, type SubagentTask, type SubagentTaskPatch } from "@/lib/types";
+import { SUBAGENT_LOG_LIMITS, clampConcurrency, type ApprovalMode, type ApprovalRequest, type RiftxEvent, type SubagentLogEntry, type SubagentTask, type SubagentTaskPatch } from "@/lib/types";
 import { readJsonStore, writeJsonStoreAtomic } from "@/server/json-store";
 import { ApprovalGate } from "./approval-gate";
 import { summarizeToolResult } from "@/lib/tool-result";
+import { createSerializer } from "@/server/serializer";
 
 export type SubagentResult = { summary: string };
 type TaskMetaUpdate = { threadId?: string; model?: string };
@@ -88,8 +89,8 @@ export class SubagentManager {
   private completionHandler?: SubagentCompletionHandler;
   private readonly idleWaiters = new Set<() => void>();
   private initialized = false;
-  private persistChain = Promise.resolve();
-  private nameGenerationChain = Promise.resolve();
+  private readonly persistQueue = createSerializer();
+  private readonly nameQueue = createSerializer();
   private readonly namingTasks = new Set<string>();
   private readonly pendingNameRetries = new Set<string>();
   private readonly usedNameRetries = new Set<string>();
@@ -103,7 +104,7 @@ export class SubagentManager {
     approvalMode: ApprovalMode,
     private readonly nameGenerator?: SubagentNameGenerator
   ) {
-    this.maxConcurrent = Math.min(8, Math.max(1, Math.round(maxConcurrent)));
+    this.maxConcurrent = clampConcurrency(maxConcurrent);
     this.approvalMode = approvalMode;
   }
 
@@ -154,7 +155,7 @@ export class SubagentManager {
   }
 
   setMaxConcurrent(value: number) {
-    this.maxConcurrent = Math.min(8, Math.max(1, Math.round(value)));
+    this.maxConcurrent = clampConcurrency(value);
     this.pump();
   }
 
@@ -276,8 +277,7 @@ export class SubagentManager {
       const message = lastError instanceof Error ? lastError.message : String(lastError ?? "Unknown title error");
       console.warn(`Failed to generate a title for subagent ${task.id}: ${message}`);
     };
-    const scheduled = this.nameGenerationChain.then(generate, generate);
-    this.nameGenerationChain = scheduled.then(() => undefined, () => undefined);
+    const scheduled = this.nameQueue(generate);
     try {
       await scheduled;
     } finally {
@@ -314,10 +314,6 @@ export class SubagentManager {
     } catch (error) {
       return { task: undefined, promise: Promise.reject(error), duplicate: false };
     }
-  }
-
-  submit(taskText: string, runner = this.runner): Promise<SubagentResult> {
-    return this.submitTask(taskText, runner).promise;
   }
 
   async retry(taskId: string) {
@@ -559,7 +555,7 @@ export class SubagentManager {
       clearTimeout(this.persistTimer);
       this.persistTimer = undefined;
     }
-    this.persistChain = this.persistChain.then(async () => {
+    return this.persistQueue(async () => {
       await mkdir(join(this.storageRoot, this.parentSessionId), { recursive: true, mode: 0o700 });
       await writeJsonStoreAtomic(this.storagePath, { tasks: this.list() });
     }).catch((error: unknown) => {
@@ -567,6 +563,5 @@ export class SubagentManager {
       // task history would otherwise stop being written without a trace.
       console.error(`RiftX failed to persist subagent tasks for ${this.parentSessionId}:`, error);
     });
-    return this.persistChain;
   }
 }

@@ -73,7 +73,7 @@ export function createBrowserExtension(options: BrowserManagerOptions, existingM
             }
             case "snapshot": result = (await manager.snapshot(params.identity)).text; break;
             case "click": result = (await manager.click(requireString(params.ref, "ref"), params.identity)).text; break;
-            case "fill": result = (await manager.fill(requireString(params.ref, "ref"), requireString(params.value, "value"), params.identity)).text; break;
+            case "fill": result = (await manager.fill(requireString(params.ref, "ref"), params.value ?? "", params.identity)).text; break;
             case "press": result = (await manager.press(requireString(params.ref, "ref"), requireString(params.key, "key"), params.identity)).text; break;
             case "select": result = (await manager.select(requireString(params.ref, "ref"), params.values?.length ? params.values : [requireString(params.value, "value")], params.identity)).text; break;
             case "back": result = (await manager.back(params.identity)).text; break;

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { Archive, ArrowLeft, Check, FloppyDisk, Plus, Trash, Warning } from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
-import { API_TYPES, SUBAGENT_AGGRESSIVENESS, TRANSPORTS, type AppConfig, type ModelProfile, type SessionSummary, type SubagentAggressiveness } from "@/lib/types";
+import { API_TYPES, SUBAGENT_AGGRESSIVENESS, TRANSPORTS, clampConcurrency, type AppConfig, type ModelProfile, type SessionSummary, type SubagentAggressiveness } from "@/lib/types";
 import { Field, LanguageToggle, RiftxLogo, SelectField, ThemeToggle } from "./ui";
 import { useLanguage } from "@/lib/i18n";
 
@@ -33,7 +33,7 @@ export function SettingsPage() {
       const data = await response.json();
       setConfig(data);
       setSelected(data.profiles?.[0]?.id ?? "");
-      setMaxConcurrentDraft(String(Math.min(8, Math.max(1, Number(data.maxConcurrentSubagents) || 1))));
+      setMaxConcurrentDraft(String(clampConcurrency(Number(data.maxConcurrentSubagents) || 1)));
       setBrowserScopeDraft(Array.isArray(data.browserScope) ? data.browserScope.join("\n") : "");
     }).catch(() => setError(t("settingsLoadFailed")));
     return undefined;
@@ -63,10 +63,10 @@ export function SettingsPage() {
   const updateMaxConcurrentDraft = (value: string) => {
     const digits = value.replace(/\D/g, "").slice(0, 2);
     setMaxConcurrentDraft(digits);
-    if (digits) setConfig({ ...config, maxConcurrentSubagents: Math.min(8, Math.max(1, Number(digits))) });
+    if (digits) setConfig({ ...config, maxConcurrentSubagents: clampConcurrency(Number(digits)) });
   };
   const normalizeMaxConcurrentDraft = () => {
-    const normalized = Math.min(8, Math.max(1, Number(maxConcurrentDraft) || 1));
+    const normalized = clampConcurrency(Number(maxConcurrentDraft) || 1);
     setMaxConcurrentDraft(String(normalized));
     setConfig({ ...config, maxConcurrentSubagents: normalized });
   };

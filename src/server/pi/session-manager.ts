@@ -17,7 +17,7 @@ import {
 import type { Model } from "@mariozechner/pi-ai";
 import { readConfig, getAppPaths, getLaunchDirectory, updateConfig } from "@/server/config-store";
 import { RiftxError } from "@/server/errors";
-import type { ApprovalMode, ArchivedSession, ContextUsage, FindingInput, FindingSource, ModelProfile, RiftxEvent, SessionSummary } from "@/lib/types";
+import { clampConcurrency, type AppConfig, type ApprovalMode, type ArchivedSession, type ContextUsage, type FindingInput, type FindingSource, type ModelProfile, type RiftxEvent, type SessionSummary } from "@/lib/types";
 import { ApprovalGate } from "./approval-gate";
 import { createPermissionExtension, guardedTools } from "./permission-extension";
 import { resolvePromptMode } from "@/lib/prompt-mode";
@@ -220,7 +220,9 @@ function createSubagentTool(manager: SubagentManager, getChildProfile: () => Mod
       const text = submitted.duplicate
         ? `A matching subagent task is already ${state}. Its existing result will be delivered when complete.`
         : `Subagent task accepted in the background (${state}): ${taskLabel}. Continue independent work. RiftX will return its result when it completes and will wait for it before a final conclusion if needed.`;
-      if (signal?.aborted && submitted.task?.id) manager.cancel(submitted.task.id);
+      // A duplicate submission shares the original task: aborting THIS call
+      // must not cancel the task owned by the first spawn.
+      if (signal?.aborted && submitted.task?.id && !submitted.duplicate) manager.cancel(submitted.task.id);
       return { content: [{ type: "text", text }], details: { model: `${childProfile.provider}/${childProfile.model}`, taskId: submitted.task?.id, status: state, background: true } };
     }
   });
@@ -531,7 +533,7 @@ async function sessionSnapshotFromFile(path: string, profiles: ModelProfile[]): 
   }
 }
 
-async function buildSessionSnapshot(id: string, path?: string) {
+async function buildSessionSnapshot(id: string, path: string | undefined, config: AppConfig) {
   const live = sessions.get(id);
   if (live) {
     return {
@@ -543,7 +545,6 @@ async function buildSessionSnapshot(id: string, path?: string) {
       usage: usageFromRecord(live)
     } satisfies SessionSnapshot;
   }
-  const config = await readConfig();
   const fromFile = path ? await sessionSnapshotFromFile(path, config.profiles) : null;
   if (fromFile) return fromFile;
   const fallbackProfile = config.profiles.find((profile) => profile.id === config.activeProfileId) ?? config.profiles[0];
@@ -697,10 +698,17 @@ export async function summarizeSessionTitle(id: string, task: string) {
   const existingConfig = await readConfig();
   const existingTitle = existingConfig.sessionTitles[id]?.trim();
   if (existingTitle) return { title: existingTitle, sessions: (await listSessions()).filter((session) => !session.archived) };
-  const record = await getOrCreateSession(id);
+  // Resolve the title model WITHOUT materializing a session runtime. Callers
+  // fire title backfills concurrently with the session's first prompt: both
+  // used to land on the same shared creation promise, and the title call —
+  // believing it owned the record — tore it down mid-prompt. A live record's
+  // own profile is used when present; otherwise the same active-profile
+  // resolution a fresh creation would use.
+  const live = sessions.get(id);
+  const sessionProfile = live?.profile ?? await profileFor();
   const titleProfile = existingConfig.childInherit
-    ? record.profile
-    : existingConfig.profiles.find((item) => item.id === existingConfig.childProfileId) ?? record.profile;
+    ? sessionProfile
+    : existingConfig.profiles.find((item) => item.id === existingConfig.childProfileId) ?? sessionProfile;
   const { titleModelRegistry, titleModel } = memoizedTitleRuntime(titleProfile, () => {
     const titleAuthStorage = AuthStorage.inMemory();
     const titleModelRegistry = ModelRegistry.inMemory(titleAuthStorage);
@@ -747,7 +755,7 @@ export async function setApprovalMode(mode: ApprovalMode) {
 }
 
 export async function setMaxConcurrentSubagents(value: number) {
-  const maxConcurrentSubagents = Math.min(8, Math.max(1, Math.round(Number(value) || 3)));
+  const maxConcurrentSubagents = clampConcurrency(Number(value) || 3);
   for (const session of sessions.values()) {
     session.subagents?.setMaxConcurrent(maxConcurrentSubagents);
     session.bashConcurrency.setLimit(maxConcurrentSubagents + 1);
@@ -759,16 +767,24 @@ export async function subscribeSession(id: string, listener: (event: RiftxEvent)
   const record = await getOrCreateSession(id);
   const onEvent = (event: RiftxEvent) => listener({ ...event, sessionId: record.id });
   record.emitter.on("event", onEvent);
-  // Replay state that may have happened before an SSE reconnect, especially an
-  // approval request that is still holding the agent at a guarded tool call.
-  if (record.waitingForSubagents) onEvent({ type: "session_state", state: "waiting_for_subagents" });
-  else if (record.session.isStreaming) onEvent({ type: "session_state", state: "running" });
-  else onEvent({ type: "session_state", state: "idle" });
-  onEvent({ type: "usage", usage: usageFromRecord(record) });
-  for (const task of record.subagents?.list() ?? []) onEvent({ type: "subagent_snapshot", task });
-  for (const finding of await record.evidenceStore.list()) onEvent({ type: "finding", finding });
-  for (const request of record.gate.pendingRequests()) onEvent({ type: "approval_required", approval: request });
-  for (const request of record.subagents?.pendingApprovals() ?? []) onEvent({ type: "approval_required", approval: request });
+  try {
+    // Replay state that may have happened before an SSE reconnect, especially
+    // an approval request that is still holding the agent at a guarded tool
+    // call. If any replay step throws, the listener must come off again —
+    // the route's cleanup would otherwise hold a default no-op and every
+    // reconnect would leak another listener onto the emitter.
+    if (record.waitingForSubagents) onEvent({ type: "session_state", state: "waiting_for_subagents" });
+    else if (record.session.isStreaming) onEvent({ type: "session_state", state: "running" });
+    else onEvent({ type: "session_state", state: "idle" });
+    onEvent({ type: "usage", usage: usageFromRecord(record) });
+    for (const task of record.subagents?.list() ?? []) onEvent({ type: "subagent_snapshot", task });
+    for (const finding of await record.evidenceStore.list()) onEvent({ type: "finding", finding });
+    for (const request of record.gate.pendingRequests()) onEvent({ type: "approval_required", approval: request });
+    for (const request of record.subagents?.pendingApprovals() ?? []) onEvent({ type: "approval_required", approval: request });
+  } catch (error) {
+    record.emitter.off("event", onEvent);
+    throw error;
+  }
   return () => {
     record.emitter.off("event", onEvent);
   };
@@ -808,7 +824,12 @@ export async function listSubagents(id: string) {
 }
 
 export async function getSessionSnapshot(id: string) {
-  const snapshot = await buildSessionSnapshot(id, await findSessionPath(id));
+  const live = sessions.get(id);
+  const path = await findSessionPath(id);
+  // An unknown id must 404 like every sibling route, never fabricate a
+  // default-profile snapshot for a session that does not exist.
+  if (!live && !path) throw new RiftxError("Session not found", "SESSION_NOT_FOUND", 404);
+  const snapshot = await buildSessionSnapshot(id, path, await readConfig());
   return {
     id,
     provider: snapshot.provider ?? "",
@@ -831,7 +852,7 @@ export async function retrySubagent(id: string, taskId: string) {
 
 export async function getSessionMessages(id: string) {
   const record = await getOrCreateSession(id);
-  const messages: Array<{ id: string; role: "user" | "assistant" | "thinking" | "tool"; content: string; toolName?: string; toolCallId?: string; status?: "queued" | "running" | "done" | "error"; isError?: boolean }> = [];
+  const messages: Array<{ id: string; role: "user" | "assistant" | "thinking" | "tool"; content: string; toolName?: string; toolCallId?: string; status?: "queued" | "running" | "done" | "error" | "cancelled"; isError?: boolean }> = [];
   const toolIndexes = new Map<string, number>();
   const entries = record.sessionManager.getBranch();
   entries.forEach((entry, messageIndex) => {
@@ -867,7 +888,7 @@ export async function getSessionMessages(id: string) {
         const toolCallId = String(item.id ?? id);
         const toolIndex = messages.length;
         toolIndexes.set(toolCallId, toolIndex);
-        messages.push({ id: toolCallId, role: "tool", toolCallId, toolName: String(item.name ?? "tool"), content: JSON.stringify(item.arguments ?? {}, null, 2), status: record.toolStatuses.get(toolCallId) ?? "running" });
+        messages.push({ id: toolCallId, role: "tool", toolCallId, toolName: String(item.name ?? "tool"), content: JSON.stringify(item.arguments ?? {}, null, 2), status: record.toolStatuses.get(toolCallId) ?? "cancelled" });
       }
     });
   });
@@ -879,7 +900,7 @@ export async function listSessions(): Promise<SessionSummary[]> {
   const archived = new Set(config.archivedSessionIds);
   const infos = await listWorkspaceSessionInfos(config.cwd);
   const persisted = await Promise.all(infos.map(async (info) => {
-    const snapshot = await buildSessionSnapshot(info.id, info.path);
+    const snapshot = await buildSessionSnapshot(info.id, info.path, config);
     return {
       id: info.id,
       path: info.path,
@@ -1000,7 +1021,7 @@ export async function setActiveProfile(profile: ModelProfile, sessionId?: string
   // The whole switch — capture, staging, commit, or rollback — runs inside a
   // per-session mutex: a second concurrent switch is rejected instead of
   // racing the first one's rollback against its commit.
-  const switched = await withProfileSwitchLock(record, "reject", () => switchSessionProfile(record, profile, {
+  const switched = await withProfileSwitchLock(record, () => switchSessionProfile(record, profile, {
     prepareModel: (target, next) => {
       const sessionRecord = target as SessionRecord;
       // Capture the provider's real pre-switch registration; the tracked map

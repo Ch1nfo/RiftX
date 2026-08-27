@@ -1,8 +1,9 @@
 import { mkdir, rename, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { APPROVAL_MODES, DEFAULT_PROFILE, SUBAGENT_AGGRESSIVENESS, type AppConfig, type ModelProfile } from "@/lib/types";
+import { APPROVAL_MODES, DEFAULT_PROFILE, SUBAGENT_AGGRESSIVENESS, clampConcurrency, type AppConfig, type ModelProfile } from "@/lib/types";
 import { readJsonStore, writeJsonStoreAtomic } from "@/server/json-store";
+import { createSerializer } from "@/server/serializer";
 
 const ROOT = join(homedir(), ".riftx");
 const CONFIG_PATH = join(ROOT, "config.json");
@@ -12,8 +13,6 @@ const LEGACY_AGENT_PATH = join(ROOT, "pi-agent");
 const SUBAGENT_PATH = join(ROOT, "subagents");
 const EVIDENCE_PATH = join(ROOT, "evidence");
 const SKILLS_PATH = join(ROOT, "skills");
-let configWriteChain = Promise.resolve();
-
 export function getLaunchDirectory() {
   return resolve(process.env.RIFTX_LAUNCH_CWD || process.cwd());
 }
@@ -37,20 +36,27 @@ const defaultConfig = (): AppConfig => ({
 });
 
 async function ensureAppDirs() {
-  await mkdir(ROOT, { recursive: true, mode: 0o700 });
-  await mkdir(SESSION_PATH, { recursive: true, mode: 0o700 });
-  try {
-    await stat(AGENT_PATH);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    await rename(LEGACY_AGENT_PATH, AGENT_PATH).catch((migrationError: NodeJS.ErrnoException) => {
-      if (migrationError.code !== "ENOENT") throw migrationError;
-    });
-  }
-  await mkdir(AGENT_PATH, { recursive: true, mode: 0o700 });
-  await mkdir(SUBAGENT_PATH, { recursive: true, mode: 0o700 });
-  await mkdir(EVIDENCE_PATH, { recursive: true, mode: 0o700 });
-  await mkdir(SKILLS_PATH, { recursive: true, mode: 0o700 });
+  // The six directories are independent; only the agent-dir migration must
+  // finish before its own mkdir. Sequential awaits cost ~6 round trips on
+  // every readConfig call.
+  const migrateAgentDir = (async () => {
+    try {
+      await stat(AGENT_PATH);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      await rename(LEGACY_AGENT_PATH, AGENT_PATH).catch((migrationError: NodeJS.ErrnoException) => {
+        if (migrationError.code !== "ENOENT") throw migrationError;
+      });
+    }
+  })();
+  await Promise.all([
+    mkdir(ROOT, { recursive: true, mode: 0o700 }),
+    mkdir(SESSION_PATH, { recursive: true, mode: 0o700 }),
+    migrateAgentDir.then(() => mkdir(AGENT_PATH, { recursive: true, mode: 0o700 })),
+    mkdir(SUBAGENT_PATH, { recursive: true, mode: 0o700 }),
+    mkdir(EVIDENCE_PATH, { recursive: true, mode: 0o700 }),
+    mkdir(SKILLS_PATH, { recursive: true, mode: 0o700 })
+  ]);
 }
 
 export function getAppPaths() {
@@ -78,7 +84,7 @@ export async function readConfig(repair = true): Promise<AppConfig> {
     sessionTitles: parsed.sessionTitles && typeof parsed.sessionTitles === "object"
       ? Object.fromEntries(Object.entries(parsed.sessionTitles).filter(([, title]) => typeof title === "string"))
       : {},
-    maxConcurrentSubagents: Math.min(8, Math.max(1, Number.isFinite(parsed.maxConcurrentSubagents) ? Math.round(parsed.maxConcurrentSubagents as number) : 3)),
+    maxConcurrentSubagents: Number.isFinite(parsed.maxConcurrentSubagents) ? clampConcurrency(parsed.maxConcurrentSubagents as number) : 3,
     subagentAggressiveness: SUBAGENT_AGGRESSIVENESS.includes(parsed.subagentAggressiveness as AppConfig["subagentAggressiveness"]) ? parsed.subagentAggressiveness as AppConfig["subagentAggressiveness"] : "default",
     systemPromptEnabled: parsed.systemPromptEnabled === true,
     systemPrompt: typeof parsed.systemPrompt === "string" ? parsed.systemPrompt : "",
@@ -98,11 +104,7 @@ async function writeConfig(config: AppConfig) {
 
 export type ConfigPatch = Partial<AppConfig> | ((current: AppConfig) => Partial<AppConfig> | Promise<Partial<AppConfig>>);
 
-function enqueueConfigWrite<T>(operation: () => Promise<T>) {
-  const result = configWriteChain.then(operation);
-  configWriteChain = result.then(() => undefined, () => undefined);
-  return result;
-}
+const enqueueConfigWrite = createSerializer();
 
 export async function updateConfig(patch: ConfigPatch) {
   return enqueueConfigWrite(async () => {

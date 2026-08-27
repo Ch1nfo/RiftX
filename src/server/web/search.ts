@@ -38,12 +38,6 @@ export function screenQuery(query: string): Error | null {
   return null;
 }
 
-/** True when the query is a bare CVE identifier — those route to the structured CVE API. */
-export function isCveLookup(query: string) {
-  const trimmed = query.trim();
-  return CVE_ID_PATTERN.test(trimmed) && trimmed.replace(CVE_ID_PATTERN, "").trim().length === 0;
-}
-
 function decodeEntities(text: string) {
   return text
     .replace(/&amp;/g, "&")
@@ -142,14 +136,15 @@ export async function webSearch(query: string, options: WebSearchOptions = {}): 
 
   const cveId = query.trim().match(CVE_ID_PATTERN)?.[0];
   if (cveId) {
-    // CVE-bearing queries get the structured record plus ordinary results;
-    // a failed lookup falls through to the ordinary search path.
-    try {
-      const [cveDetail, results] = await Promise.all([fetchCveDetail(cveId, options.signal), search()]);
-      return { results, provider: useTavily ? "tavily+cve" : "duckduckgo+cve", cveDetail };
-    } catch {
-      // fall through
-    }
+    // CVE-bearing queries get the structured record plus ordinary results.
+    // The CVE detail is optional: a failed lookup (unknown id, API down) must
+    // not discard the already-fetched search results or re-run the provider —
+    // that would double rate-limit usage for every unknown id.
+    const [results, cveDetail] = await Promise.all([
+      search(),
+      fetchCveDetail(cveId, options.signal).then((detail) => detail, () => undefined)
+    ]);
+    return { results, provider: useTavily ? "tavily+cve" : "duckduckgo+cve", cveDetail };
   }
   return { results: await search(), provider: useTavily ? "tavily" : "duckduckgo" };
 }

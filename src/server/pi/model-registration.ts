@@ -62,7 +62,11 @@ const titleRuntimeCache = new Map<string, unknown>();
  */
 export function memoizedTitleRuntime<T>(profile: ModelProfile, build: () => T): T {
   const key = JSON.stringify([profile.provider, profile.model, profile.name, profile.baseUrl, profile.api, profile.apiKey ?? "", profile.transport, profile.thinkingLevel, profile.supportsImages ?? false, profile.contextWindow, profile.maxTokens]);
-  if (!titleRuntimeCache.has(key)) titleRuntimeCache.set(key, build());
+  if (!titleRuntimeCache.has(key)) {
+    titleRuntimeCache.set(key, build());
+    // Bound the cache: profile churn must not grow it without limit.
+    while (titleRuntimeCache.size > 16) titleRuntimeCache.delete(titleRuntimeCache.keys().next().value!);
+  }
   return titleRuntimeCache.get(key) as T;
 }
 

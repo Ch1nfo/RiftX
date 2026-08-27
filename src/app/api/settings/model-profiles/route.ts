@@ -1,5 +1,5 @@
 import { readConfig, updateConfig } from "@/server/config-store";
-import { SUBAGENT_AGGRESSIVENESS, type ModelProfile, type SubagentAggressiveness } from "@/lib/types";
+import { SUBAGENT_AGGRESSIVENESS, clampConcurrency, type ModelProfile, type SubagentAggressiveness } from "@/lib/types";
 import { setActiveProfile, setMaxConcurrentSubagents } from "@/server/pi/session-manager";
 import { parseScopeRule } from "@/browser/scope/scope-rules";
 import { errorStatus } from "@/server/errors";
@@ -90,11 +90,15 @@ export async function PUT(request: Request) {
         const apiKey = resolveProfileApiKey(profile, latest.profiles.find((item) => item.id === profile.id));
         return apiKey === profile.apiKey ? profile : { ...profile, apiKey };
       });
-      const activeProfileId = body.activeProfileId ?? latest.activeProfileId;
-      if (!profiles.some((profile) => profile.id === activeProfileId)) throw new Error("Model profile not found");
+      // A per-session switch (sessionId present) must not rewrite the global
+      // default — only the settings UI (no sessionId) changes what new
+      // sessions start on.
+      const targetProfileId = body.activeProfileId ?? latest.activeProfileId;
+      const activeProfileId = body.sessionId ? latest.activeProfileId : targetProfileId;
+      if (!profiles.some((profile) => profile.id === targetProfileId)) throw new Error("Model profile not found");
       const latestMax = body.maxConcurrentSubagents === undefined || !Number.isFinite(requestedMax)
         ? latest.maxConcurrentSubagents
-        : Math.min(8, Math.max(1, Math.round(requestedMax)));
+        : clampConcurrency(requestedMax);
       return {
         // undefined or a masked echo keeps the stored key; an empty string
         // clears it (falling back to the keyless default provider).
@@ -124,7 +128,7 @@ export async function PUT(request: Request) {
   // can never report success without actually switching.
   if (typeof body.sessionId === "string" && body.sessionId) {
     try {
-      const activeProfile = finalConfig.profiles.find((profile) => profile.id === finalConfig.activeProfileId);
+      const activeProfile = finalConfig.profiles.find((profile) => profile.id === (body.activeProfileId ?? finalConfig.activeProfileId));
       if (!activeProfile) throw new Error("Model profile not found");
       await setActiveProfile(activeProfile, body.sessionId);
     } catch (error) {

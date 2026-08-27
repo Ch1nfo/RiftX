@@ -299,7 +299,7 @@ export function Workbench() {
       if (controller.signal.aborted || activeIdRef.current !== activeId) return;
       setFindings(data.findings ?? []);
     }).catch(() => undefined);
-    fetch(`/api/sessions/${activeId}/messages`, { signal: controller.signal }).then((response) => response.json()).then((items: Message[]) => {
+    fetch(`/api/sessions/${activeId}/messages`, { signal: controller.signal }).then((response) => response.ok ? response.json() as Promise<Message[]> : []).then((items: Message[]) => {
       if (controller.signal.aborted || activeIdRef.current !== activeId) return;
       flushMessageDeltas();
       setMessages((current) => mergeFetchedMessages(current, normalizeMessages(items)));
@@ -845,7 +845,14 @@ export function Workbench() {
     if (!approval || !activeId) return;
     const response = await fetch(`/api/sessions/${activeId}/approval`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ approvalId: approval.id, approved, scope }) });
     const result = await response.json() as { ok?: boolean; error?: string };
-    if (!response.ok || result.ok !== true) { setError(result.error ?? t("approvalExpired")); return; }
+    if (!response.ok || result.ok !== true) {
+      setError(result.error ?? t("approvalExpired"));
+      // The request is no longer decidable server-side (expired, or its
+      // timeout event was missed while disconnected): keeping the card would
+      // wedge the composer in guide/stop mode until a page reload.
+      setApprovalQueue((current) => current.filter((item) => item.id !== approval.id));
+      return;
+    }
     setApprovalQueue((current) => current.filter((item) => item.id !== approval.id));
   };
 

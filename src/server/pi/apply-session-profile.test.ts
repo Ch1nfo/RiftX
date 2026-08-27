@@ -146,7 +146,7 @@ test("a concurrent second switch is rejected while the first is in flight", asyn
   };
   // Production composition: the session manager runs every switch inside
   // withProfileSwitchLock, so this mirrors the real critical section.
-  const switchUnderLock = (profile: ModelProfile) => withProfileSwitchLock(record, "reject", () => switchSessionProfile(record, profile, deps));
+  const switchUnderLock = (profile: ModelProfile) => withProfileSwitchLock(record, () => switchSessionProfile(record, profile, deps));
   // A -> B starts and hangs inside setModel.
   const switchToB = switchUnderLock(baseProfile({ id: "b", model: "m-b" }));
   await new Promise((resolve) => setTimeout(resolve, 20));
@@ -160,24 +160,4 @@ test("a concurrent second switch is rejected while the first is in flight", asyn
   // After the lock frees, the next switch proceeds normally.
   assert.equal(await switchUnderLock(baseProfile({ id: "c", model: "m-c" })), true);
   assert.equal(record.profile.id, "c");
-});
-
-test("withProfileSwitchLock serializes wait-mode callers and clears on failure", async () => {
-  const order: string[] = [];
-  const record: import("./apply-session-profile").ProfileSwitchLock = {};
-  const first = withProfileSwitchLock(record, "wait", async () => {
-    order.push("first:start");
-    await new Promise((resolve) => setTimeout(resolve, 40));
-    order.push("first:end");
-    throw new Error("first failed");
-  });
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  const second = withProfileSwitchLock(record, "wait", async () => {
-    order.push("second:start");
-    return "second-done";
-  });
-  await assert.rejects(() => first, /first failed/);
-  assert.equal(await second, "second-done");
-  assert.deepEqual(order, ["first:start", "first:end", "second:start"]);
-  assert.equal(record.profileSwitch, undefined);
 });

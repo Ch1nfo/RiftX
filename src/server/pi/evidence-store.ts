@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Finding, FindingInput, FindingPatch, FindingSource, RiftxEvent } from "@/lib/types";
 import { readJsonStore, writeJsonStoreAtomic } from "@/server/json-store";
+import { createSerializer } from "@/server/serializer";
 
 type FindingFile = { findings?: Finding[] };
 
@@ -110,18 +111,20 @@ export class EvidenceStore {
     await writeJsonStoreAtomic(this.filePath, { findings: this.findings ?? [] });
   }
 
-  private async locked<T>(operation: () => Promise<T>) {
-    const result = this.operation.then(operation);
-    this.operation = result.then(() => undefined, () => undefined);
-    return result;
-  }
+  private readonly locked = createSerializer();
+  /** Terminal state after permanent removal: no later write may resurrect the store. */
+  private deleted = false;
 
   async list() {
-    return this.locked(async () => (await this.load()).map(cloneFinding));
+    return this.locked(async () => this.deleted ? [] : (await this.load()).map(cloneFinding));
   }
 
   async upsert(input: FindingInput, source: FindingSource, subagentId?: string) {
     return this.locked(async () => {
+      // Checked inside the locked operation: an upsert queued behind a
+      // pending remove() must be refused when it finally runs, not recreate
+      // findings.json for a session whose evidence was permanently deleted.
+      if (this.deleted) throw new Error("This session's evidence has been permanently deleted; new findings are refused.");
       const findings = await this.load();
       const timestamp = now();
       const evidence = input.evidence.map(sanitizeEvidence).filter((item): item is Finding["evidence"][number] => Boolean(item));
@@ -165,6 +168,7 @@ export class EvidenceStore {
 
   async patch(id: string, patch: Omit<FindingPatch, "id">) {
     return this.locked(async () => {
+      if (this.deleted) return null;
       const finding = (await this.load()).find((item) => item.id === id);
       if (!finding) return null;
       if (patch.confidence !== undefined) finding.confidence = patch.confidence;
@@ -179,16 +183,33 @@ export class EvidenceStore {
 
   async remove() {
     return this.locked(async () => {
-      this.findings = [];
       await rm(this.directory, { recursive: true, force: true });
+      // Commit the terminal state only after the removal actually succeeded:
+      // a failed rm (permissions, transient I/O) must leave the store fully
+      // usable instead of wedged in a half-deleted state.
+      this.deleted = true;
+      this.findings = [];
     });
   }
 }
 
 const stores = new Map<string, EvidenceStore>();
 const EVIDENCE_STORE_CACHE_LIMIT = 256;
+/**
+ * Per-session deletion state, process-wide. `inflight` counts removeEvidence()
+ * calls currently running for the id; `deleted` is the terminal state once any
+ * of them succeeded. getEvidenceStore refuses an id while a deletion is
+ * in-flight OR terminal: the per-instance `deleted` flag only covers writes
+ * queued on the same instance, and once the cache entry is dropped a fresh
+ * store would happily recreate findings.json.
+ */
+type DeletionState = { inflight: number; deleted: boolean };
+const deletionStates = new Map<string, DeletionState>();
 
 export function getEvidenceStore(sessionId: string, root: string, emitter?: (event: RiftxEvent) => void) {
+  if (deletionStates.has(sessionId)) {
+    throw new Error("This session's evidence has been permanently deleted; no store can be created for it.");
+  }
   const existing = stores.get(sessionId);
   if (existing) {
     if (emitter) existing.setEmitter(emitter);
@@ -201,6 +222,34 @@ export function getEvidenceStore(sessionId: string, root: string, emitter?: (eve
 }
 
 export async function removeEvidence(sessionId: string, root: string) {
-  stores.delete(sessionId);
-  await rm(join(root, sessionId), { recursive: true, force: true });
+  // Register FIRST, before any store is fetched or removed: from this point
+  // on, getEvidenceStore refuses the id entirely, so a request that validated
+  // before the deletion cannot obtain a fresh writable instance mid-flight.
+  let state = deletionStates.get(sessionId);
+  if (!state) {
+    state = { inflight: 0, deleted: false };
+    deletionStates.set(sessionId, state);
+  }
+  state.inflight += 1;
+  try {
+    const store = stores.get(sessionId);
+    if (store) {
+      // Route through the cached store's serialization chain: a queued upsert
+      // that finishes after a bare rm would re-create findings.json.
+      await store.remove();
+    } else {
+      await rm(join(root, sessionId), { recursive: true, force: true });
+    }
+    // Any success commits the terminal state — including for concurrent
+    // callers still winding down: a later failure must not roll back a
+    // deletion that already happened.
+    state.deleted = true;
+    stores.delete(sessionId);
+  } finally {
+    state.inflight -= 1;
+    // The guard is only lifted when EVERY in-flight deletion has finished and
+    // none of them succeeded — one failed request rolling back while another
+    // is still deleting would re-open the resurrection window.
+    if (state.inflight === 0 && !state.deleted) deletionStates.delete(sessionId);
+  }
 }

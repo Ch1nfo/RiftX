@@ -21,8 +21,8 @@ test("limits concurrent subagents and starts queued work after a slot is release
   const manager = new SubagentManager("parent", root, (event) => events.push(event), 1, "request");
   await manager.initialize(async ({ task }) => new Promise((resolve) => active.set(task.id, () => resolve({ summary: task.task }))));
   try {
-    const first = manager.submit("first");
-    const second = manager.submit("second");
+    const first = manager.submitTask("first").promise;
+    const second = manager.submitTask("second").promise;
     await waitFor(() => manager.list().filter((task) => task.status === "running").length === 1);
     assert.equal(manager.list().filter((task) => task.status === "queued").length, 1);
     const firstTask = manager.list().find((task) => task.task === "first")!;
@@ -49,8 +49,8 @@ test("cancels queued work without starting it", async () => {
   const active = new Map<string, () => void>();
   await manager.initialize(async ({ task }) => new Promise((resolve) => active.set(task.id, () => resolve({ summary: task.task }))));
   try {
-    const first = manager.submit("first");
-    const second = manager.submit("second");
+    const first = manager.submitTask("first").promise;
+    const second = manager.submitTask("second").promise;
     await waitFor(() => manager.list().some((task) => task.task === "first" && task.status === "running"));
     const secondTask = manager.list().find((task) => task.task === "second")!;
     assert.equal(manager.cancel(secondTask.id), true);
@@ -73,7 +73,7 @@ test("abortAll cancels every running subagent and waits for shutdown", async () 
     signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
   }));
   try {
-    const tasks = [manager.submit("one"), manager.submit("two"), manager.submit("three")];
+    const tasks = [manager.submitTask("one").promise, manager.submitTask("two").promise, manager.submitTask("three").promise];
     const settled = Promise.allSettled(tasks);
     await waitFor(() => manager.runningCount === 3);
     await manager.abortAll();
@@ -92,7 +92,7 @@ test("queues every submitted task immediately and lets maxConcurrent control exe
   const active = new Map<string, () => void>();
   await manager.initialize(async ({ task }) => new Promise((resolve) => active.set(task.id, () => resolve({ summary: task.task }))));
   try {
-    const promises = ["one", "two", "three", "four"].map((task) => manager.submit(task));
+    const promises = ["one", "two", "three", "four"].map((task) => manager.submitTask(task).promise);
     assert.equal(manager.list().length, 4);
     const [first, second, third, fourth] = manager.list();
     await waitFor(() => active.has(first.id) && active.has(second.id));
@@ -117,8 +117,8 @@ test("deduplicates normalized queued and running tasks", async () => {
   let finish!: () => void;
   await manager.initialize(async () => new Promise((resolve) => { finish = () => resolve({ summary: "done" }); }));
   try {
-    const first = manager.submit("  Inspect   API routes  ");
-    const duplicate = manager.submit("inspect api routes");
+    const first = manager.submitTask("  Inspect   API routes  ").promise;
+    const duplicate = manager.submitTask("inspect api routes").promise;
     assert.strictEqual(first, duplicate);
     assert.equal(manager.list().length, 1);
     await waitFor(() => typeof finish === "function");
@@ -160,7 +160,7 @@ test("marks a runner without a summary as empty instead of completed", async () 
   manager.setCompletionHandler((task) => { completionStatus = task.status; });
   await manager.initialize(async () => ({ summary: "" }));
   try {
-    const result = await manager.submit("empty result");
+    const result = await manager.submitTask("empty result").promise;
     assert.deepEqual(result, { summary: "" });
     assert.equal(manager.list()[0]?.status, "empty");
     assert.equal(completionStatus, "empty");
@@ -201,7 +201,7 @@ test("uses the generated child-agent title instead of the prompt prefix", async 
   const manager = new SubagentManager("parent", root, (event) => events.push(event), 1, "request", async () => "API access review");
   await manager.initialize(async () => ({ summary: "done" }));
   try {
-    const submitted = manager.submit("Inspect every API route for authorization bypasses and report evidence.");
+    const submitted = manager.submitTask("Inspect every API route for authorization bypasses and report evidence.").promise;
     await waitFor(() => manager.list()[0]?.name === "API access review");
     assert.equal(manager.list()[0]?.name, "API access review");
     assert.equal(events.some((event) => event.type === "subagent_update" && (event.taskPatch as { name?: string } | undefined)?.name === "API access review"), true);
@@ -225,7 +225,7 @@ test("serializes title generation while child tasks continue concurrently", asyn
   });
   await manager.initialize(async ({ task }) => ({ summary: task.task }));
   try {
-    const children = [manager.submit("one"), manager.submit("two"), manager.submit("three")];
+    const children = [manager.submitTask("one").promise, manager.submitTask("two").promise, manager.submitTask("three").promise];
     await waitFor(() => manager.list().every((task) => task.name.startsWith("Title:")));
     assert.equal(maxActiveNames, 1);
     await Promise.all(children);
@@ -245,7 +245,7 @@ test("retries a transient child-agent title failure", async () => {
   });
   await manager.initialize(async () => ({ summary: "done" }));
   try {
-    const child = manager.submit("retry title generation");
+    const child = manager.submitTask("retry title generation").promise;
     await waitFor(() => manager.list()[0]?.name === "Recovered title");
     assert.equal(attempts, 2);
     await child;
@@ -265,7 +265,7 @@ test("compensates for a title failure after the child task finishes in the same 
   });
   await manager.initialize(async () => ({ summary: "done" }));
   try {
-    await manager.submit("title after task completion");
+    await manager.submitTask("title after task completion").promise;
     await waitFor(() => manager.list()[0]?.name === "Recovered after completion");
     assert.equal(attempts, 4);
   } finally {
@@ -352,7 +352,7 @@ test("emits approval decisions when a child approval times out", async () => {
     throw new Error("approval timed out");
   });
   try {
-    await assert.rejects(manager.submit("approval timeout"), /approval timed out/);
+    await assert.rejects(manager.submitTask("approval timeout").promise, /approval timed out/);
     const decision = events.find((event) => event.type === "approval_decided");
     assert.equal(decision?.approvalId, "approval-timeout");
     assert.deepEqual(decision?.taskPatch, { id: manager.list()[0].id, pendingApprovalCount: 0 });
@@ -367,7 +367,7 @@ test("retry creates a new task record", async () => {
   const manager = new SubagentManager("parent", root, () => undefined, 1, "request");
   await manager.initialize(async ({ task }) => ({ summary: task.task }));
   try {
-    const originalPromise = manager.submit("retry me");
+    const originalPromise = manager.submitTask("retry me").promise;
     const original = manager.list()[0];
     await originalPromise;
     const retried = await manager.retry(original.id);
