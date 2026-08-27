@@ -15,8 +15,11 @@
   --sidebar-width: 248px;
   --right-rail-width: 300px;
   --right-rail-space: 324px;
-  --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", "DejaVu Sans", sans-serif;
+  /* The bundled variable font leads everywhere; the explicit Linux + CJK
+     families make the fallback deterministic instead of a fontconfig lottery
+     (CJK glyphs are not covered by the bundled subsets). */
+  --font-mono: var(--font-jetbrains-mono, "JetBrains Mono"), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Cascadia Code", "JetBrains Mono", "Fira Code", "DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono CJK SC", "Noto Sans CJK SC", "WenQuanYi Micro Hei", monospace;
 }
 
 * { box-sizing: border-box; scrollbar-width: thin; scrollbar-color: #3c4641 transparent; }
