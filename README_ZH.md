@@ -252,12 +252,23 @@ npm start
 
 不要提交 API Key、Authorization Header、Cookie、目标数据、证书、私钥、会话历史或测试产物。提交代码前始终检查 `git status`。
 
+## 推荐 Skills
+
+[`recommended-skills/`](recommended-skills/) 目录随仓库附带 21 个渗透测试 Agent Skills（侦察、漏洞利用、API、LLM 测试与报告）。推荐将它们安装到技能列表中，以获得开箱即用的测试能力：
+
+```bash
+cp -r recommended-skills/*/ ~/.riftx/skills/
+```
+
+当然，你也可以选用自己的 skill——把任意含 `SKILL.md` 的技能文件夹放入 `~/.riftx/skills/`，RiftX 会以相同方式加载。完整清单见 `recommended-skills/` 目录。
+
 ## 项目结构
 
 ```text
 RiftX/
 ├── bin/                 # rx CLI 入口
 ├── docs/images/         # README 界面截图
+├── recommended-skills/  # 推荐 Agent Skills
 ├── public/              # Logo 与静态资源
 ├── src/
 │   ├── app/             # Next.js 页面与 API Route Handler
