@@ -4,6 +4,11 @@ export function requiredText(value: unknown, error: string) {
   return typeof value === "string" && value.trim() ? null : error;
 }
 
+/** Ready-to-return 400 envelope for validation failures. */
+export function badRequest(message: string) {
+  return Response.json({ error: message }, { status: 400 });
+}
+
 export function isJsonObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }

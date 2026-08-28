@@ -1,7 +1,7 @@
 import type { ApprovalMode } from "@/lib/types";
 import { setApprovalMode } from "@/server/pi/session-manager";
 import { parseJsonBody, validateApprovalMode } from "@/lib/api-validation";
-import { errorMessage, errorStatus } from "@/server/errors";
+import { errorResponse } from "@/server/errors";
 
 export const runtime = "nodejs";
 
@@ -16,6 +16,6 @@ export async function PUT(request: Request) {
     const config = await setApprovalMode(body.approvalMode);
     return Response.json({ approvalMode: config.approvalMode });
   } catch (error) {
-    return Response.json({ error: errorMessage(error, "更新审批模式失败") }, { status: errorStatus(error, 500) });
+    return errorResponse(error, "更新审批模式失败");
   }
 }

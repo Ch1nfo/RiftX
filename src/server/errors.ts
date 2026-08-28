@@ -14,3 +14,8 @@ export function errorStatus(error: unknown, fallback: number) {
 export function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
 }
+
+/** Uniform route-handler error envelope: RiftxError keeps its status/message, anything else falls back. */
+export function errorResponse(error: unknown, fallbackMessage: string, fallbackStatus = 500) {
+  return Response.json({ error: errorMessage(error, fallbackMessage) }, { status: errorStatus(error, fallbackStatus) });
+}

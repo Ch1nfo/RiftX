@@ -1,6 +1,6 @@
 import { startPromptSession } from "@/server/pi/session-manager";
-import { errorMessage, errorStatus } from "@/server/errors";
-import { parseJsonBody, requiredText } from "@/lib/api-validation";
+import { errorResponse } from "@/server/errors";
+import { badRequest, parseJsonBody, requiredText } from "@/lib/api-validation";
 import { isPromptMode } from "@/lib/prompt-mode";
 
 export const runtime = "nodejs";
@@ -12,7 +12,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     if (parsed instanceof Response) return parsed;
     const body = parsed as { text?: string; mode?: "prompt" | "steer" | "followUp" };
     const text = typeof body.text === "string" ? body.text.trim() : "";
-    if (requiredText(text, "text is required")) return Response.json({ error: "text is required" }, { status: 400 });
+    const textError = requiredText(text, "text is required");
+    if (textError) return badRequest(textError);
     const mode = body.mode ?? "prompt";
     // An unrecognized mode must be rejected here: passing it through would
     // bypass the prompt serialization gate and break the running turn with a
@@ -21,6 +22,6 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     const session = await startPromptSession(id, text, mode);
     return Response.json({ ok: true, sessionId: session.id });
   } catch (error) {
-    return Response.json({ error: errorMessage(error, "发送任务失败") }, { status: errorStatus(error, 500) });
+    return errorResponse(error, "发送任务失败");
   }
 }

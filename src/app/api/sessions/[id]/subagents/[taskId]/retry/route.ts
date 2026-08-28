@@ -1,5 +1,5 @@
 import { retrySubagent } from "@/server/pi/session-manager";
-import { errorMessage, errorStatus } from "@/server/errors";
+import { errorResponse } from "@/server/errors";
 
 export const runtime = "nodejs";
 
@@ -8,6 +8,6 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
   try {
     return Response.json({ task: await retrySubagent(id, taskId) });
   } catch (error) {
-    return Response.json({ error: errorMessage(error, "Unable to retry subagent") }, { status: errorStatus(error, 400) });
+    return errorResponse(error, "Unable to retry subagent", 400);
   }
 }

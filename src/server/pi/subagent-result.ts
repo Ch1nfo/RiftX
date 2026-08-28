@@ -1,12 +1,4 @@
-function textFromAssistantContent(content: unknown) {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content.map((part) => {
-    if (!part || typeof part !== "object") return "";
-    const value = part as { type?: unknown; text?: unknown };
-    return value.type === "text" && typeof value.text === "string" ? value.text : "";
-  }).join("");
-}
+import { textFromContent } from "./text-content";
 
 export type ExtractedAssistantResult = {
   summary?: string;
@@ -47,7 +39,7 @@ export function extractLastAssistantResult(branch: readonly unknown[]): Extracte
     // skipped to avoid misattributing intermediate output as the result.
     if (message.stopReason !== "stop" && message.stopReason !== "length") continue;
 
-    const text = textFromAssistantContent(message.content).trim();
+    const text = textFromContent(message.content).trim();
     if (text) return { summary: text };
   }
   return {};
@@ -61,25 +53,17 @@ export function extractLastAssistantResult(branch: readonly unknown[]): Extracte
  * are bounded by the same truncation.
  */
 export function buildSummaryTranscript(branch: readonly unknown[]): string {
-  const extractText = (content: unknown): string => {
-    if (typeof content === "string") return content;
-    if (!Array.isArray(content)) return "";
-    return content
-      .filter((part: { type?: string }) => part?.type === "text")
-      .map((part: { text?: string }) => part?.text ?? "")
-      .join(" ");
-  };
   return branch
     .map((entry) => {
       if (!entry || typeof entry !== "object") return "";
       const value = entry as { type?: unknown; message?: { role?: unknown; content?: unknown; toolName?: unknown; isError?: unknown } };
       if (value.type !== "message" || !value.message) return "";
       const msg = value.message;
-      if (msg.role === "assistant") return extractText(msg.content);
+      if (msg.role === "assistant") return textFromContent(msg.content, { separator: " " });
       if (msg.role === "toolResult") {
         const toolName = typeof msg.toolName === "string" ? msg.toolName : "tool";
         const isError = msg.isError ? " (error)" : "";
-        const text = extractText(msg.content).slice(0, 500);
+        const text = textFromContent(msg.content, { separator: " " }).slice(0, 500);
         return text ? `[${toolName}${isError}] ${text}` : "";
       }
       return "";

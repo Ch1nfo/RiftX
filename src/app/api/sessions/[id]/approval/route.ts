@@ -1,5 +1,5 @@
 import { decideApproval } from "@/server/pi/session-manager";
-import { errorMessage, errorStatus } from "@/server/errors";
+import { errorResponse } from "@/server/errors";
 import { parseJsonBody } from "@/lib/api-validation";
 
 export const runtime = "nodejs";
@@ -13,6 +13,6 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   try {
     return Response.json({ ok: await decideApproval(id, body.approvalId, body.approved, body.scope ?? "once") });
   } catch (error) {
-    return Response.json({ error: errorMessage(error, "处理审批失败") }, { status: errorStatus(error, 500) });
+    return errorResponse(error, "处理审批失败");
   }
 }

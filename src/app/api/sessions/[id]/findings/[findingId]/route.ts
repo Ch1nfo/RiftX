@@ -1,6 +1,6 @@
 import { patchFinding } from "@/server/pi/session-manager";
 import type { FindingConfidence } from "@/lib/types";
-import { errorMessage, errorStatus } from "@/server/errors";
+import { errorResponse } from "@/server/errors";
 import { parseJsonBody, validateDismissed, validateFindingConfidence } from "@/lib/api-validation";
 
 export const runtime = "nodejs";
@@ -17,6 +17,6 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     if (!finding) return Response.json({ error: "Finding not found" }, { status: 404 });
     return Response.json({ finding });
   } catch (error) {
-    return Response.json({ error: errorMessage(error, "更新证据失败") }, { status: errorStatus(error, 500) });
+    return errorResponse(error, "更新证据失败");
   }
 }

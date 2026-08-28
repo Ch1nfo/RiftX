@@ -2,7 +2,7 @@ import { readConfig, updateConfig } from "@/server/config-store";
 import { SUBAGENT_AGGRESSIVENESS, clampConcurrency, type ModelProfile, type SubagentAggressiveness } from "@/lib/types";
 import { setActiveProfile, setMaxConcurrentSubagents } from "@/server/pi/session-manager";
 import { parseScopeRule } from "@/lib/scope-rules";
-import { errorStatus } from "@/server/errors";
+import { errorResponse } from "@/server/errors";
 import { parseJsonBody } from "@/lib/api-validation";
 import { MASKED_API_KEY, publicWebSearch, resolveProfileApiKey } from "@/server/profile-api-key";
 
@@ -132,7 +132,7 @@ export async function PUT(request: Request) {
       if (!activeProfile) throw new Error("Model profile not found");
       await setActiveProfile(activeProfile, body.sessionId);
     } catch (error) {
-      return Response.json({ error: error instanceof Error ? error.message : "Model switch failed" }, { status: errorStatus(error, 400) });
+      return errorResponse(error, "Model switch failed", 400);
     }
   }
   // Apply the limit whenever the request explicitly carries it — comparing

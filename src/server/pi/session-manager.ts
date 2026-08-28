@@ -51,11 +51,7 @@ export { listSessions, getSessionSnapshot };
 export async function getSessionMessages(id: string) {
   return getMessages(() => getOrCreateSession(id));
 }
-import { deliverSubagentCompletion, dispatchSessionAction } from "./session-join";
-
-function terminalSubagentStatus(task: { status: string }) {
-  return task.status === "completed" || task.status === "empty" || task.status === "failed" || task.status === "cancelled" || task.status === "interrupted";
-}
+import { deliverSubagentCompletion, dispatchSessionAction, undeliveredTerminalTasks } from "./session-join";
 
 function eventPayload(event: AgentSessionEvent): RiftxEvent {
   const base = event as unknown as Record<string, unknown>;
@@ -282,11 +278,7 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
       // subagent is still running (partial results defer to the batch).
       // Checks the persisted delivery mark so post-restart legacy tasks
       // aren't re-injected.
-      const stranded = subagents.list().filter((task) =>
-        terminalSubagentStatus(task)
-        && task.delivered === false
-        && !record.deliveredSubagentResults.has(task.id)
-      );
+      const stranded = undeliveredTerminalTasks(record, subagents.list());
       if (hasActive) {
         // Still waiting for the active batch. Stranded results from earlier
         // failed deliveries stay pending — the completion handler delivers
@@ -324,11 +316,7 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
             // All subagents are done: clear the waiting state so SSE
             // reconnects replay idle instead of a stale waiting_for_subagents.
             record.waitingForSubagents = false;
-            const stranded = subagents.list().filter((entry) =>
-              terminalSubagentStatus(entry)
-              && entry.delivered === false
-              && !record.deliveredSubagentResults.has(entry.id)
-            );
+            const stranded = undeliveredTerminalTasks(record, subagents.list());
             for (const entry of stranded) {
               void deliverSubagentCompletion(record, entry, entry.summary).catch(() => undefined);
             }

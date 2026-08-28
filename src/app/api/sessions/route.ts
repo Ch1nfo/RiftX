@@ -1,5 +1,5 @@
 import { createSession, listSessions } from "@/server/pi/session-manager";
-import { errorMessage, errorStatus } from "@/server/errors";
+import { errorResponse } from "@/server/errors";
 
 export const runtime = "nodejs";
 
@@ -9,7 +9,7 @@ export async function GET(request: Request) {
     const archivedOnly = new URL(request.url).searchParams.get("archived") === "true";
     return Response.json(sessions.filter((session) => archivedOnly ? session.archived : !session.archived));
   } catch (error) {
-    return Response.json({ error: errorMessage(error, "读取会话失败") }, { status: errorStatus(error, 500) });
+    return errorResponse(error, "读取会话失败");
   }
 }
 
@@ -18,6 +18,6 @@ export async function POST() {
     const session = await createSession();
     return Response.json(session, { status: 201 });
   } catch (error) {
-    return Response.json({ error: errorMessage(error, "创建会话失败") }, { status: errorStatus(error, 500) });
+    return errorResponse(error, "创建会话失败");
   }
 }

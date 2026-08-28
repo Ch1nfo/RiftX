@@ -1,11 +1,35 @@
-import { Type } from "@sinclair/typebox";
+import { Type, type Static } from "@sinclair/typebox";
 import { defineTool, type ExtensionFactory } from "@mariozechner/pi-coding-agent";
 import { BrowserManager } from "./runtime/browser-manager";
-import type { BrowserAction, BrowserManagerOptions, BrowserToolInput } from "./types";
+import type { BrowserManagerOptions } from "./types";
 
 const parameters = Type.Object({
   action: Type.Union([
-    Type.Literal("navigate"), Type.Literal("snapshot"), Type.Literal("click"), Type.Literal("fill"), Type.Literal("press"), Type.Literal("select"), Type.Literal("back"), Type.Literal("reload"), Type.Literal("evaluate"), Type.Literal("console"), Type.Literal("requests"), Type.Literal("request_detail"), Type.Literal("response_body"), Type.Literal("use_identity"), Type.Literal("identities"), Type.Literal("cookies"), Type.Literal("cookies_export"), Type.Literal("cookies_import"), Type.Literal("set_host_mappings"), Type.Literal("set_user_agent"), Type.Literal("set_extra_headers"), Type.Literal("storage"), Type.Literal("screenshot"), Type.Literal("tabs"), Type.Literal("close")
+    Type.Literal("navigate"),
+    Type.Literal("snapshot"),
+    Type.Literal("click"),
+    Type.Literal("fill"),
+    Type.Literal("press"),
+    Type.Literal("select"),
+    Type.Literal("back"),
+    Type.Literal("reload"),
+    Type.Literal("evaluate"),
+    Type.Literal("console"),
+    Type.Literal("requests"),
+    Type.Literal("request_detail"),
+    Type.Literal("response_body"),
+    Type.Literal("use_identity"),
+    Type.Literal("identities"),
+    Type.Literal("cookies"),
+    Type.Literal("cookies_export"),
+    Type.Literal("cookies_import"),
+    Type.Literal("set_host_mappings"),
+    Type.Literal("set_user_agent"),
+    Type.Literal("set_extra_headers"),
+    Type.Literal("storage"),
+    Type.Literal("screenshot"),
+    Type.Literal("tabs"),
+    Type.Literal("close")
   ]),
   url: Type.Optional(Type.String()),
   ref: Type.Optional(Type.String()),
@@ -19,6 +43,11 @@ const parameters = Type.Object({
   headers: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Extra HTTP headers for the identity; empty object clears them (set_extra_headers action)" })),
   mappings: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Host to ip[:port] mappings with curl --resolve semantics; empty object clears them (set_host_mappings action)" }))
 });
+
+// Single source of truth for the tool contract: the input and action types
+// derive from the TypeBox schema above instead of being maintained separately.
+type BrowserToolInput = Static<typeof parameters>;
+type BrowserAction = BrowserToolInput["action"];
 
 function requireString(value: string | undefined, name: string): string {
   if (!value) throw new Error(`browser ${name} is required for this action`);

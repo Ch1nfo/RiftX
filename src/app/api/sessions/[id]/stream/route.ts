@@ -1,5 +1,5 @@
 import { assertSessionRunnable, subscribeSession } from "@/server/pi/session-manager";
-import { errorMessage, errorStatus } from "@/server/errors";
+import { errorMessage, errorResponse } from "@/server/errors";
 
 export const runtime = "nodejs";
 
@@ -12,7 +12,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   try {
     await assertSessionRunnable(id);
   } catch (error) {
-    return Response.json({ error: errorMessage(error, "读取会话失败") }, { status: errorStatus(error, 500) });
+    return errorResponse(error, "读取会话失败");
   }
   const encoder = new TextEncoder();
   let unsubscribe: () => void = () => undefined;

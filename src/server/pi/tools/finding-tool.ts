@@ -2,6 +2,7 @@ import { Type } from "@sinclair/typebox";
 import { defineTool, type AgentSession, type ToolDefinition } from "@mariozechner/pi-coding-agent";
 import type { FindingInput, FindingSource } from "@/lib/types";
 import type { EvidenceStore } from "../evidence-store";
+import { textFromContent } from "../text-content";
 import type { BrowserManager } from "@/browser";
 
 /** The record_finding tool: writes evidence-backed conclusions to the parent session's store. */
@@ -9,12 +10,6 @@ import type { BrowserManager } from "@/browser";
 export type FindingSourceInfo = { source: FindingSource; subagentId?: string };
 
 export type ToolEvidenceSnapshot = { toolCallId: string; toolName: string; content: string };
-
-export function textFromContent(content: unknown) {
-  return Array.isArray(content)
-    ? content.map((part: unknown) => typeof part === "string" ? part : part && typeof part === "object" && "text" in part ? String((part as { text?: unknown }).text ?? "") : "").join("")
-    : String(content ?? "");
-}
 
 export function resolveToolEvidence(session: AgentSession | undefined, requestedId: string): ToolEvidenceSnapshot | undefined {
   if (!session) return undefined;

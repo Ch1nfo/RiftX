@@ -1,5 +1,5 @@
 import { listFindings } from "@/server/pi/session-manager";
-import { errorMessage, errorStatus } from "@/server/errors";
+import { errorResponse } from "@/server/errors";
 
 export const runtime = "nodejs";
 
@@ -8,6 +8,6 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   try {
     return Response.json({ findings: await listFindings(id) });
   } catch (error) {
-    return Response.json({ error: errorMessage(error, "读取证据失败") }, { status: errorStatus(error, 500) });
+    return errorResponse(error, "读取证据失败");
   }
 }

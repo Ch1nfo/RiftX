@@ -7,7 +7,8 @@ import type { AppConfig, ContextUsage, ModelProfile, SessionSummary } from "@/li
 import { emptyContextUsage, normalizeContextUsage } from "./usage";
 import { estimateCompactedUsage, estimateMessagesContextUsage } from "./mid-turn-compaction";
 import { sessions, type SessionRecord } from "./session-registry";
-import { textFromContent } from "./tools/finding-tool";
+import { textFromContent } from "./text-content";
+import { isSubagentInjectionMessage } from "./session-join";
 
 /**
  * Session snapshots, listings, and message projection: everything that reads
@@ -216,7 +217,7 @@ export async function getSessionMessages(getRecord: () => Promise<SessionRecord>
       const id = `${record.id}-${messageIndex}-${partIndex}`;
       if (candidate.role === "user" && item.type === "text") {
         const content = String(item.text ?? "");
-        if (content.startsWith("[RiftX subagent result]") || content.startsWith("[RiftX subagent status]")) return;
+        if (isSubagentInjectionMessage(content)) return;
         messages.push({ id, role: "user", content });
       } else if (candidate.role === "assistant" && item.type === "thinking") {
         messages.push({ id, role: "thinking", content: String(item.thinking ?? ""), status: "done" });
