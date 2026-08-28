@@ -31,6 +31,10 @@ export function SettingsPage() {
   useEffect(() => {
     fetch("/api/settings/model-profiles").then(async (response) => {
       const data = await response.json();
+      if (!response.ok || !Array.isArray(data.profiles)) {
+        setError((data as { error?: string }).error ?? t("settingsLoadFailed"));
+        return;
+      }
       setConfig(data);
       setSelected(data.profiles?.[0]?.id ?? "");
       setMaxConcurrentDraft(String(clampConcurrency(Number(data.maxConcurrentSubagents) || 1)));

@@ -89,6 +89,16 @@ export class HostMappingProxy {
     }
     const address = server.address();
     this.portValue = typeof address === "object" && address ? address.port : undefined;
+    // If the server dies unexpectedly (crash, OS kill, port conflict after
+    // listen), clear the cached port so the next start() creates a fresh
+    // listener instead of reusing a dead one and silently failing every
+    // mapped request for the rest of the session.
+    server.on("close", () => {
+      if (this.server === server) {
+        this.server = undefined;
+        this.portValue = undefined;
+      }
+    });
   }
 
   private resolve(host: string, port: number): HostMappingTarget & { port: number } {

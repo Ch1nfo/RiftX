@@ -17,7 +17,9 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   const encoder = new TextEncoder();
   let unsubscribe: () => void = () => undefined;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let cancelled = false;
   const cleanup = () => {
+    cancelled = true;
     if (heartbeat) clearInterval(heartbeat);
     heartbeat = undefined;
     unsubscribe();
@@ -30,13 +32,24 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
       // an in-stream error event — otherwise the browser just reconnect-loops
       // with no typed feedback.
       try {
-      unsubscribe = await subscribeSession(id, (event) => {
-        try {
-          controller.enqueue(encoder.encode(encode(event)));
-        } catch {
-          cleanup();
+        const cancel = await subscribeSession(id, (event) => {
+          try {
+            controller.enqueue(encoder.encode(encode(event)));
+          } catch {
+            cleanup();
+          }
+        });
+        // The client may have disconnected WHILE subscribeSession was
+        // connecting: immediately detach the listener and skip the heartbeat
+        // instead of leaking both until the next event fires.
+        if (cancelled) {
+          cancel();
+          // The stream is already closed by the client's cancel() — calling
+          // controller.close() here throws Invalid state. Just detach and
+          // return.
+          return;
         }
-      });
+        unsubscribe = cancel;
       } catch (error) {
         controller.enqueue(encoder.encode(encode({ type: "error", error: errorMessage(error, "读取会话失败") })));
         controller.close();

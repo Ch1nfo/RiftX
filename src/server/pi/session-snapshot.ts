@@ -118,8 +118,14 @@ async function sessionSnapshotFromFile(path: string, profiles: ModelProfile[]): 
     sessionSnapshotCache.set(path, { modifiedMs: fileInfo.mtimeMs, size: fileInfo.size, profileKey, snapshot });
     while (sessionSnapshotCache.size > SESSION_SNAPSHOT_CACHE_LIMIT) sessionSnapshotCache.delete(sessionSnapshotCache.keys().next().value!);
     return { ...snapshot, usage: { ...snapshot.usage } };
-  } catch {
-    return null;
+  } catch (error) {
+    // Degrade only for a missing file or a single unparseable line —
+    // other I/O errors (permissions, disk failures) must surface, not
+    // silently present an empty session.
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return null;
+    if (error instanceof SyntaxError) return null; // bad JSON line
+    throw error;
   }
 }
 

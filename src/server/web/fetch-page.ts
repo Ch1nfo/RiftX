@@ -41,8 +41,14 @@ export function htmlToText(html: string) {
 function timedSignal(signal: AbortSignal | undefined, timeoutMs: number) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error("fetch timed out")), timeoutMs);
-  signal?.addEventListener("abort", () => controller.abort(signal.reason), { once: true });
-  return { signal: controller.signal, done: () => clearTimeout(timer) };
+  const onAbort = () => controller.abort(signal?.reason);
+  if (signal?.aborted) {
+    clearTimeout(timer);
+    controller.abort(signal.reason);
+  } else {
+    signal?.addEventListener("abort", onAbort, { once: true });
+  }
+  return { signal: controller.signal, done: () => { clearTimeout(timer); signal?.removeEventListener("abort", onAbort); } };
 }
 
 /**
@@ -75,6 +81,7 @@ async function readCapped(response: Response, maxBytes = MAX_READ_BYTES) {
 export type FetchedPage = { content: string; source: "jina" | "direct" };
 
 export async function fetchPage(url: string, options: { signal?: AbortSignal } & UrlGuardOptions = {}): Promise<FetchedPage> {
+  if (options.signal?.aborted) throw new Error("fetch aborted before start");
   // Entry guard covers BOTH fetch paths: the direct request runs from this
   // process (SSRF), and the reader path would hand an internal address to a
   // third-party service (OPSEC) — neither is acceptable for research URLs.
