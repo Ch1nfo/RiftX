@@ -1,4 +1,4 @@
-import { completeSimple, type Model } from "@mariozechner/pi-ai";
+import { completeSimple, type Api, type Model } from "@mariozechner/pi-ai";
 import type { ModelRegistry } from "@mariozechner/pi-coding-agent";
 import { textFromModelContent } from "./text-content";
 
@@ -12,7 +12,7 @@ Given the SubAgent's session transcript (assistant text and tool output), produc
  * when the main model spent its entire output budget on thinking and the
  * session produced no final text response.
  */
-export async function generateSubagentSummary(modelRegistry: ModelRegistry, model: Model<any>, transcript: string): Promise<string> {
+export async function generateSubagentSummary(modelRegistry: ModelRegistry, model: Model<Api>, transcript: string): Promise<string> {
   const auth = await modelRegistry.getApiKeyAndHeaders(model);
   if (!auth.ok) throw new Error(auth.error);
   const response = await completeSimple(model, {

@@ -27,6 +27,7 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests bin",
     "test": "tsx --test 'src/**/*.test.ts'",
     "postinstall": "playwright install chromium",
     "prepare": "npm run build",
@@ -47,10 +48,13 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "@eslint/eslintrc": "^3.3.6",
     "@playwright/test": "^1.62.1",
     "@types/node": "^22.15.30",
     "@types/react": "^19.1.2",
     "@types/react-dom": "^19.1.2",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^15.5.24",
     "tsx": "^4.19.4",
     "typescript": "^5.8.3"
   }

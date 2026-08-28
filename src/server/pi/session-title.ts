@@ -1,4 +1,4 @@
-import { completeSimple, type Model } from "@mariozechner/pi-ai";
+import { completeSimple, type Api, type Model } from "@mariozechner/pi-ai";
 import type { ModelRegistry } from "@mariozechner/pi-coding-agent";
 import { textFromModelContent } from "./text-content";
 
@@ -13,7 +13,7 @@ function normalizeSessionTitle(raw: string) {
   return Array.from(title).slice(0, 32).join("");
 }
 
-export async function generateSessionTitle(modelRegistry: ModelRegistry, model: Model<any>, task: string, authFailure: "empty" | "throw" = "throw") {
+export async function generateSessionTitle(modelRegistry: ModelRegistry, model: Model<Api>, task: string, authFailure: "empty" | "throw" = "throw") {
   const auth = await modelRegistry.getApiKeyAndHeaders(model);
   if (!auth.ok) {
     if (authFailure === "empty") return "";

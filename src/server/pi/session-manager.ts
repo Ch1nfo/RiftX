@@ -12,7 +12,7 @@ import {
   type AgentSessionEvent,
   type ToolDefinition
 } from "@mariozechner/pi-coding-agent";
-import type { Model } from "@mariozechner/pi-ai";
+import type { Api, Model } from "@mariozechner/pi-ai";
 import { readConfig, getAppPaths, updateConfig } from "@/server/config-store";
 import { RiftxError } from "@/server/errors";
 import { clampConcurrency, type ApprovalMode, type ArchivedSession, type ModelProfile, type RiftxEvent, type SessionSummary } from "@/lib/types";
@@ -80,7 +80,19 @@ function eventPayload(event: AgentSessionEvent): RiftxEvent {
 }
 
 
-async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: ApprovalGate, child = false, sessionManagerOverride?: AgentSessionManager, mutationLock = new MutationLock(), bashConcurrencyOverride?: BashConcurrency, runtimeDeps?: RuntimeDeps, findingSource: FindingSourceInfo = { source: "main" }) {
+async function createRuntimeSession(options: {
+  profile: ModelProfile;
+  cwd: string;
+  gate: ApprovalGate;
+  /** Subagent children reuse the parent's locks, concurrency limiter, and evidence store. */
+  child?: boolean;
+  sessionManagerOverride?: AgentSessionManager;
+  mutationLock?: MutationLock;
+  bashConcurrencyOverride?: BashConcurrency;
+  runtimeDeps?: RuntimeDeps;
+  findingSource?: FindingSourceInfo;
+}) {
+  const { profile, cwd, gate, child = false, sessionManagerOverride, mutationLock = new MutationLock(), bashConcurrencyOverride, runtimeDeps, findingSource = { source: "main" } } = options;
   const paths = getAppPaths();
   await mkdir(paths.agent, { recursive: true, mode: 0o700 });
   const authStorage = AuthStorage.create(join(paths.agent, "auth.json"));
@@ -116,6 +128,9 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
   if (!child) {
     gate.onDecision((request, approved) => emitter.emit("event", { type: "approval_decided", approvalId: request.id, approval: request, approved }));
   }
+  // Deliberately let + separate assignment: closures below forward-reference
+  // `record` before it is built, and read it only after assignment.
+  // eslint-disable-next-line prefer-const
   let record: SessionRecord | undefined;
   const childProfile = config.childInherit ? profile : config.profiles.find((item) => item.id === config.childProfileId) ?? profile;
   // Keep title work on the configured child profile when available so it does
@@ -149,6 +164,9 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
   } : undefined;
   const subagents = !child ? new SubagentManager(sessionManager.getSessionId(), paths.subagents, (event) => emitter.emit("event", event), config.maxConcurrentSubagents, config.approvalMode, subagentNameGenerator) : undefined;
   const getChildProfile = () => config.childInherit ? (record?.profile ?? profile) : childProfile;
+  // Same forward-closure pattern as `record`: the finding tool reads this
+  // lazily, after the session below has been created.
+  // eslint-disable-next-line prefer-const
   let evidenceSession: AgentSession | undefined;
   const customTools = [createTimedBashTool(cwd, { commandPrefix: settingsManager.getShellCommandPrefix(), shellPath: settingsManager.getShellPath() }) as unknown as ToolDefinition, createFindingTool(evidenceStore, findingSource, browser, () => evidenceSession), createCrawlTool(browser), ...createWebTools({
         // Read per call: saving a key in settings applies to already-running
@@ -334,7 +352,7 @@ async function runChildSession(profile: ModelProfile, cwd: string, mutationLock:
   const threadDir = join(paths.subagents, context.task.parentSessionId, context.task.id);
   await mkdir(threadDir, { recursive: true, mode: 0o700 });
   const childSessionManager = AgentSessionManager.create(cwd, threadDir);
-  const child = await createRuntimeSession(profile, cwd, context.gate, true, childSessionManager, mutationLock, bashConcurrency, runtimeDeps, { source: "subagent", subagentId: context.task.id });
+  const child = await createRuntimeSession({ profile, cwd, gate: context.gate, child: true, sessionManagerOverride: childSessionManager, mutationLock, bashConcurrencyOverride: bashConcurrency, runtimeDeps, findingSource: { source: "subagent", subagentId: context.task.id } });
   context.task.model = `${profile.provider}/${profile.model}`;
   context.updateTaskMeta({ model: context.task.model, threadId: child.id });
   const abortChild = () => {
@@ -358,7 +376,7 @@ async function runChildSession(profile: ModelProfile, cwd: string, mutationLock:
     // main session's prompt preparation, so children inherit domain guidance.
     const prepared = await prepareSkillPrompt(context.task.task, child.skills, child.loadedSkills);
     await child.session.prompt(prepared.prompt);
-    let result = extractLastAssistantResult(child.session.sessionManager.getBranch());
+    const result = extractLastAssistantResult(child.session.sessionManager.getBranch());
     if (result.error) throw new Error(result.error);
 
     // The model can spend its entire output budget on thinking (hitting the
@@ -436,7 +454,7 @@ async function getOrCreateSession(id?: string) {
       if (!info) throw new RiftxError("Session does not belong to the current working directory", "SESSION_NOT_IN_WORKSPACE", 404);
       sessionManager = AgentSessionManager.open(info.path, getAppPaths().sessions, currentConfig.cwd);
     }
-    const created = await createRuntimeSession(profile, currentConfig.cwd, new ApprovalGate(), false, sessionManager);
+    const created = await createRuntimeSession({ profile, cwd: currentConfig.cwd, gate: new ApprovalGate(), sessionManagerOverride: sessionManager });
     sessions.set(created.id, created);
     return created;
   };
@@ -455,7 +473,7 @@ async function getOrCreateSession(id?: string) {
 export async function createSession(): Promise<SessionSummary> {
   const config = await readConfig();
   const profile = await profileFor();
-  const created = await createRuntimeSession(profile, config.cwd, new ApprovalGate());
+  const created = await createRuntimeSession({ profile, cwd: config.cwd, gate: new ApprovalGate() });
   sessions.set(created.id, created);
   return {
     id: created.id,
@@ -772,7 +790,7 @@ export async function setActiveProfile(profile: ModelProfile, sessionId?: string
         next.provider,
         captured
       );
-      let model: Model<any>;
+      let model: Model<Api>;
       try {
         model = registerProfileModel(sessionRecord.authStorage, sessionRecord.modelRegistry, next, true);
       } catch (error) {
@@ -782,7 +800,7 @@ export async function setActiveProfile(profile: ModelProfile, sessionId?: string
       }
       return { model, rollback };
     },
-    hasConfiguredAuth: (model) => record.modelRegistry.hasConfiguredAuth(model as Model<any>),
+    hasConfiguredAuth: (model) => record.modelRegistry.hasConfiguredAuth(model as Model<Api>),
     applyTransport: (session, transport) => setAgentTransport(session as AgentSession, transport)
   }));
   // Only a successful switch becomes the provider's tracked registration.

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Archive, ArrowDown, ArrowUp, Brain, Command, FolderOpen, Gear, List, Plus, Stop, WarningCircle, X } from "@phosphor-icons/react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -62,6 +62,162 @@ const MessageItem = memo(function MessageItem({ message, labels }: { message: Me
   </article>;
 });
 
+type Translate = ReturnType<typeof useLanguage>["t"];
+
+function SendButton({ label, onClick, disabled }: { label: string; onClick: () => void; disabled?: boolean }) {
+  return <button className="send-button" aria-label={label} title={label} onClick={onClick} disabled={disabled}><ArrowUp size={18} weight="bold" /></button>;
+}
+
+function StopButton({ label, onStop }: { label: string; onStop: () => void }) {
+  return <button className="send-button stop" aria-label={label} title={label} onClick={onStop}><Stop size={17} weight="fill" /></button>;
+}
+
+function UsageTooltip({ usage, t }: { usage: ContextUsage; t: Translate }) {
+  const safe = {
+    tokens: Number(usage.tokens) || 0,
+    contextWindow: Number(usage.contextWindow) || 0,
+    input: usage.input,
+    output: usage.output,
+    cacheRead: usage.cacheRead,
+    cacheWrite: usage.cacheWrite,
+    remaining: Number(usage.remaining) || 0
+  };
+  const formatPart = (value: number | null) => value === null ? "—" : value.toLocaleString();
+  return <div className="usage-tooltip"><strong>{usage.percent === null ? t("contextUnknown") : `${Math.round(Number(usage.percent) || 0)}%`} {t("context")}</strong><span>{safe.tokens.toLocaleString()} / {safe.contextWindow.toLocaleString()} {t("tokens")}</span><span>{t("input")} {formatPart(safe.input)} · {t("output")} {formatPart(safe.output)}</span><span>{t("cacheRead")} {formatPart(safe.cacheRead)} · {t("cacheWrite")} {formatPart(safe.cacheWrite)}</span><span>{t("remaining")} {safe.remaining.toLocaleString()} {t("tokens")}</span></div>;
+}
+
+function EmptyState({ bootstrapping, activeId, t, onSuggestion }: { bootstrapping: boolean; activeId: string; t: Translate; onSuggestion: (text: string) => void }) {
+  return <div className="empty-state"><div className="empty-orbit"><RiftxLogo decorative /></div><h1>{bootstrapping ? t("loadingWorkspace") : activeId ? t("ready") : t("noSession")}</h1><p>{bootstrapping ? t("readingWorkspace") : activeId ? t("readOrTest") : t("createSessionFirst")}</p>{activeId && !bootstrapping ? <div className="prompt-suggestions"><button onClick={() => onSuggestion(t("overview"))}>{t("overview")}</button><button onClick={() => onSuggestion(t("checkRisks"))}>{t("checkRisks")}</button></div> : null}</div>;
+}
+
+function Sidebar({ open, bootstrapping, sessions, activeId, t, onNewSession, onSelect, onArchive, onClose }: { open: boolean; bootstrapping: boolean; sessions: SessionSummary[]; activeId: string; t: Translate; onNewSession: () => void; onSelect: (id: string) => void; onArchive: (id: string) => void; onClose: () => void }) {
+  return <aside className={`sidebar ${open ? "open" : ""}`}>
+    <div className="brand-row"><div className="brand-mark"><RiftxLogo /></div><span>RiftX</span><button className="icon-button mobile-only" onClick={onClose}><X size={17} /></button></div>
+    <button className="new-session" onClick={onNewSession}><Plus size={17} weight="bold" />{t("newSession")}<span className="shortcut">⌘ N</span></button>
+    <div className="sidebar-label">{t("recentSessions")}</div>
+    <div className="session-list">
+      {bootstrapping ? <span className="session-loading">{t("loading")}</span> : sessions.map((session) => (
+        <div key={session.id} className="session-item-row">
+          <button className={`session-item ${activeId === session.id ? "active" : ""}`} onClick={() => onSelect(session.id)}>
+            <span className="session-dot" />
+            <span className="session-copy">
+              {session.name === t("summarizeTitle")
+                ? <span className="session-title-loading" role="status" aria-label={t("summarizeTitle")} title={t("summarizeTitle")} />
+                : <strong>{session.name || t("newSessionEnglish")}</strong>}
+              <small>{new Date(session.updatedAt).toLocaleDateString()}</small>
+            </span>
+          </button>
+          <button className="session-archive" aria-label={`${t("archive")} ${session.name || t("archived")}`} title={t("archive")} onClick={(event) => { event.stopPropagation(); onArchive(session.id); }}><Archive size={14} /></button>
+        </div>
+      ))}
+    </div>
+    <div className="sidebar-bottom"><div className="sidebar-settings-row"><Link href="/settings" className="sidebar-link"><Gear size={17} />{t("settings")}</Link></div></div>
+  </aside>;
+}
+
+function Topbar({ bootstrapping, choosing, cwd, t, onOpenNav, onChooseDirectory }: { bootstrapping: boolean; choosing: boolean; cwd: string; t: Translate; onOpenNav: () => void; onChooseDirectory: () => void }) {
+  return <header className="topbar"><button className="icon-button mobile-only" onClick={onOpenNav} aria-label={t("settings")}><List size={19} /></button><button className="workspace workspace-button" type="button" disabled={bootstrapping || choosing} aria-busy={choosing} onClick={onChooseDirectory} title={t("changeWorkingDirectory")} aria-label={choosing ? t("choosingWorkingDirectory") : t("changeWorkingDirectory")}><FolderOpen size={16} /><span>{cwd || t("workingDirectory")}</span></button><div className="topbar-spacer" /><div className="topbar-actions"><LanguageToggle /><ThemeToggle /></div></header>;
+}
+
+function ApprovalCard({ approval, scopeExpansion, t, onDecide }: { approval: ApprovalRequest; scopeExpansion: boolean; t: Translate; onDecide: (approved: boolean, scope: "once" | "task") => void }) {
+  return <div className="approval-card">
+    <div className="approval-card-main">
+      <div className="approval-icon"><WarningCircle size={18} weight="bold" /></div>
+      <div className="approval-card-copy">
+        <div className="approval-card-title">
+          <span className="eyebrow">{approval.subagentId ? t("subagentApproval") : t("needConfirm")}</span>
+          <strong>{approval.subagentId ? approval.agentName : approval.toolName}</strong>
+          <span className="approval-card-risk">{t("highRisk")}</span>
+        </div>
+        {scopeExpansion ? <p>{t("browserScopeApproval")}</p>
+          : approval.subagentId ? <p>{t("subagentRequestsTool", { agent: approval.agentName ?? "", tool: approval.toolName })}</p>
+          : <p>{(approval.toolName === "browser" || approval.toolName === "crawl") ? t("browserApproval") : t("terminalApproval")}</p>}
+      </div>
+    </div>
+    <details className="approval-command">
+      <summary><code>{summarizeApprovalInput(approval.input)}</code><span>{t("expandCommand")}</span></summary>
+      <pre>{formatApprovalInput(approval.input)}</pre>
+    </details>
+    <div className="approval-actions">
+      <button className="button reject" onClick={() => onDecide(false, "once")}>{t("reject")}</button>
+      <button className="button ghost" onClick={() => onDecide(true, "task")}>{t(scopeExpansion ? "allowScopeTask" : "allowTask")}</button>
+      <button className="button primary" onClick={() => onDecide(true, "once")}>{t(scopeExpansion ? "allowScopeOnce" : "allowOnce")}</button>
+    </div>
+  </div>;
+}
+
+function Composer({ value, onChange, onSubmit, onStop, busy, running, activeId, bootstrapping, mainAgentRunning, approvalMode, onApprovalModeChange, usage, modelProfiles, activeProfileId, modelName, modelSwitching, onModelChange, t }: {
+  value: string;
+  onChange: (value: string) => void;
+  onSubmit: (mode?: "prompt" | "steer" | "followUp") => void;
+  onStop: () => void;
+  busy: boolean;
+  running: boolean;
+  activeId: string;
+  bootstrapping: boolean;
+  mainAgentRunning: boolean;
+  approvalMode: ApprovalMode;
+  onApprovalModeChange: (mode: ApprovalMode) => void;
+  usage: ContextUsage;
+  modelProfiles: ModelProfile[];
+  activeProfileId: string;
+  modelName: string;
+  modelSwitching: boolean;
+  onModelChange: (profileId: string) => void;
+  t: Translate;
+}) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const compositionActiveRef = useRef(false);
+  const compositionEndedAtRef = useRef(0);
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const maxHeight = 200;
+    textarea.style.height = "auto";
+    const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
+    textarea.style.height = `${Math.max(48, nextHeight)}px`;
+    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+  }, [value]);
+  // IME composition must not trigger Enter-submit: a composing keypress, the
+  // 229 keyCode, and a composition that ended <150ms ago are all ignored.
+  const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.nativeEvent.isComposing || event.keyCode === 229 || compositionActiveRef.current) return;
+    if (event.key === "Enter" && !event.shiftKey) {
+      if (Date.now() - compositionEndedAtRef.current < 150) {
+        compositionEndedAtRef.current = 0;
+        return;
+      }
+      event.preventDefault();
+      onSubmit();
+    }
+  };
+  return <div className="composer">
+    <textarea ref={textareaRef} value={value} disabled={!activeId || bootstrapping} onChange={(event) => onChange(event.target.value)}
+      onCompositionStart={() => { compositionActiveRef.current = true; compositionEndedAtRef.current = 0; }}
+      onCompositionEnd={() => { compositionActiveRef.current = false; compositionEndedAtRef.current = Date.now(); }}
+      onKeyDown={handleKeyDown}
+      placeholder={bootstrapping ? t("loadingWorkspace") : busy ? t("guide") : activeId ? t("ask") : t("createSessionFirst")} rows={1} />
+    <div className="composer-bottom">
+      <div className="composer-tools">
+        <ApprovalModeMenu value={approvalMode} onValueChange={onApprovalModeChange} disabled={bootstrapping || mainAgentRunning} />
+        <span className="composer-hint"><span className="keycap">Shift</span> + <span className="keycap">Enter</span> {t("shiftEnter")}</span>
+      </div>
+      <div className="composer-actions">
+        <ContextRing percent={bootstrapping ? null : usage.percent} label={bootstrapping ? "—" : usage.percent === null ? "—" : `${Math.round(usage.percent)}`} detail={<UsageTooltip usage={usage} t={t} />} />
+        {bootstrapping ? <span className="model-label">{t("loadingModel")}</span>
+          : modelProfiles.length > 1
+            ? <ModelMenu value={activeProfileId} onValueChange={onModelChange} options={modelProfiles.map((profile) => ({ value: profile.id, label: `${profile.provider}/${profile.model}` }))} disabled={mainAgentRunning || modelSwitching} />
+            : <span className="model-label">{modelName}</span>}
+        {busy
+          ? (value.trim() ? <SendButton label={t("sendGuide")} onClick={() => onSubmit("steer")} /> : <StopButton label={t("stop")} onStop={onStop} />)
+          : value.trim() ? <SendButton label={t("send")} onClick={() => onSubmit("prompt")} disabled={!activeId || bootstrapping} />
+          : running ? <StopButton label={t("stop")} onStop={onStop} />
+          : <SendButton label={t("send")} onClick={() => onSubmit("prompt")} disabled={!activeId || bootstrapping || !value.trim()} />}
+      </div>
+    </div>
+  </div>;
+}
+
 export function Workbench() {
   const { language, t } = useLanguage();
   const tRef = useRef(t);
@@ -87,9 +243,6 @@ export function Workbench() {
   const [error, setError] = useState("");
   const [mobileNav, setMobileNav] = useState(false);
   const [streamGeneration, setStreamGeneration] = useState(0);
-  const composerInputRef = useRef<HTMLTextAreaElement>(null);
-  const compositionActiveRef = useRef(false);
-  const compositionEndedAtRef = useRef(0);
   const subagentsRef = useRef<SubagentTask[]>([]);
   const subagentQueueRef = useRef(new Map<string, SubagentTask>());
   const subagentPatchQueueRef = useRef(new Map<string, SubagentTaskPatch[]>());
@@ -132,16 +285,6 @@ export function Workbench() {
     activeIdRef.current = id;
     setActiveId(id);
   };
-
-  useLayoutEffect(() => {
-    const textarea = composerInputRef.current;
-    if (!textarea) return;
-    const maxHeight = 200;
-    textarea.style.height = "auto";
-    const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
-    textarea.style.height = `${Math.max(48, nextHeight)}px`;
-    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
-  }, [input]);
 
   const scheduleSubagentFlush = () => {
     if (subagentFlushFrameRef.current !== undefined) return;
@@ -224,13 +367,7 @@ export function Workbench() {
   }, [subagents]);
 
   useEffect(() => {
-    resetConversationView();
-    subagentsRef.current = [];
-    setSubagents([]);
-    setFindings([]);
-    setApprovalQueue([]);
-    setMainAgentRunning(false);
-    setContextCompacting(false);
+    resetSessionState();
     const sessionMeta = sessions.find((session) => session.id === activeId);
     setUsage(usageFromSession(sessionMeta));
     if (sessionMeta?.provider && sessionMeta?.model) setModelName(`${sessionMeta.provider}/${sessionMeta.model}`);
@@ -239,6 +376,18 @@ export function Workbench() {
     setActiveProfileId(sessionMeta?.profileId ?? "");
     if (!activeId) return;
     const controller = new AbortController();
+    let disposed = false;
+    // Initial load and every SSE reconnect fetch the same reconciled snapshot.
+    const refetchMessages = () => {
+      void fetch(`/api/sessions/${activeId}/messages`, { signal: controller.signal })
+        .then((response) => response.ok ? response.json() as Promise<Message[]> : [])
+        .then((items) => {
+          if (disposed || controller.signal.aborted || activeIdRef.current !== activeId) return;
+          flushMessageDeltas();
+          setMessages((current) => mergeFetchedMessages(current, normalizeMessages(items)));
+        })
+        .catch(() => undefined);
+    };
     fetch(`/api/sessions/${activeId}`, { signal: controller.signal }).then((response) => response.json()).then((data: Partial<SessionSummary>) => {
       if (controller.signal.aborted || activeIdRef.current !== activeId) return;
       const nextUsage = data.usage && typeof data.usage === "object"
@@ -259,12 +408,7 @@ export function Workbench() {
       if (controller.signal.aborted || activeIdRef.current !== activeId) return;
       setFindings(data.findings ?? []);
     }).catch(() => undefined);
-    fetch(`/api/sessions/${activeId}/messages`, { signal: controller.signal }).then((response) => response.ok ? response.json() as Promise<Message[]> : []).then((items: Message[]) => {
-      if (controller.signal.aborted || activeIdRef.current !== activeId) return;
-      flushMessageDeltas();
-      setMessages((current) => mergeFetchedMessages(current, normalizeMessages(items)));
-    }).catch(() => undefined);
-    let disposed = false;
+    refetchMessages();
     let reconnectAttempts = 0;
     let hasOpened = false;
     const source = new EventSource(`/api/sessions/${activeId}/stream`);
@@ -274,14 +418,7 @@ export function Workbench() {
         hasOpened = true;
         return;
       }
-      void fetch(`/api/sessions/${activeId}/messages`, { signal: controller.signal })
-        .then((response) => response.ok ? response.json() as Promise<Message[]> : [])
-        .then((items) => {
-          if (disposed || controller.signal.aborted || activeIdRef.current !== activeId) return;
-          flushMessageDeltas();
-          setMessages((current) => mergeFetchedMessages(current, normalizeMessages(items)));
-        })
-        .catch(() => undefined);
+      refetchMessages();
     };
     source.onmessage = (event) => {
       // Same pre-cleanup window as the fetch guards: events from the previous
@@ -323,6 +460,17 @@ export function Workbench() {
   const visibleMessages = useMemo(() => messages.filter((message) => message.toolName !== "spawn_subagent"), [messages]);
   const { conversationRef, conversationInnerRef, showJumpToLatest, visibleMessageCount, handleConversationScroll, revealToolCard, requestToolReveal, expandVisibleMessages, loadEarlierMessages, jumpToLatest, pauseAutoFollow, resumeAutoFollow, resetConversationView } = useConversationScroll(messages, visibleMessages.length, MESSAGE_BATCH_SIZE);
   const eventContext: SessionEventContext = { activeId, t, queueMessageDelta, flushMessageDeltas, setMessages, setFindings, queueSubagentTask, queueSubagentTaskPatch, setApprovalQueue, setUsage, setSessions, setMainAgentRunning, setContextCompacting, setError };
+  // Clear every piece of per-session view state (messages stay: the fetch
+  // merge reconciles them, and callers clear them for instant feedback).
+  const resetSessionState = () => {
+    resetConversationView();
+    subagentsRef.current = [];
+    setSubagents([]);
+    setFindings([]);
+    setApprovalQueue([]);
+    setMainAgentRunning(false);
+    setContextCompacting(false);
+  };
   const displayedMessages = useMemo(() => visibleMessages.slice(-visibleMessageCount), [visibleMessages, visibleMessageCount]);
   const hasEarlierMessages = displayedMessages.length < visibleMessages.length;
   const messageLabels = useMemo<MessageLabels>(() => ({ you: t("you"), thinking: t("thinking"), thinkingNow: t("thinkingNow"), thinkingDone: t("thinkingDone"), queued: t("queued"), running: t("running"), failed: t("failed"), stopped: t("stopped"), complete: t("complete") }), [t]);
@@ -382,6 +530,7 @@ export function Workbench() {
     const previousActiveId = activeId;
     selectSession("");
     setMessages([]);
+    resetSessionState();
     setUsage(makeEmptyUsage());
     setError("");
     try {
@@ -409,11 +558,8 @@ export function Workbench() {
       setSessions(nextSessions);
       selectSession(data.activeSessionId ?? "");
       setMessages([]);
+      resetSessionState();
       setUsage(makeEmptyUsage());
-      setMainAgentRunning(false);
-      setApprovalQueue([]);
-      subagentsRef.current = [];
-      setSubagents([]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("changeWorkingDirectoryFailed"));
     } finally {
@@ -431,6 +577,7 @@ export function Workbench() {
     const next = nextSessions[0];
     selectSession(next?.id ?? "");
     setMessages([]);
+    resetSessionState();
     setUsage(usageFromSession(next));
   };
 
@@ -600,36 +747,34 @@ export function Workbench() {
     }
   };
 
-  const detail = useMemo(() => {
-    const safe = {
-      tokens: Number(usage.tokens) || 0,
-      contextWindow: Number(usage.contextWindow) || 0,
-      input: usage.input,
-      output: usage.output,
-      cacheRead: usage.cacheRead,
-      cacheWrite: usage.cacheWrite,
-      remaining: Number(usage.remaining) || 0
-    };
-    const formatPart = (value: number | null) => value === null ? "—" : value.toLocaleString();
-    return <div className="usage-tooltip"><strong>{usage.percent === null ? t("contextUnknown") : `${Math.round(Number(usage.percent) || 0)}%`} {t("context")}</strong><span>{safe.tokens.toLocaleString()} / {safe.contextWindow.toLocaleString()} {t("tokens")}</span><span>{t("input")} {formatPart(safe.input)} · {t("output")} {formatPart(safe.output)}</span><span>{t("cacheRead")} {formatPart(safe.cacheRead)} · {t("cacheWrite")} {formatPart(safe.cacheWrite)}</span><span>{t("remaining")} {safe.remaining.toLocaleString()} {t("tokens")}</span></div>;
-  }, [usage]);
   const scopeExpansion = Boolean(approval?.input && typeof approval.input === "object" && (approval.input as { scopeExpansion?: unknown }).scopeExpansion === true);
 
   return <div className="app-shell">
-    <aside className={`sidebar ${mobileNav ? "open" : ""}`}>
-      <div className="brand-row"><div className="brand-mark"><RiftxLogo /></div><span>RiftX</span><button className="icon-button mobile-only" onClick={() => setMobileNav(false)}><X size={17} /></button></div>
-      <button className="new-session" onClick={newSession}><Plus size={17} weight="bold" />{t("newSession")}<span className="shortcut">⌘ N</span></button>
-      <div className="sidebar-label">{t("recentSessions")}</div>
-      <div className="session-list">{bootstrapping ? <span className="session-loading">{t("loading")}</span> : sessions.map((session) => <div key={session.id} className="session-item-row"><button className={`session-item ${activeId === session.id ? "active" : ""}`} onClick={() => { selectSession(session.id); setMessages([]); setMobileNav(false); }}><span className="session-dot" /><span className="session-copy">{session.name === t("summarizeTitle") ? <span className="session-title-loading" role="status" aria-label={t("summarizeTitle")} title={t("summarizeTitle")} /> : <strong>{session.name || t("newSessionEnglish")}</strong>}<small>{new Date(session.updatedAt).toLocaleDateString()}</small></span></button><button className="session-archive" aria-label={`${t("archive")} ${session.name || t("archived")}`} title={t("archive")} onClick={(event) => { event.stopPropagation(); void archiveSession(session.id); }}><Archive size={14} /></button></div>)}</div>
-      <div className="sidebar-bottom"><div className="sidebar-settings-row"><Link href="/settings" className="sidebar-link"><Gear size={17} />{t("settings")}</Link></div></div>
-    </aside>
+    <Sidebar open={mobileNav} bootstrapping={bootstrapping} sessions={sessions} activeId={activeId} t={t} onNewSession={() => void newSession()} onSelect={(id) => { selectSession(id); setMessages([]); resetSessionState(); setMobileNav(false); }} onArchive={(id) => void archiveSession(id)} onClose={() => setMobileNav(false)} />
     {mobileNav ? <button className="scrim mobile-only" onClick={() => setMobileNav(false)} aria-label={t("closeNav")} /> : null}
     <main className="main-panel">
-      <header className="topbar"><button className="icon-button mobile-only" onClick={() => setMobileNav(true)} aria-label={t("settings")}><List size={19} /></button><button className="workspace workspace-button" type="button" disabled={bootstrapping || workspaceChoosing} aria-busy={workspaceChoosing} onClick={() => void chooseWorkingDirectory()} title={t("changeWorkingDirectory")} aria-label={workspaceChoosing ? t("choosingWorkingDirectory") : t("changeWorkingDirectory")}><FolderOpen size={16} /><span>{cwd || t("workingDirectory")}</span></button><div className="topbar-spacer" /><div className="topbar-actions"><LanguageToggle /><ThemeToggle /></div></header>
-      <section ref={conversationRef} className="conversation" onScroll={handleConversationScroll}><div ref={conversationInnerRef} className="conversation-inner">{visibleMessages.length === 0 ? <div className="empty-state"><div className="empty-orbit"><RiftxLogo decorative /></div><h1>{bootstrapping ? t("loadingWorkspace") : activeId ? t("ready") : t("noSession")}</h1><p>{bootstrapping ? t("readingWorkspace") : activeId ? t("readOrTest") : t("createSessionFirst")}</p>{activeId && !bootstrapping ? <div className="prompt-suggestions"><button onClick={() => setInput(t("overview"))}>{t("overview")}</button><button onClick={() => setInput(t("checkRisks"))}>{t("checkRisks")}</button></div> : null}</div> : <>{hasEarlierMessages ? <button className="load-earlier" type="button" onClick={loadEarlierMessages}><ArrowUp size={14} />{t("loadEarlierMessages")}</button> : null}{displayedMessages.map((message) => <MessageItem key={message.id} message={message} labels={messageLabels} />)}</>}{contextCompacting ? <article className="message thinking context-compaction-message" role="status" aria-live="polite"><div className="message-body"><div className="thinking-copy"><span className="thinking-title"><Brain size={14} weight="bold" />{t("contextCompacting")}</span></div></div></article> : null}</div>{showJumpToLatest ? <button className="jump-latest" type="button" aria-label={t("jumpLatest")} title={t("jumpLatest")} onClick={jumpToLatest}><ArrowDown size={17} weight="bold" /></button> : null}</section>
-      <footer className="composer-wrap">{approval ? <div className="approval-card"><div className="approval-card-main"><div className="approval-icon"><WarningCircle size={18} weight="bold" /></div><div className="approval-card-copy"><div className="approval-card-title"><span className="eyebrow">{approval.subagentId ? t("subagentApproval") : t("needConfirm")}</span><strong>{approval.subagentId ? approval.agentName : approval.toolName}</strong><span className="approval-card-risk">{t("highRisk")}</span></div>{scopeExpansion ? <p>{t("browserScopeApproval")}</p> : approval.subagentId ? <p>{t("subagentRequestsTool", { agent: approval.agentName ?? "", tool: approval.toolName })}</p> : <p>{(approval.toolName === "browser" || approval.toolName === "crawl") ? t("browserApproval") : t("terminalApproval")}</p>}</div></div><details className="approval-command"><summary><code>{summarizeApprovalInput(approval.input)}</code><span>{t("expandCommand")}</span></summary><pre>{formatApprovalInput(approval.input)}</pre></details><div className="approval-actions"><button className="button reject" onClick={() => void decide(false)}>{t("reject")}</button><button className="button ghost" onClick={() => void decide(true, "task")}>{t(scopeExpansion ? "allowScopeTask" : "allowTask")}</button><button className="button primary" onClick={() => void decide(true)}>{t(scopeExpansion ? "allowScopeOnce" : "allowOnce")}</button></div></div> : null}<div className="composer"><textarea ref={composerInputRef} value={input} disabled={!activeId || bootstrapping} onChange={(event) => setInput(event.target.value)} onCompositionStart={() => { compositionActiveRef.current = true; compositionEndedAtRef.current = 0; }} onCompositionEnd={() => { compositionActiveRef.current = false; compositionEndedAtRef.current = Date.now(); }} onKeyDown={(event) => { if (event.nativeEvent.isComposing || event.keyCode === 229 || compositionActiveRef.current) return; if (event.key === "Enter" && !event.shiftKey) { if (Date.now() - compositionEndedAtRef.current < 150) { compositionEndedAtRef.current = 0; return; } event.preventDefault(); void send(); } }} placeholder={bootstrapping ? t("loadingWorkspace") : composerBusy ? t("guide") : activeId ? t("ask") : t("createSessionFirst")} rows={1} /><div className="composer-bottom"><div className="composer-tools"><ApprovalModeMenu value={approvalMode} onValueChange={(mode) => void changeApprovalMode(mode)} disabled={bootstrapping || mainAgentRunning} /><span className="composer-hint"><span className="keycap">Shift</span> + <span className="keycap">Enter</span> {t("shiftEnter")}</span></div><div className="composer-actions"><ContextRing percent={bootstrapping ? null : usage.percent} label={bootstrapping ? "—" : usage.percent === null ? "—" : `${Math.round(usage.percent)}`} detail={detail} />{bootstrapping ? <span className="model-label">{t("loadingModel")}</span> : modelProfiles.length > 1 ? <ModelMenu value={activeProfileId} onValueChange={(profileId) => void changeModel(profileId)} options={modelProfiles.map((profile) => ({ value: profile.id, label: `${profile.provider}/${profile.model}` }))} disabled={mainAgentRunning || modelSwitching} /> : <span className="model-label">{modelName}</span>}{composerBusy ? (input.trim() ? <button className="send-button" aria-label={t("sendGuide")} title={t("sendGuide")} onClick={() => void send("steer")}><ArrowUp size={18} weight="bold" /></button> : <button className="send-button stop" aria-label={t("stop")} title={t("stop")} onClick={stopAll}><Stop size={17} weight="fill" /></button>) : input.trim() ? <button className="send-button" aria-label={t("send")} title={t("send")} onClick={() => void send("prompt")} disabled={!activeId || bootstrapping}><ArrowUp size={18} weight="bold" /></button> : running ? <button className="send-button stop" aria-label={t("stop")} title={t("stop")} onClick={stopAll}><Stop size={17} weight="fill" /></button> : <button className="send-button" aria-label={t("send")} title={t("send")} onClick={() => void send("prompt")} disabled={!activeId || bootstrapping || !input.trim()}><ArrowUp size={18} weight="bold" /></button>}</div></div></div></footer>
+      <Topbar bootstrapping={bootstrapping} choosing={workspaceChoosing} cwd={cwd} t={t} onOpenNav={() => setMobileNav(true)} onChooseDirectory={() => void chooseWorkingDirectory()} />
+      <section ref={conversationRef} className="conversation" onScroll={handleConversationScroll}>
+        <div ref={conversationInnerRef} className="conversation-inner">
+          {visibleMessages.length === 0
+            ? <EmptyState bootstrapping={bootstrapping} activeId={activeId} t={t} onSuggestion={setInput} />
+            : <>
+              {hasEarlierMessages ? <button className="load-earlier" type="button" onClick={loadEarlierMessages}><ArrowUp size={14} />{t("loadEarlierMessages")}</button> : null}
+              {displayedMessages.map((message) => <MessageItem key={message.id} message={message} labels={messageLabels} />)}
+            </>}
+          {contextCompacting ? <article className="message thinking context-compaction-message" role="status" aria-live="polite"><div className="message-body"><div className="thinking-copy"><span className="thinking-title"><Brain size={14} weight="bold" />{t("contextCompacting")}</span></div></div></article> : null}
+        </div>
+        {showJumpToLatest ? <button className="jump-latest" type="button" aria-label={t("jumpLatest")} title={t("jumpLatest")} onClick={jumpToLatest}><ArrowDown size={17} weight="bold" /></button> : null}
+      </section>
+      <footer className="composer-wrap">
+        {approval ? <ApprovalCard approval={approval} scopeExpansion={scopeExpansion} t={t} onDecide={(approved, scope) => void decide(approved, scope)} /> : null}
+        <Composer value={input} onChange={setInput} onSubmit={(mode) => void send(mode)} onStop={stopAll} busy={composerBusy} running={running} activeId={activeId} bootstrapping={bootstrapping} mainAgentRunning={mainAgentRunning} approvalMode={approvalMode} onApprovalModeChange={(mode) => void changeApprovalMode(mode)} usage={usage} modelProfiles={modelProfiles} activeProfileId={activeProfileId} modelName={modelName} modelSwitching={modelSwitching} onModelChange={(profileId) => void changeModel(profileId)} t={t} />
+      </footer>
     </main>
-    <aside className="right-rail" aria-label={t("subagents")}><SubagentPanel tasks={subagents} running={subagentRunning} maxConcurrent={maxConcurrentSubagents} onCancel={(taskId) => void cancelSubagent(taskId)} onRetry={(taskId) => void retrySubagent(taskId)} focus={subagentFocus} /><FindingsPanel sessionId={activeId || undefined} findings={findings} onPatch={(id, patch) => void patchFindingInSession(id, patch)} onToolClick={scrollToTool} onRequestClick={scrollToRequest} /></aside>
+    <aside className="right-rail" aria-label={t("subagents")}>
+      <SubagentPanel tasks={subagents} running={subagentRunning} maxConcurrent={maxConcurrentSubagents} onCancel={(taskId) => void cancelSubagent(taskId)} onRetry={(taskId) => void retrySubagent(taskId)} focus={subagentFocus} />
+      <FindingsPanel sessionId={activeId || undefined} findings={findings} onPatch={(id, patch) => void patchFindingInSession(id, patch)} onToolClick={scrollToTool} onRequestClick={scrollToRequest} />
+    </aside>
     {error ? <div className="toast-wrap"><ErrorNotice message={error} onDismiss={() => setError("")} /></div> : null}
   </div>;
 }

@@ -19,11 +19,11 @@ type RegistryLike = {
  * override leaves the new key serving the old model.
  */
 async function loadSdk() {
-  const module = await import(pathToFileURL(join(process.cwd(), "node_modules/@mariozechner/pi-coding-agent/dist/index.js")).href) as {
+  const sdk = await import(pathToFileURL(join(process.cwd(), "node_modules/@mariozechner/pi-coding-agent/dist/index.js")).href) as {
     AuthStorage: { inMemory: () => unknown };
     ModelRegistry: { create(authStorage: unknown, modelsPath: string): RegistryLike };
   };
-  return module;
+  return sdk;
 }
 
 function providerConfig(apiKey: string) {

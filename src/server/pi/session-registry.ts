@@ -1,6 +1,6 @@
 import type { EventEmitter } from "node:events";
 import type { AuthStorage, ModelRegistry, SessionManager as AgentSessionManager, SettingsManager, AgentSession } from "@mariozechner/pi-coding-agent";
-import type { Model } from "@mariozechner/pi-ai";
+import type { Api, Model } from "@mariozechner/pi-ai";
 import type { EvidenceStore } from "./evidence-store";
 import { ApprovalGate } from "./approval-gate";
 import { BrowserManager } from "@/browser";
@@ -22,7 +22,7 @@ export type SessionRecord = {
   cwd: string;
   profile: import("@/lib/types").ModelProfile;
   authStorage: AuthStorage;
-  model: Model<any>;
+  model: Model<Api>;
   modelRegistry: ModelRegistry;
   settingsManager: SettingsManager;
   sessionManager: AgentSessionManager;
@@ -61,9 +61,7 @@ export type RuntimeDeps = {
 export const RUNTIME_VERSION = 27;
 
 declare global {
-  // eslint-disable-next-line no-var
   var __riftxSessions: Map<string, SessionRecord> | undefined;
-  // eslint-disable-next-line no-var
   var __riftxSessionCreation: Map<string, Promise<SessionRecord>> | undefined;
 }
 

@@ -1,4 +1,4 @@
-import { completeSimple, type Model } from "@mariozechner/pi-ai";
+import { completeSimple, type Api, type Model } from "@mariozechner/pi-ai";
 import type { ModelRegistry } from "@mariozechner/pi-coding-agent";
 import type { ApprovalRequest } from "@/lib/types";
 import { textFromModelContent } from "./text-content";
@@ -28,7 +28,7 @@ function extractFirstJsonObject(raw: string) {
   return raw.slice(start, end + 1);
 }
 
-export async function evaluateApproval(model: Model<any>, modelRegistry: ModelRegistry, request: ApprovalRequest, scopeRules: string[] = []): Promise<ApprovalEvaluation> {
+export async function evaluateApproval(model: Model<Api>, modelRegistry: ModelRegistry, request: ApprovalRequest, scopeRules: string[] = []): Promise<ApprovalEvaluation> {
   const auth = await modelRegistry.getApiKeyAndHeaders(model);
   if (!auth.ok) throw new Error(auth.error);
   const scopeSection = scopeRules.length
