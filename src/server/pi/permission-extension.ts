@@ -52,13 +52,9 @@ export function createPermissionExtension(
       if (succeeded) effect.commit();
       else effect.rollback();
     };
-    const releaseTool = (toolCallId: string) => {
-      const entry = releases.get(toolCallId);
-      if (!entry) return;
-      releases.delete(toolCallId);
-      entry.cleanupAbort?.();
-      entry.release();
-    };
+    // releaseTool is a no-op now: locks are managed inside tool execute wrappers.
+    // Kept for the tool_execution_end cleanup contract and future use.
+    const releaseTool = (_toolCallId: string) => undefined;
     agent.on("tool_execution_end", (event) => {
       settleScopeEffect(event.toolCallId, !event.isError);
       releaseTool(event.toolCallId);
@@ -159,43 +155,13 @@ export function createPermissionExtension(
         const decision = await resolveApproval(request, gate, evaluate, onEvent, ctx.signal);
         if (!decision.approved) return { block: true, reason: decision.reason ?? "Blocked by RiftX safety gate" };
       }
-      let release: (() => void) | undefined;
-      try {
-        if (event.toolName === "bash") {
-          if (!bashConcurrency) throw new Error("Bash concurrency limiter is required");
-          const bashRelease = await bashConcurrency.acquire(ctx.signal);
-          let mutationRelease: (() => void) | undefined;
-          try {
-            mutationRelease = mutationLock ? await mutationLock.acquireShared(ctx.signal) : undefined;
-          } catch (error) {
-            bashRelease?.();
-            throw error;
-          }
-          release = () => {
-            mutationRelease?.();
-            bashRelease?.();
-          };
-        } else if (event.toolName !== "browser" && event.toolName !== "crawl") {
-          // Browser state is serialized inside BrowserManager's per-instance
-          // operation chain, so browser calls coordinate no cross-tool lock:
-          // routing them through the file lock would stall browser work
-          // behind long Bash scans again.
-          release = mutationLock ? await mutationLock.acquire(ctx.signal) : undefined;
-        }
-        if (release) {
-          const onAbort = () => releaseTool(event.toolCallId);
-          ctx.signal?.addEventListener("abort", onAbort, { once: true });
-          releases.set(event.toolCallId, {
-            release,
-            cleanupAbort: () => ctx.signal?.removeEventListener("abort", onAbort)
-          });
-        }
-        onEvent({ type: "tool_status", toolName: event.toolName, toolCallId: event.toolCallId, toolStatus: "running" });
-      } catch (error) {
-        settleScopeEffect(event.toolCallId, false);
-        releaseTool(event.toolCallId);
-        return { block: true, reason: error instanceof Error ? error.message : "Mutation was blocked" };
-      }
+      // Locks are NOT acquired here. The SDK's parallel executor runs ALL
+      // beforeToolCall handlers before starting ANY execution — acquiring a
+      // lock here means bash's shared lock is held while write's exclusive
+      // acquisition blocks, but bash hasn't actually started running so it
+      // will never release: deadlock. Locks are acquired inside each tool's
+      // execute() wrapper (session-manager.ts) at actual execution time.
+      onEvent({ type: "tool_status", toolName: event.toolName, toolCallId: event.toolCallId, toolStatus: "running" });
     });
   };
 }

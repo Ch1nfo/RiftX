@@ -190,18 +190,55 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
   });
   evidenceSession = result.session;
   installMidTurnCompaction(result.session);
-  // The runtime prepares parallel calls before executing them. write/edit
-  // share one sequential lane because they take the exclusive file lock in
-  // beforeToolCall and must not head-of-line-stall each other's lock waits.
-  // Bash uses its own shared concurrency limiter; browser and spawn_subagent
-  // run in parallel lanes (BrowserManager serializes its own state per
-  // instance, so browser never queues behind file mutations).
-  const runtimeAgent = (result.session as unknown as { agent?: { toolExecution?: "parallel" | "sequential"; state?: { tools?: Array<{ name: string; executionMode?: "parallel" | "sequential" }> } } }).agent;
+  // The runtime prepares parallel calls before executing them. The SDK runs
+  // an ENTIRE batch sequentially if any single tool is marked sequential
+  // (agent-loop.js:235: hasSequentialToolCall → executeToolCallsSequential),
+  // so a batch like [bash(400s), write, web_search] would queue everything
+  // behind the 400s bash. No RiftX tool uses executionMode: "sequential" —
+  // write/edit coordinate through the exclusive MutationLock in
+  // beforeToolCall (they already wait for each other there), and Bash uses
+  // its own shared concurrency limiter. crawl serializes through
+  // BrowserManager.run(). Everything stays in the parallel lane.
+  const runtimeAgent = (result.session as unknown as { agent?: { toolExecution?: "parallel" | "sequential"; state?: { tools?: Array<{ name: string; executionMode?: "parallel" | "sequential"; execute?: (toolCallId: string, params: unknown, signal?: AbortSignal, ...rest: unknown[]) => Promise<unknown> }> } } }).agent;
   if (runtimeAgent) {
     runtimeAgent.toolExecution = "parallel";
     for (const tool of runtimeAgent.state?.tools ?? []) {
-      if (tool.name === "write" || tool.name === "edit") tool.executionMode = "sequential";
-      if (tool.name === "spawn_subagent") tool.executionMode = "parallel";
+      tool.executionMode = "parallel";
+      // Locks are acquired at EXECUTION time (not beforeToolCall) to avoid
+      // the SDK parallel-executor deadlock: beforeToolCall handlers all run
+      // before any execution starts, so a shared holder (bash) would never
+      // release while an exclusive waiter (write) is stuck in pre-processing.
+      // The execute wrapper acquires and releases around the real execute.
+      if (tool.name === "bash" && typeof tool.execute === "function") {
+        const original = tool.execute.bind(tool);
+        tool.execute = async (toolCallId: string, params: unknown, signal?: AbortSignal, ...rest: unknown[]) => {
+          const bashRelease = await bashConcurrency.acquire(signal);
+          let mutationRelease: (() => void) | undefined;
+          try {
+            mutationRelease = mutationLock ? await mutationLock.acquireShared(signal) : undefined;
+          } catch (error) {
+            bashRelease();
+            throw error;
+          }
+          try {
+            return await original(toolCallId, params, signal, ...rest);
+          } finally {
+            mutationRelease?.();
+            bashRelease();
+          }
+        };
+      }
+      if ((tool.name === "write" || tool.name === "edit") && typeof tool.execute === "function") {
+        const original = tool.execute.bind(tool);
+        tool.execute = async (toolCallId: string, params: unknown, signal?: AbortSignal, ...rest: unknown[]) => {
+          const release = mutationLock ? await mutationLock.acquire(signal) : undefined;
+          try {
+            return await original(toolCallId, params, signal, ...rest);
+          } finally {
+            release?.();
+          }
+        };
+      }
     }
   }
   record = {

@@ -138,7 +138,7 @@ export function createCrawlTool(browser: BrowserManager): ToolDefinition {
     description:
       "Breadth-first crawl of an in-scope web application through the scoped browser: collects every link, form (including hidden fields), API routes extracted from loaded JS bundles, and auth boundaries into one structured inventory. Use it right after the first navigate to map the attack surface before hypothesizing vulnerabilities, and feed the discovered endpoints into the matching exploit skills. Only same-host links are followed (cross-host links are recorded as leads); every hop is scope-checked. Returns the inventory in the conversation — record actual exposures with record_finding.",
     promptSnippet: "crawl(entry, maxPages?, maxDepth?)",
-    executionMode: "sequential",
+    executionMode: "parallel",
     parameters: Type.Object({
       entry: Type.String({ description: "Absolute http(s) URL to start from" }),
       maxPages: Type.Optional(Type.Integer({ minimum: 1, maximum: 40, description: "Page budget (default 15)" })),
