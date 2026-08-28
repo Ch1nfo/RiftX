@@ -9,7 +9,7 @@ import { fetchPage } from "./fetch-page";
  * is configured. These are read-only research actions against the public web —
  * they take no approval and never touch the target-scoped browser state.
  */
-export type WebToolOptions = {
+type WebToolOptions = {
   /** Read at execution time so a saved key applies to running sessions immediately. */
   getTavilyApiKey?: () => Promise<string | undefined>;
 };

@@ -18,9 +18,9 @@ export type SubagentRunnerContext = {
   updateTaskMeta: (update: TaskMetaUpdate) => void;
 };
 
-export type SubagentRunner = (context: SubagentRunnerContext) => Promise<SubagentResult>;
-export type SubagentCompletionHandler = (task: SubagentTask, result: SubagentResult) => void;
-export type SubagentNameGenerator = (task: string) => Promise<string>;
+type SubagentRunner = (context: SubagentRunnerContext) => Promise<SubagentResult>;
+type SubagentCompletionHandler = (task: SubagentTask, result: SubagentResult) => void;
+type SubagentNameGenerator = (task: string) => Promise<string>;
 
 type QueueItem = {
   task: SubagentTask;

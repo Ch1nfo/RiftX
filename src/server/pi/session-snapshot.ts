@@ -162,7 +162,7 @@ export async function listWorkspaceSessionInfos(cwd: string) {
   return infos.filter((info) => info.cwd ? resolve(info.cwd) === target : target === launchDirectory);
 }
 
-export async function findSessionPath(id: string, cwd?: string) {
+async function findSessionPath(id: string, cwd?: string) {
   const config = await readConfig();
   const rootCwd = cwd ?? config.cwd;
   const info = (await listWorkspaceSessionInfos(rootCwd)).find((item) => item.id === id);

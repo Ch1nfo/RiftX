@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-export type Language = "zh" | "en";
+type Language = "zh" | "en";
 const STORAGE_KEY = "riftx-language";
 const EVENT_NAME = "riftx-language-change";
 

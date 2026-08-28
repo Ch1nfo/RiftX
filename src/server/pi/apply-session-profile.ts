@@ -11,7 +11,7 @@ import { RiftxError } from "@/server/errors";
  * is a successful no-op.
  */
 
-export type ProfileSwitchLock = {
+type ProfileSwitchLock = {
   /** In-flight profile registration/switch; used as a per-session mutex. */
   profileSwitch?: Promise<unknown>;
 };
@@ -50,7 +50,7 @@ export type ProfileSwitchRecord = {
   settingsManager: { setTransport(transport: ModelProfile["transport"]): void };
 };
 
-export type ProfileSwitchDeps = {
+type ProfileSwitchDeps = {
   /**
    * Registers the profile's model on the record's registries and returns the
    * model handle plus a rollback that undoes the runtime side effects (the

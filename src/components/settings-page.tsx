@@ -47,7 +47,7 @@ export function SettingsPage() {
     if (activeSection !== "archived" || archivedLoaded) return;
     const controller = new AbortController();
     setArchivedLoading(true);
-    fetch("/api/sessions?archived=true", { signal: controller.signal }).then(async (response) => {
+    fetch("/api/sessions", { signal: controller.signal }).then(async (response) => {
       const data = await response.json() as SessionSummary[] | { error?: string };
       if (!response.ok) throw new Error(!Array.isArray(data) ? data.error : undefined);
       setArchivedSessions(Array.isArray(data) ? data : []);

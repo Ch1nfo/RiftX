@@ -8,7 +8,7 @@ import type { RuntimeDeps } from "../session-registry";
 
 /** The spawn_subagent tool. `runChild` is injected so this module stays independent of the runtime-creation module. */
 
-export type RunChild = (profile: ModelProfile, cwd: string, mutationLock: MutationLock, bashConcurrency: BashConcurrency, context: SubagentRunnerContext, runtimeDeps: RuntimeDeps) => Promise<SubagentResult>;
+type RunChild = (profile: ModelProfile, cwd: string, mutationLock: MutationLock, bashConcurrency: BashConcurrency, context: SubagentRunnerContext, runtimeDeps: RuntimeDeps) => Promise<SubagentResult>;
 
 export function createSubagentTool(manager: SubagentManager, getChildProfile: () => ModelProfile, cwd: string, mutationLock: MutationLock, bashConcurrency: BashConcurrency, runtimeDeps: RuntimeDeps, runChild: RunChild): ToolDefinition {
   return defineTool({

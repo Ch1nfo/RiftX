@@ -9,9 +9,9 @@ import type { BrowserManager } from "@/browser";
 
 export type FindingSourceInfo = { source: FindingSource; subagentId?: string };
 
-export type ToolEvidenceSnapshot = { toolCallId: string; toolName: string; content: string };
+type ToolEvidenceSnapshot = { toolCallId: string; toolName: string; content: string };
 
-export function resolveToolEvidence(session: AgentSession | undefined, requestedId: string): ToolEvidenceSnapshot | undefined {
+function resolveToolEvidence(session: AgentSession | undefined, requestedId: string): ToolEvidenceSnapshot | undefined {
   if (!session) return undefined;
   const messages = session.messages as unknown as Array<{ role?: string; content?: unknown; toolCallId?: string }>;
   const calls = messages.flatMap((message) => {

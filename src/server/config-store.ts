@@ -102,7 +102,7 @@ async function writeConfig(config: AppConfig) {
   await writeJsonStoreAtomic(CONFIG_PATH, config);
 }
 
-export type ConfigPatch = Partial<AppConfig> | ((current: AppConfig) => Partial<AppConfig> | Promise<Partial<AppConfig>>);
+type ConfigPatch = Partial<AppConfig> | ((current: AppConfig) => Partial<AppConfig> | Promise<Partial<AppConfig>>);
 
 const enqueueConfigWrite = createSerializer();
 

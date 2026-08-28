@@ -7,7 +7,7 @@ const JINA_READER_PREFIX = "https://r.jina.ai/";
 const FETCH_TIMEOUT_MS = 25_000;
 const MAX_REDIRECTS = 4;
 
-export const MAX_CONTENT_CHARS = 30_000;
+const MAX_CONTENT_CHARS = 30_000;
 /** Byte ceiling while reading: the body is never fully buffered before truncation. */
 const MAX_READ_BYTES = MAX_CONTENT_CHARS * 4;
 
@@ -78,7 +78,7 @@ async function readCapped(response: Response, maxBytes = MAX_READ_BYTES) {
   return cut ? `${text}\n\n[... stopped reading: the response exceeded the size budget]` : text;
 }
 
-export type FetchedPage = { content: string; source: "jina" | "direct" };
+type FetchedPage = { content: string; source: "jina" | "direct" };
 
 export async function fetchPage(url: string, options: { signal?: AbortSignal } & UrlGuardOptions = {}): Promise<FetchedPage> {
   if (options.signal?.aborted) throw new Error("fetch aborted before start");

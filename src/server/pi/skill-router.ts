@@ -8,7 +8,7 @@ export type SkillDescriptor = {
   disableModelInvocation?: boolean;
 };
 
-export type SkillMatch = SkillDescriptor & { score: number; matchedTerms: string[] };
+type SkillMatch = SkillDescriptor & { score: number; matchedTerms: string[] };
 
 const STOP_WORDS = new Set([
   "a", "an", "and", "are", "as", "at", "check", "for", "from", "in", "is", "of", "on", "or", "test", "testing", "the", "to", "use", "with",

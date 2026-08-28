@@ -1,14 +1,14 @@
 /** Web research: provider-backed public-web search with CVE direct routing and OPSEC screening. */
 
-export type WebSearchResult = { title: string; url: string; snippet: string };
+type WebSearchResult = { title: string; url: string; snippet: string };
 
-export type WebSearchOutcome = {
+type WebSearchOutcome = {
   results: WebSearchResult[];
   provider: "duckduckgo" | "tavily" | "duckduckgo+cve" | "tavily+cve";
   cveDetail?: string;
 };
 
-export type WebSearchOptions = { tavilyApiKey?: string; limit?: number; signal?: AbortSignal };
+type WebSearchOptions = { tavilyApiKey?: string; limit?: number; signal?: AbortSignal };
 
 const USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 
@@ -109,7 +109,7 @@ async function searchTavily(query: string, apiKey: string, limit: number, signal
 type CveRecord = { id?: string; summary?: string; cvss?: number | null; references?: string[] };
 
 /** Keyless structured lookup via the CIRCL CVE API — no search quota spent. */
-export async function fetchCveDetail(cveId: string, signal?: AbortSignal): Promise<string> {
+async function fetchCveDetail(cveId: string, signal?: AbortSignal): Promise<string> {
   const response = await fetch(`https://cve.circl.lu/api/cve/${cveId.toUpperCase()}`, {
     headers: { accept: "application/json" },
     signal

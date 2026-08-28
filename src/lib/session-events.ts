@@ -29,7 +29,7 @@ export type SessionEventContext = {
   setError: (value: string) => void;
 };
 
-export function isSubagentApproval(request: ApprovalRequest) {
+function isSubagentApproval(request: ApprovalRequest) {
   return Boolean(request.subagentId);
 }
 

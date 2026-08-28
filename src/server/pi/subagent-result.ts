@@ -1,6 +1,6 @@
 import { textFromContent } from "./text-content";
 
-export type ExtractedAssistantResult = {
+type ExtractedAssistantResult = {
   summary?: string;
   error?: string;
 };

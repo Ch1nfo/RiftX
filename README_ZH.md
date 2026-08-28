@@ -316,7 +316,8 @@ RiftX/
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
 | `GET` | `/api/bootstrap` | 加载工作区、会话和设置 |
-| `GET/POST` | `/api/sessions` | 列出或创建会话 |
+| `GET` | `/api/sessions` | 列出归档会话 |
+| `POST` | `/api/sessions` | 创建会话 |
 | `DELETE` | `/api/sessions/:id` | 删除归档会话 |
 | `POST` | `/api/sessions/:id/archive` | 归档会话 |
 | `GET` | `/api/sessions/:id/stream` | 订阅 SSE 会话事件 |

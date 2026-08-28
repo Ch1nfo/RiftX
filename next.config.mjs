@@ -4,9 +4,7 @@ const nextConfig = {
   devIndicators: false,
   serverExternalPackages: [
     "@mariozechner/pi-coding-agent",
-    "@mariozechner/pi-ai",
-    "@mariozechner/pi-agent-core",
-    "@mariozechner/pi-tui"
+    "@mariozechner/pi-ai"
   ]
 };
 

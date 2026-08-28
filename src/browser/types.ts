@@ -8,7 +8,7 @@ export type BrowserConsoleEntry = {
   at: number;
 };
 
-export type BrowserScope = {
+type BrowserScope = {
   rules?: string[];
 };
 

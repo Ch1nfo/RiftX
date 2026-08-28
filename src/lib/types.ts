@@ -7,9 +7,9 @@ export const API_TYPES = [
 
 export const TRANSPORTS = ["auto", "sse", "websocket"] as const;
 
-export type ApiType = (typeof API_TYPES)[number];
+type ApiType = (typeof API_TYPES)[number];
 export type Transport = (typeof TRANSPORTS)[number];
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 export const APPROVAL_MODES = ["request", "auto", "full"] as const;
 export type ApprovalMode = (typeof APPROVAL_MODES)[number];
 export const SUBAGENT_AGGRESSIVENESS = ["low", "default", "high"] as const;
@@ -57,7 +57,7 @@ export type ApprovalRequest = {
   taskSummary?: string;
 };
 
-export type SubagentStatus = "queued" | "running" | "completed" | "empty" | "failed" | "cancelled" | "interrupted";
+type SubagentStatus = "queued" | "running" | "completed" | "empty" | "failed" | "cancelled" | "interrupted";
 
 export type SubagentLogEntry = {
   id: string;
@@ -68,7 +68,7 @@ export type SubagentLogEntry = {
   createdAt: string;
 };
 
-export type SubagentLogPatch = {
+type SubagentLogPatch = {
   id: string;
   content?: string;
   appendContent?: string;
@@ -135,7 +135,7 @@ const RIFTX_EVENT_TYPES = [
   "tool_start", "tool_status", "tool_update", "tool_end", "done", "error"
 ] as const;
 
-export type RiftxEventType = (typeof RIFTX_EVENT_TYPES)[number];
+type RiftxEventType = (typeof RIFTX_EVENT_TYPES)[number];
 type RiftxEventFields = {
   sessionId?: string;
   delta?: unknown;
@@ -186,7 +186,7 @@ export function parseRiftxEvent(value: unknown): RiftxEvent | null {
 }
 
 export type FindingConfidence = "confirmed" | "likely" | "suspected" | "not_reproducible";
-export type FindingStatus = "open" | "dismissed";
+type FindingStatus = "open" | "dismissed";
 export type FindingSource = "main" | "subagent";
 
 export type FindingEvidence =
@@ -213,7 +213,7 @@ export type Finding = {
 export type FindingInput = Pick<Finding, "title" | "asset" | "confidence" | "impact" | "reproduction" | "evidence">;
 export type FindingPatch = { id: string; confidence?: FindingConfidence; status?: FindingStatus; updatedAt?: string };
 
-export type WebSearchConfig = {
+type WebSearchConfig = {
   /** Optional Tavily key; absent/empty means the keyless DuckDuckGo default. */
   tavilyApiKey?: string;
 };

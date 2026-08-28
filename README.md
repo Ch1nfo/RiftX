@@ -316,7 +316,8 @@ RiftX/
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/bootstrap` | Load the workspace, sessions, and settings |
-| `GET/POST` | `/api/sessions` | List or create sessions |
+| `GET` | `/api/sessions` | List archived sessions |
+| `POST` | `/api/sessions` | Create a session |
 | `DELETE` | `/api/sessions/:id` | Permanently delete an archived session |
 | `POST` | `/api/sessions/:id/archive` | Archive a session |
 | `GET` | `/api/sessions/:id/stream` | Subscribe to SSE session events |

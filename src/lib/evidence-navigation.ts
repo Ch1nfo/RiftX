@@ -3,9 +3,9 @@ import type { MergeableMessage } from "@/lib/message-merge";
 
 /** Pure helpers for resolving evidence links (tool/request clicks) to targets. */
 
-export type EvidenceTarget = { kind: "tool"; toolCallId: string } | { kind: "subagent"; taskId: string; logId: string };
+type EvidenceTarget = { kind: "tool"; toolCallId: string } | { kind: "subagent"; taskId: string; logId: string };
 
-export function containsToken(text: string, token: string) {
+function containsToken(text: string, token: string) {
   const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`(?:^|[^\\w])${escaped}(?:[^\\w]|$)`).test(text);
 }

@@ -8,7 +8,7 @@ type JoinManager = {
   markDelivered?(taskId: string, delivered: boolean): void;
 };
 
-export type SubagentJoinRecord = {
+type SubagentJoinRecord = {
   subagents?: JoinManager;
   abortPromise?: Promise<void>;
   aborting?: boolean;
@@ -40,12 +40,12 @@ export function dispatchSessionAction(record: Pick<SubagentJoinRecord, "promptCh
 }
 
 /** Terminal task statuses: no further result can arrive for these. Adding a new terminal status here is the single place to extend. */
-export function terminalSubagent(task: Pick<SubagentTask, "status">) {
+function terminalSubagent(task: Pick<SubagentTask, "status">) {
   return task.status === "completed" || task.status === "empty" || task.status === "failed" || task.status === "cancelled" || task.status === "interrupted";
 }
 
-export const SUBAGENT_RESULT_PREFIX = "[RiftX subagent result]";
-export const SUBAGENT_STATUS_PREFIX = "[RiftX subagent status]";
+const SUBAGENT_RESULT_PREFIX = "[RiftX subagent result]";
+const SUBAGENT_STATUS_PREFIX = "[RiftX subagent status]";
 
 /** True for the synthetic messages this module injects into the session transcript. */
 export function isSubagentInjectionMessage(content: string) {

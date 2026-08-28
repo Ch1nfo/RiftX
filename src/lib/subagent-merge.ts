@@ -4,7 +4,7 @@ function trimLogContent(content: string) {
   return content.length <= SUBAGENT_LOG_LIMITS.content ? content : content.slice(-SUBAGENT_LOG_LIMITS.content);
 }
 
-export function sameSubagentTask(left: SubagentTask, right: SubagentTask) {
+function sameSubagentTask(left: SubagentTask, right: SubagentTask) {
   const logsEqual = left.logs.length === right.logs.length && left.logs.every((log, index) => {
     const other = right.logs[index];
     return log.id === other?.id && log.type === other.type && log.content === other.content

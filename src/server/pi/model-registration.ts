@@ -78,7 +78,7 @@ export function registerTrackedProfile(registrations: ProviderRegistrations, aut
   return model;
 }
 
-export type RegistrationOwner = {
+type RegistrationOwner = {
   authStorage: AuthStorage;
   modelRegistry: ModelRegistry;
   registrations: ProviderRegistrations;
