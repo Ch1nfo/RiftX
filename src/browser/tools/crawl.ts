@@ -3,8 +3,6 @@ import { defineTool, type ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { BrowserManager, BrowserDegradedError } from "../runtime/browser-manager";
 import { authSignal, extractApiRoutes, normalizeUrl, sameHost } from "./crawl-core";
 
-export { authSignal, extractApiRoutes, looksLikeRoute, normalizeUrl, sameHost } from "./crawl-core";
-
 /**
  * The crawl tool: breadth-first attack-surface discovery through the scoped
  * browser. Collects links, forms (with hidden fields), JS-bundle API routes,

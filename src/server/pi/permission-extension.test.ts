@@ -16,7 +16,7 @@ function stallGuard<T>(promise: Promise<T>, message: string, ms = 250): Promise<
   return Promise.race([promise, new Promise<never>((_, reject) => setTimeout(() => reject(new Error(message)), ms))]);
 }
 
-function makeHarness(guard?: BrowserScopeGuard, bashConcurrency?: BashConcurrency, mutationLock?: MutationLock, mode: "request" | "auto" | "full" = "request", evaluate?: (request: ApprovalRequest) => Promise<ApprovalEvaluation>, emit?: (event: Record<string, unknown>) => void) {
+function makeHarness(guard?: BrowserScopeGuard, mode: "request" | "auto" | "full" = "request", evaluate?: (request: ApprovalRequest) => Promise<ApprovalEvaluation>, emit?: (event: Record<string, unknown>) => void) {
   const gate = new ApprovalGate(mode);
   const events: RiftxEvent[] = [];
   const onEvent = emit ?? ((event: Record<string, unknown>) => events.push(event as RiftxEvent));
@@ -32,8 +32,6 @@ function makeHarness(guard?: BrowserScopeGuard, bashConcurrency?: BashConcurrenc
     gate,
     onEvent,
     evaluate,
-    mutationLock,
-    bashConcurrency,
     guard
   );
   factory(agent as never);
@@ -52,9 +50,8 @@ function makeHarness(guard?: BrowserScopeGuard, bashConcurrency?: BashConcurrenc
 }
 
 test.skip("Bash reports running only after acquiring its dedicated concurrency slot", async () => {
-  const limiter = new BashConcurrency(1);
-  const first = makeHarness(undefined, limiter);
-  const second = makeHarness(undefined, limiter);
+  const first = makeHarness();
+  const second = makeHarness();
   const firstPending = first.call({ command: "echo first" }, "bash", "bash-1");
   first.gate.decide("bash-1", true);
   await firstPending;
@@ -71,7 +68,7 @@ test.skip("Bash reports running only after acquiring its dedicated concurrency s
 test.skip("Bash waits for an exclusive mutation and then reports running", async () => {
   const mutationLock = new MutationLock();
   const releaseMutation = await mutationLock.acquire();
-  const harness = makeHarness(undefined, new BashConcurrency(1), mutationLock);
+  const harness = makeHarness();
   const pending = harness.call({ command: "echo protected" }, "bash", "bash-mutation");
   harness.gate.decide("bash-mutation", true);
 
@@ -89,9 +86,8 @@ test.skip("Bash waits for an exclusive mutation and then reports running", async
 });
 
 test.skip("a running Bash scan does not block a browser call", async () => {
-  const mutationLock = new MutationLock();
-  const bash = makeHarness(undefined, new BashConcurrency(1), mutationLock, "full");
-  const browser = makeHarness(undefined, undefined, mutationLock, "full");
+  const bash = makeHarness(undefined, "full");
+  const browser = makeHarness(undefined, "full");
 
   const bashPending = bash.call({ command: "find . -type f" }, "bash", "bash-scan");
   await bashPending;
@@ -109,15 +105,14 @@ test.skip("a running Bash scan does not block a browser call", async () => {
 });
 
 test.skip("an approved browser call does not block Bash or file mutations", async () => {
-  const mutationLock = new MutationLock();
-  const browser = makeHarness(undefined, undefined, mutationLock, "full");
+  const browser = makeHarness(undefined, "full");
   await browser.call({ action: "navigate", url: "http://authorized.test/" }, "browser", "browser-nav");
 
-  const bash = makeHarness(undefined, new BashConcurrency(1), mutationLock, "full");
+  const bash = makeHarness(undefined, "full");
   await stallGuard(bash.call({ command: "echo probe" }, "bash", "bash-1"), "Bash stalled behind a pending browser call");
   bash.end("bash-1");
 
-  const write = makeHarness(undefined, undefined, mutationLock, "full");
+  const write = makeHarness(undefined, "full");
   await stallGuard(write.call({ path: "a.txt", content: "x" }, "write", "write-1"), "write stalled behind a pending browser call");
   write.end("write-1");
   browser.end("browser-nav");
@@ -126,7 +121,7 @@ test.skip("an approved browser call does not block Bash or file mutations", asyn
 test.skip("write still waits for shared Bash holders on the file lock", async () => {
   const mutationLock = new MutationLock();
   const releaseShared = await mutationLock.acquireShared();
-  const harness = makeHarness(undefined, undefined, mutationLock, "full");
+  const harness = makeHarness(undefined, "full");
   const pending = harness.call({ path: "a.txt", content: "x" }, "write", "write-shared");
   await Promise.resolve();
   assert.equal(harness.events.some((event) => event.type === "tool_status"), false);
@@ -144,7 +139,7 @@ test.skip("Bash without a limiter is blocked instead of running without coordina
 });
 
 test.skip("Bash does not treat the shared mutation lock as its concurrency limiter", async () => {
-  const harness = makeHarness(undefined, undefined, new MutationLock());
+  const harness = makeHarness();
   const pending = harness.call({ command: "echo unguarded" }, "bash", "bash-only-mutation-lock");
   harness.gate.decide("bash-only-mutation-lock", true);
 
@@ -153,14 +148,11 @@ test.skip("Bash does not treat the shared mutation lock as its concurrency limit
 
 test.skip("a tool status listener failure releases Bash and mutation slots", async () => {
   const bashConcurrency = new BashConcurrency(1);
-  const mutationLock = new MutationLock();
-  const harness = makeHarness(undefined, bashConcurrency, mutationLock, "full", undefined, () => { throw new Error("status listener failed"); });
+  const harness = makeHarness(undefined, "full", undefined, () => { throw new Error("status listener failed"); });
   const result = await harness.call({ command: "echo release" }, "bash", "bash-status-listener");
 
   assert.deepEqual(result, { block: true, reason: "status listener failed" });
   assert.equal(bashConcurrency.running, 0);
-  const release = await mutationLock.acquire();
-  release();
 });
 
 function scopeGuard(allowedHosts: string[]) {
@@ -208,7 +200,7 @@ test("out-of-scope navigation asks for scope approval and grants the host on tas
 
 test("full access bypasses both regular and browser-scope approvals", async () => {
   const scope = scopeGuard(["authorized.test"]);
-  const harness = makeHarness(scope.guard, undefined, undefined, "full");
+  const harness = makeHarness(scope.guard, "full");
   const pending = harness.call({ action: "navigate", url: "http://10.0.0.9:8000/" }, "browser", "full-nav");
 
   assert.equal(await pending, undefined);
@@ -219,12 +211,12 @@ test("full access bypasses both regular and browser-scope approvals", async () =
 
 test("full access bypasses every guarded tool without an approval event", async () => {
   for (const [toolName, input] of [["write", { path: "file.txt", content: "x" }], ["edit", { path: "file.txt", oldText: "x", newText: "y" }]] as const) {
-    const harness = makeHarness(undefined, undefined, undefined, "full");
+    const harness = makeHarness(undefined, "full");
     assert.equal(await harness.call(input, toolName, `full-${toolName}`), undefined);
     assert.equal(harness.gate.pendingRequests().length, 0);
     assert.equal(harness.events.some((event) => event.type === "approval_required"), false);
   }
-  const bash = makeHarness(undefined, new BashConcurrency(1), new MutationLock(), "full");
+  const bash = makeHarness(undefined, "full");
   assert.equal(await bash.call({ command: "echo full" }, "bash", "full-bash"), undefined);
   assert.equal(bash.gate.pendingRequests().length, 0);
   assert.equal(bash.events.some((event) => event.type === "approval_required"), false);
@@ -233,7 +225,7 @@ test("full access bypasses every guarded tool without an approval event", async 
 
 test("full access bypasses out-of-scope host mapping approval", async () => {
   const scope = scopeGuard(["authorized.test"]);
-  const harness = makeHarness(scope.guard, undefined, undefined, "full");
+  const harness = makeHarness(scope.guard, "full");
   const pending = harness.call({ action: "set_host_mappings", mappings: { "vhost.authorized.test": "10.0.0.9:8000" } }, "browser", "full-map");
 
   assert.equal(await pending, undefined);
@@ -246,7 +238,7 @@ test("full access bypasses out-of-scope host mapping approval", async () => {
 test("auto approval evaluates browser scope expansion without human approval", async () => {
   const scope = scopeGuard(["authorized.test"]);
   const evaluations: ApprovalRequest[] = [];
-  const harness = makeHarness(scope.guard, undefined, undefined, "auto", async (request) => {
+  const harness = makeHarness(scope.guard, "auto", async (request) => {
     evaluations.push(request);
     return { approved: true, reason: "approved by test evaluator" };
   });
@@ -260,7 +252,7 @@ test("auto approval evaluates browser scope expansion without human approval", a
 
 test("auto approval blocks when its evaluator rejects scope expansion", async () => {
   const scope = scopeGuard(["authorized.test"]);
-  const harness = makeHarness(scope.guard, undefined, undefined, "auto", async () => ({ approved: false, reason: "outside test scope" }));
+  const harness = makeHarness(scope.guard, "auto", async () => ({ approved: false, reason: "outside test scope" }));
   const result = await harness.call({ action: "navigate", url: "http://10.0.0.9/" }, "browser", "auto-reject");
 
   assert.deepEqual(result, { block: true, reason: "Rejected by RiftX approval evaluator: outside test scope" });
@@ -269,7 +261,7 @@ test("auto approval blocks when its evaluator rejects scope expansion", async ()
 });
 
 test("auto approval explains how to recover when its evaluator is unavailable", async () => {
-  const harness = makeHarness(undefined, undefined, undefined, "auto");
+  const harness = makeHarness(undefined, "auto");
   const result = await harness.call({ path: "file.txt", content: "x" }, "write", "auto-no-evaluator");
 
   assert.deepEqual(result, {
@@ -282,7 +274,7 @@ test("auto approval explains how to recover when its evaluator is unavailable", 
 
 test("auto approval evaluates host mapping scope without human approval", async () => {
   const scope = scopeGuard(["authorized.test"]);
-  const harness = makeHarness(scope.guard, undefined, undefined, "auto", async () => ({ approved: true, reason: "approved by test evaluator" }));
+  const harness = makeHarness(scope.guard, "auto", async () => ({ approved: true, reason: "approved by test evaluator" }));
   const pending = harness.call({ action: "set_host_mappings", mappings: { "vhost.authorized.test": "10.0.0.9:8000" } }, "browser", "auto-map");
 
   assert.equal(await pending, undefined);

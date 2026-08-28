@@ -74,7 +74,6 @@ function mergeEvidence(existing: Finding["evidence"], incoming: Finding["evidenc
 
 export class EvidenceStore {
   private findings: Finding[] | undefined;
-  private operation = Promise.resolve();
   private emitter?: (event: RiftxEvent) => void;
 
   constructor(private readonly sessionId: string, private readonly root: string, emitter?: (event: RiftxEvent) => void) {

@@ -2,8 +2,6 @@ import type { ExtensionFactory, ToolCallEvent } from "@mariozechner/pi-coding-ag
 import type { ApprovalRequest } from "@/lib/types";
 import { ApprovalGate } from "./approval-gate";
 import type { ApprovalEvaluation } from "./approval-evaluator";
-import type { MutationLock } from "./mutation-lock";
-import type { BashConcurrency } from "./bash-concurrency";
 import type { ScopeDecision } from "@/lib/scope-rules";
 
 /** Tools whose calls require permission evaluation. Shared with the event mapper so tool_status stays consistent with gating. */
@@ -38,12 +36,9 @@ export function createPermissionExtension(
   gate: ApprovalGate,
   onEvent: (event: Record<string, unknown>) => void,
   evaluate?: (request: ApprovalRequest) => Promise<ApprovalEvaluation>,
-  mutationLock?: MutationLock,
-  bashConcurrency?: BashConcurrency,
   browserScope?: BrowserScopeGuard
 ): ExtensionFactory {
   return (agent) => {
-    const releases = new Map<string, { release: () => void; cleanupAbort?: () => void }>();
     const scopeEffects = new Map<string, { commit: () => void; rollback: () => void }>();
     const settleScopeEffect = (toolCallId: string, succeeded: boolean) => {
       const effect = scopeEffects.get(toolCallId);
@@ -52,12 +47,8 @@ export function createPermissionExtension(
       if (succeeded) effect.commit();
       else effect.rollback();
     };
-    // releaseTool is a no-op now: locks are managed inside tool execute wrappers.
-    // Kept for the tool_execution_end cleanup contract and future use.
-    const releaseTool = (_toolCallId: string) => undefined;
     agent.on("tool_execution_end", (event) => {
       settleScopeEffect(event.toolCallId, !event.isError);
-      releaseTool(event.toolCallId);
     });
     agent.on("tool_call", async (event: ToolCallEvent, ctx) => {
       if (!guardedTools.has(event.toolName)) return;
@@ -174,7 +165,6 @@ async function resolveApproval(
   signal?: AbortSignal
 ): Promise<ResolvedApproval> {
   if (gate.shouldBypass(request)) return { approved: true, task: false };
-  if (gate.approvalMode === "full") return { approved: true, task: false };
   if (gate.approvalMode === "auto") {
     if (!evaluate) return { approved: false, task: false, reason: AUTO_APPROVAL_UNAVAILABLE };
     try {

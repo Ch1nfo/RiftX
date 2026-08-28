@@ -38,7 +38,7 @@ export function SubagentPanel({ tasks, running, maxConcurrent, onCancel, onRetry
       const isExpanded = Boolean(expanded[task.id]);
       const active = task.status === "queued" || task.status === "running";
       const status = t(statusLabels[task.status]);
-      return <article className={`subagent-item ${task.status}`} key={task.id} id={`subagent-task-${task.id}`}>
+      return <article className={`subagent-item ${task.status}`} key={task.id}>
         <button className="subagent-item-head" onClick={() => setExpanded((current) => ({ ...current, [task.id]: !isExpanded }))}>
           <span className="subagent-item-title"><span className={`subagent-status-dot ${task.status}`}>{task.status === "running" ? <CircleNotch size={12} className="spin" /> : null}</span><strong>{task.name}</strong></span>
           <span className="subagent-status">{status}<CaretDown size={12} className={isExpanded ? "rotated" : ""} /></span>

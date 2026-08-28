@@ -188,7 +188,7 @@ export async function getSessionSnapshot(id: string) {
   };
 }
 
-export async function getSessionMessages(id: string, getRecord: () => Promise<SessionRecord>) {
+export async function getSessionMessages(getRecord: () => Promise<SessionRecord>) {
   const record = await getRecord();
   const messages: Array<{ id: string; role: "user" | "assistant" | "thinking" | "tool"; content: string; toolName?: string; toolCallId?: string; status?: "queued" | "running" | "done" | "error" | "cancelled"; isError?: boolean }> = [];
   const toolIndexes = new Map<string, number>();

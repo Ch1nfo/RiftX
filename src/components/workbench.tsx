@@ -13,8 +13,8 @@ import { cloneSubagentTask, mergeSubagentTaskPatch, mergeSubagentTasks } from "@
 import { withSessionProfile } from "@/lib/session-profile-sync";
 import { useLanguage } from "@/lib/i18n";
 import { mergeFetchedMessages, type MergeableMessage } from "@/lib/message-merge";
-import { applyRiftxEvent, applyMessageDeltas, isSubagentApproval, normalizeMessages, type MessageDelta, type SessionEventContext } from "@/lib/session-events";
-import { containsToken, findRequestTarget, type EvidenceTarget } from "@/lib/evidence-navigation";
+import { applyRiftxEvent, applyMessageDeltas, normalizeMessages, type MessageDelta, type SessionEventContext } from "@/lib/session-events";
+import { findRequestTarget } from "@/lib/evidence-navigation";
 import { useConversationScroll } from "./use-conversation-scroll";
 
 type Message = MergeableMessage;

@@ -10,7 +10,7 @@ export class PageManager {
   readonly id = randomUUID();
   private readonly consoleEntries: BrowserConsoleEntry[] = [];
 
-  constructor(readonly page: Page, readonly identity: string, private readonly requests: RequestStore) {
+  constructor(readonly page: Page, readonly identity: string, requests: RequestStore) {
     attachRequestRecorder(page, this.id, identity, requests);
     // Attach a dialog listener so alert/confirm/prompt are recorded instead of
     // being silently auto-dismissed by Playwright: captured dialogs are the

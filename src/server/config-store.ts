@@ -1,7 +1,7 @@
 import { mkdir, rename, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { APPROVAL_MODES, DEFAULT_PROFILE, SUBAGENT_AGGRESSIVENESS, clampConcurrency, type AppConfig, type ModelProfile } from "@/lib/types";
+import { APPROVAL_MODES, DEFAULT_PROFILE, SUBAGENT_AGGRESSIVENESS, clampConcurrency, type AppConfig } from "@/lib/types";
 import { readJsonStore, writeJsonStoreAtomic } from "@/server/json-store";
 import { createSerializer } from "@/server/serializer";
 

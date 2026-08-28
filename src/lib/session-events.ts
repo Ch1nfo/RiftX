@@ -116,7 +116,7 @@ export function applyRiftxEvent(payload: RiftxEvent, ctx: SessionEventContext) {
     return;
   }
   if (payload.type.startsWith("subagent_") || payload.type === "approval_decided") return;
-  if (["text_delta", "tool_start", "tool_status", "tool_update", "tool_end", "message", "done", "error"].includes(payload.type)) {
+  if (["tool_start", "tool_status", "tool_update", "tool_end", "message", "done", "error"].includes(payload.type)) {
     ctx.setMessages((current) => current.map((message) => message.role === "thinking" && message.status === "streaming" ? { ...message, status: "done" } : message));
   }
   if (payload.type === "session_state") { ctx.setMainAgentRunning(payload.state !== "idle"); ctx.setContextCompacting(payload.state === "compacting"); return; }

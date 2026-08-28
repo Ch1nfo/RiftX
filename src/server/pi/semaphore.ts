@@ -21,10 +21,6 @@ export class Semaphore {
     this.limit = normalizeLimit(limit);
   }
 
-  get maxConcurrent() {
-    return this.limit;
-  }
-
   get running() {
     return this.active;
   }

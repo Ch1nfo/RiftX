@@ -140,7 +140,7 @@ test("blocked top-level navigation preserves once windows and successful navigat
     response.writeHead(200, { "content-type": request.url === "/after" ? "text/plain" : "text/html" });
     response.end(request.url === "/after" ? "after-ok" : "<main>first</main>");
   });
-  const second = createServer((request, response) => {
+  const second = createServer((_request, response) => {
     response.writeHead(200, { "content-type": "text/html" });
     response.end("<main>second</main>");
   });
@@ -284,7 +284,7 @@ test("browser snapshot refs drive form interaction, evaluate, and console captur
 });
 
 test("identities isolate cookie jars and bridge cookies in and out", async () => {
-  const server = createServer((request, response) => {
+  const server = createServer((_request, response) => {
     response.writeHead(200, { "content-type": "text/html" });
     response.end("<main>identity page</main>");
   });
@@ -331,13 +331,13 @@ test("identities isolate cookie jars and bridge cookies in and out", async () =>
 });
 
 test("scope blocks out-of-scope subresources and popup navigations", async () => {
-  const outOfScope = createServer((request, response) => {
+  const outOfScope = createServer((_request, response) => {
     response.writeHead(200, { "content-type": "text/html" });
     response.end("<main>out-of-scope content</main>");
   });
   await new Promise<void>((resolve) => outOfScope.listen(0, "127.0.0.1", () => resolve()));
   const outPort = (outOfScope.address() as { port: number }).port;
-  const inScope = createServer((request, response) => {
+  const inScope = createServer((_request, response) => {
     response.writeHead(200, { "content-type": "text/html" });
     response.end(`<main>scope page</main><script>
       window.__probe = "pending";
@@ -425,7 +425,7 @@ test("websockets are scope-checked like other requests", () => {
 
 test("websockets cannot reach out-of-scope hosts", async () => {
   let upgrades = 0;
-  const outServer = createServer((request, response) => response.end("unused"));
+  const outServer = createServer((_request, response) => response.end("unused"));
   outServer.on("upgrade", (request, socket) => {
     upgrades += 1;
     const key = String(request.headers["sec-websocket-key"] ?? "");
@@ -434,7 +434,7 @@ test("websockets cannot reach out-of-scope hosts", async () => {
   });
   await new Promise<void>((resolve) => outServer.listen(0, "127.0.0.1", () => resolve()));
   const outPort = (outServer.address() as { port: number }).port;
-  const inServer = createServer((request, response) => {
+  const inServer = createServer((_request, response) => {
     response.writeHead(200, { "content-type": "text/html" });
     response.end(`<main>ws page</main><script>
       window.__ws = "pending";
@@ -465,7 +465,7 @@ test("mapped websocket connections reach the physical target and preserve Host",
   let upgrades = 0;
   const hosts: string[] = [];
   const upgradedSockets = new Set<import("node:stream").Duplex>();
-  const wsServer = createServer((request, response) => response.end("unused"));
+  const wsServer = createServer((_request, response) => response.end("unused"));
   wsServer.on("upgrade", (request, socket) => {
     upgrades += 1;
     hosts.push(String(request.headers.host ?? ""));
@@ -478,7 +478,7 @@ test("mapped websocket connections reach the physical target and preserve Host",
   });
   await new Promise<void>((resolve) => wsServer.listen(0, "127.0.0.1", () => resolve()));
   const wsPort = (wsServer.address() as { port: number }).port;
-  const pageServer = createServer((request, response) => {
+  const pageServer = createServer((_request, response) => {
     response.writeHead(200, { "content-type": "text/html" });
     response.end(`<main>mapped ws</main><script>
       window.__ws = "pending";
@@ -551,7 +551,7 @@ test("scheme-restricted scope sends partial mappings through approval", () => {
 
 test("screenshot evidence survives a runtime rebuild", async () => {
   const root = await mkdtemp(join(tmpdir(), "riftx-shots-"));
-  const server = createServer((request, response) => {
+  const server = createServer((_request, response) => {
     response.writeHead(200, { "content-type": "text/html" });
     response.end("<main>captured page</main>");
   });

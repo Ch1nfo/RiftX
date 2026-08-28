@@ -281,7 +281,7 @@ npm start
 
 ## 推荐 Skills
 
-[`recommended-skills/`](recommended-skills/) 目录随仓库附带 21 个渗透测试 Agent Skills（侦察、漏洞利用、API、LLM 测试与报告）。推荐将它们安装到技能列表中，以获得开箱即用的测试能力：
+[`recommended-skills/`](recommended-skills/) 目录随仓库附带 22 个渗透测试 Agent Skills（侦察、漏洞利用、API、LLM 测试与报告）。推荐将它们安装到技能列表中，以获得开箱即用的测试能力：
 
 ```bash
 cp -r recommended-skills/*/ ~/.riftx/skills/

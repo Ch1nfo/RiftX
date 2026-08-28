@@ -8,8 +8,6 @@ coverage/
 
 # Local runtime state (RiftX and Pi)
 .riftx/
-.riftx/sessions/
-.riftx/pi-agent/
 *.jsonl
 
 # Environment and credentials

@@ -9,7 +9,7 @@ import { createSnapshot } from "../snapshot/snapshot";
 import { ElementRefMapper } from "../snapshot/element-refs";
 import { RequestStore, redactHeaders } from "../network/request-store";
 import { hostMatches, matchScopeUrl, parseScopeRule, parseScopeRules, parseScopeTarget, type ParsedScopeRule, type ScopeDecision, type ScopeTarget } from "@/lib/scope-rules";
-import type { BrowserManagerOptions, BrowserPageInfo, BrowserScope, PageSnapshot } from "../types";
+import type { BrowserManagerOptions, BrowserPageInfo, PageSnapshot } from "../types";
 import { getScreenshotPath } from "@/lib/evidence-path";
 import { createSerializer } from "@/server/serializer";
 

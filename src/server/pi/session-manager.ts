@@ -1,7 +1,6 @@
 import { EventEmitter } from "node:events";
-import { mkdir, readFile, stat, unlink, rm } from "node:fs/promises";
+import { mkdir, stat, unlink, rm } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { Type } from "@sinclair/typebox";
 import {
   AuthStorage,
   DefaultResourceLoader,
@@ -9,13 +8,12 @@ import {
   SessionManager as AgentSessionManager,
   SettingsManager,
   createAgentSession,
-  defineTool,
   type AgentSession,
   type AgentSessionEvent,
   type ToolDefinition
 } from "@mariozechner/pi-coding-agent";
 import type { Model } from "@mariozechner/pi-ai";
-import { readConfig, getAppPaths, getLaunchDirectory, updateConfig } from "@/server/config-store";
+import { readConfig, getAppPaths, updateConfig } from "@/server/config-store";
 import { RiftxError } from "@/server/errors";
 import { clampConcurrency, type ApprovalMode, type ArchivedSession, type ModelProfile, type RiftxEvent, type SessionSummary } from "@/lib/types";
 import { ApprovalGate } from "./approval-gate";
@@ -29,7 +27,7 @@ import { MutationLock } from "./mutation-lock";
 import { SubagentManager, type SubagentRunnerContext } from "./subagent-manager";
 import { generateSessionTitle } from "./session-title";
 import { generateSubagentSummary } from "./subagent-summary";
-import { EvidenceStore, getEvidenceStore, removeEvidence } from "./evidence-store";
+import { getEvidenceStore, removeEvidence } from "./evidence-store";
 import { estimateCompactedUsage, installMidTurnCompaction } from "./mid-turn-compaction";
 import { waitForSubagentsBeforeConclusion } from "./session-join";
 import { setAgentTransport } from "./pi-internals";
@@ -46,12 +44,12 @@ import { extractLastAssistantResult, buildSummaryTranscript } from "./subagent-r
 import { sessions, sessionCreation, RUNTIME_VERSION, type RuntimeDeps, type SessionRecord } from "./session-registry";
 import { createFindingTool, type FindingSourceInfo } from "./tools/finding-tool";
 import { createSubagentTool } from "./tools/subagent-tool";
-import { listSessions, getSessionSnapshot, getSessionMessages as getMessages, summaryName, usageFromRecord, listWorkspaceSessionInfos, findSessionPath } from "./session-snapshot";
+import { listSessions, getSessionSnapshot, getSessionMessages as getMessages, summaryName, usageFromRecord, listWorkspaceSessionInfos } from "./session-snapshot";
 
 // Facade re-exports: the API routes import everything from this module.
 export { listSessions, getSessionSnapshot };
 export async function getSessionMessages(id: string) {
-  return getMessages(id, () => getOrCreateSession(id));
+  return getMessages(() => getOrCreateSession(id));
 }
 import { deliverSubagentCompletion, dispatchSessionAction } from "./session-join";
 
@@ -135,8 +133,6 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
     gate,
     (event) => emitRuntimeEvent(event as RiftxEvent),
     (request) => evaluateApproval(record?.model ?? model, modelRegistry, request, config.browserScope),
-    mutationLock,
-    bashConcurrency,
     {
       check: (url) => browser.checkNavigationScope(url),
       authorizeOnce: (url, identity) => browser.authorizeOnce(url, identity),
@@ -418,9 +414,9 @@ async function runChildSession(profile: ModelProfile, cwd: string, mutationLock:
   }
 }
 
-async function profileFor(id?: string) {
+async function profileFor() {
   const config = await readConfig();
-  return config.profiles.find((profile) => profile.id === (id ?? config.activeProfileId)) ?? config.profiles[0];
+  return config.profiles.find((profile) => profile.id === config.activeProfileId) ?? config.profiles[0];
 }
 
 async function getOrCreateSession(id?: string) {

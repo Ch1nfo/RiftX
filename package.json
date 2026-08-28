@@ -33,6 +33,7 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "@mariozechner/pi-ai": "^0.73.1",
     "@mariozechner/pi-coding-agent": "^0.73.1",
     "@phosphor-icons/react": "^2.1.7",
     "@radix-ui/react-select": "^2.2.6",
