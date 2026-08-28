@@ -750,7 +750,7 @@ export function Workbench() {
   const scopeExpansion = Boolean(approval?.input && typeof approval.input === "object" && (approval.input as { scopeExpansion?: unknown }).scopeExpansion === true);
 
   return <div className="app-shell">
-    <Sidebar open={mobileNav} bootstrapping={bootstrapping} sessions={sessions} activeId={activeId} t={t} onNewSession={() => void newSession()} onSelect={(id) => { selectSession(id); setMessages([]); resetSessionState(); setMobileNav(false); }} onArchive={(id) => void archiveSession(id)} onClose={() => setMobileNav(false)} />
+    <Sidebar open={mobileNav} bootstrapping={bootstrapping} sessions={sessions} activeId={activeId} t={t} onNewSession={() => void newSession()} onSelect={(id) => { if (id !== activeId) { selectSession(id); setMessages([]); resetSessionState(); } setMobileNav(false); }} onArchive={(id) => void archiveSession(id)} onClose={() => setMobileNav(false)} />
     {mobileNav ? <button className="scrim mobile-only" onClick={() => setMobileNav(false)} aria-label={t("closeNav")} /> : null}
     <main className="main-panel">
       <Topbar bootstrapping={bootstrapping} choosing={workspaceChoosing} cwd={cwd} t={t} onOpenNav={() => setMobileNav(true)} onChooseDirectory={() => void chooseWorkingDirectory()} />
