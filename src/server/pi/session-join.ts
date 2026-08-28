@@ -50,8 +50,8 @@ export function formatSubagentTerminalMessage(task: SubagentTask, summary?: stri
     return `[RiftX subagent result]\nSubagent: ${task.name}\nStatus: completed\nSummary:\n${cleanSummary}\n\nUse this result in the current assessment. Do not repeat the same delegated task. ${untrustedNote}`;
   }
   const detail = task.status === "empty"
-    ? "The child Agent completed without a final text response. Do not treat this task as evidence."
-    : task.error?.trim() || `The child Agent ended with status: ${task.status}. Do not treat this task as evidence.`;
+    ? "The SubAgent completed without a final text response. Do not treat this task as evidence."
+    : task.error?.trim() || `The SubAgent ended with status: ${task.status}. Do not treat this task as evidence.`;
   return `[RiftX subagent status]\nSubagent: ${task.name}\nStatus: ${task.status}\nDetails:\n${detail}\n\nDo not treat this task as evidence or repeat the same delegated task unless you explicitly decide to retry it. ${untrustedNote}`;
 }
 

@@ -102,6 +102,16 @@ Browser scope accepts CIDR, host, host and port, wildcard domain, and scheme-res
 - Queries are screened before they leave the machine — credential-shaped queries (API keys, tokens, JWTs, secrets) are rejected so engagement material never reaches third-party engines.
 - Pages are fetched as clean text via a reader service with a local extraction fallback, and truncated to a fixed budget.
 
+### Attack-Surface Crawl
+
+The `crawl` tool maps an in-scope web application through the scoped browser in one call: every link, form (including hidden fields), API routes extracted from loaded JS bundles, and authentication boundaries are collected into a structured inventory. Use it right after the first navigation to map the attack surface before hypothesizing vulnerabilities — the most common agent failure is not exploiting a weakness but never finding the endpoint.
+
+- Follows only same-host links; cross-host links are recorded as leads (not crawled)
+- Every hop is scope-checked and permission-gated (approval required in request/auto mode)
+- JS bundle analysis extracts API routes from quoted path strings (SPA endpoint map)
+- Login-walled pages are flagged for authenticated re-testing with identities
+- Whole-crawl time budget is bounded (page-level navigation/probe caps + total deadline)
+
 ### Approvals and Operational Control
 
 RiftX provides three approval modes for actions that may change local or target state:
@@ -136,7 +146,7 @@ The `SKILL.md` frontmatter must contain a lowercase `name` matching its director
 
 - Supports `openai-completions`, `openai-responses`, `anthropic-messages`, and `google-generative-ai` API protocols.
 - Each profile defines a provider, model ID, API key, base URL, transport, context window, output limit, thinking level, and image-input capability.
-- Main and child Agents can use different profiles. Live model changes are scoped to the selected session.
+- Main Agent and SubAgents can use different profiles. Live model changes are scoped to the selected session.
 - Configure a custom main Agent system prompt, subagent concurrency, and scheduling behavior.
 - API keys remain in local configuration; no RiftX account is required.
 

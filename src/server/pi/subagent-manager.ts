@@ -67,7 +67,7 @@ function markActiveLogs(task: SubagentTask, reason: string) {
 function markEmpty(task: SubagentTask) {
   task.status = "empty";
   task.finishedAt ??= now();
-  task.error = "Child Agent completed without a final text response.";
+  task.error = "SubAgent completed without a final text response.";
 }
 
 function cloneTask(task: SubagentTask): SubagentTask {
@@ -331,7 +331,7 @@ export class SubagentManager {
       const queueItem = queueIndex >= 0 ? this.queue.splice(queueIndex, 1)[0] : undefined;
       task.status = "cancelled";
       task.finishedAt = now();
-      task.error = "Cancelled before the child Agent started.";
+      task.error = "Cancelled before the SubAgent started.";
       this.emitTask("subagent_cancelled", task);
       this.completionHandler?.(task, { summary: task.error ?? "Subagent task cancelled." });
       queueItem?.reject?.(new Error(task.error));

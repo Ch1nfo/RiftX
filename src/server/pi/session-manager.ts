@@ -28,6 +28,7 @@ import { createBrowserExtension, BrowserManager } from "@/browser";
 import { MutationLock } from "./mutation-lock";
 import { SubagentManager, type SubagentRunnerContext } from "./subagent-manager";
 import { generateSessionTitle } from "./session-title";
+import { generateSubagentSummary } from "./subagent-summary";
 import { EvidenceStore, getEvidenceStore, removeEvidence } from "./evidence-store";
 import { estimateCompactedUsage, installMidTurnCompaction } from "./mid-turn-compaction";
 import { waitForSubagentsBeforeConclusion } from "./session-join";
@@ -41,7 +42,7 @@ import { BashConcurrency } from "./bash-concurrency";
 import { abortSessionRecord, shutdownSessionRecord } from "./session-shutdown";
 import { switchSessionProfile, withProfileSwitchLock } from "./apply-session-profile";
 import { registerTrackedProfile, registerProfileModel, restoreProviderRegistration, memoizedTitleRuntime, type ProviderRegistrations } from "./model-registration";
-import { extractLastAssistantResult } from "./subagent-result";
+import { extractLastAssistantResult, buildSummaryTranscript } from "./subagent-result";
 import { sessions, sessionCreation, RUNTIME_VERSION, type RuntimeDeps, type SessionRecord } from "./session-registry";
 import { createFindingTool, type FindingSourceInfo } from "./tools/finding-tool";
 import { createSubagentTool } from "./tools/subagent-tool";
@@ -283,8 +284,41 @@ async function runChildSession(profile: ModelProfile, cwd: string, mutationLock:
     // main session's prompt preparation, so children inherit domain guidance.
     const prepared = await prepareSkillPrompt(context.task.task, child.skills, child.loadedSkills);
     await child.session.prompt(prepared.prompt);
-    const result = extractLastAssistantResult(child.session.sessionManager.getBranch());
+    let result = extractLastAssistantResult(child.session.sessionManager.getBranch());
     if (result.error) throw new Error(result.error);
+
+    // The model can spend its entire output budget on thinking (hitting the
+    // max-tokens limit before producing any text). The session context still
+    // holds all the work — a short follow-up asking for a concise summary
+    // lets the model deliver its result within a few hundred tokens.
+    if (!result.summary?.trim() && !context.signal.aborted) {
+      // Fallback via the lightweight summary model (thinking off, short
+      // output) instead of another full run on the same session — the first
+      // run already burned the output budget on thinking; a second identical
+      // call would likely repeat that. The transcript includes both assistant
+      // text AND tool results — the actual evidence lives in toolResult
+      // messages, not in the model's plans. Sensitive values (cookies,
+      // tokens) are truncated per-entry to avoid sending full credentials to
+      // the summary model.
+      try {
+        const branchText = buildSummaryTranscript(child.session.sessionManager.getBranch());
+        if (branchText.trim()) {
+          const existingConfig = await readConfig();
+          const titleProfile = existingConfig.childInherit ? profile : existingConfig.profiles.find((item) => item.id === existingConfig.childProfileId) ?? profile;
+          const { titleModelRegistry, titleModel } = memoizedTitleRuntime(titleProfile, () => {
+            const titleAuthStorage = AuthStorage.inMemory();
+            const titleModelRegistry = ModelRegistry.inMemory(titleAuthStorage);
+            return { titleModelRegistry, titleModel: registerProfileModel(titleAuthStorage, titleModelRegistry, titleProfile, true) };
+          });
+          const summary = await generateSubagentSummary(titleModelRegistry, titleModel, branchText);
+          if (summary.trim()) return { summary: summary.trim() };
+        }
+      } catch {
+        // Title-model fallback is best-effort; if it fails the result stays
+        // empty and markEmpty produces the correct status.
+      }
+    }
+
     return { summary: result.summary ?? "" };
   } finally {
     unsubscribe();

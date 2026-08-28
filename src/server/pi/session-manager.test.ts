@@ -174,7 +174,7 @@ test("a failed result delivery can be claimed again", () => {
 
 test("join reports an empty child as a status, not a fake result", () => {
   const task = makeTask("empty");
-  task.error = "Child Agent completed without a final text response.";
+  task.error = "SubAgent completed without a final text response.";
   const message = formatSubagentTerminalMessage(task, "");
 
   assert.match(message, /^\[RiftX subagent status\]/);

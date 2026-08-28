@@ -102,17 +102,17 @@ When a conclusion has concrete, reviewable evidence, save it with record_finding
 
 export function buildPentestSystemPrompt(aggressiveness: SubagentAggressiveness, customPrompt?: string) {
   const policy = aggressiveness === "high"
-    ? "Use the spawn_subagent tool to create child Agents. Maximize useful delegation. Whenever the task contains any meaningful independent reconnaissance, analysis, validation, browser, or evidence track, delegate it without waiting for the user and without optimizing for token cost. Create all distinct useful tracks, never duplicates, respect scope and approvals, and let the scheduler queue work beyond the configured concurrency limit. Continue main-Agent work immediately after background delegation."
+    ? "Use the spawn_subagent tool to create SubAgents. Maximize useful delegation. Whenever the task contains any meaningful independent reconnaissance, analysis, validation, browser, or evidence track, delegate it without waiting for the user and without optimizing for token cost. Create all distinct useful tracks, never duplicates, respect scope and approvals, and let the scheduler queue work beyond the configured concurrency limit. Continue main-Agent work immediately after background delegation."
     : aggressiveness === "low"
-      ? "Use the spawn_subagent tool to create child Agents. Delegate conservatively. Use a child Agent only when an independent task is likely to produce a substantial efficiency, coverage, or evidence-quality gain. Do not delegate small, obvious, or state-dependent work."
-      : "Use the spawn_subagent tool to create child Agents. Delegate on demand. When an independent child task provides a concrete efficiency, coverage, or evidence benefit, create it; otherwise keep the work in the main Agent. Never create tasks merely to fill the concurrency limit.";
+      ? "Use the spawn_subagent tool to create SubAgents. Delegate conservatively. Use a SubAgent only when an independent task is likely to produce a substantial efficiency, coverage, or evidence-quality gain. Do not delegate small, obvious, or state-dependent work."
+      : "Use the spawn_subagent tool to create SubAgents. Delegate on demand. When an independent SubAgent task provides a concrete efficiency, coverage, or evidence benefit, create it; otherwise keep the work in the main Agent. Never create tasks merely to fill the concurrency limit.";
   const basePrompt = customPrompt?.trim() || PENTEST_SYSTEM_PROMPT;
   return `${basePrompt}
 ${SAFETY_CORE}
 ${SKILL_POLICY}
 
 ## Subagent delegation policy
-${policy} The configured maximum is a concurrency limit, not a target: create only the number of useful tasks needed, run up to the limit, and let excess tasks queue. Avoid normalized duplicates of queued or running tasks. Keep state-dependent work serial, and keep every child Agent within the same authorization, approval, browser-scope, and rate-limit rules. Every spawned child is mandatory for the final assessment. Continue independent work while children run and incorporate each child result as soon as RiftX returns it. If your current turn reaches a conclusion while any child is still active, do not finalize: RiftX will wait for every spawned child to complete, fail, be cancelled, or be interrupted and then request the final synthesis. Never use bash, sleep, tasks.json, child log files, or filesystem polling to monitor or wait for children. The spawn_subagent tool has no optional wait mode.
+${policy} The configured maximum is a concurrency limit, not a target: create only the number of useful tasks needed, run up to the limit, and let excess tasks queue. Avoid normalized duplicates of queued or running tasks. Keep state-dependent work serial, and keep every SubAgent within the same authorization, approval, browser-scope, and rate-limit rules. Every spawned SubAgent is mandatory for the final assessment. Continue independent work while SubAgents run and incorporate each child result as soon as RiftX returns it. If your current turn reaches a conclusion while any child is still active, do not finalize: RiftX will wait for every spawned SubAgent to complete, fail, be cancelled, or be interrupted and then request the final synthesis. Never use bash, sleep, tasks.json, child log files, or filesystem polling to monitor or wait for children. The spawn_subagent tool has no optional wait mode.
 
 ${FINDINGS_POLICY}`;
 }
@@ -120,7 +120,7 @@ ${FINDINGS_POLICY}`;
 export function buildChildPentestSystemPrompt() {
   const basePrompt = String.raw`You are a child Web penetration testing and vulnerability validation agent operating only on explicitly authorized targets.
 
-Complete only the delegated task from the parent RiftX Agent. Do not try to create child Agents or request spawn_subagent. If parallel work would help, note that limitation in your result and continue locally.
+Complete only the delegated task from the parent RiftX Agent. Do not try to create SubAgents or request spawn_subagent. If parallel work would help, note that limitation in your result and continue locally.
 
 Keep the same authorization, approval, browser-scope, and rate-limit rules as the parent.
 

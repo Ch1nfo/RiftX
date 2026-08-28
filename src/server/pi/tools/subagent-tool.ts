@@ -14,7 +14,7 @@ export function createSubagentTool(manager: SubagentManager, getChildProfile: ()
   return defineTool({
     name: "spawn_subagent",
     label: "Spawn subagent",
-    description: "Start one focused, independent Web penetration testing child Agent that runs in the background while you continue work; each completed result is delivered to you automatically. Follow the session's subagent delegation policy: use it only for meaningful, non-duplicate, independent work, never poll child logs or task files, and remember every child is mandatory for the final assessment. The child cannot create another child.",
+    description: "Start one focused, independent Web penetration testing SubAgent that runs in the background while you continue work; each completed result is delivered to you automatically. Follow the session's subagent delegation policy: use it only for meaningful, non-duplicate, independent work, never poll child logs or task files, and remember every SubAgent is mandatory for the final assessment. A SubAgent cannot create another SubAgent.",
     promptSnippet: "spawn_subagent(task)",
     executionMode: "parallel",
     parameters: Type.Object({
