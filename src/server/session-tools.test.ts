@@ -4,6 +4,7 @@ import { WEB_TOOL_NAMES, sessionToolNames } from "./session-tools";
 
 test("every web tool name is on the session tool whitelist", () => {
   for (const variant of [sessionToolNames(true), sessionToolNames(false)]) {
+    assert.equal(variant.includes("crawl"), true, "both variants must whitelist crawl");
     for (const name of WEB_TOOL_NAMES) {
       assert.equal(variant.includes(name), true, `${name} must be whitelisted`);
     }

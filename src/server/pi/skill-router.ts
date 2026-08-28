@@ -46,7 +46,9 @@ const TERM_ALIASES: Record<string, string[]> = {
   "api": ["接口"],
   "ssrf": ["server", "side", "forgery"],
   "jwt": ["token", "api"],
-  "graphql": ["api"]
+  "graphql": ["api"],
+  "爬取": ["crawl", "spider"],
+  "攻击面": ["attack", "surface", "crawl"]
 };
 
 function expandAliases(term: string) {

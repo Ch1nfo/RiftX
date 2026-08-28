@@ -66,14 +66,17 @@ export class ContextManager {
     return creation;
   }
 
-  async close() {
+  /** Returns false when any close failed: the execution contexts may still be alive. */
+  async close(): Promise<boolean> {
+    let closed = true;
     const contexts = [...this.contexts.values()];
     this.contexts.clear();
     this.contextPromises.clear();
-    await Promise.all(contexts.map((context) => context.close().catch(() => undefined)));
+    await Promise.all(contexts.map((context) => context.close().catch(() => { closed = false; })));
     const browser = this.browser ?? await this.browserPromise?.catch(() => undefined);
-    await browser?.close().catch(() => undefined);
+    await browser?.close().catch(() => { closed = false; });
     this.browserPromise = undefined;
     this.browser = undefined;
+    return closed;
   }
 }

@@ -10,7 +10,7 @@ export const WEB_TOOL_NAMES = ["web_search", "web_fetch"] as const;
 export function sessionToolNames(subagents: boolean): string[] {
   return [
     "read", "grep", "find", "ls", "bash", "write", "edit", "browser",
-    "record_finding", ...WEB_TOOL_NAMES,
+    "record_finding", "crawl", ...WEB_TOOL_NAMES,
     ...(subagents ? ["spawn_subagent"] : [])
   ];
 }

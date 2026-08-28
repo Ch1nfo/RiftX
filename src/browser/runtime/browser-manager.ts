@@ -91,9 +91,22 @@ function parseHostMappingEntries(mappings: Record<string, string>): ParsedHostMa
   });
 }
 
+/** Thrown only when context destruction is NOT confirmed — the manager is degraded and unusable. */
+export class BrowserDegradedError extends Error {
+  constructor(message: string) { super(message); this.name = "BrowserDegradedError"; }
+}
+
 export class BrowserManager {
   private readonly serialize = createSerializer();
   private closed = false;
+  /**
+   * Set when even the escalation path (whole-context destroy) failed to
+   * confirm destruction. A possibly-live evaluate may still be running, so
+   * lazy resource restart is refused: a later navigate() must not re-launch
+   * a browser next to an uncontrolled page. Distinct from `closed`
+   * (model-facing, reopenable) and from shutdown() (terminal by design).
+   */
+  private destructionFailed = false;
 
   /**
    * Serialize every browser operation on this manager instance. Playwright
@@ -313,6 +326,7 @@ export class BrowserManager {
    * Playwright's route URL rewriting recomputes the Host header.
    */
   private async ensureContext(identity: string) {
+    if (this.destructionFailed) throw new BrowserDegradedError("Browser session is degraded: a previous context destruction failed; no new contexts can be created for this manager");
     await this.mappingProxy.start();
     const context = await this.contextManager.getContext(identity, { ignoreHTTPSErrors: this.ignoreTlsErrors, proxyUrl: this.mappingProxy.proxyUrl });
     if (!this.attachedContexts.has(context)) {
@@ -449,6 +463,7 @@ export class BrowserManager {
   }
 
   private async ensurePage(identityId?: string) {
+    if (this.destructionFailed) throw new Error("Browser session is degraded: a previous context destruction failed and left a possibly-live evaluate; no new pages can be created for this manager");
     const identity = this.resolveIdentity(identityId);
     const state = this.ensureIdentityState(identity);
     const context = await this.ensureContext(identity);
@@ -468,6 +483,63 @@ export class BrowserManager {
     const manager = this.pages.get(state?.activePageId ?? "");
     if (!manager) throw new Error(`No browser page is open for identity "${identity}". Run browser navigate first.`);
     return manager;
+  }
+
+  /**
+   * Force-close the active page of an identity, destroying its execution
+   * context (any pending evaluate settles with "context destroyed"). Internal
+   * page state is cleared so the next ensurePage rebuilds lazily. Used by
+   * crawl's timeout recovery: guarantees a stuck evaluate cannot outlive the
+   * browser lane, without re-navigating the target or re-launching resources.
+   */
+  async resetActivePage(identityId?: string): Promise<boolean> {
+    const identity = this.resolveIdentity(identityId);
+    const state = this.identities.get(identity);
+    const activeId = state?.activePageId ?? "";
+    const manager = this.pages.get(activeId);
+    this.pages.delete(activeId);
+    this.refs.delete(activeId);
+    if (state) state.activePageId = undefined;
+    let closed = false;
+    let destroyed = false;
+    if (manager) {
+      try {
+        await manager.page.close({ runBeforeUnload: false });
+        closed = true;
+        destroyed = true;
+      } catch {
+        // Fall through to whole-context destruction below.
+      }
+    }
+    if (!closed) {
+      // The page is missing or uncloseable (crash, protocol error, or the
+      // Stop teardown racing us). Destroy the WHOLE browser context — that
+      // guarantees every execution context is gone — while PRESERVING the
+      // authorization state (lockedHost, sessionRules, tempAuthorizations,
+      // identity settings): a full teardown() would drop the first-host lock
+      // and session grants, silently widening scope. Pages rebuild lazily.
+      this.pages.clear();
+      this.refs.clear();
+      for (const identityState of this.identities.values()) identityState.activePageId = undefined;
+      // Teardown-grade cleanup order (live routed sockets can stall a context
+      // close), while authorization state stays intact. Destruction is only
+      // CONFIRMED when the context close reports success — a failed close
+      // means execution contexts may still be alive, and the caller must not
+      // be told otherwise.
+      // Teardown-grade cleanup order — routed sockets, then the browser
+      // context BEFORE the proxy (a still-alive page reconnecting to a
+      // closed proxy stalls the context close) — while authorization state
+      // stays intact.
+      await Promise.race([
+        Promise.allSettled([...this.routedWebSockets].map((entry) => this.closeRoutedWebSocket(entry))),
+        new Promise<void>((resolve) => setTimeout(resolve, 5_000))
+      ]).catch(() => undefined);
+      this.routedWebSockets.clear();
+      destroyed = await this.contextManager.close();
+      this.mappingProxy.close();
+      if (!destroyed) this.destructionFailed = true;
+    }
+    return destroyed;
   }
 
   async navigate(url: string, identityId?: string) {
@@ -505,6 +577,97 @@ export class BrowserManager {
   async reload(identityId?: string) { await this.pageManager(identityId).page.reload({ waitUntil: "domcontentloaded" }); return this.snapshot(identityId); }
 
   /** Evaluate a JavaScript expression in the identity's active page and return a serialized result. */
+  /**
+   * The shared timing contract for long browser-side evaluations: bounded
+   * patience (the race), forced destruction on timeout (resetActivePage —
+   * page or whole context, authorization state preserved), and the lane held
+   * until the underlying evaluate actually settles. Returns the evaluation
+   * result, or undefined when the deadline hit (destruction confirmed) —
+   * callers degrade, they never overlap a possibly-live evaluate.
+   */
+  /**
+   * The shared timing contract for any potentially-blocking browser operation:
+   * bounded patience (the race), forced destruction on timeout
+   * (resetActivePage — page or whole context, authorization state preserved),
+   * and the lane held until the underlying operation actually settles.
+   * Returns the result, or undefined when the deadline hit (destruction
+   * confirmed) — callers degrade, they never overlap a possibly-live op.
+   */
+  async withDeadline<T>(operation: () => Promise<T>, deadlineMs: number): Promise<T | undefined> {
+    const op = operation();
+    let raceTimer: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
+    try {
+      return await Promise.race([
+        op,
+        new Promise<never>((_, reject) => {
+          raceTimer = setTimeout(() => { timedOut = true; reject(new Error(`operation exceeded ${deadlineMs}ms`)); }, deadlineMs);
+        })
+      ]);
+    } catch (error) {
+      if (!timedOut) throw error;
+
+      // ── Recovery phase, also bounded ──
+      // resetActivePage's page.close / context.close have no timeout of
+      // their own; a hung Playwright protocol layer could stall the recovery
+      // forever. A second-layer cap bounds the worst case: if even the
+      // recovery hangs, we accept a possibly-live evaluate and release the
+      // lane — but destructionFailed blocks all future resource creation and
+      // the error tells callers to stop.
+      const RECOVERY_CAP_MS = 10_000;
+      const SETTLE_CAP_MS = 5_000;
+      let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+
+      const boundedRecovery = (async () => {
+        const destroyed = await Promise.race([
+          this.resetActivePage(),
+          new Promise<never>((_, reject) => {
+            recoveryTimer = setTimeout(() => reject(new Error("recovery exceeded 10s")), RECOVERY_CAP_MS);
+          })
+        ]);
+        if (!destroyed) return "unconfirmed" as const;
+
+        // Destruction confirmed; the original op should settle quickly now
+        // (its execution context is gone). Cap it anyway — a hung protocol
+        // layer might not relay the destruction event.
+        await Promise.race([
+          op.catch(() => undefined),
+          new Promise<void>((resolve) => setTimeout(resolve, SETTLE_CAP_MS))
+        ]);
+        return "confirmed" as const;
+      })();
+
+      try {
+        const outcome = await boundedRecovery;
+        if (outcome === "confirmed") return undefined;
+        // "unconfirmed": resetActivePage returned false (close failed) —
+        // destructionFailed was already set inside resetActivePage.
+        throw new BrowserDegradedError("operation deadline hit and context destruction failed — browser manager is degraded, stop using it");
+      } catch (recoveryError) {
+        // Recovery itself hung (page.close / context.close stalled past
+        // the cap): nothing more can be done. Mark degraded and release.
+        this.destructionFailed = true;
+        throw new BrowserDegradedError(`operation deadline hit and recovery exceeded bounds (${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}) — browser manager is degraded, stop using it`);
+      } finally {
+        clearTimeout(recoveryTimer);
+      }
+    } finally {
+      clearTimeout(raceTimer);
+    }
+  }
+
+  /** navigate() bounded by a deadline: the internal snapshot() evaluate is capped too. */
+  async navigateWithDeadline(url: string, deadlineMs: number) {
+    const result = await this.withDeadline(() => this.navigate(url), deadlineMs);
+    // undefined = timeout (page destroyed); return a marker so callers can degrade.
+    return result;
+  }
+
+  async evaluateWithDeadline(expression: string, deadlineMs: number): Promise<string | undefined> {
+    return this.withDeadline(() => this.evaluate(expression), deadlineMs);
+  }
+
+
   async evaluate(expression: string, identityId?: string) {
     const manager = this.pageManager(identityId);
     return serializeEvaluation(await manager.page.evaluate(expression));
@@ -738,11 +901,17 @@ export class BrowserManager {
   }
 
   /** Close both ends of a routed WebSocket explicitly. */
-  private closeRoutedWebSocket(entry: { route: WebSocketRoute; serverRoute?: WebSocketRoute }) {
-    try { void entry.route.close().catch(() => undefined); } catch { /* already closed */ }
-    if (entry.serverRoute) {
-      try { void entry.serverRoute.close().catch(() => undefined); } catch { /* already closed */ }
-    }
+  private async closeRoutedWebSocket(entry: { route: WebSocketRoute; serverRoute?: WebSocketRoute }) {
+    // Safely wrap each close (a sync throw from an already-closed page must
+    // not become an unhandled rejection), then await both ends with a cap:
+    // an unfinished WebSocket close can stall the subsequent context close.
+    const safeClose = (close: () => Promise<void>) => {
+      try { return close().catch(() => undefined); } catch { return Promise.resolve(); }
+    };
+    await Promise.race([
+      Promise.allSettled([safeClose(() => entry.route.close()), entry.serverRoute ? safeClose(() => entry.serverRoute!.close()) : Promise.resolve()]),
+      new Promise<void>((resolve) => setTimeout(resolve, 3_000))
+    ]).catch(() => undefined);
   }
 
   /**
@@ -769,7 +938,10 @@ export class BrowserManager {
   private async teardown() {
     // Tear down routed WebSockets first: closing the browser while a routed
     // WebSocket is still live can hang the Playwright context shutdown.
-    for (const entry of [...this.routedWebSockets]) this.closeRoutedWebSocket(entry);
+    await Promise.race([
+        Promise.allSettled([...this.routedWebSockets].map((entry) => this.closeRoutedWebSocket(entry))),
+        new Promise<void>((resolve) => setTimeout(resolve, 5_000))
+      ]).catch(() => undefined);
     this.routedWebSockets.clear();
     this.requests.clear();
     this.refs.clear();
@@ -790,8 +962,11 @@ export class BrowserManager {
     this.mappingProxy.reset();
     // Close the browser before the proxy: killing the proxy first makes the
     // still-live browser reconnect, leaving TCP handles behind.
-    await this.contextManager.close();
+    const closed = await this.contextManager.close();
     this.mappingProxy.close();
+    // A failed close means the old context may still be alive alongside any
+    // lazily recreated instance — block all further resource creation.
+    if (!closed) this.destructionFailed = true;
   }
 
   get currentUrl() {

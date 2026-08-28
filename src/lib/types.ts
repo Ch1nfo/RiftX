@@ -48,7 +48,7 @@ export type ContextUsage = {
 
 export type ApprovalRequest = {
   id: string;
-  toolName: "bash" | "write" | "edit" | "browser";
+  toolName: "bash" | "write" | "edit" | "browser" | "crawl";
   input: unknown;
   createdAt: string;
   subagentId?: string;
