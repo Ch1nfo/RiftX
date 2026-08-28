@@ -46,7 +46,17 @@ Web security validation is often split across terminals, browsers, proxies, note
 
 ## Benchmark Performance
 
-RiftX has been evaluated on TSECBENCH's XBW Validation Benchmarks. The screenshot below shows a benchmark run and the Agent's overall completion performance on security validation tasks.
+### CyBench
+
+RiftX completed the CyBench test set with a perfect completion rate across all 40 validation tasks.
+
+![RiftX CyBench result](docs/images/riftx-cybench.jpg)
+
+> Example run: `20800` total points, `100` composite score, `100%` completion rate, and `40/40` completed items.
+
+### XBOW Validation Benchmarks
+
+RiftX has also been evaluated on TSECBENCH's XBOW Validation Benchmarks. The screenshot below shows a benchmark run and the Agent's overall completion performance on security validation tasks.
 
 ![RiftX TSECBENCH benchmark result](docs/images/riftx-benchmark.jpg)
 

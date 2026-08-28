@@ -46,7 +46,17 @@ Web 安全验证通常散落在终端、浏览器、代理工具、笔记和多�
 
 ## 跑分表现
 
-RiftX 已参与 TSECBENCH 的 XBW Validation Benchmarks。下面是一次公开跑分记录，用于展示 Agent 在安全验证任务中的整体完成情况：
+### CyBench
+
+RiftX 已完成 CyBench 测试集的评估，40 道验证题全部完成，完成率达到 100%。
+
+![RiftX CyBench 跑分结果](docs/images/riftx-cybench.jpg)
+
+> 示例记录：总得分 `20800`，综合得分 `100`，完成率 `100%`，完成 `40/40` 道题。
+
+### XBOW Validation Benchmarks
+
+RiftX 已参与 TSECBENCH 的 XBOW Validation Benchmarks。下面是一次公开跑分记录，用于展示 Agent 在安全验证任务中的整体完成情况：
 
 ![RiftX TSECBENCH 跑分结果](docs/images/riftx-benchmark.jpg)
 
