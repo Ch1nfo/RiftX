@@ -55,8 +55,16 @@ export function formatSubagentTerminalMessage(task: SubagentTask, summary?: stri
   return `[RiftX subagent status]\nSubagent: ${task.name}\nStatus: ${task.status}\nDetails:\n${detail}\n\nDo not treat this task as evidence or repeat the same delegated task unless you explicitly decide to retry it. ${untrustedNote}`;
 }
 
-export function shouldDeliverSubagentCompletion(record: Pick<SubagentJoinRecord, "waitingForSubagents" | "abortPromise" | "aborting">) {
-  return !record.waitingForSubagents && !record.abortPromise && !record.aborting;
+export function shouldDeliverSubagentCompletion(record: Pick<SubagentJoinRecord, "waitingForSubagents" | "abortPromise" | "aborting" | "session"> & { subagents?: { hasActiveTasks(): boolean } }) {
+  // If other subagents are still running, never deliver a partial result:
+  // the conclusion wait handles the full batch. This check comes FIRST and
+  // ignores waitingForSubagents entirely (that flag's lifecycle is turn-based
+  // and unreliable for this purpose — it may be stale).
+  if (record.subagents?.hasActiveTasks()) return false;
+  // No other subagents running: deliver if not aborting. waitingForSubagents
+  // is not consulted here either — if the model is streaming, steer handles
+  // it; if idle, prompt starts a new turn with the complete result set.
+  return !record.abortPromise && !record.aborting;
 }
 
 export function claimSubagentResult(record: Pick<SubagentJoinRecord, "deliveredSubagentResults" | "deliveringSubagentResults">, taskId: string) {

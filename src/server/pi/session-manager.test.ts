@@ -195,11 +195,27 @@ test("join exits before terminal cancellation results when Stop advanced the abo
   assert.equal(prompts.length, 0);
 });
 
-test("completion delivery is suppressed while a session is stopping or joining", () => {
-  assert.equal(shouldDeliverSubagentCompletion({}), true);
-  assert.equal(shouldDeliverSubagentCompletion({ waitingForSubagents: true }), false);
-  assert.equal(shouldDeliverSubagentCompletion({ aborting: true }), false);
-  assert.equal(shouldDeliverSubagentCompletion({ abortPromise: Promise.resolve() }), false);
+test("completion delivery is suppressed while streaming, but idle sessions deliver immediately", () => {
+  const streaming = { isStreaming: true, steer: async () => undefined, prompt: async () => undefined };
+  const idle = { isStreaming: false, steer: async () => undefined, prompt: async () => undefined };
+  const noSubagents = { hasActiveTasks: () => false };
+  const otherRunning = { hasActiveTasks: () => true };
+  // New semantics: hasActiveTasks() is the only delivery gate. waitingForSubagents
+  // no longer suppresses — a stale flag shouldn't strand a result when no other
+  // subagent is actually running.
+  assert.equal(shouldDeliverSubagentCompletion({ session: streaming, subagents: noSubagents }), true);
+  assert.equal(shouldDeliverSubagentCompletion({ session: streaming, subagents: noSubagents, waitingForSubagents: true }), true, "stale waiting flag must not suppress when no other subagent is running");
+  assert.equal(shouldDeliverSubagentCompletion({ session: streaming, subagents: noSubagents, aborting: true }), false);
+  assert.equal(shouldDeliverSubagentCompletion({ session: streaming, subagents: noSubagents, abortPromise: Promise.resolve() }), false);
+  // Idle + no other subagents running: deliver immediately.
+  assert.equal(shouldDeliverSubagentCompletion({ session: idle, subagents: noSubagents, waitingForSubagents: true }), true);
+  assert.equal(shouldDeliverSubagentCompletion({ session: idle, subagents: noSubagents }), true);
+  // Other subagents running: defer regardless of streaming state or waitingForSubagents.
+  assert.equal(shouldDeliverSubagentCompletion({ session: idle, subagents: otherRunning, waitingForSubagents: true }), false);
+  assert.equal(shouldDeliverSubagentCompletion({ session: idle, subagents: otherRunning, waitingForSubagents: false }), false, "stale waiting=false must not bypass batch deference");
+  assert.equal(shouldDeliverSubagentCompletion({ session: streaming, subagents: otherRunning, waitingForSubagents: false }), false);
+  // No subagents manager at all: deliver.
+  assert.equal(shouldDeliverSubagentCompletion({ session: idle }), true);
 });
 
 test("session prompt actions are serialized", async () => {

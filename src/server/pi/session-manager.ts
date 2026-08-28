@@ -55,6 +55,10 @@ export async function getSessionMessages(id: string) {
 }
 import { deliverSubagentCompletion, dispatchSessionAction } from "./session-join";
 
+function terminalSubagentStatus(task: { status: string }) {
+  return task.status === "completed" || task.status === "empty" || task.status === "failed" || task.status === "cancelled" || task.status === "interrupted";
+}
+
 function eventPayload(event: AgentSessionEvent): RiftxEvent {
   const base = event as unknown as Record<string, unknown>;
   if (event.type === "message_update") {
@@ -271,7 +275,36 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
     unsubscribe: () => undefined
   };
   const unsubscribe = result.session.subscribe((event) => {
-    if (event.type === "agent_end" && subagents?.hasActiveTasks() && !record.subagentDeliveryInProgress) record.waitingForSubagents = true;
+    if (event.type === "agent_end" && subagents && !record.subagentDeliveryInProgress) {
+      // Only enter the waiting state when subagents are actually still
+      // running. Setting it unconditionally would make SSE reconnects replay
+      // a stale waiting_for_subagents state and suppress deliveries in the
+      // next turn's streaming phase.
+      const hasActive = subagents.hasActiveTasks();
+      // The model just finished its turn. Deliver any stranded subagent
+      // results now while the model is idle — but only when no other
+      // subagent is still running (partial results defer to the batch).
+      // Checks the persisted delivery mark so post-restart legacy tasks
+      // aren't re-injected.
+      const stranded = subagents.list().filter((task) =>
+        terminalSubagentStatus(task)
+        && task.delivered === false
+        && !record.deliveredSubagentResults.has(task.id)
+      );
+      if (hasActive) {
+        // Still waiting for the active batch. Stranded results from earlier
+        // failed deliveries stay pending — the completion handler delivers
+        // them alongside the final active result when the batch completes.
+        record.waitingForSubagents = true;
+      } else if (stranded.length > 0) {
+        record.waitingForSubagents = false;
+        for (const task of stranded) {
+          void deliverSubagentCompletion(record, task, task.summary).catch(() => undefined);
+        }
+      } else {
+        record.waitingForSubagents = false;
+      }
+    }
     const payload = event.type === "agent_end" && subagents?.hasActiveTasks() && !record.subagentDeliveryInProgress
       ? { type: "session_state", state: "waiting_for_subagents" }
       : eventPayload(event);
@@ -285,7 +318,27 @@ async function createRuntimeSession(profile: ModelProfile, cwd: string, gate: Ap
   record.unsubscribe = unsubscribe;
   if (subagents) {
     subagents.setCompletionHandler((task, childResult) => {
-      void deliverSubagentCompletion(record, task, childResult.summary);
+      void deliverSubagentCompletion(record, task, childResult.summary)
+        .then(() => {
+          // When this was the last active subagent, deliver any previously
+          // stranded results alongside this one — otherwise a result that
+          // failed delivery earlier stays stranded until the next user
+          // prompt.
+          if (subagents && !subagents.hasActiveTasks()) {
+            // All subagents are done: clear the waiting state so SSE
+            // reconnects replay idle instead of a stale waiting_for_subagents.
+            record.waitingForSubagents = false;
+            const stranded = subagents.list().filter((entry) =>
+              terminalSubagentStatus(entry)
+              && entry.delivered === false
+              && !record.deliveredSubagentResults.has(entry.id)
+            );
+            for (const entry of stranded) {
+              void deliverSubagentCompletion(record, entry, entry.summary).catch(() => undefined);
+            }
+          }
+        })
+        .catch(() => undefined);
     });
     await subagents.initialize((context) => runChildSession(getChildProfile(), cwd, mutationLock, bashConcurrency, context, { evidenceStore, evidenceSessionId }));
   }
@@ -485,7 +538,18 @@ async function promptSession(id: string, text: string, mode: "prompt" | "steer" 
     if (!skillInjected) prepared.loaded.forEach((name) => record.loadedSkills.delete(name));
     throw error;
   }
-  if (resolvedMode !== "steer" && record.subagents) await waitForSubagentsBeforeConclusion(record, knownTaskIds, activeBefore, promptAbortEpoch);
+  // Reset the waiting flag after ANY response (steer included). The flag was
+  // set when the previous turn ended; the model just responded again, so the
+  // "waiting" state is stale. waitForSubagentsBeforeConclusion is only safe
+  // when the model is NOT still streaming (it calls session.prompt, which the
+  // SDK rejects with "already processing" during an active run) — defer to
+  // the agent_end handler for streaming sessions.
+  if (record.subagents) {
+    record.waitingForSubagents = false;
+    if (!record.session.isStreaming) {
+      await waitForSubagentsBeforeConclusion(record, knownTaskIds, activeBefore, promptAbortEpoch);
+    }
+  }
   return record;
 }
 
