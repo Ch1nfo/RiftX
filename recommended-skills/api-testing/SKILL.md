@@ -5,12 +5,6 @@ description: API security testing 接口安全测试：REST/GraphQL 面发现、
 
 # API 安全测试
 
-## 授权声明
-
-**本 Skill 仅用于授权安全测试**：书面授权、明确范围、遵守当地法律。批量请求遵守限速约定，不发起拒绝服务级别的压力。
-
----
-
 ## RiftX Workflow
 
 1. **API 面发现靠浏览器的网络记录**：以正常用户在浏览器里走完全部功能，`requests` 自动记录所有 XHR/fetch——这是最真实的 API 清单（比 swagger 文档更接近实际部署）；`request_detail` 逐个看真实结构（方法、路径、头、体、token 形态）
@@ -53,7 +47,7 @@ description: API security testing 接口安全测试：REST/GraphQL 面发现、
 ### 5. 限流与滥用
 
 - 登录/验证码/敏感操作端点连续请求观察限流（无限流=暴力破解面，记录 finding）
-- 批量枚举的速率控制在授权约定内
+- 批量枚举控制速率与并发，不发起拒绝服务级别的压力
 
 ---
 
@@ -67,18 +61,6 @@ description: API security testing 接口安全测试：REST/GraphQL 面发现、
 - [ ] GraphQL：introspection/字段建议/mutation 越权
 - [ ] 限流验证
 - [ ] 每个确认点：`request_detail` 证据 + `record_finding`
-
----
-
-### Recording Findings
-
-When a vulnerability is confirmed, record it immediately with the `record_finding` tool — one finding per concrete, evidence-backed conclusion:
-
-- `title` / `asset` / `impact` / `reproduction`: what an attacker gains and the exact steps to reproduce
-- `confidence`: `confirmed` (reproduced), `likely`, `suspected`, or `not_reproducible`
-- `evidence`: reference the proving tool call, e.g. `{ "type": "tool", "toolCallId": "<id>", "toolName": "bash" }` — its captured output becomes the evidence shown in the Findings panel
-
-There is no separate results database to write to; findings persist with the session and feed the final report.
 
 ---
 

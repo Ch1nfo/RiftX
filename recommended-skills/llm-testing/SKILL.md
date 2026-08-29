@@ -18,15 +18,6 @@ This skill is designed for security researchers, AI safety engineers, and red te
 - Prevent adversarial prompt attacks
 - Maintain alignment with intended behavior
 
-## Authorized Use Cases
-
-- **AI Safety Research**: Testing LLM models for safety and alignment issues
-- **Security Auditing**: Red team operations for AI/ML systems
-- **Bias Detection**: Evaluating models for fairness and bias
-- **Privacy Testing**: Verifying models don't leak training data or PII
-- **Educational Purposes**: Teaching AI security concepts and vulnerabilities
-- **Responsible AI Development**: Building more robust and secure LLMs
-
 ## Test Categories
 
 ### 1. Bias Testing
@@ -79,19 +70,6 @@ Test model alignment and resistance to adversarial prompts:
 
 ## Usage Instructions
 
-### Basic Usage
-
-```bash
-# Reference the LLM Testing skill
-"Use the llm-testing skill to test this model for gender bias"
-
-# Access specific test categories
-"Show me prompts from the llm-testing skill for testing data leakage"
-
-# Run comprehensive testing
-"Use the llm-testing skill to perform a full security audit of this LLM"
-```
-
 ### Replacing Placeholders
 
 Before using bias and memory recall tests, replace placeholders:
@@ -120,13 +98,12 @@ for gender in ['man', 'woman', 'non-binary person']:
 
 ## Best Practices
 
-### Ethical Testing Guidelines
+### Testing Guidelines
 
-1. **Authorization Required**: Only test models you own or have permission to test
-2. **Responsible Disclosure**: Report vulnerabilities through proper channels
-3. **No Exploitation**: Use findings for improvement, not exploitation
-4. **Privacy Protection**: Don't share PII discovered during testing
-5. **Documentation**: Keep detailed records of testing methodology and results
+1. **Responsible Disclosure**: Report vulnerabilities through proper channels
+2. **No Exploitation**: Use findings for improvement, not exploitation
+3. **Privacy Protection**: Don't share PII discovered during testing
+4. **Documentation**: Keep detailed records of testing methodology and results
 
 ### Testing Methodology
 
@@ -155,74 +132,6 @@ for gender in ['man', 'woman', 'non-binary person']:
 - Build detection systems for adversarial prompts
 - Improve safety alignment and guardrails
 
-## File Structure
-
-```
-LLM_Testing/
-├── SKILL.md (this file)
-├── README.md
-├── Bias_Testing/
-│   ├── gender_bias.txt
-│   ├── nationality_geographic_bias.txt
-│   └── race_ethnicity_bias.txt
-├── Data_Leakage/
-│   ├── personal_data.txt
-│   └── metadata.txt
-├── Memory_Recall_Testing/
-│   └── session_recall.txt
-└── Divergence_attack/
-    ├── escape_out_of_allignment_training.txt
-    └── pre-training_data.txt
-```
-
-## Integration with Other Skills
-
-This LLM Testing skill works well with:
-- **Security Fuzzing**: Use fuzzing techniques alongside prompt testing
-- **Security Patterns**: Apply pattern matching to detect vulnerabilities
-- **Pentest Advisor**: Get strategic guidance for comprehensive AI testing
-
-## Legal and Ethical Notice
-
-**IMPORTANT**: These test prompts are designed for authorized security research and responsible AI development only.
-
-### Authorized Use:
-- Testing your own AI models and systems
-- Authorized red team operations with written permission
-- AI safety research in academic or corporate settings
-- Educational demonstrations in controlled environments
-- Responsible vulnerability disclosure programs
-
-### Prohibited Use:
-- Testing models without authorization
-- Exploiting discovered vulnerabilities
-- Attempting to jailbreak production AI systems
-- Creating harmful content or tools
-- Violating terms of service of AI platforms
-
-## Contributing
-
-To add new test cases or categories:
-1. Follow the existing file structure and naming conventions
-2. Include clear documentation for any placeholders
-3. Test prompts for effectiveness and safety
-4. Submit via pull request with detailed description
-
-## References
-
-- [OWASP LLM Top 10](https://owasp.org/www-project-top-10-for-large-language-model-applications/)
-- [AI Red Teaming Best Practices](https://www.anthropic.com/index/red-teaming-language-models)
-- [Responsible AI Guidelines](https://www.partnershiponai.org/)
-- [AI Safety Research](https://www.safe.ai/)
-
-## Version
-
-1.0.0
-
 ## License
 
-MIT License - Use responsibly and ethically for authorized testing only.
-
-## Disclaimer
-
-This skill is provided for security research and AI safety improvement. Users are responsible for ensuring they have proper authorization before testing any AI systems. The maintainers are not responsible for misuse of these testing resources.
+MIT License

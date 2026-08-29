@@ -290,27 +290,6 @@ Signs you've been detected:
 2. **Change IP address** if possible
 3. **Wait** before resuming
 4. **Reduce aggressiveness** if continuing
-5. **Reconsider authorization** if not properly authorized
-
----
-
-## Legal and Ethical Considerations
-
-### Authorization
-
-Always have:
-- Written permission
-- Defined scope
-- Point of contact
-- Emergency response plan
-
-### Responsible Disclosure
-
-If vulnerabilities found:
-1. Report to system owner
-2. Provide time to fix
-3. Follow responsible disclosure
-4. Don't publish without permission
 
 ---
 
@@ -350,4 +329,4 @@ nmap -T4 target.com
 4. Source port manipulation (`--source-port`)
 5. Randomization (`--randomize-hosts`)
 
-**Remember:** No technique guarantees evasion. Best defense is proper authorization.
+**Remember:** No technique guarantees evasion.

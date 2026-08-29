@@ -5,11 +5,7 @@ description: Directory and file enumeration using ffuf, gobuster, dirsearch, and
 
 # Directory and File Enumeration
 
-## Authorization Warning
-
-目录扫描在无授权时会被视为入侵尝试：书面授权、明确范围后再开始，扫描速率保持在授权约定内。
-
----
+目录扫描请求量大：控制扫描速率与并发，避免对目标造成压力。
 
 ## RiftX Workflow
 

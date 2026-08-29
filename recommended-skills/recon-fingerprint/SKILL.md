@@ -5,12 +5,6 @@ description: Web fingerprinting and WAF detection using wafw00f, whatweb, nuclei
 
 # Web Fingerprinting & WAF Detection
 
-## Authorization Warning
-
-指纹识别会向目标发送请求：授权范围内进行；`--aggression`/nuclei 主动探测前确认约定。
-
----
-
 ## RiftX Workflow
 
 1. **浏览器是 SPA 指纹的最强工具**：`browser navigate` + `snapshot` 直接看到渲染后的 DOM——script bundle 路径、meta generator、`ng-app`/`__NEXT_DATA__`/`wp-json` 等特征全在快照里；`requests` 列出全部已加载资源（JS/CSS/字体），bundle 命名即技术栈

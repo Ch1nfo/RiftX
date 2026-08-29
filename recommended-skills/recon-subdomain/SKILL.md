@@ -5,17 +5,13 @@ description: Subdomain enumeration and DNS reconnaissance using subfinder, amass
 
 # Subdomain Enumeration / DNS Reconnaissance
 
-## Authorization Warning
-
-子域枚举会触及第三方数据源（CT 日志、被动 DNS）：确认授权范围覆盖整个域名；主动枚举/爆破遵守速率约定。
-
----
+主动枚举/爆破控制速率与并发。
 
 ## RiftX Workflow
 
 1. **枚举流水线交 subagent**：被动枚举+解析+存活探测是分钟级任务——`spawn_subagent` 跑下面 Workflow，主会话继续已发现资产的手工侦察
 2. **存活资产接浏览器**：httpx 出来的存活子域逐个 `browser navigate` + `snapshot` 分类（管理后台 / API / 旧系统 / 默认页面）——旧系统和 forgotten 后台是最肥的攻击面
-3. **注意 scope**：浏览器导航受 scope 规则约束——发现的新子域若不在已授权 scope，navigate 会走 scope 审批流程，属预期行为
+3. **注意 scope**：浏览器导航受 scope 规则约束——发现的新子域若不在当前 scope，navigate 会走 scope 审批流程，属预期行为
 4. **危险发现即 finding**：subdomain takeover 特征（CNAME 指向已释放的云资源）、可 zone transfer 的 DNS——验证后 `record_finding`
 
 ---

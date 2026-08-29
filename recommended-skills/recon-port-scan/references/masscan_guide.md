@@ -263,7 +263,6 @@ sudo masscan 192.168.1.0/24 -p80 --exclude 192.168.1.1,192.168.1.254 --rate 1000
 3. **Test first**: Start with small ranges before large scans
 4. **Combine with nmap**: Use masscan for discovery, nmap for details
 5. **Check firewall rules**: Some networks block masscan's aggressive scanning
-6. **Consider legal implications**: Get authorization before scanning
 
 ---
 

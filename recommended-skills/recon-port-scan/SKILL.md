@@ -5,12 +5,6 @@ description: Port scanning and service identification using nmap, masscan, and r
 
 # Port Scanning / Reconnaissance
 
-## Authorization Warning
-
-端口扫描在无授权时违法：书面授权、明确 IP 段范围后再开始；速率与隐蔽性要求以授权约定为准。
-
----
-
 ## RiftX Workflow
 
 1. **扫描全部交给 subagent**：全端口扫描动辄数分钟——`spawn_subagent` 按下述顺序跑，主机多时按 /24 分块并行派发；主会话继续 Web 侧侦察，结果回来汇总进对话
@@ -41,7 +35,7 @@ sudo nmap -O <target>
 
 **大网段**：`masscan -p1-65535 <CIDR> --rate=10000 -oL -` 找开放端口 → `scripts/masscan_to_nmap.py` 转换 → nmap `-sV` 补细节。
 **快速现代流**：`rustscan -a <target> -- -sV -sC`。
-**隐蔽需求**（授权约定时）：`-sS -T2 -f --data-length 24`、诱骗 `-D RND:10`；详见 `references/scanning_techniques.md`。
+**隐蔽需求**：`-sS -T2 -f --data-length 24`、诱骗 `-D RND:10`；详见 `references/scanning_techniques.md`。
 
 **节奏**：-T4 起步；对方有 IDS/限速要求时降到 -T2；-T5 可能漏报不推荐。
 

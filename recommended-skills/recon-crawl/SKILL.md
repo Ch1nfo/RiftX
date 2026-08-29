@@ -5,11 +5,7 @@ description: Attack-surface crawling with the crawl tool — BFS link/form/hidde
 
 # Attack-Surface Crawling (crawl)
 
-## 授权声明
-
-**本 Skill 仅用于授权安全测试**：crawl 走真实浏览器访问目标，必须遵守浏览器 scope 与速率约定；页面预算用最小够用的值，不要无差别扫全站。
-
----
+crawl 走真实浏览器访问目标，必须遵守浏览器 scope 与速率约定；页面预算用最小够用的值，不要无差别扫全站。
 
 ## RiftX Workflow
 
@@ -19,7 +15,7 @@ description: Attack-surface crawling with the crawl tool — BFS link/form/hidde
    - **JS-discovered routes**——SPA 的 API 地图，模型最容易漏的就是这里的非标准端点；逐个对照后续 exploit skill 的注入面清单
    - **Forms（含 hidden 字段）**——隐藏域是 mass assignment 与越权测试的入口（`exploit-authz`）
    - **AUTH 标记的页面**——login-walled 端点用 `use_identity` + `cookies_import` 带认证会话再测；匿名可达面优先测未授权访问
-   - **Cross-host leads**——crawl 不跟随跨主机链接，但记下了 host 清单：确认在授权范围内后可扩大 scope 或交给 `recon-subdomain`/`recon-dir-scan`
+   - **Cross-host leads**——crawl 不跟随跨主机链接，但记下了 host 清单：核对后可扩大 scope 或交给 `recon-subdomain`/`recon-dir-scan`
 4. **分流**：爬完把端点清单交给对应的 exploit skill（/api/* → `api-testing`；表单反射 → `exploit-xss`；下载/文件参数 → `exploit-file-download`）；大站可 `spawn_subagent` 并行处理不同端点组
 5. **记录**：爬到的**暴露面**（无需认证的管理端点、泄露的调试接口）验证后 `record_finding`；普通端点清单留在对话里即可，不要把每个 URL 都记成 finding
 
@@ -50,7 +46,7 @@ description: Attack-surface crawling with the crawl tool — BFS link/form/hidde
 - [ ] JS routes 逐条分派到 exploit skills
 - [ ] Forms 的 hidden 字段单独过一遍（tamper/mass assignment）
 - [ ] AUTH 页面带认证身份复测
-- [ ] cross-host leads 核对授权范围
+- [ ] cross-host leads 核对后决定是否扩大 scope
 - [ ] 大站按端点组分派 subagent 并行
 - [ ] 暴露面验证后 record_finding
 
