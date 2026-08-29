@@ -28,6 +28,10 @@ models.json
 *.p12
 *.pfx
 
+# Bundled skill data is distributable wordlists, not secrets — keep it tracked
+# (e.g. SecLists' Common-Credentials/ dir matches *credentials* case-insensitively)
+!recommended-skills/**
+
 # Local databases and caches
 *.db
 *.db-shm
