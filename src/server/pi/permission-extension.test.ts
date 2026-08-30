@@ -288,3 +288,29 @@ test("read-only browser actions never raise approvals", async () => {
   }
   assert.equal(harness.gate.pendingRequests().length, 0);
 });
+
+test("MCP tools follow the approval mode like other guarded tools", async () => {
+  const input = { message: "hello" };
+  // request mode: waits for an explicit decision.
+  const request = makeHarness(undefined, "request");
+  const pending = request.call(input, "mcp__smoke__echo", "mcp-req");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(request.gate.pendingRequests().length, 1);
+  request.gate.decide("mcp-req", true, false);
+  assert.equal(await pending, undefined);
+  request.end("mcp-req");
+  // auto mode: the evaluator judges the input, not the tool name.
+  let seen: ApprovalRequest | undefined;
+  const auto = makeHarness(undefined, "auto", async (evaluation) => {
+    seen = evaluation;
+    return { approved: true, reason: "" };
+  });
+  assert.equal(await auto.call(input, "mcp__smoke__echo", "mcp-auto"), undefined);
+  assert.equal(seen?.toolName, "mcp__smoke__echo");
+  auto.end("mcp-auto");
+  // full access: no approval at all.
+  const full = makeHarness(undefined, "full");
+  assert.equal(await full.call(input, "mcp__smoke__echo", "mcp-full"), undefined);
+  assert.equal(full.gate.pendingRequests().length, 0);
+  full.end("mcp-full");
+});

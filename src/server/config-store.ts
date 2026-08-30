@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { APPROVAL_MODES, DEFAULT_PROFILE, SUBAGENT_AGGRESSIVENESS, clampConcurrency, type AppConfig } from "@/lib/types";
 import { readJsonStore, writeJsonStoreAtomic } from "@/server/json-store";
 import { createSerializer } from "@/server/serializer";
+import { normalizeMcpServers } from "@/server/mcp/config";
 
 const ROOT = join(homedir(), ".riftx");
 const CONFIG_PATH = join(ROOT, "config.json");
@@ -32,7 +33,8 @@ const defaultConfig = (): AppConfig => ({
   systemPromptEnabled: false,
   systemPrompt: "",
   browserScope: [],
-  browserIgnoreTlsErrors: true
+  browserIgnoreTlsErrors: true,
+  mcpServers: []
 });
 
 async function ensureAppDirs() {
@@ -89,7 +91,8 @@ export async function readConfig(repair = true): Promise<AppConfig> {
     systemPromptEnabled: parsed.systemPromptEnabled === true,
     systemPrompt: typeof parsed.systemPrompt === "string" ? parsed.systemPrompt : "",
     browserScope: Array.isArray(parsed.browserScope) ? parsed.browserScope.filter((rule): rule is string => typeof rule === "string" && Boolean(rule.trim())) : [],
-    browserIgnoreTlsErrors: parsed.browserIgnoreTlsErrors !== false
+    browserIgnoreTlsErrors: parsed.browserIgnoreTlsErrors !== false,
+    mcpServers: normalizeMcpServers(parsed.mcpServers)
   };
   if (repair && parsed && (!Array.isArray(parsed.profiles) || !parsed.profiles.length)) {
     await enqueueConfigWrite(() => writeConfig(config));

@@ -48,7 +48,7 @@ export type ContextUsage = {
 
 export type ApprovalRequest = {
   id: string;
-  toolName: "bash" | "write" | "edit" | "browser" | "crawl";
+  toolName: "bash" | "write" | "edit" | "browser" | "crawl" | `mcp__${string}`;
   input: unknown;
   createdAt: string;
   subagentId?: string;
@@ -218,8 +218,25 @@ type WebSearchConfig = {
   tavilyApiKey?: string;
 };
 
+/** One external MCP server. Tools only — no resources/prompts/sampling. */
+export type McpServerConfig = {
+  /** ^[A-Za-z0-9_-]{1,32}$, unique across the list; tools become mcp__<name>__<tool>. */
+  name: string;
+  transport: "stdio" | "http";
+  /** stdio: command to launch. */
+  command?: string;
+  args?: string[];
+  /** stdio: extra env merged over process.env. */
+  env?: Record<string, string>;
+  /** http: server URL (http/https with a hostname). */
+  url?: string;
+  /** http: extra request headers (e.g. auth tokens). */
+  headers?: Record<string, string>;
+};
+
 export type AppConfig = {
   webSearch?: WebSearchConfig;
+  mcpServers: McpServerConfig[];
   profiles: ModelProfile[];
   activeProfileId: string;
   childProfileId: string | null;

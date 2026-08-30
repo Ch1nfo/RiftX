@@ -10,6 +10,7 @@ const [command, ...args] = process.argv.slice(2);
 
 if (!command || command === "help" || command === "--help" || command === "-h") {
   console.log("Usage: rx webui [--port <port>] [--hostname <hostname>]");
+  console.log("       Binds 127.0.0.1 by default; set RIFTX_HOST or --hostname to expose.");
   process.exit(0);
 }
 
@@ -26,9 +27,15 @@ try {
   process.exit(1);
 }
 
+// Default to loopback: the API can drive local tooling (bash, MCP servers),
+// so it must not be reachable from the network unless the operator opts in
+// with --hostname/-H or RIFTX_HOST.
+const hostnameArgIndex = args.findIndex((arg) => arg === "-H" || arg === "--hostname");
+const launchArgs = hostnameArgIndex === -1 ? [...args, "-H", process.env.RIFTX_HOST ?? "127.0.0.1"] : args;
+
 const child = spawn(
   process.execPath,
-  [join(appRoot, "node_modules", "next", "dist", "bin", "next"), "start", ...args],
+  [join(appRoot, "node_modules", "next", "dist", "bin", "next"), "start", ...launchArgs],
   {
     cwd: appRoot,
     stdio: "inherit",

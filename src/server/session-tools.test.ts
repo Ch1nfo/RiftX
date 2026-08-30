@@ -15,3 +15,9 @@ test("spawn_subagent is whitelisted only for main sessions", () => {
   assert.equal(sessionToolNames(true).includes("spawn_subagent"), true);
   assert.equal(sessionToolNames(false).includes("spawn_subagent"), false);
 });
+
+test("the static whitelist reserves the mcp__ namespace for dynamically appended MCP tools", () => {
+  for (const variant of [sessionToolNames(true), sessionToolNames(false)]) {
+    assert.equal(variant.some((name) => name.startsWith("mcp__")), false);
+  }
+});

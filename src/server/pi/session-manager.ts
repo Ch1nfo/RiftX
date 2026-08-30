@@ -15,9 +15,9 @@ import {
 import type { Api, Model } from "@mariozechner/pi-ai";
 import { readConfig, getAppPaths, updateConfig } from "@/server/config-store";
 import { RiftxError } from "@/server/errors";
-import { clampConcurrency, type ApprovalMode, type ArchivedSession, type ModelProfile, type RiftxEvent, type SessionSummary } from "@/lib/types";
+import { clampConcurrency, type AppConfig, type ApprovalMode, type ArchivedSession, type ModelProfile, type RiftxEvent, type SessionSummary } from "@/lib/types";
 import { ApprovalGate } from "./approval-gate";
-import { createPermissionExtension, guardedTools } from "./permission-extension";
+import { createPermissionExtension, isGuardedTool } from "./permission-extension";
 import { resolvePromptMode } from "@/lib/prompt-mode";
 import { normalizeContextUsage } from "./usage";
 import { buildChildPentestSystemPrompt, buildPentestSystemPrompt } from "./system-prompt";
@@ -36,6 +36,8 @@ import { createTimedBashTool } from "./bash-timeout";
 import { createWebTools } from "@/server/web/tools";
 import { createCrawlTool } from "@/browser/tools/crawl";
 import { sessionToolNames } from "@/server/session-tools";
+import { withMcpReferences, type McpServerEntry } from "@/server/mcp/manager";
+import { buildMcpTools } from "@/server/mcp/tools";
 import { BashConcurrency } from "./bash-concurrency";
 import { abortSessionRecord, shutdownSessionRecord } from "./session-shutdown";
 import { switchSessionProfile, withProfileSwitchLock } from "./apply-session-profile";
@@ -60,7 +62,7 @@ function eventPayload(event: AgentSessionEvent): RiftxEvent {
     return { type: assistant?.type === "text_delta" ? "text_delta" : assistant?.type === "thinking_delta" ? "thinking_delta" : "message", delta: assistant?.delta ?? "" };
   }
   if (event.type === "tool_execution_start") {
-    const guarded = guardedTools.has(String(base.toolName));
+    const guarded = isGuardedTool(String(base.toolName));
     return { type: "tool_start", toolName: base.toolName, toolCallId: base.toolCallId, args: base.args, toolStatus: guarded ? "queued" : "running" } as RiftxEvent;
   }
   if (event.type === "tool_execution_update") {
@@ -80,7 +82,7 @@ function eventPayload(event: AgentSessionEvent): RiftxEvent {
 }
 
 
-async function createRuntimeSession(options: {
+type CreateRuntimeSessionOptions = {
   profile: ModelProfile;
   cwd: string;
   gate: ApprovalGate;
@@ -91,7 +93,16 @@ async function createRuntimeSession(options: {
   bashConcurrencyOverride?: BashConcurrency;
   runtimeDeps?: RuntimeDeps;
   findingSource?: FindingSourceInfo;
-}) {
+};
+
+async function createRuntimeSession(options: CreateRuntimeSessionOptions) {
+  const config = await readConfig();
+  // The MCP references must be released if construction throws partway: no
+  // session record exists yet, so shutdown would never release them.
+  return withMcpReferences(config.mcpServers, (mcpEntries) => buildRuntimeSession(options, config, mcpEntries));
+}
+
+async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config: AppConfig, mcpEntries: McpServerEntry[]) {
   const { profile, cwd, gate, child = false, sessionManagerOverride, mutationLock = new MutationLock(), bashConcurrencyOverride, runtimeDeps, findingSource = { source: "main" } } = options;
   const paths = getAppPaths();
   await mkdir(paths.agent, { recursive: true, mode: 0o700 });
@@ -100,7 +111,7 @@ async function createRuntimeSession(options: {
   const providerRegistrations: ProviderRegistrations = new Map();
   const model = registerTrackedProfile(providerRegistrations, authStorage, modelRegistry, profile, true);
 
-  const config = await readConfig();
+  const mcpTools = mcpEntries.flatMap(buildMcpTools);
   const bashConcurrency = bashConcurrencyOverride ?? new BashConcurrency(config.maxConcurrentSubagents + 1);
   // Browser state changes have their own lock. Bash still shares the file
   // mutation lock with write/edit, but a long read-heavy Bash scan must not
@@ -172,7 +183,7 @@ async function createRuntimeSession(options: {
         // Read per call: saving a key in settings applies to already-running
         // sessions on their next search, with no re-open needed.
         getTavilyApiKey: async () => (await readConfig()).webSearch?.tavilyApiKey
-      }), ...(subagents ? [createSubagentTool(subagents, getChildProfile, cwd, mutationLock, bashConcurrency, { evidenceStore, evidenceSessionId }, runChildSession)] : [])];
+      }), ...(subagents ? [createSubagentTool(subagents, getChildProfile, cwd, mutationLock, bashConcurrency, { evidenceStore, evidenceSessionId }, runChildSession)] : []), ...mcpTools];
   const browserExtension = createBrowserExtension({ evidenceRoot: paths.evidence, evidenceSessionId }, browser);
   const resourceLoader = new DefaultResourceLoader({
     cwd,
@@ -196,7 +207,7 @@ async function createRuntimeSession(options: {
     thinkingLevel: profile.thinkingLevel,
     // Hard whitelist (see src/server/session-tools.ts): the SDK silently
     // drops any tool — built-in or custom — whose name is absent here.
-    tools: sessionToolNames(Boolean(subagents)),
+    tools: [...sessionToolNames(Boolean(subagents)), ...mcpTools.map((tool) => tool.name)],
     customTools,
     resourceLoader,
     sessionManager,
@@ -272,6 +283,7 @@ async function createRuntimeSession(options: {
     mutationLock,
     bashConcurrency,
     subagents,
+    mcpEntries,
     evidenceStore,
     runtimeVersion: RUNTIME_VERSION,
     aborting: false,

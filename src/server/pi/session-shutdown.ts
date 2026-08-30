@@ -11,6 +11,8 @@
  * steps still run, and shutdown never rejects to its caller.
  */
 
+import type { McpServerEntry } from "../mcp/manager";
+
 export type ShutdownTarget = {
   id: string;
   aborting?: boolean;
@@ -27,6 +29,8 @@ export type ShutdownTarget = {
   subagents?: { abortAll(): Promise<unknown> };
   /** close cancels in-flight Playwright work but keeps the manager reopenable; shutdown is permanent. */
   browser?: { close(): Promise<unknown>; shutdown(): Promise<unknown> };
+  /** MCP connection references; releasing the last one closes the connection. */
+  mcpEntries?: readonly McpServerEntry[];
   unsubscribe(): void;
 };
 
@@ -55,6 +59,11 @@ export async function shutdownSessionRecord(record: ShutdownTarget) {
     // so queued operations reject instead of relaunching resources after
     // cleanup. close() alone would leave the manager reopenable.
     if (record.browser) await safe("shutdownBrowser", () => record.browser!.shutdown());
+    if (record.mcpEntries?.length) await safe("releaseMcpServers", async () => {
+      // Dynamic import keeps this module free of SDK imports (see header).
+      const { releaseMcpServers } = await import("../mcp/manager");
+      await releaseMcpServers(record.mcpEntries!);
+    });
     await safe("unsubscribe", () => record.unsubscribe());
     await safe("dispose", () => session.dispose());
   })().finally(() => {

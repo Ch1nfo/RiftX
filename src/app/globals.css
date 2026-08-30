@@ -448,6 +448,9 @@ a { color: inherit; text-decoration: none; }
 .archived-session-row .session-copy strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
 .archived-empty { padding: 12px 10px; color: var(--muted-2); font-size: 12px; }
 .inline-error { color: var(--danger); margin-top: 18px; }
+.mcp-test-result { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; font-size: 13px; }
+.mcp-test-result .ok { color: var(--muted); }
+.mcp-test-result .fail { color: var(--danger); }
 .settings-loading { min-height: 100dvh; display: grid; place-items: center; color: var(--muted); }
 
 @keyframes riftx-spin { to { transform: rotate(360deg); } }

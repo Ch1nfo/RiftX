@@ -131,7 +131,7 @@ function ApprovalCard({ approval, scopeExpansion, t, onDecide }: { approval: App
         </div>
         {scopeExpansion ? <p>{t("browserScopeApproval")}</p>
           : approval.subagentId ? <p>{t("subagentRequestsTool", { agent: approval.agentName ?? "", tool: approval.toolName })}</p>
-          : <p>{(approval.toolName === "browser" || approval.toolName === "crawl") ? t("browserApproval") : t("terminalApproval")}</p>}
+          : <p>{(approval.toolName === "browser" || approval.toolName === "crawl") ? t("browserApproval") : approval.toolName.startsWith("mcp__") ? t("mcpApproval") : t("terminalApproval")}</p>}
       </div>
     </div>
     <details className="approval-command">

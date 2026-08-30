@@ -56,11 +56,11 @@ RiftX 已完成 CyBench 测试集的评估，40 道验证题全部完成，完�
 
 ### XBOW Validation Benchmarks
 
-RiftX 已参与 TSECBENCH 的 XBOW Validation Benchmarks。下面是一次公开跑分记录，用于展示 Agent 在安全验证任务中的整体完成情况：
+RiftX 当前版本重新参与了 TSECBENCH 的 XBOW Validation Benchmarks。下面是本次跑分记录，展示 Agent 在安全验证任务中的最新整体表现：
 
 ![RiftX TSECBENCH 跑分结果](docs/images/riftx-benchmark.jpg)
 
-> 示例记录：总得分 `22520`，综合得分 `79.58`，完成率 `85.6%`，完成 `89/104` 道题。
+> 当前版本记录：总得分 `27440`，综合得分 `96.96`，完成率 `97.1%`，完成 `101/104` 道题。
 
 ## 功能特性
 
@@ -111,6 +111,10 @@ RiftX 提供一个统一的 action 型 `browser` 工具，底层由 Playwright/C
 - 默认使用免 Key 的 DuckDuckGo，开箱即用；在设置中填写可选的 Tavily API Key 可切换到更稳定的搜索提供方。
 - 查询在离开本机前会经过筛查——形似凭据的查询（API Key、Token、JWT、机密）会被拒绝，确保交战素材不会流入第三方搜索引擎。
 - 页面通过阅读服务抓取为干净文本，并带有本地提取回退与固定长度截断。
+
+### MCP 工具
+
+RiftX 可作为 MCP Client：在设置中以 JSON 数组配置外部 MCP Server（stdio 填 `command`/`args`/`env`，远程填 `url`/`headers`），创建会话时建立连接，其工具以 `mcp__<名称>__<工具>` 提供给主 Agent 与子 Agent。范围刻意只做工具（不含 resources、prompts、sampling、OAuth）。MCP 工具调用与会话的审批模式走同一套规则：request 模式逐次询问、AI 辅助模式按调用内容评估、完全访问直接放行——配置了 Server 不等于 blanket 批准它提供的每一个操作。配置修改仅对新建或重新打开的会话生效；连接失败的 Server 不阻塞会话创建，只产生零工具并在下次新建会话时重试。设置卡片上的“测试连接”按钮可在不保存的情况下探测草稿列表——每个 Server 显示“已连接（N 个工具）”或具体错误，探测用一次性连接，不干扰线上会话。
 
 ### 攻击面爬取
 
@@ -302,7 +306,7 @@ RiftX/
 │   ├── browser/         # Playwright 工具、范围控制和网络记录
 │   ├── components/      # 工作台、设置与共享 UI
 │   ├── lib/             # 共享类型、国际化与前端辅助模块
-│   └── server/          # Agent 运行时、配置、会话、审批与持久化
+│   └── server/          # Agent 运行时、配置、会话、审批、持久化与 MCP 客户端
 ├── package.json
 ├── README.md
 └── README_ZH.md

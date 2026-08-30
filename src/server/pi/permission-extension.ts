@@ -6,6 +6,12 @@ import type { ScopeDecision } from "@/lib/scope-rules";
 
 /** Tools whose calls require permission evaluation. Shared with the event mapper so tool_status stays consistent with gating. */
 export const guardedTools = new Set(["bash", "write", "edit", "browser", "crawl"]);
+/** MCP tools are gated like any other state-changing tool: they run arbitrary external code. */
+export const MCP_TOOL_PREFIX = "mcp__";
+
+export function isGuardedTool(toolName: string) {
+  return guardedTools.has(toolName) || toolName.startsWith(MCP_TOOL_PREFIX);
+}
 const readOnlyBrowserActions = new Set(["snapshot", "console", "requests", "request_detail", "response_body", "identities", "cookies", "cookies_export", "storage", "screenshot", "tabs"]);
 type ResolvedApproval = { approved: boolean; task: boolean; reason?: string };
 const AUTO_APPROVAL_UNAVAILABLE = "Automatic approval is unavailable. Switch approval mode to request approval or full access, then retry.";
@@ -51,7 +57,7 @@ export function createPermissionExtension(
       settleScopeEffect(event.toolCallId, !event.isError);
     });
     agent.on("tool_call", async (event: ToolCallEvent, ctx) => {
-      if (!guardedTools.has(event.toolName)) return;
+      if (!isGuardedTool(event.toolName)) return;
       let scopeAuthorized = false;
       if (event.toolName === "browser") {
         const action = (event.input as { action?: unknown }).action;

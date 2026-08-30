@@ -1,10 +1,11 @@
 import { readConfig, updateConfig } from "@/server/config-store";
-import { SUBAGENT_AGGRESSIVENESS, clampConcurrency, type ModelProfile, type SubagentAggressiveness } from "@/lib/types";
+import { SUBAGENT_AGGRESSIVENESS, clampConcurrency, type McpServerConfig, type ModelProfile, type SubagentAggressiveness } from "@/lib/types";
 import { setActiveProfile, setMaxConcurrentSubagents } from "@/server/pi/session-manager";
 import { parseScopeRule } from "@/lib/scope-rules";
 import { errorResponse } from "@/server/errors";
 import { parseJsonBody } from "@/lib/api-validation";
 import { MASKED_API_KEY, publicWebSearch, resolveProfileApiKey } from "@/server/profile-api-key";
+import { mcpServersValidationError } from "@/server/mcp/config";
 
 export const runtime = "nodejs";
 
@@ -62,6 +63,7 @@ export async function PUT(request: Request) {
     browserScope: string[];
     browserIgnoreTlsErrors: boolean;
     webSearch?: { tavilyApiKey?: string };
+    mcpServers: McpServerConfig[];
  }>;
   // Reject invalid scope rules up front: silently dropping them would leave
   // the manager with an empty rule set that behaves like "no scope configured".
@@ -69,6 +71,8 @@ export async function PUT(request: Request) {
     ? body.browserScope.filter((rule) => typeof rule !== "string" || !rule.trim() || !parseScopeRule(rule))
     : [];
   if (invalidScopeRules.length) return Response.json({ error: `Invalid browser scope rules: ${invalidScopeRules.join(", ")}` }, { status: 400 });
+  const mcpError = mcpServersValidationError(body.mcpServers);
+  if (mcpError) return Response.json({ error: mcpError }, { status: 400 });
   // Only validate profiles the request actually carries: stored ones were
   // validated on write, and re-reading config here would race the update.
   const incoming = Array.isArray(body.profiles) ? body.profiles : [];
@@ -116,7 +120,8 @@ export async function PUT(request: Request) {
         systemPromptEnabled: body.systemPromptEnabled === undefined ? latest.systemPromptEnabled : body.systemPromptEnabled === true,
         systemPrompt: typeof body.systemPrompt === "string" ? body.systemPrompt : latest.systemPrompt,
         browserScope: Array.isArray(body.browserScope) ? body.browserScope.filter((rule): rule is string => typeof rule === "string" && Boolean(rule.trim())) : latest.browserScope,
-        browserIgnoreTlsErrors: body.browserIgnoreTlsErrors === undefined ? latest.browserIgnoreTlsErrors : body.browserIgnoreTlsErrors === true
+        browserIgnoreTlsErrors: body.browserIgnoreTlsErrors === undefined ? latest.browserIgnoreTlsErrors : body.browserIgnoreTlsErrors === true,
+        mcpServers: body.mcpServers === undefined ? latest.mcpServers : body.mcpServers
       };
     });
   } catch (error) {

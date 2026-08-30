@@ -56,11 +56,11 @@ RiftX completed the CyBench test set with a perfect completion rate across all 4
 
 ### XBOW Validation Benchmarks
 
-RiftX has also been evaluated on TSECBENCH's XBOW Validation Benchmarks. The screenshot below shows a benchmark run and the Agent's overall completion performance on security validation tasks.
+The current RiftX version was rerun on TSECBENCH's XBOW Validation Benchmarks. The screenshot below shows the Agent's updated overall performance on the security validation tasks.
 
 ![RiftX TSECBENCH benchmark result](docs/images/riftx-benchmark.jpg)
 
-> Example run: `22520` total points, `79.58` composite score, `85.6%` completion rate, and `89/104` completed items.
+> Current-version run: `27440` total points, `96.96` composite score, `97.1%` completion rate, and `101/104` completed items.
 
 ## Features
 
@@ -111,6 +111,10 @@ Browser scope accepts CIDR, host, host and port, wildcard domain, and scheme-res
 - Keyless DuckDuckGo search works out of the box; an optional Tavily API key in settings switches to a more stable provider.
 - Queries are screened before they leave the machine — credential-shaped queries (API keys, tokens, JWTs, secrets) are rejected so engagement material never reaches third-party engines.
 - Pages are fetched as clean text via a reader service with a local extraction fallback, and truncated to a fixed budget.
+
+### MCP Tools
+
+RiftX can act as an MCP client: external MCP servers configured in settings (a JSON array — stdio servers with `command`/`args`/`env`, or remote servers with `url`/`headers`) are connected when a session is created, and their tools are exposed to the main Agent and SubAgents as `mcp__<server>__<tool>`. Scope is deliberately tools-only (no resources, prompts, sampling, or OAuth). MCP tool calls follow the session's approval mode like bash or the browser: request mode asks, AI-assisted mode evaluates the call, and full access bypasses — configuring a server does not blanket-approve every operation it offers. Config changes apply to new or reopened sessions; a server that fails to connect yields zero tools and is retried on the next new session instead of blocking session creation. The settings card has a "Test connection" button that probes the draft list without saving — each server reports connected-with-N-tools or the exact error, and the probe uses throwaway connections that never disturb live sessions.
 
 ### Attack-Surface Crawl
 
@@ -302,6 +306,7 @@ RiftX/
 |   |-- browser/         # Playwright tool, scope control, and recorder
 |   |-- components/      # Workbench, settings, and shared UI
 |   |-- lib/             # Shared types, i18n, and frontend helpers
+|   |-- server/mcp/      # External MCP client (connection manager + tool bridge)
 |   `-- server/          # Agent runtime, config, sessions, approvals, storage
 |-- package.json
 |-- README.md

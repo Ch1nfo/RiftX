@@ -9,6 +9,7 @@ import { BashConcurrency } from "./bash-concurrency";
 import { SubagentManager } from "./subagent-manager";
 import type { SkillDescriptor } from "./skill-router";
 import type { ProviderRegistrations } from "./model-registration";
+import type { McpServerEntry } from "@/server/mcp/manager";
 
 /**
  * Process-global session registry: the live SessionRecord map, the in-flight
@@ -32,6 +33,8 @@ export type SessionRecord = {
   toolStatuses: Map<string, "queued" | "running">;
   unsubscribe: () => void;
   browser?: BrowserManager;
+  /** MCP connection references acquired at creation; released on shutdown. */
+  mcpEntries?: McpServerEntry[];
   mutationLock: MutationLock;
   bashConcurrency: BashConcurrency;
   subagents?: SubagentManager;
@@ -58,7 +61,7 @@ export type RuntimeDeps = {
 };
 
 /** Bump to force process-global session objects to rebuild from disk. */
-export const RUNTIME_VERSION = 27;
+export const RUNTIME_VERSION = 29;
 
 declare global {
   var __riftxSessions: Map<string, SessionRecord> | undefined;
