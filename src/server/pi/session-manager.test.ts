@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { SubagentTask } from "@/lib/types";
-import { claimSubagentResult, deliverSubagentCompletion, dispatchSessionAction, enqueueSessionAction, finishSubagentResult, formatSubagentTerminalMessage, shouldDeliverSubagentCompletion, waitForSubagentsBeforeConclusion } from "./session-join";
+import { claimSubagentResult, deliverSubagentCompletion, dispatchSessionAction, enqueueSessionAction, finishSubagentResult, formatSubagentTerminalMessage, shouldDeliverSubagentCompletion, undeliveredTerminalTasks, waitForSubagentsBeforeConclusion } from "./session-join";
 
 function makeTask(status: SubagentTask["status"]): SubagentTask {
   return {
@@ -195,14 +195,12 @@ test("join exits before terminal cancellation results when Stop advanced the abo
   assert.equal(prompts.length, 0);
 });
 
-test("completion delivery is suppressed while streaming, but idle sessions deliver immediately", () => {
+test("streaming sessions deliver partial results while idle sessions batch active siblings", () => {
   const streaming = { isStreaming: true, steer: async () => undefined, prompt: async () => undefined };
   const idle = { isStreaming: false, steer: async () => undefined, prompt: async () => undefined };
   const noSubagents = { hasActiveTasks: () => false };
   const otherRunning = { hasActiveTasks: () => true };
-  // New semantics: hasActiveTasks() is the only delivery gate. waitingForSubagents
-  // no longer suppresses — a stale flag shouldn't strand a result when no other
-  // subagent is actually running.
+  // A stale waiting flag never suppresses a running parent's steer delivery.
   assert.equal(shouldDeliverSubagentCompletion({ session: streaming, subagents: noSubagents }), true);
   assert.equal(shouldDeliverSubagentCompletion({ session: streaming, subagents: noSubagents, waitingForSubagents: true }), true, "stale waiting flag must not suppress when no other subagent is running");
   assert.equal(shouldDeliverSubagentCompletion({ session: streaming, subagents: noSubagents, aborting: true }), false);
@@ -210,10 +208,12 @@ test("completion delivery is suppressed while streaming, but idle sessions deliv
   // Idle + no other subagents running: deliver immediately.
   assert.equal(shouldDeliverSubagentCompletion({ session: idle, subagents: noSubagents, waitingForSubagents: true }), true);
   assert.equal(shouldDeliverSubagentCompletion({ session: idle, subagents: noSubagents }), true);
-  // Other subagents running: defer regardless of streaming state or waitingForSubagents.
+  // An idle parent batches while a sibling is active, but a running parent can
+  // consume the completed result immediately through steer.
   assert.equal(shouldDeliverSubagentCompletion({ session: idle, subagents: otherRunning, waitingForSubagents: true }), false);
   assert.equal(shouldDeliverSubagentCompletion({ session: idle, subagents: otherRunning, waitingForSubagents: false }), false, "stale waiting=false must not bypass batch deference");
-  assert.equal(shouldDeliverSubagentCompletion({ session: streaming, subagents: otherRunning, waitingForSubagents: false }), false);
+  assert.equal(shouldDeliverSubagentCompletion({ session: streaming, subagents: otherRunning, waitingForSubagents: false }), true);
+  assert.equal(shouldDeliverSubagentCompletion({ session: streaming, subagents: otherRunning, waitingForSubagents: true }), true, "a stale waiting state must not hold a streaming result");
   // No subagents manager at all: deliver.
   assert.equal(shouldDeliverSubagentCompletion({ session: idle }), true);
 });
@@ -255,7 +255,7 @@ test("steering and follow-up actions bypass the prompt run queue", async () => {
   assert.deepEqual(order, ["steer", "follow-up", "prompt-start", "prompt-end"]);
 });
 
-test("a completed child steers an active parent immediately despite a pending prompt queue", async () => {
+test("a completed child steers an active parent immediately despite an active sibling and pending prompt queue", async () => {
   const task = makeTask("completed");
   task.summary = "Child found a useful result.";
   const order: string[] = [];
@@ -266,6 +266,7 @@ test("a completed child steers an active parent immediately despite a pending pr
     waitingForSubagents: false,
     deliveredSubagentResults: new Set<string>(),
     deliveringSubagentResults: new Set<string>(),
+    subagents: { hasActiveTasks: () => true },
     gate: { beginTask: () => order.push("begin-task") },
     session: {
       isStreaming: true,
@@ -281,4 +282,51 @@ test("a completed child steers an active parent immediately despite a pending pr
   releaseQueue();
   await existingPrompt;
   assert.deepEqual(order, ["steer-result", "existing-prompt-start"]);
+});
+
+test("streaming child results arrive individually and the final scan does not redeliver the first", async () => {
+  const first = makeTask("completed");
+  first.id = "child-a";
+  first.name = "Fast review";
+  first.summary = "Fast result.";
+  first.delivered = false;
+  const second = makeTask("running");
+  second.id = "child-b";
+  second.name = "Slow review";
+  second.delivered = false;
+  const tasks = [first, second];
+  const steered: string[] = [];
+  const record = {
+    waitingForSubagents: false,
+    deliveredSubagentResults: new Set<string>(),
+    deliveringSubagentResults: new Set<string>(),
+    gate: { beginTask: () => undefined },
+    subagents: {
+      list: () => tasks,
+      hasActiveTasks: () => tasks.some((task) => task.status === "queued" || task.status === "running"),
+      waitForAll: async () => undefined,
+      markDelivered: (taskId: string, delivered: boolean) => {
+        const task = tasks.find((candidate) => candidate.id === taskId);
+        if (task) task.delivered = delivered;
+      }
+    },
+    session: {
+      isStreaming: true,
+      steer: async (message: string) => { steered.push(message); },
+      prompt: async () => { throw new Error("streaming completion must use steer"); }
+    }
+  } as unknown as Parameters<typeof deliverSubagentCompletion>[0];
+
+  assert.equal(await deliverSubagentCompletion(record, first, first.summary), true);
+  assert.equal(steered.length, 1);
+  assert.match(steered[0], /Subagent: Fast review/);
+  assert.equal(first.delivered, true);
+
+  second.status = "completed";
+  second.summary = "Slow result.";
+  assert.equal(await deliverSubagentCompletion(record, second, second.summary), true);
+  assert.equal(steered.length, 2);
+  assert.match(steered[1], /Subagent: Slow review/);
+  assert.equal(second.delivered, true);
+  assert.deepEqual(undeliveredTerminalTasks(record, tasks), []);
 });

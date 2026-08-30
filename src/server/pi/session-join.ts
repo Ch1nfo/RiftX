@@ -70,15 +70,16 @@ export function formatSubagentTerminalMessage(task: SubagentTask, summary?: stri
 }
 
 export function shouldDeliverSubagentCompletion(record: Pick<SubagentJoinRecord, "waitingForSubagents" | "abortPromise" | "aborting" | "session"> & { subagents?: { hasActiveTasks(): boolean } }) {
-  // If other subagents are still running, never deliver a partial result:
-  // the conclusion wait handles the full batch. This check comes FIRST and
-  // ignores waitingForSubagents entirely (that flag's lifecycle is turn-based
-  // and unreliable for this purpose — it may be stale).
-  if (record.subagents?.hasActiveTasks()) return false;
-  // No other subagents running: deliver if not aborting. waitingForSubagents
-  // is not consulted here either — if the model is streaming, steer handles
-  // it; if idle, prompt starts a new turn with the complete result set.
-  return !record.abortPromise && !record.aborting;
+  if (record.abortPromise || record.aborting) return false;
+  // A running parent can consume each completed child through the SDK's steer
+  // queue at the next turn boundary. Do not hold a useful result behind a
+  // slower sibling during a long task.
+  if (record.session.isStreaming) return true;
+  // An idle parent would need a fresh model turn for every completion. Keep
+  // that path batched until all siblings finish, then the conclusion join
+  // starts one turn with the remaining results. waitingForSubagents is not a
+  // delivery gate because its lifecycle is turn-based and it may be stale.
+  return !record.subagents?.hasActiveTasks();
 }
 
 export function claimSubagentResult(record: Pick<SubagentJoinRecord, "deliveredSubagentResults" | "deliveringSubagentResults">, taskId: string) {
