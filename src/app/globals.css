@@ -413,6 +413,7 @@ a { color: inherit; text-decoration: none; }
 .card-heading h2 { margin: 0 0 5px; font-size: 15px; letter-spacing: -.02em; }
 .card-heading p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
 .inline-actions { display: flex; gap: 4px; }
+.inline-actions .button { white-space: nowrap; flex-shrink: 0; }
 .profile-tabs { display: flex; gap: 6px; overflow: auto; padding-bottom: 12px; margin-bottom: 14px; border-bottom: 1px solid var(--line-soft); }
 .profile-tabs button { flex: 0 0 auto; border: 1px solid var(--line); background: transparent; color: var(--muted); border-radius: 999px; padding: 7px 11px; cursor: pointer; font-size: 11px; }
 .profile-tabs button.active { color: #152218; background: var(--accent); border-color: var(--accent); }
