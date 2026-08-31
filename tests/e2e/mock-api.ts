@@ -14,6 +14,7 @@ function deferred<T>(): Deferred<T> {
 }
 
 const SESSION_ID = "e2e";
+const SECOND_SESSION_ID = "e2e-second";
 const TALL_TEXT = `${"Streaming content that grows the conversation by well over the follow threshold in a single frame. ".repeat(4)}\n\n`;
 
 /** 210 seeds exceed the 200-message window, so every append slides the window. */
@@ -39,6 +40,7 @@ export class MockApi {
   private readonly finished = deferred<void>();
   private server?: Server;
   private port = 0;
+  private secondSessionRunning = false;
 
   readonly phaseADone = this.phaseA.promise;
   readonly allDone = this.finished.promise;
@@ -46,6 +48,10 @@ export class MockApi {
   /** Lets the SSE timeline continue with the post-re-engagement rounds. */
   releasePhaseC() {
     this.phaseCRelease.resolve();
+  }
+
+  finishSecondSession() {
+    this.secondSessionRunning = false;
   }
 
   async start(): Promise<number> {
@@ -57,13 +63,20 @@ export class MockApi {
         void this.runTimeline(response, closed).catch(() => undefined);
         return;
       }
+      if (url === `/api/sessions/${SECOND_SESSION_ID}/stream`) {
+        response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+        return;
+      }
       const json = (body: unknown) => {
         response.writeHead(200, { "content-type": "application/json" });
         response.end(JSON.stringify(body));
       };
       if (url === "/api/bootstrap") {
         json({
-          sessions: [{ id: SESSION_ID, name: "E2E scroll regression", updatedAt: new Date().toISOString(), firstMessage: "seed" }],
+          sessions: [
+            { id: SESSION_ID, name: "E2E scroll regression", updatedAt: new Date().toISOString(), firstMessage: "seed" },
+            { id: SECOND_SESSION_ID, name: "E2E second session", updatedAt: new Date().toISOString(), firstMessage: "older seed" }
+          ],
           activeSessionId: SESSION_ID,
           cwd: "/tmp/riftx-e2e",
           profiles: [],
@@ -72,13 +85,26 @@ export class MockApi {
         });
         return;
       }
+      if (url === "/api/sessions/status") {
+        json({ runningSessionIds: this.secondSessionRunning ? [SECOND_SESSION_ID] : [] });
+        return;
+      }
+      if (url === `/api/sessions/${SECOND_SESSION_ID}/prompt` && request.method === "POST") {
+        this.secondSessionRunning = true;
+        json({ ok: true, sessionId: SECOND_SESSION_ID });
+        return;
+      }
       if (url === `/api/sessions/${SESSION_ID}/messages`) {
         json(seedMessages(210));
         return;
       }
-      if (url === `/api/sessions/${SESSION_ID}`) json({});
-      else if (url === `/api/sessions/${SESSION_ID}/subagents`) json({ tasks: [], running: 0, maxConcurrent: 3 });
-      else if (url === `/api/sessions/${SESSION_ID}/findings`) json({ findings: [] });
+      if (url === `/api/sessions/${SECOND_SESSION_ID}/messages`) {
+        json([]);
+        return;
+      }
+      if (url === `/api/sessions/${SESSION_ID}` || url === `/api/sessions/${SECOND_SESSION_ID}`) json({});
+      else if (url === `/api/sessions/${SESSION_ID}/subagents` || url === `/api/sessions/${SECOND_SESSION_ID}/subagents`) json({ tasks: [], running: 0, maxConcurrent: 3 });
+      else if (url === `/api/sessions/${SESSION_ID}/findings` || url === `/api/sessions/${SECOND_SESSION_ID}/findings`) json({ findings: [] });
       else json({});
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));

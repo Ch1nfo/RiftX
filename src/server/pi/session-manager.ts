@@ -46,10 +46,10 @@ import { extractLastAssistantResult, buildSummaryTranscript } from "./subagent-r
 import { sessions, sessionCreation, RUNTIME_VERSION, type RuntimeDeps, type SessionRecord } from "./session-registry";
 import { createFindingTool, type FindingSourceInfo } from "./tools/finding-tool";
 import { createSubagentTool } from "./tools/subagent-tool";
-import { listSessions, getSessionSnapshot, getSessionMessages as getMessages, summaryName, usageFromRecord, listWorkspaceSessionInfos } from "./session-snapshot";
+import { listRunningSessionIds, listSessions, getSessionSnapshot, getSessionMessages as getMessages, summaryName, usageFromRecord, listWorkspaceSessionInfos } from "./session-snapshot";
 
 // Facade re-exports: the API routes import everything from this module.
-export { listSessions, getSessionSnapshot };
+export { listRunningSessionIds, listSessions, getSessionSnapshot };
 export async function getSessionMessages(id: string) {
   return getMessages(() => getOrCreateSession(id));
 }
@@ -498,7 +498,8 @@ export async function createSession(): Promise<SessionSummary> {
     provider: created.profile.provider,
     model: created.profile.model,
     contextWindow: created.profile.contextWindow,
-    usage: usageFromRecord(created)
+    usage: usageFromRecord(created),
+    running: false
   };
 }
 

@@ -11,6 +11,8 @@ import { FindingsPanel } from "./findings-panel";
 import { parseRiftxEvent, type ApprovalMode, type ApprovalRequest, type ContextUsage, type Finding, type FindingPatch, type ModelProfile, type RiftxEvent, type SessionSummary, type SubagentTask, type SubagentTaskPatch } from "@/lib/types";
 import { cloneSubagentTask, mergeSubagentTaskPatch, mergeSubagentTasks } from "@/lib/subagent-merge";
 import { withSessionProfile } from "@/lib/session-profile-sync";
+import { sessionDraft, withSessionDraft, type SessionDrafts } from "@/lib/session-drafts";
+import { orderSessionsByActivity, withRunningSessionIds, withSessionActivity } from "@/lib/session-activity";
 import { useLanguage } from "@/lib/i18n";
 import { mergeFetchedMessages, type MergeableMessage } from "@/lib/message-merge";
 import { applyRiftxEvent, applyMessageDeltas, normalizeMessages, type MessageDelta, type SessionEventContext } from "@/lib/session-events";
@@ -98,8 +100,8 @@ function Sidebar({ open, bootstrapping, sessions, activeId, t, onNewSession, onS
     <div className="session-list">
       {bootstrapping ? <span className="session-loading">{t("loading")}</span> : sessions.map((session) => (
         <div key={session.id} className="session-item-row">
-          <button className={`session-item ${activeId === session.id ? "active" : ""}`} onClick={() => onSelect(session.id)}>
-            <span className="session-dot" />
+          <button className={`session-item ${activeId === session.id ? "active" : ""}`} aria-label={session.running ? `${session.name || t("newSessionEnglish")} · ${t("running")}` : undefined} onClick={() => onSelect(session.id)}>
+            <span className={`session-presence ${session.running ? "running" : ""}`} aria-hidden="true"><span className="session-dot" /></span>
             <span className="session-copy">
               {session.name === t("summarizeTitle")
                 ? <span className="session-title-loading" role="status" aria-label={t("summarizeTitle")} title={t("summarizeTitle")} />
@@ -231,7 +233,7 @@ export function Workbench() {
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>("request");
   const [cwd, setCwd] = useState("");
   const [workspaceChoosing, setWorkspaceChoosing] = useState(false);
-  const [input, setInput] = useState("");
+  const [sessionDrafts, setSessionDrafts] = useState<SessionDrafts>({});
   const [mainAgentRunning, setMainAgentRunning] = useState(false);
   const [contextCompacting, setContextCompacting] = useState(false);
   const [bootstrapping, setBootstrapping] = useState(true);
@@ -249,6 +251,7 @@ export function Workbench() {
   const subagentFlushFrameRef = useRef<number | undefined>(undefined);
   const titleQueueRef = useRef<Promise<void>>(Promise.resolve());
   const titleRequestRef = useRef(0);
+  const sessionActivityEpochRef = useRef(0);
   const activeIdRef = useRef("");
   const modelRequestRef = useRef(0);
   const [modelSwitching, setModelSwitching] = useState(false);
@@ -284,6 +287,20 @@ export function Workbench() {
   const selectSession = (id: string) => {
     activeIdRef.current = id;
     setActiveId(id);
+  };
+
+  const input = sessionDraft(sessionDrafts, activeId);
+  const setInput = (value: string) => {
+    // selectSession updates this ref before React commits, so even an input
+    // event in that narrow transition window is attributed to the new owner.
+    const sessionId = activeIdRef.current;
+    setSessionDrafts((current) => withSessionDraft(current, sessionId, value));
+  };
+
+  const setSessionRunning = (sessionId: string, running: boolean, touch = false) => {
+    if (!sessionId) return;
+    sessionActivityEpochRef.current += 1;
+    setSessions((current) => withSessionActivity(current, sessionId, running, touch));
   };
 
   const scheduleSubagentFlush = () => {
@@ -361,6 +378,30 @@ export function Workbench() {
     }).catch(() => setError(tRef.current("cannotConnect"))).finally(() => setBootstrapping(false));
     return undefined;
   }, []);
+
+  const hasRunningSessions = sessions.some((session) => session.running);
+  useEffect(() => {
+    if (!hasRunningSessions) return;
+    let disposed = false;
+    const refresh = async () => {
+      const epoch = sessionActivityEpochRef.current;
+      try {
+        const response = await fetch("/api/sessions/status");
+        if (!response.ok) return;
+        const data = await response.json() as { runningSessionIds?: string[] };
+        if (disposed || epoch !== sessionActivityEpochRef.current || !Array.isArray(data.runningSessionIds)) return;
+        setSessions((current) => withRunningSessionIds(current, data.runningSessionIds!));
+      } catch {
+        // The active SSE still owns foreground state; retry background status
+        // reconciliation on the next interval instead of surfacing noise.
+      }
+    };
+    const interval = window.setInterval(() => void refresh(), 1500);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+    };
+  }, [hasRunningSessions, cwd]);
 
   useEffect(() => {
     subagentsRef.current = subagents;
@@ -459,7 +500,7 @@ export function Workbench() {
   const subagentRunning = useMemo(() => subagents.filter((task) => task.status === "queued" || task.status === "running").length, [subagents]);
   const visibleMessages = useMemo(() => messages.filter((message) => message.toolName !== "spawn_subagent"), [messages]);
   const { conversationRef, conversationInnerRef, showJumpToLatest, visibleMessageCount, handleConversationScroll, revealToolCard, requestToolReveal, expandVisibleMessages, loadEarlierMessages, jumpToLatest, pauseAutoFollow, resumeAutoFollow, resetConversationView } = useConversationScroll(messages, visibleMessages.length, MESSAGE_BATCH_SIZE);
-  const eventContext: SessionEventContext = { activeId, t, queueMessageDelta, flushMessageDeltas, setMessages, setFindings, queueSubagentTask, queueSubagentTaskPatch, setApprovalQueue, setUsage, setSessions, setMainAgentRunning, setContextCompacting, setError };
+  const eventContext: SessionEventContext = { activeId, t, queueMessageDelta, flushMessageDeltas, setMessages, setFindings, queueSubagentTask, queueSubagentTaskPatch, setApprovalQueue, setUsage, setSessions, setSessionRunning, setMainAgentRunning, setContextCompacting, setError };
   // Clear every piece of per-session view state (messages stay: the fetch
   // merge reconciles them, and callers clear them for instant feedback).
   const resetSessionState = () => {
@@ -511,16 +552,23 @@ export function Workbench() {
     const hasExistingUserMessage = Boolean(currentSession?.firstMessage?.trim()) || messages.some((message) => message.role === "user");
     if (!hasExistingUserMessage) queueSessionTitle(text);
     setMainAgentRunning(true);
+    setSessionRunning(activeId, true);
     try {
       const response = await fetch(`/api/sessions/${activeId}/prompt`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, mode }) });
       if (!response.ok) {
         const data = await response.json().catch(() => ({})) as { error?: string };
-        if (!wasRunning) setMainAgentRunning(false);
+        if (!wasRunning) {
+          setMainAgentRunning(false);
+          setSessionRunning(activeId, false);
+        }
         markMessageFailed();
         setError(data.error ?? t("sendFailed"));
-      }
+      } else setSessionRunning(activeId, true, true);
     } catch (error) {
-      if (!wasRunning) setMainAgentRunning(false);
+      if (!wasRunning) {
+        setMainAgentRunning(false);
+        setSessionRunning(activeId, false);
+      }
       markMessageFailed();
       setError(error instanceof Error ? error.message : t("sendFailed"));
     }
@@ -571,6 +619,7 @@ export function Workbench() {
     const response = await fetch(`/api/sessions/${id}/archive`, { method: "POST" });
     if (!response.ok) { setError((await response.json()).error ?? t("sendFailed")); return; }
     const data = await response.json();
+    setSessionDrafts((current) => withSessionDraft(current, id, ""));
     const nextSessions = (data.sessions ?? []).filter((session: SessionSummary) => !session.archived);
     setSessions(nextSessions);
     if (id !== activeId) return;
@@ -591,7 +640,10 @@ export function Workbench() {
     const response = await fetch(`/api/sessions/${activeId}/subagents/${taskId}/retry`, { method: "POST" });
     if (!response.ok) { setError((await response.json()).error ?? t("sendFailed")); return; }
     const data = await response.json() as { task?: SubagentTask };
-    if (data.task) queueSubagentTask(data.task);
+    if (data.task) {
+      queueSubagentTask(data.task);
+      setSessionRunning(activeId, true, true);
+    }
   };
 
   const patchFindingInSession = async (id: string, patch: FindingPatch) => {
@@ -672,6 +724,7 @@ export function Workbench() {
   const stopAll = () => {
     if (!activeId) return;
     setMainAgentRunning(false);
+    setSessionRunning(activeId, false);
     setContextCompacting(false);
     setApprovalQueue([]);
     setMessages((current) => current.map((message) => message.role === "thinking"
@@ -748,9 +801,10 @@ export function Workbench() {
   };
 
   const scopeExpansion = Boolean(approval?.input && typeof approval.input === "object" && (approval.input as { scopeExpansion?: unknown }).scopeExpansion === true);
+  const orderedSessions = useMemo(() => orderSessionsByActivity(sessions), [sessions]);
 
   return <div className="app-shell">
-    <Sidebar open={mobileNav} bootstrapping={bootstrapping} sessions={sessions} activeId={activeId} t={t} onNewSession={() => void newSession()} onSelect={(id) => { if (id !== activeId) { selectSession(id); setMessages([]); resetSessionState(); } setMobileNav(false); }} onArchive={(id) => void archiveSession(id)} onClose={() => setMobileNav(false)} />
+    <Sidebar open={mobileNav} bootstrapping={bootstrapping} sessions={orderedSessions} activeId={activeId} t={t} onNewSession={() => void newSession()} onSelect={(id) => { if (id !== activeId) { selectSession(id); setMessages([]); resetSessionState(); } setMobileNav(false); }} onArchive={(id) => void archiveSession(id)} onClose={() => setMobileNav(false)} />
     {mobileNav ? <button className="scrim mobile-only" onClick={() => setMobileNav(false)} aria-label={t("closeNav")} /> : null}
     <main className="main-panel">
       <Topbar bootstrapping={bootstrapping} choosing={workspaceChoosing} cwd={cwd} t={t} onOpenNav={() => setMobileNav(true)} onChooseDirectory={() => void chooseWorkingDirectory()} />

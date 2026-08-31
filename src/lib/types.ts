@@ -123,6 +123,7 @@ export type SessionSummary = {
   model?: string;
   contextWindow?: number;
   usage?: ContextUsage;
+  running?: boolean;
 };
 
 export type ArchivedSession = Omit<SessionSummary, "archived">;

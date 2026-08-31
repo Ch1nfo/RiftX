@@ -70,3 +70,10 @@ declare global {
 
 export const sessions = globalThis.__riftxSessions ?? (globalThis.__riftxSessions = new Map<string, SessionRecord>());
 export const sessionCreation = globalThis.__riftxSessionCreation ?? (globalThis.__riftxSessionCreation = new Map<string, Promise<SessionRecord>>());
+
+export function isSessionRecordRunning(record: SessionRecord) {
+  return record.session.isStreaming
+    || Boolean(record.waitingForSubagents)
+    || record.gate.pendingRequests().length > 0
+    || (record.subagents?.runningCount ?? 0) > 0;
+}

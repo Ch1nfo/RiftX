@@ -24,6 +24,7 @@ export type SessionEventContext = {
   setApprovalQueue: Dispatch<SetStateAction<ApprovalRequest[]>>;
   setUsage: Dispatch<SetStateAction<ContextUsage>>;
   setSessions: Dispatch<SetStateAction<SessionSummary[]>>;
+  setSessionRunning: (sessionId: string, running: boolean) => void;
   setMainAgentRunning: (value: boolean) => void;
   setContextCompacting: (value: boolean) => void;
   setError: (value: string) => void;
@@ -112,16 +113,26 @@ export function applyRiftxEvent(payload: RiftxEvent, ctx: SessionEventContext) {
     const request = payload.approval as ApprovalRequest;
     if (payload.taskPatch) ctx.queueSubagentTaskPatch(payload.taskPatch as SubagentTaskPatch);
     ctx.setApprovalQueue((current) => current.some((item) => item.id === request.id) ? current : [...current, request]);
-    if (!request.subagentId) ctx.setMainAgentRunning(true);
+    if (!request.subagentId) {
+      ctx.setMainAgentRunning(true);
+      ctx.setSessionRunning(ctx.activeId, true);
+    }
     return;
   }
   if (payload.type.startsWith("subagent_") || payload.type === "approval_decided") return;
   if (["tool_start", "tool_status", "tool_update", "tool_end", "message", "done", "error"].includes(payload.type)) {
     ctx.setMessages((current) => current.map((message) => message.role === "thinking" && message.status === "streaming" ? { ...message, status: "done" } : message));
   }
-  if (payload.type === "session_state") { ctx.setMainAgentRunning(payload.state !== "idle"); ctx.setContextCompacting(payload.state === "compacting"); return; }
+  if (payload.type === "session_state") {
+    const running = payload.state !== "idle";
+    ctx.setMainAgentRunning(running);
+    ctx.setSessionRunning(ctx.activeId, running);
+    ctx.setContextCompacting(payload.state === "compacting");
+    return;
+  }
   if (payload.type === "done") {
     ctx.setMainAgentRunning(false);
+    ctx.setSessionRunning(ctx.activeId, false);
     ctx.setContextCompacting(false);
     ctx.setApprovalQueue((current) => current.filter(isSubagentApproval));
     ctx.setMessages((current) => current.map((message) => message.role === "thinking" ? { ...message, status: "done" } : message.role === "tool" && (message.status === "running" || message.status === "queued") ? { ...message, status: "cancelled", isError: true, content: message.content ? `${message.content}\n\n${ctx.t("stopped")}` : ctx.t("stopped") } : message));
@@ -158,6 +169,7 @@ export function applyRiftxEvent(payload: RiftxEvent, ctx: SessionEventContext) {
     const message = String(payload.error ?? "Agent error");
     if (isAlreadyProcessingError(message)) return;
     ctx.setMainAgentRunning(false);
+    ctx.setSessionRunning(ctx.activeId, false);
     ctx.setContextCompacting(false);
     ctx.setApprovalQueue((current) => current.filter(isSubagentApproval));
     ctx.setError(message);

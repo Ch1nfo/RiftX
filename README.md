@@ -68,7 +68,7 @@ The current RiftX version was rerun on TSECBENCH's XBOW Validation Benchmarks. T
 
 - **Streaming sessions** - Render text, thinking, tool calls, errors, and task state as they happen; restore session state after reconnecting.
 - **Continuous guidance** - Send follow-up instructions while the Agent is running. The conversation follows new output while still allowing manual history review.
-- **Session management** - Scope sessions to a working directory, generate titles with AI, switch sessions, archive them, and permanently remove archived records.
+- **Session management** - Scope sessions to a working directory, keep unsent drafts isolated per session, show live running indicators, and promote the most recently active running session to the top. Sessions also support AI-generated titles, switching, archiving, and permanent deletion of archived records.
 - **Context management** - Show input, output, cache, and remaining tokens. Compact context automatically near the limit and expose the compaction state in the conversation.
 - **Model switching** - Change the selected session's model from the composer without affecting other foreground or background sessions.
 - **Bilingual UI** - Switch between English and Chinese, with light and dark themes.

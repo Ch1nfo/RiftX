@@ -61,6 +61,48 @@ test.describe("conversation auto-follow", () => {
     await expectBottomed(page, true);
     await expect(page.locator(".jump-latest")).toHaveCount(0);
   });
+
+  test("keeps unsent composer drafts isolated per session", async ({ page, context }) => {
+    await routeApiToMock(context);
+    await page.goto("/");
+
+    const composer = page.locator(".composer textarea");
+    await expect(composer).toBeEnabled();
+    await composer.fill("draft for the first session");
+
+    await page.locator(".session-item", { hasText: "E2E second session" }).click();
+    await expect(composer).toHaveValue("");
+    await composer.fill("draft for the second session");
+
+    await page.locator(".session-item", { hasText: "E2E scroll regression" }).click();
+    await expect(composer).toHaveValue("draft for the first session");
+
+    await page.locator(".session-item", { hasText: "E2E second session" }).click();
+    await expect(composer).toHaveValue("draft for the second session");
+  });
+
+  test("marks a running session, promotes it, and clears background status", async ({ page, context }) => {
+    await routeApiToMock(context);
+    await page.goto("/");
+
+    const olderSession = page.locator(".session-item", { hasText: "E2E second session" });
+    await olderSession.click();
+    await page.locator(".composer textarea").fill("continue the older session");
+    await page.locator(".send-button").click();
+
+    const firstSession = page.locator(".session-list .session-item").first();
+    await expect(firstSession).toContainText("E2E second session");
+    await expect(firstSession.locator(".session-presence.running")).toBeVisible();
+    const ringAnimation = () => firstSession.locator(".session-presence.running").evaluate((element) => getComputedStyle(element, "::after").animationName);
+    await expect.poll(ringAnimation).toBe("riftx-spin");
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await expect.poll(ringAnimation).toBe("none");
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+
+    await page.locator(".session-item", { hasText: "E2E scroll regression" }).click();
+    mock.finishSecondSession();
+    await expect(page.locator(".session-item", { hasText: "E2E second session" }).locator(".session-presence.running")).toHaveCount(0, { timeout: 5_000 });
+  });
 });
 
 async function expectBottomed(page: Page, bottomed: boolean) {

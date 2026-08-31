@@ -4,9 +4,10 @@ import { SessionManager as AgentSessionManager } from "@mariozechner/pi-coding-a
 import { readConfig, getAppPaths, getLaunchDirectory } from "@/server/config-store";
 import { RiftxError } from "@/server/errors";
 import type { AppConfig, ContextUsage, ModelProfile, SessionSummary } from "@/lib/types";
+import { orderSessionsByActivity } from "@/lib/session-activity";
 import { emptyContextUsage, normalizeContextUsage } from "./usage";
 import { estimateCompactedUsage, estimateMessagesContextUsage } from "./mid-turn-compaction";
-import { sessions, type SessionRecord } from "./session-registry";
+import { isSessionRecordRunning, sessions, type SessionRecord } from "./session-registry";
 import { textFromContent } from "./text-content";
 import { isSubagentInjectionMessage } from "./session-join";
 
@@ -240,6 +241,7 @@ export async function listSessions(): Promise<SessionSummary[]> {
   const infos = await listWorkspaceSessionInfos(config.cwd);
   const persisted = await Promise.all(infos.map(async (info) => {
     const snapshot = await buildSessionSnapshot(info.id, info.path, config);
+    const liveRecord = sessions.get(info.id);
     return {
       id: info.id,
       path: info.path,
@@ -251,7 +253,8 @@ export async function listSessions(): Promise<SessionSummary[]> {
       provider: snapshot.provider,
       model: snapshot.model,
       contextWindow: snapshot.contextWindow,
-      usage: snapshot.usage
+      usage: snapshot.usage,
+      running: liveRecord ? isSessionRecordRunning(liveRecord) : false
     } satisfies SessionSummary;
   }));
   const seen = new Set(persisted.map((item) => item.id));
@@ -268,7 +271,8 @@ export async function listSessions(): Promise<SessionSummary[]> {
       provider: session.profile.provider,
       model: session.profile.model,
       contextWindow: session.profile.contextWindow,
-      usage: usageFromRecord(session)
+      usage: usageFromRecord(session),
+      running: isSessionRecordRunning(session)
     } satisfies SessionSummary));
   const archivedMetadata = config.archivedSessions
     .filter((session) => !seen.has(session.id) && !live.some((item) => item.id === session.id))
@@ -276,5 +280,12 @@ export async function listSessions(): Promise<SessionSummary[]> {
   const archivedFallback = config.archivedSessionIds
     .filter((id) => !seen.has(id) && !archivedMetadata.some((session) => session.id === id))
     .map((id) => ({ id, path: "", name: summaryName(config, id, "", true), firstMessage: "", updatedAt: new Date().toISOString(), archived: true } satisfies SessionSummary));
-  return [...live, ...persisted, ...archivedMetadata, ...archivedFallback];
+  return orderSessionsByActivity([...live, ...persisted, ...archivedMetadata, ...archivedFallback]);
+}
+
+export async function listRunningSessionIds() {
+  const config = await readConfig();
+  return [...sessions.values()]
+    .filter((record) => resolve(record.cwd) === resolve(config.cwd) && isSessionRecordRunning(record))
+    .map((record) => record.id);
 }
