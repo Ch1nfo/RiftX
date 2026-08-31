@@ -5,7 +5,7 @@ import { parseScopeRule } from "@/lib/scope-rules";
 import { errorResponse } from "@/server/errors";
 import { parseJsonBody } from "@/lib/api-validation";
 import { MASKED_API_KEY, publicWebSearch, resolveProfileApiKey } from "@/server/profile-api-key";
-import { mcpServersValidationError } from "@/server/mcp/config";
+import { mcpServersValidationError, normalizeMcpServers } from "@/server/mcp/config";
 
 export const runtime = "nodejs";
 
@@ -121,7 +121,9 @@ export async function PUT(request: Request) {
         systemPrompt: typeof body.systemPrompt === "string" ? body.systemPrompt : latest.systemPrompt,
         browserScope: Array.isArray(body.browserScope) ? body.browserScope.filter((rule): rule is string => typeof rule === "string" && Boolean(rule.trim())) : latest.browserScope,
         browserIgnoreTlsErrors: body.browserIgnoreTlsErrors === undefined ? latest.browserIgnoreTlsErrors : body.browserIgnoreTlsErrors === true,
-        mcpServers: body.mcpServers === undefined ? latest.mcpServers : body.mcpServers
+        // Canonicalize on persist so a pasted ecosystem entry ("type" key) is
+        // stored in RiftX's own "transport" shape.
+        mcpServers: body.mcpServers === undefined ? latest.mcpServers : normalizeMcpServers(body.mcpServers)
       };
     });
   } catch (error) {

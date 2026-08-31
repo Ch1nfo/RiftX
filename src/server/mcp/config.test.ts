@@ -14,6 +14,23 @@ test("accepts valid stdio and http servers", () => {
   ]);
 });
 
+test("accepts the ecosystem 'type' key and canonicalizes it to 'transport'", () => {
+  const pasted = [{ name: "yakit", type: "stdio", command: "/path/to/yak", args: ["mcp", "--transport", "stdio"] }];
+  assert.equal(mcpServersValidationError(pasted), null);
+  assert.deepEqual(normalizeMcpServers(pasted), [
+    { name: "yakit", transport: "stdio", command: "/path/to/yak", args: ["mcp", "--transport", "stdio"], env: {} }
+  ]);
+});
+
+test("command-only entries (official Claude stdio form) infer stdio; url-only does not infer http", () => {
+  const claude = [{ name: "filesystem", command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"] }];
+  assert.equal(mcpServersValidationError(claude), null);
+  assert.deepEqual(normalizeMcpServers(claude), [
+    { name: "filesystem", transport: "stdio", command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"], env: {} }
+  ]);
+  assert.match(String(mcpServersValidationError([{ name: "remote", url: "http://x/mcp" }])), /transport/);
+});
+
 test("rejects bad names, transports, commands, urls, and shapes", () => {
   assert.match(String(mcpServersValidationError([{ name: "bad name", transport: "stdio", command: "x" }])), /name/);
   assert.match(String(mcpServersValidationError([{ name: "x".repeat(33), transport: "stdio", command: "x" }])), /name/);

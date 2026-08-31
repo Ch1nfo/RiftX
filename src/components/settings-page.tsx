@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { API_TYPES, SUBAGENT_AGGRESSIVENESS, TRANSPORTS, clampConcurrency, type AppConfig, type ModelProfile, type SessionSummary, type SubagentAggressiveness } from "@/lib/types";
 import { Field, LanguageToggle, RiftxLogo, SelectField, ThemeToggle } from "./ui";
 import { useLanguage } from "@/lib/i18n";
+import { parseMcpServersDraft } from "@/lib/mcp-paste";
 
 const labels: Record<string, string> = {
   "openai-completions": "OpenAI Chat Completions",
@@ -42,7 +43,7 @@ export function SettingsPage() {
       setSelected(data.profiles?.[0]?.id ?? "");
       setMaxConcurrentDraft(String(clampConcurrency(Number(data.maxConcurrentSubagents) || 1)));
       setBrowserScopeDraft(Array.isArray(data.browserScope) ? data.browserScope.join("\n") : "");
-      setMcpServersDraft(JSON.stringify(Array.isArray(data.mcpServers) ? data.mcpServers : [], null, 2));
+      setMcpServersDraft(Array.isArray(data.mcpServers) && data.mcpServers.length ? JSON.stringify(data.mcpServers, null, 2) : "");
     }).catch(() => setError(t("settingsLoadFailed")));
     return undefined;
   }, []);
@@ -97,16 +98,9 @@ export function SettingsPage() {
   };
   const sectionSaveButton = (section: string, onSave: () => void) => <button className="button secondary settings-section-save" disabled={savingSection !== null} onClick={onSave}>{savingSection === section ? t("saving") : savedSection === section ? <><Check size={16} />{t("saved")}</> : <><FloppyDisk size={16} />{t("saveSettings")}</>}</button>;
   const parseMcpDraft = (): unknown | null => {
-    try {
-      const parsed = JSON.parse(mcpServersDraft);
-      // Accept the ecosystem's record form ({"name": {...}}) by converting to the array form.
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-        ? Object.entries(parsed as Record<string, unknown>).map(([name, server]) => ({ name, ...(server && typeof server === "object" ? server as Record<string, unknown> : {}) }))
-        : parsed;
-    } catch {
-      setError(t("mcpServersInvalid"));
-      return null;
-    }
+    const parsed = parseMcpServersDraft(mcpServersDraft);
+    if (parsed === null) setError(t("mcpServersInvalid"));
+    return parsed;
   };
   const saveMcpServers = () => {
     const mcpServers = parseMcpDraft();

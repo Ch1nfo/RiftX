@@ -1,6 +1,5 @@
-import { mcpServersValidationError } from "@/server/mcp/config";
+import { mcpServersValidationError, normalizeMcpServers } from "@/server/mcp/config";
 import { testMcpServers } from "@/server/mcp/manager";
-import type { McpServerConfig } from "@/lib/types";
 import { parseJsonBody } from "@/lib/api-validation";
 
 export const runtime = "nodejs";
@@ -12,6 +11,8 @@ export async function POST(request: Request) {
   const body = parsed as { mcpServers?: unknown };
   const error = mcpServersValidationError(body.mcpServers);
   if (error) return Response.json({ error }, { status: 400 });
-  const results = await testMcpServers(Array.isArray(body.mcpServers) ? body.mcpServers as McpServerConfig[] : []);
+  // Canonicalize ("type" → "transport") before probing: the manager consumes
+  // the stored shape, not the pasted one.
+  const results = await testMcpServers(normalizeMcpServers(Array.isArray(body.mcpServers) ? body.mcpServers : []));
   return Response.json({ results });
 }

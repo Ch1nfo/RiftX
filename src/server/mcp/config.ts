@@ -26,12 +26,24 @@ function httpUrlError(value: unknown): string | null {
   return null;
 }
 
+/** Ecosystem configs (Claude Code, Cursor, …) spell the transport key "type" — accept both. */
+function transportOf(server: Partial<McpServerConfig> & { type?: unknown }): "stdio" | "http" | undefined {
+  const value = server.transport ?? server.type;
+  if (value === "stdio" || value === "http") return value;
+  // Official Claude .mcp.json stdio entries carry no type at all: a command
+  // implies stdio. URL-only entries are NOT inferred as http — an SSE config
+  // would be silently misrouted to Streamable HTTP.
+  if (value === undefined && typeof server.command === "string" && server.command.trim()) return "stdio";
+  return undefined;
+}
+
 function serverError(server: unknown): string | null {
   if (!server || typeof server !== "object" || Array.isArray(server)) return "each MCP server must be an object";
-  const candidate = server as Partial<McpServerConfig>;
+  const candidate = server as Partial<McpServerConfig> & { type?: unknown };
+  const transport = transportOf(candidate);
   if (typeof candidate.name !== "string" || !NAME_PATTERN.test(candidate.name)) return "MCP server name must match [A-Za-z0-9_-] and be 1-32 characters";
-  if (candidate.transport !== "stdio" && candidate.transport !== "http") return `MCP server "${candidate.name}": transport must be "stdio" or "http"`;
-  if (candidate.transport === "stdio") {
+  if (!transport) return `MCP server "${candidate.name}": transport must be "stdio" or "http"`;
+  if (transport === "stdio") {
     if (typeof candidate.command !== "string" || !candidate.command.trim()) return `MCP server "${candidate.name}": stdio transport requires a command`;
     if (candidate.args !== undefined && (!Array.isArray(candidate.args) || candidate.args.some((arg) => typeof arg !== "string"))) return `MCP server "${candidate.name}": args must be an array of strings`;
     if (candidate.env !== undefined && !stringRecord(candidate.env)) return `MCP server "${candidate.name}": env must be a string map`;
@@ -66,14 +78,17 @@ export function normalizeMcpServers(value: unknown): McpServerConfig[] {
   const out: McpServerConfig[] = [];
   for (const server of value) {
     if (serverError(server) !== null) continue;
-    const name = (server as McpServerConfig).name;
+    const candidate = server as Partial<McpServerConfig> & { type?: unknown };
+    // serverError has validated the name; narrow it for the compiler.
+    const name = candidate.name!;
     if (seen.has(name)) continue;
     seen.add(name);
-    const candidate = server as McpServerConfig;
+    // Canonicalize "type" (ecosystem configs) to "transport" on the way in.
+    const transport = transportOf(candidate)!;
     out.push({
-      name: candidate.name,
-      transport: candidate.transport,
-      ...(candidate.transport === "stdio"
+      name,
+      transport,
+      ...(transport === "stdio"
         ? { command: candidate.command, args: candidate.args ?? [], env: candidate.env ?? {} }
         : { url: candidate.url, headers: candidate.headers ?? {} })
     });
