@@ -60,9 +60,9 @@ a { color: inherit; text-decoration: none; }
 .session-archive { width: 28px; height: 28px; flex: 0 0 28px; display: inline-grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--muted-2); cursor: pointer; opacity: 0; transition: opacity .15s, color .15s, background .15s; }
 .session-item-row:hover .session-archive, .session-item-row:focus-within .session-archive { opacity: 1; }
 .session-archive:hover { color: var(--text); background: #242a2b; }
-.session-presence { position: relative; width: 6px; height: 14px; flex: 0 0 6px; }
-.session-dot { position: absolute; top: 4px; left: 0; width: 6px; height: 6px; border-radius: 50%; background: #4b5552; }
-.session-presence.running::after { content: ""; position: absolute; top: 1px; left: -3px; width: 12px; height: 12px; border: 1.5px solid color-mix(in srgb, var(--accent) 24%, transparent); border-top-color: var(--accent); border-radius: 50%; animation: riftx-spin .9s linear infinite; }
+.session-presence { width: 6px; height: 14px; flex: 0 0 6px; display: grid; grid-template: 14px / 6px; place-items: center; }
+.session-dot { grid-area: 1 / 1; z-index: 1; width: 6px; height: 6px; border-radius: 50%; background: #4b5552; }
+.session-presence.running::after { content: ""; grid-area: 1 / 1; width: 12px; height: 12px; border: 1.5px solid color-mix(in srgb, var(--accent) 24%, transparent); border-top-color: var(--accent); border-radius: 50%; animation: riftx-spin .9s linear infinite; }
 .session-presence.running .session-dot { background: var(--accent); }
 .session-item.active .session-dot, .status-dot { background: var(--accent); box-shadow: 0 0 0 3px rgba(154, 216, 165, .08); }
 .session-copy { min-width: 0; display: grid; gap: 3px; }
