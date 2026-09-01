@@ -1,15 +1,22 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const { version: appVersion } = JSON.parse(await readFile(join(appRoot, "package.json"), "utf8"));
 const [command, ...args] = process.argv.slice(2);
+
+if (command === "version" || command === "--version" || command === "-v") {
+  console.log(`RiftX ${appVersion}`);
+  process.exit(0);
+}
 
 if (!command || command === "help" || command === "--help" || command === "-h") {
   console.log("Usage: rx webui [--port <port>] [--hostname <hostname>]");
+  console.log("       rx --version");
   console.log("       Binds 127.0.0.1 by default; set RIFTX_HOST or --hostname to expose.");
   process.exit(0);
 }

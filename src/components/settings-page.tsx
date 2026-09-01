@@ -7,6 +7,7 @@ import { API_TYPES, SUBAGENT_AGGRESSIVENESS, TRANSPORTS, clampConcurrency, type 
 import { Field, LanguageToggle, RiftxLogo, SelectField, ThemeToggle } from "./ui";
 import { useLanguage } from "@/lib/i18n";
 import { parseMcpServersDraft } from "@/lib/mcp-paste";
+import { RIFTX_VERSION } from "@/lib/version";
 
 const labels: Record<string, string> = {
   "openai-completions": "OpenAI Chat Completions",
@@ -145,7 +146,7 @@ export function SettingsPage() {
   return <div className="settings-shell">
     <aside className="settings-nav">
       <Link href="/" className="back-link"><ArrowLeft size={16} />{t("backToWorkbench")}</Link>
-      <div className="settings-brand"><div className="brand-mark"><RiftxLogo /></div><div><strong>RiftX {t("settings")}</strong><small>{t("localAgent")} {t("configuration")}</small></div></div>
+      <div className="settings-brand"><div className="brand-mark"><RiftxLogo /></div><div><strong>RiftX {t("settings")}</strong><small>v{RIFTX_VERSION} · {t("localAgent")} {t("configuration")}</small></div></div>
       <div className="settings-nav-label">{t("config")}</div>
       <a href="#model-agent" className={`settings-nav-item ${activeSection === "model-agent" ? "active" : ""}`} onClick={() => setActiveSection("model-agent")}>{t("modelAgent")}</a>
       <a href="#archived" className={`settings-nav-item ${activeSection === "archived" ? "active" : ""}`} onClick={() => setActiveSection("archived")}>{t("archived")}</a>

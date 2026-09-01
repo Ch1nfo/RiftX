@@ -7,6 +7,7 @@ import { z } from "zod";
 import { wireClient } from "./manager";
 import { buildMcpTools } from "./tools";
 import type { McpServerConfig } from "@/lib/types";
+import { RIFTX_VERSION } from "@/lib/version";
 
 /** End-to-end against the real MCP SDK over an in-process transport pair — proves the schema bridge and result mapping against the actual wire protocol. */
 
@@ -23,7 +24,7 @@ async function startDemoServer() {
   server.registerTool("fail", { description: "Always fails" }, async () => ({ content: [{ type: "text", text: "kaboom" }], isError: true }));
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);
-  const client = new Client({ name: "riftx", version: "0.1.0" }, { capabilities: {} });
+  const client = new Client({ name: "riftx", version: RIFTX_VERSION }, { capabilities: {} });
   const handle = await wireClient(client, clientTransport, config, 2000);
   return { server, handle };
 }

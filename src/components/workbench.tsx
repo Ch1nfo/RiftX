@@ -17,6 +17,7 @@ import { useLanguage } from "@/lib/i18n";
 import { mergeFetchedMessages, type MergeableMessage } from "@/lib/message-merge";
 import { applyRiftxEvent, applyMessageDeltas, normalizeMessages, type MessageDelta, type SessionEventContext } from "@/lib/session-events";
 import { findRequestTarget } from "@/lib/evidence-navigation";
+import { RIFTX_VERSION } from "@/lib/version";
 import { useConversationScroll } from "./use-conversation-scroll";
 
 type Message = MergeableMessage;
@@ -94,7 +95,7 @@ function EmptyState({ bootstrapping, activeId, t, onSuggestion }: { bootstrappin
 
 function Sidebar({ open, bootstrapping, sessions, activeId, t, onNewSession, onSelect, onArchive, onClose }: { open: boolean; bootstrapping: boolean; sessions: SessionSummary[]; activeId: string; t: Translate; onNewSession: () => void; onSelect: (id: string) => void; onArchive: (id: string) => void; onClose: () => void }) {
   return <aside className={`sidebar ${open ? "open" : ""}`}>
-    <div className="brand-row"><div className="brand-mark"><RiftxLogo /></div><span>RiftX</span><button className="icon-button mobile-only" onClick={onClose}><X size={17} /></button></div>
+    <div className="brand-row"><div className="brand-mark"><RiftxLogo /></div><span>RiftX</span><span className="brand-version">v{RIFTX_VERSION}</span><button className="icon-button mobile-only" onClick={onClose}><X size={17} /></button></div>
     <button className="new-session" onClick={onNewSession}><Plus size={17} weight="bold" />{t("newSession")}<span className="shortcut">⌘ N</span></button>
     <div className="sidebar-label">{t("recentSessions")}</div>
     <div className="session-list">

@@ -3,6 +3,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { McpServerConfig } from "@/lib/types";
+import { RIFTX_VERSION } from "@/lib/version";
 import { createSerializer } from "@/server/serializer";
 
 /**
@@ -149,7 +150,7 @@ function sdkConnect(config: McpServerConfig, timeoutMs: number): Promise<McpServ
     // block a chatty server when the OS pipe buffer fills.
     ? new StdioClientTransport({ command: config.command!, args: config.args ?? [], env: { ...cleanEnv(process.env), ...config.env }, stderr: "inherit" })
     : new StreamableHTTPClientTransport(new URL(config.url!), config.headers ? { requestInit: { headers: config.headers } } : {});
-  return wireClient(new Client({ name: "riftx", version: "0.1.0" }, { capabilities: {} }), transport, config, timeoutMs);
+  return wireClient(new Client({ name: "riftx", version: RIFTX_VERSION }, { capabilities: {} }), transport, config, timeoutMs);
 }
 
 /** Client wiring shared by stdio/http and the in-memory integration test. */
