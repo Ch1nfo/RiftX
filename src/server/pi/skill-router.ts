@@ -52,7 +52,11 @@ const TERM_ALIASES: Record<string, string[]> = {
 };
 
 function expandAliases(term: string) {
-  return [term, ...(TERM_ALIASES[term] ?? [])];
+  // hasOwn guard: a description term like "constructor" (prototype-pollution
+  // keyword) would otherwise resolve to Object.prototype's inherited function
+  // — truthy but not spreadable, crashing rankSkills.
+  const aliases = Object.hasOwn(TERM_ALIASES, term) ? TERM_ALIASES[term] : [];
+  return [term, ...aliases];
 }
 
 function terms(text: string) {

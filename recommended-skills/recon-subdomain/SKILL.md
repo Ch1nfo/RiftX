@@ -74,5 +74,5 @@ Recon observations are working data, not findings — summarize them in the conv
 ## Resources
 
 - **Scripts**：`scripts/merge_subdomains.py`、`scripts/filter_resolved.py`、`scripts/subdomain_stats.py`
-- **References**：`references/subfinder_guide.md`、`references/amass_guide.md`、`references/dnsx_guide.md`、`references/dns_techniques.md`
+- **References**：`references/subfinder_guide.md`、`references/amass_guide.md`、`references/dnsx_guide.md`、`references/dns_techniques.md`、`references/subdomain-takeover.md`（接管特征与验证手法）
 - **Assets**：`assets/subdomains-top5k.txt`、`assets/resolvers.txt`、`assets/wildcard-test.txt`

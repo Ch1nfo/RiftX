@@ -61,3 +61,7 @@ Recon observations are working data, not findings — summarize them in the conv
 ## 相关 Skills
 
 `api-testing`（API 面深入）、`exploit-authz`（越权/隐藏域）、`recon-dir-scan`（目录爆破互补）、`recon-fingerprint`（技术栈）、`results-storage`（findings 机制）
+
+## 深度参考
+
+- `references/js-reverse.md`——JS 逆向配合接口挖掘：加密参数还原、隐藏/管理接口提取、硬编码密钥与演示账号发现

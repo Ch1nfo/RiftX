@@ -285,7 +285,7 @@ Do not commit API keys, authorization headers, cookies, target data, certificate
 
 ## Recommended Skills
 
-The [`recommended-skills/`](recommended-skills/) folder ships 22 penetration-testing Agent Skills (reconnaissance, exploitation, API, LLM testing, and reporting). We recommend installing them into your skill list to boost testing capability out of the box:
+The [`recommended-skills/`](recommended-skills/) folder ships 36 penetration-testing Agent Skills (reconnaissance, exploitation — injection chains, race conditions, request smuggling, cache poisoning, WebSocket, auth bypass, WAF, CSRF, OAuth, Host-header, business logic, info leak, dev-surface exposure — API, LLM testing, and reporting). We recommend installing them into your skill list to boost testing capability out of the box:
 
 ```bash
 cp -r recommended-skills/*/ ~/.riftx/skills/

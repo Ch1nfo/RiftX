@@ -66,4 +66,9 @@ description: API security testing 接口安全测试：REST/GraphQL 面发现、
 
 ## 相关 Skills
 
-`exploit-authz`（越权/BOLA 深入打法）、`recon-dir-scan`（端点发现）、`exploit-sqli`（注入类 API 参数）、`results-storage`（findings 持久化机制）
+`exploit-authz`（越权/BOLA 深入打法）、`exploit-oauth`（OAuth 流程与 JWT 深度）、`recon-dir-scan`（端点发现）、`exploit-sqli`（注入类 API 参数）、`results-storage`（findings 持久化机制）
+
+## 深度参考
+
+- `references/api-gateway.md`——API 网关安全测试（限流绕过、路由/鉴权层缺陷、网关特有攻击面）
+- `references/graphql-deep.md`——GraphQL 深度手册（introspection、字段建议枚举、batching/深度滥用、权限边界）

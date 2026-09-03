@@ -80,3 +80,14 @@ test("routes authz, upload, API, and SSRF tasks to the gap-filling skills", () =
   assert.equal(rankSkills("SSRF测试", skills, 1)[0]?.name, "exploit-ssrf");
   assert.equal(rankSkills("爬取网站攻击面", skills, 1)[0]?.name, "recon-crawl");
 });
+
+test("object prototype keys in descriptions never crash the router", () => {
+  const skills = [
+    skill("exploit-proto-pollution", "Prototype pollution 原型污染：__proto__ 与 constructor.prototype 污染链。"),
+    skill("api-testing", "API 安全测试。")
+  ];
+  // "constructor" / "valueOf" would index Object.prototype without the hasOwn guard.
+  const top = rankSkills("constructor.prototype 污染怎么测", skills, 1)[0];
+  assert.equal(top?.name, "exploit-proto-pollution");
+  assert.doesNotThrow(() => rankSkills("valueOf toString", skills, 1));
+});
