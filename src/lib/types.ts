@@ -142,6 +142,7 @@ type RiftxEventFields = {
   delta?: unknown;
   message?: unknown;
   toolResults?: unknown;
+  turnEnd?: boolean;
   toolName?: string;
   toolCallId?: string;
   toolStatus?: "queued" | "running";
@@ -173,6 +174,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function parseRiftxEvent(value: unknown): RiftxEvent | null {
   if (!isRecord(value) || typeof value.type !== "string" || !RIFTX_EVENT_TYPES.includes(value.type as RiftxEventType)) return null;
   if (value.sessionId !== undefined && typeof value.sessionId !== "string") return null;
+  if (value.turnEnd !== undefined && typeof value.turnEnd !== "boolean") return null;
   if (value.type === "connected" && typeof value.sessionId !== "string") return null;
   if (value.type === "usage" && !isRecord(value.usage)) return null;
   if (value.type === "finding" && !isRecord(value.finding)) return null;

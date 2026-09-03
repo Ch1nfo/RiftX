@@ -19,10 +19,12 @@ export type ShutdownTarget = {
   abortEpoch?: number;
   abortPromise?: Promise<void>;
   waitingForSubagents?: boolean;
+  compacting?: boolean;
   shutdownPromise?: Promise<void>;
   gate: { rejectAll(): void };
   session: {
     abortBash(): void;
+    abortCompaction(): void;
     abort(): Promise<unknown>;
     dispose(): void;
   };
@@ -53,6 +55,7 @@ export async function shutdownSessionRecord(record: ShutdownTarget) {
     const session = record.session;
     await safe("rejectApprovals", () => gate.rejectAll());
     await safe("abortBash", () => session.abortBash());
+    await safe("abortCompaction", () => session.abortCompaction());
     await safe("abortAgent", () => session.abort());
     if (record.subagents) await safe("abortSubagents", () => record.subagents!.abortAll());
     // The session is being destroyed: the browser must shut down permanently
@@ -88,8 +91,10 @@ export async function abortSessionRecord(record: ShutdownTarget, emit: (event: {
   record.abortPromise = (async () => {
     record.abortEpoch = (record.abortEpoch ?? 0) + 1;
     record.waitingForSubagents = false;
+    record.compacting = false;
     record.gate.rejectAll();
     record.session.abortBash();
+    record.session.abortCompaction();
     await Promise.allSettled([
       record.session.abort(),
       record.subagents?.abortAll() ?? Promise.resolve()

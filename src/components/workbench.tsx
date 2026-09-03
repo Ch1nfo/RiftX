@@ -149,7 +149,7 @@ function ApprovalCard({ approval, scopeExpansion, t, onDecide }: { approval: App
   </div>;
 }
 
-function Composer({ value, onChange, onSubmit, onStop, busy, running, activeId, bootstrapping, mainAgentRunning, approvalMode, onApprovalModeChange, usage, modelProfiles, activeProfileId, modelName, modelSwitching, onModelChange, t }: {
+function Composer({ value, onChange, onSubmit, onStop, busy, running, activeId, bootstrapping, streamReady, mainAgentRunning, approvalMode, onApprovalModeChange, usage, modelProfiles, activeProfileId, modelName, modelSwitching, onModelChange, t }: {
   value: string;
   onChange: (value: string) => void;
   onSubmit: (mode?: "prompt" | "steer" | "followUp") => void;
@@ -158,6 +158,7 @@ function Composer({ value, onChange, onSubmit, onStop, busy, running, activeId, 
   running: boolean;
   activeId: string;
   bootstrapping: boolean;
+  streamReady: boolean;
   mainAgentRunning: boolean;
   approvalMode: ApprovalMode;
   onApprovalModeChange: (mode: ApprovalMode) => void;
@@ -191,6 +192,7 @@ function Composer({ value, onChange, onSubmit, onStop, busy, running, activeId, 
         return;
       }
       event.preventDefault();
+      if (!streamReady) return;
       onSubmit();
     }
   };
@@ -212,10 +214,10 @@ function Composer({ value, onChange, onSubmit, onStop, busy, running, activeId, 
             ? <ModelMenu value={activeProfileId} onValueChange={onModelChange} options={modelProfiles.map((profile) => ({ value: profile.id, label: `${profile.provider}/${profile.model}` }))} disabled={mainAgentRunning || modelSwitching} />
             : <span className="model-label">{modelName}</span>}
         {busy
-          ? (value.trim() ? <SendButton label={t("sendGuide")} onClick={() => onSubmit("steer")} /> : <StopButton label={t("stop")} onStop={onStop} />)
-          : value.trim() ? <SendButton label={t("send")} onClick={() => onSubmit("prompt")} disabled={!activeId || bootstrapping} />
+          ? (value.trim() ? <SendButton label={t("sendGuide")} onClick={() => onSubmit("steer")} disabled={!streamReady} /> : <StopButton label={t("stop")} onStop={onStop} />)
+          : value.trim() ? <SendButton label={t("send")} onClick={() => onSubmit("prompt")} disabled={!activeId || bootstrapping || !streamReady} />
           : running ? <StopButton label={t("stop")} onStop={onStop} />
-          : <SendButton label={t("send")} onClick={() => onSubmit("prompt")} disabled={!activeId || bootstrapping || !value.trim()} />}
+          : <SendButton label={t("send")} onClick={() => onSubmit("prompt")} disabled={!activeId || bootstrapping || !streamReady || !value.trim()} />}
       </div>
     </div>
   </div>;
@@ -237,6 +239,7 @@ export function Workbench() {
   const [sessionDrafts, setSessionDrafts] = useState<SessionDrafts>({});
   const [mainAgentRunning, setMainAgentRunning] = useState(false);
   const [contextCompacting, setContextCompacting] = useState(false);
+  const [streamReady, setStreamReady] = useState(false);
   const [bootstrapping, setBootstrapping] = useState(true);
   const [approvalQueue, setApprovalQueue] = useState<ApprovalRequest[]>([]);
   const [subagents, setSubagents] = useState<SubagentTask[]>([]);
@@ -420,7 +423,14 @@ export function Workbench() {
     const controller = new AbortController();
     let disposed = false;
     // Initial load and every SSE reconnect fetch the same reconciled snapshot.
+    let refetchInFlight = false;
+    let refetchAgain = false;
     const refetchMessages = () => {
+      if (refetchInFlight) {
+        refetchAgain = true;
+        return;
+      }
+      refetchInFlight = true;
       void fetch(`/api/sessions/${activeId}/messages`, { signal: controller.signal })
         .then((response) => response.ok ? response.json() as Promise<Message[]> : [])
         .then((items) => {
@@ -428,7 +438,14 @@ export function Workbench() {
           flushMessageDeltas();
           setMessages((current) => mergeFetchedMessages(current, normalizeMessages(items)));
         })
-        .catch(() => undefined);
+        .catch(() => undefined)
+        .finally(() => {
+          refetchInFlight = false;
+          if (refetchAgain && !disposed && !controller.signal.aborted) {
+            refetchAgain = false;
+            refetchMessages();
+          }
+        });
     };
     fetch(`/api/sessions/${activeId}`, { signal: controller.signal }).then((response) => response.json()).then((data: Partial<SessionSummary>) => {
       if (controller.signal.aborted || activeIdRef.current !== activeId) return;
@@ -452,15 +469,9 @@ export function Workbench() {
     }).catch(() => undefined);
     refetchMessages();
     let reconnectAttempts = 0;
-    let hasOpened = false;
     const source = new EventSource(`/api/sessions/${activeId}/stream`);
     source.onopen = () => {
       reconnectAttempts = 0;
-      if (!hasOpened) {
-        hasOpened = true;
-        return;
-      }
-      refetchMessages();
     };
     source.onmessage = (event) => {
       // Same pre-cleanup window as the fetch guards: events from the previous
@@ -473,10 +484,11 @@ export function Workbench() {
       } catch {
         return;
       }
-      if (payload) applyRiftxEvent(payload, eventContext);
+      if (payload) applyRiftxEvent(payload, { ...eventContext, reconcileMessages: refetchMessages });
     };
     source.onerror = () => {
       if (disposed || activeIdRef.current !== activeId) return;
+      setStreamReady(false);
       reconnectAttempts += 1;
       if (source.readyState === EventSource.CLOSED || reconnectAttempts >= 3) {
         setError(t("connectionLostRefresh"));
@@ -484,6 +496,7 @@ export function Workbench() {
     };
     return () => {
       disposed = true;
+      setStreamReady(false);
       controller.abort();
       source.close();
       if (messageDeltaFrameRef.current !== undefined) cancelAnimationFrame(messageDeltaFrameRef.current);
@@ -501,7 +514,7 @@ export function Workbench() {
   const subagentRunning = useMemo(() => subagents.filter((task) => task.status === "queued" || task.status === "running").length, [subagents]);
   const visibleMessages = useMemo(() => messages.filter((message) => message.toolName !== "spawn_subagent"), [messages]);
   const { conversationRef, conversationInnerRef, showJumpToLatest, visibleMessageCount, handleConversationScroll, revealToolCard, requestToolReveal, expandVisibleMessages, loadEarlierMessages, jumpToLatest, pauseAutoFollow, resumeAutoFollow, resetConversationView } = useConversationScroll(messages, visibleMessages.length, MESSAGE_BATCH_SIZE);
-  const eventContext: SessionEventContext = { activeId, t, queueMessageDelta, flushMessageDeltas, setMessages, setFindings, queueSubagentTask, queueSubagentTaskPatch, setApprovalQueue, setUsage, setSessions, setSessionRunning, setMainAgentRunning, setContextCompacting, setError };
+  const eventContext: Omit<SessionEventContext, "reconcileMessages"> = { activeId, t, queueMessageDelta, flushMessageDeltas, setMessages, setFindings, queueSubagentTask, queueSubagentTaskPatch, setApprovalQueue, setUsage, setSessions, setSessionRunning, setMainAgentRunning, setContextCompacting, setStreamReady, setError };
   // Clear every piece of per-session view state (messages stay: the fetch
   // merge reconciles them, and callers clear them for instant feedback).
   const resetSessionState = () => {
@@ -512,6 +525,7 @@ export function Workbench() {
     setApprovalQueue([]);
     setMainAgentRunning(false);
     setContextCompacting(false);
+    setStreamReady(false);
   };
   const displayedMessages = useMemo(() => visibleMessages.slice(-visibleMessageCount), [visibleMessages, visibleMessageCount]);
   const hasEarlierMessages = displayedMessages.length < visibleMessages.length;
@@ -541,7 +555,7 @@ export function Workbench() {
 
   const send = async (requestedMode?: "prompt" | "steer" | "followUp") => {
     const text = input.trim();
-    if (!text || !activeId) return;
+    if (!text || !activeId || !streamReady) return;
     const wasRunning = composerBusy;
     const mode = requestedMode ?? (wasRunning ? "steer" : "prompt");
     const messageId = crypto.randomUUID();
@@ -823,7 +837,7 @@ export function Workbench() {
       </section>
       <footer className="composer-wrap">
         {approval ? <ApprovalCard approval={approval} scopeExpansion={scopeExpansion} t={t} onDecide={(approved, scope) => void decide(approved, scope)} /> : null}
-        <Composer value={input} onChange={setInput} onSubmit={(mode) => void send(mode)} onStop={stopAll} busy={composerBusy} running={running} activeId={activeId} bootstrapping={bootstrapping} mainAgentRunning={mainAgentRunning} approvalMode={approvalMode} onApprovalModeChange={(mode) => void changeApprovalMode(mode)} usage={usage} modelProfiles={modelProfiles} activeProfileId={activeProfileId} modelName={modelName} modelSwitching={modelSwitching} onModelChange={(profileId) => void changeModel(profileId)} t={t} />
+        <Composer value={input} onChange={setInput} onSubmit={(mode) => void send(mode)} onStop={stopAll} busy={composerBusy} running={running} activeId={activeId} bootstrapping={bootstrapping} streamReady={streamReady} mainAgentRunning={mainAgentRunning} approvalMode={approvalMode} onApprovalModeChange={(mode) => void changeApprovalMode(mode)} usage={usage} modelProfiles={modelProfiles} activeProfileId={activeProfileId} modelName={modelName} modelSwitching={modelSwitching} onModelChange={(profileId) => void changeModel(profileId)} t={t} />
       </footer>
     </main>
     <aside className="right-rail" aria-label={t("subagents")}>

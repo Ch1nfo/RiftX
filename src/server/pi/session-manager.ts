@@ -74,7 +74,7 @@ function eventPayload(event: AgentSessionEvent): RiftxEvent {
   if (event.type === "tool_execution_end") return { type: "tool_end", toolName: base.toolName, toolCallId: base.toolCallId, result: base.result, isError: base.isError } as RiftxEvent;
   if (event.type === "agent_start") return { type: "session_state", state: "running" };
   if (event.type === "agent_end") return { type: "done" };
-  if (event.type === "turn_end") return { type: "message", message: base.message, toolResults: base.toolResults } as RiftxEvent;
+  if (event.type === "turn_end") return { type: "message", message: base.message, toolResults: base.toolResults, turnEnd: true } as RiftxEvent;
   if (event.type === "auto_retry_start") return { type: "session_state", state: "retrying", attempt: base.attempt, error: base.errorMessage } as RiftxEvent;
   if (event.type === "compaction_start") return { type: "session_state", state: "compacting", reason: base.reason } as RiftxEvent;
   if (event.type === "compaction_end") return { type: "session_state", state: "running", reason: base.reason } as RiftxEvent;
@@ -289,6 +289,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     aborting: false,
     abortEpoch: 0,
     waitingForSubagents: false,
+    compacting: false,
     deliveredSubagentResults: new Set(),
     deliveringSubagentResults: new Set(),
     skills: resourceLoader.getSkills().skills as SkillDescriptor[],
@@ -297,6 +298,8 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     unsubscribe: () => undefined
   };
   const unsubscribe = result.session.subscribe((event) => {
+    if (event.type === "compaction_start") record.compacting = true;
+    else if (event.type === "compaction_end") record.compacting = false;
     if (event.type === "agent_end" && subagents && !record.subagentDeliveryInProgress) {
       // Only enter the waiting state when subagents are actually still
       // running. Setting it unconditionally would make SSE reconnects replay
@@ -325,6 +328,8 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     }
     const payload = event.type === "agent_end" && subagents?.hasActiveTasks() && !record.subagentDeliveryInProgress
       ? { type: "session_state", state: "waiting_for_subagents" }
+      : event.type === "compaction_end"
+        ? { type: "session_state", state: result.session.isStreaming ? "running" : "idle", reason: event.reason }
       : eventPayload(event);
     trackToolStatus(payload as RiftxEvent);
     emitter.emit("event", payload);
@@ -647,7 +652,8 @@ export async function subscribeSession(id: string, listener: (event: RiftxEvent)
     // call. If any replay step throws, the listener must come off again —
     // the route's cleanup would otherwise hold a default no-op and every
     // reconnect would leak another listener onto the emitter.
-    if (record.waitingForSubagents) onEvent({ type: "session_state", state: "waiting_for_subagents" });
+    if (record.compacting) onEvent({ type: "session_state", state: "compacting" });
+    else if (record.waitingForSubagents) onEvent({ type: "session_state", state: "waiting_for_subagents" });
     else if (record.session.isStreaming) onEvent({ type: "session_state", state: "running" });
     else onEvent({ type: "session_state", state: "idle" });
     onEvent({ type: "usage", usage: usageFromRecord(record) });

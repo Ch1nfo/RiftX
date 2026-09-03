@@ -26,7 +26,6 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   };
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      controller.enqueue(encoder.encode(encode({ type: "connected", sessionId: id })));
       // The SSE headers are already committed, so a failure here (archive
       // race, corrupt session file, model registration error) must surface as
       // an in-stream error event — otherwise the browser just reconnect-loops
@@ -50,6 +49,10 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
           return;
         }
         unsubscribe = cancel;
+        // This is a readiness event, not merely an HTTP-open event. Emitting
+        // it after subscribeSession closes the cold-start window where a
+        // prompt could run before its Session listener existed.
+        controller.enqueue(encoder.encode(encode({ type: "connected", sessionId: id })));
       } catch (error) {
         controller.enqueue(encoder.encode(encode({ type: "error", error: errorMessage(error, "读取会话失败") })));
         controller.close();

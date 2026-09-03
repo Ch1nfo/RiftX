@@ -45,6 +45,7 @@ export type SessionRecord = {
   aborting?: boolean;
   abortEpoch?: number;
   waitingForSubagents?: boolean;
+  compacting?: boolean;
   promptChain?: Promise<void>;
   subagentDeliveryInProgress?: boolean;
   deliveredSubagentResults: Set<string>;
@@ -73,6 +74,7 @@ export const sessionCreation = globalThis.__riftxSessionCreation ?? (globalThis.
 
 export function isSessionRecordRunning(record: SessionRecord) {
   return record.session.isStreaming
+    || Boolean(record.compacting)
     || Boolean(record.waitingForSubagents)
     || record.gate.pendingRequests().length > 0
     || (record.subagents?.runningCount ?? 0) > 0;

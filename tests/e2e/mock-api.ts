@@ -41,6 +41,8 @@ export class MockApi {
   private server?: Server;
   private port = 0;
   private secondSessionRunning = false;
+  private secondSessionMessages: Array<{ id: string; role: "assistant"; content: string }> = [];
+  private secondStream?: ServerResponse;
 
   readonly phaseADone = this.phaseA.promise;
   readonly allDone = this.finished.promise;
@@ -54,17 +56,31 @@ export class MockApi {
     this.secondSessionRunning = false;
   }
 
+  /** Completes a turn without sending text_delta, reproducing an SSE gap. */
+  completeSecondSessionReply(content: string) {
+    this.secondSessionRunning = false;
+    this.secondSessionMessages = [{ id: "persisted-reply", role: "assistant", content }];
+    this.secondStream?.write(`data: ${JSON.stringify({ type: "message", turnEnd: true, message: { role: "assistant", content } })}\n\n`);
+    this.secondStream?.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
+  }
+
   async start(): Promise<number> {
     const server = createServer((request, response) => {
       const url = request.url ?? "";
       if (url === `/api/sessions/${SESSION_ID}/stream`) {
         response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+        response.write(`data: ${JSON.stringify({ type: "connected", sessionId: SESSION_ID })}\n\n`);
         const closed = new Promise<void>((resolve) => response.on("close", resolve));
         void this.runTimeline(response, closed).catch(() => undefined);
         return;
       }
       if (url === `/api/sessions/${SECOND_SESSION_ID}/stream`) {
         response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+        response.write(`data: ${JSON.stringify({ type: "connected", sessionId: SECOND_SESSION_ID })}\n\n`);
+        this.secondStream = response;
+        response.on("close", () => {
+          if (this.secondStream === response) this.secondStream = undefined;
+        });
         return;
       }
       const json = (body: unknown) => {
@@ -91,6 +107,7 @@ export class MockApi {
       }
       if (url === `/api/sessions/${SECOND_SESSION_ID}/prompt` && request.method === "POST") {
         this.secondSessionRunning = true;
+        this.secondSessionMessages = [];
         json({ ok: true, sessionId: SECOND_SESSION_ID });
         return;
       }
@@ -99,7 +116,7 @@ export class MockApi {
         return;
       }
       if (url === `/api/sessions/${SECOND_SESSION_ID}/messages`) {
-        json([]);
+        json(this.secondSessionMessages);
         return;
       }
       if (url === `/api/sessions/${SESSION_ID}` || url === `/api/sessions/${SECOND_SESSION_ID}`) json({});

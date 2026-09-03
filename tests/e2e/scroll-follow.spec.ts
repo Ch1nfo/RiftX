@@ -103,6 +103,22 @@ test.describe("conversation auto-follow", () => {
     mock.finishSecondSession();
     await expect(page.locator(".session-item", { hasText: "E2E second session" }).locator(".session-presence.running")).toHaveCount(0, { timeout: 5_000 });
   });
+
+  test("reconciles a persisted reply when its text deltas were missed", async ({ page, context }) => {
+    await routeApiToMock(context);
+    await page.goto("/");
+
+    await page.locator(".session-item", { hasText: "E2E second session" }).click();
+    await page.locator(".composer textarea").fill("finish without visible deltas");
+    await page.locator(".send-button").click();
+    await expect(page.locator(".session-item", { hasText: "E2E second session" }).locator(".session-presence.running")).toBeVisible();
+
+    mock.completeSecondSessionReply("persisted answer after a dropped stream segment");
+
+    // No session switch or manual refresh: the terminal event must fetch the
+    // persisted snapshot and make the otherwise-missed reply visible.
+    await expect(page.locator(".message.assistant").last()).toContainText("persisted answer after a dropped stream segment");
+  });
 });
 
 async function expectBottomed(page: Page, bottomed: boolean) {

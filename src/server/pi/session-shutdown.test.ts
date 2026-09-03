@@ -10,6 +10,7 @@ function makeFakeRecord(id: string, calls: Calls): ShutdownTarget {
     gate: { rejectAll: () => calls.push("rejectAll") },
     session: {
       abortBash: () => calls.push("abortBash"),
+      abortCompaction: () => calls.push("abortCompaction"),
       abort: async () => calls.push("abort"),
       dispose: () => calls.push("dispose")
     },
@@ -28,6 +29,7 @@ test("shutdown aborts the running main agent before detaching, exactly once", as
   // down permanently and the SDK session is disposed last.
   assert.equal(calls[0], "rejectAll");
   assert.ok(calls.indexOf("abortBash") < calls.indexOf("abort"), "abortBash precedes abort");
+  assert.ok(calls.indexOf("abortCompaction") < calls.indexOf("abort"), "compaction abort precedes agent abort");
   assert.ok(calls.indexOf("abort") < calls.indexOf("browser-shutdown"), "abort precedes browser shutdown");
   assert.ok(calls.indexOf("browser-shutdown") < calls.indexOf("unsubscribe"), "browser shutdown precedes unsubscribe");
   assert.equal(calls[calls.length - 1], "dispose");
@@ -55,7 +57,7 @@ test("a failing cleanup step never skips the remaining ones", async () => {
   };
   await shutdownSessionRecord(record);
   // Every later step still ran and shutdown resolved instead of rejecting.
-  assert.deepEqual(calls, ["rejectAll", "abortBash", "abort", "subagents-abortAll", "browser-shutdown", "unsubscribe", "dispose"]);
+  assert.deepEqual(calls, ["rejectAll", "abortBash", "abortCompaction", "abort", "subagents-abortAll", "browser-shutdown", "unsubscribe", "dispose"]);
 });
 
 test("shutdown waits for an in-flight stop before cleaning up", async () => {
@@ -127,6 +129,7 @@ test("a user Stop cancels browser work without permanently closing it", async ()
   // Stop uses the reopenable close (the session survives and must be able to
   // relaunch the browser on the next prompt), never the permanent shutdown.
   assert.ok(calls.includes("browser-close"), "stop cancels in-flight Playwright work");
+  assert.ok(calls.includes("abortCompaction"), "stop cancels pre-response compaction work");
   assert.equal(calls.includes("browser-shutdown"), false, "stop must not permanently close the browser");
   assert.deepEqual(emitted, ["session_state", "done"]);
 });

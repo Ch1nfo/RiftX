@@ -27,6 +27,8 @@ export type SessionEventContext = {
   setSessionRunning: (sessionId: string, running: boolean) => void;
   setMainAgentRunning: (value: boolean) => void;
   setContextCompacting: (value: boolean) => void;
+  setStreamReady: (value: boolean) => void;
+  reconcileMessages: () => void;
   setError: (value: string) => void;
 };
 
@@ -52,7 +54,14 @@ export function normalizeMessages(items: MergeableMessage[]) {
 }
 
 export function applyRiftxEvent(payload: RiftxEvent, ctx: SessionEventContext) {
-  if (payload.type === "connected") return;
+  if (payload.type === "connected") {
+    // `connected` is emitted only after the server-side Session listener is
+    // installed. Reconcile the disk-backed snapshot to close the unavoidable
+    // fetch-to-subscribe gap after a WebUI restart or EventSource reconnect.
+    ctx.setStreamReady(true);
+    ctx.reconcileMessages();
+    return;
+  }
   if (payload.type === "text_delta" || payload.type === "thinking_delta") {
     ctx.queueMessageDelta({ role: payload.type === "text_delta" ? "assistant" : "thinking", content: String(payload.delta ?? "") });
     return;
@@ -123,6 +132,14 @@ export function applyRiftxEvent(payload: RiftxEvent, ctx: SessionEventContext) {
   if (["tool_start", "tool_status", "tool_update", "tool_end", "message", "done", "error"].includes(payload.type)) {
     ctx.setMessages((current) => current.map((message) => message.role === "thinking" && message.status === "streaming" ? { ...message, status: "done" } : message));
   }
+  if (payload.type === "message" && payload.turnEnd) {
+    // turn_end carries the authoritative completed assistant message. Rather
+    // than trusting that every transient text_delta arrived, reload the
+    // persisted branch and merge it with the local in-flight tail.
+    ctx.reconcileMessages();
+    return;
+  }
+  if (payload.type === "message") return;
   if (payload.type === "session_state") {
     const running = payload.state !== "idle";
     ctx.setMainAgentRunning(running);
@@ -131,6 +148,10 @@ export function applyRiftxEvent(payload: RiftxEvent, ctx: SessionEventContext) {
     return;
   }
   if (payload.type === "done") {
+    // `done` may be the only terminal event received after a brief SSE gap.
+    // A final reconciliation makes completed replies visible without forcing
+    // the user to switch sessions and back.
+    ctx.reconcileMessages();
     ctx.setMainAgentRunning(false);
     ctx.setSessionRunning(ctx.activeId, false);
     ctx.setContextCompacting(false);
