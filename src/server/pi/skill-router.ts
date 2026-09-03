@@ -75,6 +75,9 @@ function searchableText(skill: SkillDescriptor) {
 export function rankSkills(task: string, skills: readonly SkillDescriptor[], limit = 3): SkillMatch[] {
   const queryTerms = terms(task);
   if (queryTerms.length === 0) return [];
+  // Short single-concept queries ("竞态", "IDOR") can only match 1-2 terms;
+  // the full cutoff of 4 would leave them without any auto-loaded skill.
+  const cutoff = queryTerms.length > 3 ? 4 : 2;
   return skills
     .filter((skill) => !skill.disableModelInvocation)
     .map((skill) => {
@@ -85,7 +88,7 @@ export function rankSkills(task: string, skills: readonly SkillDescriptor[], lim
         + (matchedTerms.length > 1 && queryTerms.every((term) => searchableTerms.has(term)) ? 3 : 0);
       return { ...skill, score, matchedTerms };
     })
-    .filter((skill) => skill.score >= 4)
+    .filter((skill) => skill.score >= cutoff)
     .sort((left, right) => right.score - left.score || left.name.localeCompare(right.name))
     .slice(0, limit);
 }

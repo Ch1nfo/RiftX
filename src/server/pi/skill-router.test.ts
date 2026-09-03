@@ -91,3 +91,15 @@ test("object prototype keys in descriptions never crash the router", () => {
   assert.equal(top?.name, "exploit-proto-pollution");
   assert.doesNotThrow(() => rankSkills("valueOf toString", skills, 1));
 });
+
+test("short single-concept queries still auto-load their skill", () => {
+  const skills = [
+    skill("exploit-race", "Race condition 竞态条件测试：优惠券并发、TOCTOU。"),
+    skill("exploit-authz", "IDOR 越权测试。"),
+    skill("exploit-host-header", "Host 头攻击：密码重置投毒。"),
+    skill("security-passwords", "password brute force 密码爆破 词表。")
+  ];
+  assert.equal(rankSkills("竞态", skills, 1)[0]?.name, "exploit-race");
+  assert.equal(rankSkills("IDOR", skills, 1)[0]?.name, "exploit-authz");
+  assert.equal(rankSkills("密码爆破", skills, 1)[0]?.name, "security-passwords");
+});

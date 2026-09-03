@@ -1,6 +1,6 @@
 ---
 name: security-webshells
-description: "Web shell samples for detection and analysis: PHP, ASP, ASPX, JSP, Python, Perl shells. Use for security research and detection system testing."
+description: "Webshell samples for detection and analysis webshell 样本: PHP, ASP, ASPX, JSP, Python, Perl shells. Use for security research and detection system testing."
 ---
 
 # SecLists Web-Shells

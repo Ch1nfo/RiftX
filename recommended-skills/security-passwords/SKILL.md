@@ -1,6 +1,6 @@
 ---
 name: security-passwords
-description: "Top password lists for security testing: common passwords, darkweb leaks, worst passwords. Curated essentials (<10MB)."
+description: "Top password lists for password brute force 密码爆破/撞库: common passwords, darkweb leaks, worst passwords, default credentials. Curated essentials."
 ---
 
 # SecLists Passwords (Curated)
