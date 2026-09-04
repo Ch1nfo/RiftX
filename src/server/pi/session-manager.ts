@@ -43,6 +43,7 @@ import { abortSessionRecord, shutdownSessionRecord } from "./session-shutdown";
 import { switchSessionProfile, withProfileSwitchLock } from "./apply-session-profile";
 import { registerTrackedProfile, registerProfileModel, restoreProviderRegistration, memoizedTitleRuntime, type ProviderRegistrations } from "./model-registration";
 import { extractLastAssistantResult, buildSummaryTranscript } from "./subagent-result";
+import { archivedRestoreError, classifyArchivedRestore, restoredArchiveState } from "./session-archive";
 import { sessions, sessionCreation, RUNTIME_VERSION, type RuntimeDeps, type SessionRecord } from "./session-registry";
 import { createFindingTool, type FindingSourceInfo } from "./tools/finding-tool";
 import { createSubagentTool } from "./tools/subagent-tool";
@@ -736,6 +737,37 @@ export async function archiveSession(id: string) {
     await shutdownSessionRecord(record);
     sessions.delete(id);
   }
+  return listSessions();
+}
+
+async function sessionPathExists(path: string) {
+  if (!path) return false;
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function restoreArchivedSession(id: string) {
+  const config = await readConfig();
+  const inCurrentWorkspace = Boolean((await listWorkspaceSessionInfos(config.cwd)).find((item) => item.id === id));
+  const archivedPath = config.archivedSessions.find((item) => item.id === id)?.path ?? "";
+  let sessionFileExists = inCurrentWorkspace || await sessionPathExists(archivedPath);
+  if (!sessionFileExists) {
+    sessionFileExists = (await AgentSessionManager.list(config.cwd, getAppPaths().sessions)).some((item) => item.id === id);
+  }
+  const decision = classifyArchivedRestore({
+    archived: config.archivedSessionIds.includes(id),
+    inCurrentWorkspace,
+    sessionFileExists
+  });
+  if (!decision.ok) {
+    const { message, status } = archivedRestoreError(decision.code);
+    throw new RiftxError(message, decision.code, status);
+  }
+  await updateConfig((current) => restoredArchiveState(current, id));
   return listSessions();
 }
 

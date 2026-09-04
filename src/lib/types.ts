@@ -124,9 +124,10 @@ export type SessionSummary = {
   contextWindow?: number;
   usage?: ContextUsage;
   running?: boolean;
+  restoreBlock?: "wrong-workspace" | "missing";
 };
 
-export type ArchivedSession = Omit<SessionSummary, "archived">;
+export type ArchivedSession = Omit<SessionSummary, "archived" | "restoreBlock">;
 
 const RIFTX_EVENT_TYPES = [
   "connected", "finding", "findingPatch", "usage", "session_state", "subagent_snapshot",

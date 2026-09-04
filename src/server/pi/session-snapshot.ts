@@ -8,6 +8,7 @@ import { orderSessionsByActivity } from "@/lib/session-activity";
 import { emptyContextUsage, normalizeContextUsage } from "./usage";
 import { estimateCompactedUsage, estimateMessagesContextUsage } from "./mid-turn-compaction";
 import { isSessionRecordRunning, sessions, type SessionRecord } from "./session-registry";
+import { archivedRestoreBlock } from "./session-archive";
 import { textFromContent } from "./text-content";
 import { isSubagentInjectionMessage } from "./session-join";
 
@@ -274,12 +275,28 @@ export async function listSessions(): Promise<SessionSummary[]> {
       usage: usageFromRecord(session),
       running: isSessionRecordRunning(session)
     } satisfies SessionSummary));
-  const archivedMetadata = config.archivedSessions
+  const archivedMetadata = await Promise.all(config.archivedSessions
     .filter((session) => !seen.has(session.id) && !live.some((item) => item.id === session.id))
-    .map((session) => ({ ...session, name: summaryName(config, session.id, session.firstMessage, true), archived: true } satisfies SessionSummary));
+    .map(async (session) => {
+      const sessionFileExists = Boolean(session.path) && await stat(session.path).then(() => true, () => false);
+      return {
+        ...session,
+        name: summaryName(config, session.id, session.firstMessage, true),
+        archived: true,
+        restoreBlock: archivedRestoreBlock(false, sessionFileExists)
+      } satisfies SessionSummary;
+    }));
   const archivedFallback = config.archivedSessionIds
     .filter((id) => !seen.has(id) && !archivedMetadata.some((session) => session.id === id))
-    .map((id) => ({ id, path: "", name: summaryName(config, id, "", true), firstMessage: "", updatedAt: new Date().toISOString(), archived: true } satisfies SessionSummary));
+    .map((id) => ({
+      id,
+      path: "",
+      name: summaryName(config, id, "", true),
+      firstMessage: "",
+      updatedAt: new Date().toISOString(),
+      archived: true,
+      restoreBlock: archivedRestoreBlock(false, false)
+    } satisfies SessionSummary));
   return orderSessionsByActivity([...live, ...persisted, ...archivedMetadata, ...archivedFallback]);
 }
 

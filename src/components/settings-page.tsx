@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Archive, ArrowLeft, Check, FloppyDisk, Plus, Trash, Warning } from "@phosphor-icons/react";
+import { Archive, ArrowCounterClockwise, ArrowLeft, Check, FloppyDisk, Plus, Trash, Warning } from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
 import { API_TYPES, SUBAGENT_AGGRESSIVENESS, TRANSPORTS, clampConcurrency, type AppConfig, type ModelProfile, type SessionSummary, type SubagentAggressiveness } from "@/lib/types";
 import { Field, LanguageToggle, RiftxLogo, SelectField, ThemeToggle } from "./ui";
@@ -31,6 +31,7 @@ export function SettingsPage() {
   const [archivedSessions, setArchivedSessions] = useState<SessionSummary[]>([]);
   const [archivedLoading, setArchivedLoading] = useState(false);
   const [archivedLoaded, setArchivedLoaded] = useState(false);
+  const [archivedActionId, setArchivedActionId] = useState<string | null>(null);
   const [activeSection, setActiveSection] = useState<"model-agent" | "archived">("model-agent");
 
   useEffect(() => {
@@ -139,9 +140,48 @@ export function SettingsPage() {
   };
   const deleteArchived = async (session: SessionSummary) => {
     if (!window.confirm(t("confirmDelete", { name: session.name || t("newSessionEnglish") }))) return;
-    const response = await fetch(`/api/sessions/${session.id}`, { method: "DELETE" });
-    if (!response.ok) { setError((await response.json()).error ?? t("deleteArchivedFailed")); return; }
-    setArchivedSessions((current) => current.filter((item) => item.id !== session.id));
+    setArchivedActionId(session.id);
+    setError("");
+    try {
+      const response = await fetch(`/api/sessions/${session.id}`, { method: "DELETE" });
+      const data = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? t("deleteArchivedFailed"));
+      setArchivedSessions((current) => current.filter((item) => item.id !== session.id));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("deleteArchivedFailed"));
+    } finally {
+      setArchivedActionId(null);
+    }
+  };
+  const restoreHint = (session: SessionSummary) => session.restoreBlock === "wrong-workspace"
+    ? t("restoreArchivedWrongWorkspace")
+    : session.restoreBlock === "missing"
+      ? t("restoreArchivedMissing")
+      : "";
+  const restoreArchived = async (session: SessionSummary) => {
+    if (session.restoreBlock) {
+      setError(restoreHint(session) || t("restoreArchivedFailed"));
+      return;
+    }
+    setArchivedActionId(session.id);
+    setError("");
+    try {
+      const response = await fetch(`/api/sessions/${session.id}/archive`, { method: "DELETE" });
+      const data = await response.json() as { error?: string; code?: string };
+      if (!response.ok) {
+        const message = data.code === "SESSION_NOT_IN_WORKSPACE"
+          ? t("restoreArchivedWrongWorkspace")
+          : data.code === "SESSION_NOT_FOUND"
+            ? t("restoreArchivedMissing")
+            : data.error ?? t("restoreArchivedFailed");
+        throw new Error(message);
+      }
+      setArchivedSessions((current) => current.filter((item) => item.id !== session.id));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("restoreArchivedFailed"));
+    } finally {
+      setArchivedActionId(null);
+    }
   };
   return <div className="settings-shell">
     <aside className="settings-nav">
@@ -152,7 +192,7 @@ export function SettingsPage() {
       <a href="#archived" className={`settings-nav-item ${activeSection === "archived" ? "active" : ""}`} onClick={() => setActiveSection("archived")}>{t("archived")}</a>
     </aside>
     <main className="settings-main">
-      <header className="settings-header"><div><span className="eyebrow">{t("workspaceSettings")}</span><h1>{activeSection === "archived" ? t("archived") : t("modelAgent")}</h1><p>{activeSection === "archived" ? t("archivedDesc") : t("modelSettingsDesc")}</p></div><div className="settings-header-actions"><LanguageToggle /><ThemeToggle /></div></header>
+      <header className="settings-header"><div><span className="eyebrow">{t("workspaceSettings")}</span><h1>{activeSection === "archived" ? t("archived") : t("modelAgent")}</h1><p>{activeSection === "archived" ? t("archivedManageDesc") : t("modelSettingsDesc")}</p></div><div className="settings-header-actions"><LanguageToggle /><ThemeToggle /></div></header>
       <div className="settings-grid">
         {activeSection === "model-agent" ? <>
         <section id="model-agent" className="settings-card">
@@ -175,7 +215,11 @@ export function SettingsPage() {
         <section className="settings-card system-prompt-card"><div className="card-heading"><div><h2>{t("systemPrompt")}</h2><p>{t("systemPromptDesc")}</p></div>{sectionSaveButton("systemPrompt", () => void saveSection("systemPrompt", { systemPromptEnabled: config.systemPromptEnabled, systemPrompt: config.systemPrompt }))}</div><label className="toggle-row"><span><strong>{t("customSystemPromptEnabled")}</strong><small>{t("customSystemPromptEnabledDesc")}</small></span><input type="checkbox" checked={config.systemPromptEnabled} onChange={(event) => setConfig({ ...config, systemPromptEnabled: event.target.checked })} /></label>{config.systemPromptEnabled ? <Field label={t("customSystemPrompt")}><textarea className="settings-prompt-input" value={config.systemPrompt} onChange={(event) => setConfig({ ...config, systemPrompt: event.target.value })} placeholder={t("systemPromptPlaceholder")} rows={12} /></Field> : null}</section>
         <section className="settings-card"><div className="card-heading"><div><h2>{t("childAgent")}</h2><p>{t("childAgentDesc")}</p></div>{sectionSaveButton("childAgent", () => void saveSection("childAgent", { childProfileId: config.childProfileId, childInherit: config.childInherit, maxConcurrentSubagents: config.maxConcurrentSubagents, subagentAggressiveness: config.subagentAggressiveness }))}</div><label className="toggle-row"><span><strong>{t("inheritMain")}</strong><small>{t("inheritMainDesc")}</small></span><input type="checkbox" checked={config.childInherit} onChange={(event) => setConfig({ ...config, childInherit: event.target.checked })} /></label>{config.childInherit ? null : <Field label={t("independentProfile")}><SelectField value={config.childProfileId ?? profile.id} onValueChange={(value) => setConfig({ ...config, childProfileId: value })} options={config.profiles.map((item) => ({ value: item.id, label: item.name || item.model }))} /></Field>}<Field label={t("maxConcurrentSubagents")}><input type="text" inputMode="numeric" maxLength={2} value={maxConcurrentDraft} onChange={(event) => updateMaxConcurrentDraft(event.target.value)} onFocus={(event) => { const input = event.currentTarget; const end = input.value.length; window.requestAnimationFrame(() => { if (input.isConnected) input.setSelectionRange(end, end); }); }} onBlur={normalizeMaxConcurrentDraft} placeholder={t("maxConcurrentSubagentsHint")} /></Field><Field label={t("subagentAggressiveness")}><SelectField value={config.subagentAggressiveness} onValueChange={(value) => setConfig({ ...config, subagentAggressiveness: value as SubagentAggressiveness })} options={SUBAGENT_AGGRESSIVENESS.map((value) => ({ value, label: value === "low" ? t("subagentLow") : value === "high" ? t("subagentHigh") : t("subagentDefault") }))} /></Field>{config.subagentAggressiveness === "high" ? <div className="safety-note"><Warning size={18} weight="regular" /><span>{t("subagentHighWarning")}</span></div> : null}</section>
         <section className="settings-card"><div className="card-heading"><div><h2>{t("browserScope")}</h2><p>{t("browserScopeDesc")}</p></div>{sectionSaveButton("browserScope", () => void saveSection("browserScope", { browserScope: browserScopeDraft.split(/\r?\n/).map((line) => line.trim()).filter(Boolean), browserIgnoreTlsErrors: config.browserIgnoreTlsErrors }))}</div><Field label={t("browserScope")}><textarea className="settings-prompt-input" value={browserScopeDraft} onChange={(event) => setBrowserScopeDraft(event.target.value)} placeholder={"10.0.0.0/8\n10.0.181.248:8000\n*.target.com"} rows={5} spellCheck={false} /></Field><label className="toggle-row no-divider"><span><strong>{t("ignoreTlsErrors")}</strong><small>{t("ignoreTlsErrorsDesc")}</small></span><input type="checkbox" checked={config.browserIgnoreTlsErrors !== false} onChange={(event) => setConfig({ ...config, browserIgnoreTlsErrors: event.target.checked })} /></label></section><section className="settings-card"><div className="card-heading"><div><h2>{t("webResearch")}</h2><p>{t("webResearchDesc")}</p></div>{sectionSaveButton("webResearch", () => void saveSection("webResearch", { webSearch: { tavilyApiKey: config.webSearch?.tavilyApiKey ?? "" } }, () => ({})))}</div><Field label={t("webSearchTavilyKey")}><input type="password" value={config.webSearch?.tavilyApiKey ?? ""} onChange={(event) => setConfig({ ...config, webSearch: { tavilyApiKey: event.target.value } })} placeholder={t("webSearchTavilyKeyPlaceholder")} /></Field></section><section className="settings-card"><div className="card-heading"><div><h2>{t("mcpServers")}</h2><p>{t("mcpServersDesc")}</p></div><div className="inline-actions"><button className="button secondary" disabled={mcpTesting || savingSection !== null} onClick={() => void runMcpTest()}>{mcpTesting ? t("mcpTesting") : t("mcpTestButton")}</button>{sectionSaveButton("mcpServers", saveMcpServers)}</div></div><Field label={t("mcpServers")}><textarea className="settings-prompt-input" value={mcpServersDraft} onChange={(event) => setMcpServersDraft(event.target.value)} placeholder={t("mcpServersPlaceholder")} rows={8} spellCheck={false} /></Field>{mcpResults ? <div className="mcp-test-result">{mcpResults.length ? mcpResults.map((result) => <div key={result.name} className={result.ok ? "ok" : "fail"}>{result.ok ? `✓ ${result.name}: ${result.toolCount} tools` : `✗ ${result.name}: ${result.error}`}</div>) : <div className="ok">{t("mcpNoServers")}</div>}</div> : null}</section>
-        </> : <section id="archived" className="settings-card"><div className="card-heading"><div><h2>{t("archived")}</h2><p>{t("archivedDesc")}</p></div><Archive size={18} color="var(--muted)" /></div>{archivedLoading ? <div className="archived-empty">{t("loading")}</div> : archivedSessions.length ? <div className="archived-session-list">{archivedSessions.map((session) => <div className="archived-session-row" key={session.id}><div className="session-copy"><strong>{session.name || t("newSessionEnglish")}</strong><small>{new Date(session.updatedAt).toLocaleString()}</small></div><button className="icon-button danger-icon" aria-label={`${t("deleteArchived")} ${session.name || t("archived")}`} title={t("deleteArchived")} onClick={() => void deleteArchived(session)}><Trash size={16} /></button></div>)}</div> : <div className="archived-empty">{t("noArchived")}</div>}</section>}
+        </> : <section id="archived" className="settings-card"><div className="card-heading"><div><h2>{t("archived")}</h2><p>{t("archivedManageDesc")}</p></div><Archive size={18} color="var(--muted)" /></div>{archivedLoading ? <div className="archived-empty">{t("loading")}</div> : archivedSessions.length ? <div className="archived-session-list">{archivedSessions.map((session) => {
+          const hint = restoreHint(session);
+          const restoreDisabled = archivedActionId !== null || Boolean(session.restoreBlock);
+          return <div className="archived-session-row" key={session.id}><div className="session-copy"><strong>{session.name || t("newSessionEnglish")}</strong><small>{new Date(session.updatedAt).toLocaleString()}</small>{hint ? <small className="archived-session-hint">{hint}</small> : null}</div><div className="archived-session-actions"><button className="icon-button" disabled={restoreDisabled} aria-label={`${t("restoreArchived")} ${session.name || t("archived")}${hint ? `. ${hint}` : ""}`} title={hint || t("restoreArchived")} onClick={() => void restoreArchived(session)}><ArrowCounterClockwise size={16} /></button><button className="icon-button danger-icon" disabled={archivedActionId !== null} aria-label={`${t("deleteArchived")} ${session.name || t("archived")}`} title={t("deleteArchived")} onClick={() => void deleteArchived(session)}><Trash size={16} /></button></div></div>;
+        })}</div> : <div className="archived-empty">{t("noArchived")}</div>}</section>}
       </div>
       {error ? <div className="inline-error">{error}</div> : null}
     </main>
