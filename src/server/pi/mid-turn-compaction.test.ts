@@ -100,3 +100,31 @@ test("mid-turn compaction replaces the active loop context in place", async () =
   assert.equal(transformed, activeMessages);
   assert.equal(activeMessages[0]?.content, "summary");
 });
+
+test("mid-turn compaction restores the investigation capsule to the detached and future contexts", async () => {
+  const listeners = new Set<(event: { type: string; reason?: string; result?: unknown }) => void>();
+  const state: { messages: Array<Record<string, unknown>> } = { messages: [{ role: "toolResult", content: "old" }] };
+  const session = {
+    agent: { state, transformContext: undefined },
+    model: { contextWindow: 1_000 },
+    messages: state.messages,
+    settingsManager: { getCompactionSettings: () => ({ enabled: true, reserveTokens: 100 }) },
+    getContextUsage: () => ({ tokens: 901, contextWindow: 1_000, percent: 90, input: null, output: null, cacheRead: null, cacheWrite: null, remaining: 99 }),
+    subscribe: (listener: (event: { type: string; reason?: string; result?: unknown }) => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    abortCompaction: () => undefined,
+    _agentEventQueue: Promise.resolve(),
+    _runAutoCompaction: async () => {
+      state.messages = [{ role: "compactionSummary", summary: "summary" }];
+      for (const listener of listeners) listener({ type: "compaction_end", reason: "threshold", result: { summary: "summary" } });
+    }
+  } as unknown as AgentSession;
+
+  installMidTurnCompaction(session, async () => "<riftx-investigation-capsule>durable finding</riftx-investigation-capsule>");
+  const activeMessages = session.messages as unknown as Array<Record<string, unknown>>;
+  const transformed = await session.agent.transformContext!(activeMessages as never) as unknown as Array<Record<string, unknown>>;
+  assert.equal(transformed.filter((message) => message.customType === "riftx_investigation_capsule").length, 1);
+  assert.equal(state.messages.filter((message) => message.customType === "riftx_investigation_capsule").length, 1);
+});

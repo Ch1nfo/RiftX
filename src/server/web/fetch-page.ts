@@ -11,11 +11,6 @@ const MAX_CONTENT_CHARS = 30_000;
 /** Byte ceiling while reading: the body is never fully buffered before truncation. */
 const MAX_READ_BYTES = MAX_CONTENT_CHARS * 4;
 
-export function truncateContent(text: string, max = MAX_CONTENT_CHARS) {
-  if (text.length <= max) return text;
-  return `${text.slice(0, max)}\n\n[... truncated at ${max} characters — fetch the source URL directly if you need more]`;
-}
-
 /** Tag-stripping fallback for when the reader service is unavailable: crude, dependency-free, structure-preserving where cheap. */
 export function htmlToText(html: string) {
   return html
@@ -97,7 +92,7 @@ export async function fetchPage(url: string, options: { signal?: AbortSignal } &
     });
     if (response.ok) {
       const text = await readCapped(response);
-      if (text.trim()) return { content: truncateContent(text), source: "jina" };
+      if (text.trim()) return { content: text, source: "jina" };
     }
   } catch {
     // fall through to the direct fetch
@@ -125,7 +120,7 @@ export async function fetchPage(url: string, options: { signal?: AbortSignal } &
     const contentType = response.headers.get("content-type") ?? "";
     const content = contentType.includes("html") ? htmlToText(body) : body;
     if (!content.trim()) throw new Error("the page rendered to empty content");
-    return { content: truncateContent(content), source: "direct" };
+    return { content, source: "direct" };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new Error(`Could not fetch ${url} via the reader service or directly: ${reason}`);

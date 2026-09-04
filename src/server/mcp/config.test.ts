@@ -14,6 +14,27 @@ test("accepts valid stdio and http servers", () => {
   ]);
 });
 
+test("validates and preserves MCP role visibility and raw-name filters", () => {
+  const servers = [{
+    name: "scanner",
+    transport: "stdio",
+    command: "scan",
+    visibility: ["child"],
+    includeTools: ["scan_*", "query"],
+    excludeTools: ["*_admin"]
+  }];
+  assert.equal(mcpServersValidationError(servers), null);
+  assert.deepEqual(normalizeMcpServers(servers), [{
+    ...servers[0],
+    transport: "stdio",
+    args: [],
+    env: {}
+  }]);
+  assert.match(String(mcpServersValidationError([{ name: "x", command: "x", visibility: ["main", "main"] }])), /visibility/);
+  assert.match(String(mcpServersValidationError([{ name: "x", command: "x", visibility: ["other"] }])), /visibility/);
+  assert.match(String(mcpServersValidationError([{ name: "x", command: "x", includeTools: [""] }])), /includeTools/);
+});
+
 test("accepts the ecosystem 'type' key and canonicalizes it to 'transport'", () => {
   const pasted = [{ name: "yakit", type: "stdio", command: "/path/to/yak", args: ["mcp", "--transport", "stdio"] }];
   assert.equal(mcpServersValidationError(pasted), null);

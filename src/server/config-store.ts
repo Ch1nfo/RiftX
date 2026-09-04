@@ -14,6 +14,7 @@ const LEGACY_AGENT_PATH = join(ROOT, "pi-agent");
 const SUBAGENT_PATH = join(ROOT, "subagents");
 const EVIDENCE_PATH = join(ROOT, "evidence");
 const SKILLS_PATH = join(ROOT, "skills");
+const ARTIFACTS_PATH = join(ROOT, "artifacts");
 export function getLaunchDirectory() {
   return resolve(process.env.RIFTX_LAUNCH_CWD || process.cwd());
 }
@@ -57,12 +58,13 @@ async function ensureAppDirs() {
     migrateAgentDir.then(() => mkdir(AGENT_PATH, { recursive: true, mode: 0o700 })),
     mkdir(SUBAGENT_PATH, { recursive: true, mode: 0o700 }),
     mkdir(EVIDENCE_PATH, { recursive: true, mode: 0o700 }),
-    mkdir(SKILLS_PATH, { recursive: true, mode: 0o700 })
+    mkdir(SKILLS_PATH, { recursive: true, mode: 0o700 }),
+    mkdir(ARTIFACTS_PATH, { recursive: true, mode: 0o700 })
   ]);
 }
 
 export function getAppPaths() {
-  return { root: ROOT, config: CONFIG_PATH, sessions: SESSION_PATH, agent: AGENT_PATH, subagents: SUBAGENT_PATH, evidence: EVIDENCE_PATH, skills: SKILLS_PATH };
+  return { root: ROOT, config: CONFIG_PATH, sessions: SESSION_PATH, agent: AGENT_PATH, subagents: SUBAGENT_PATH, evidence: EVIDENCE_PATH, skills: SKILLS_PATH, artifacts: ARTIFACTS_PATH };
 }
 
 export async function readConfig(repair = true): Promise<AppConfig> {

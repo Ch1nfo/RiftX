@@ -34,6 +34,18 @@ test("serverKey treats sorted env/headers as part of identity", () => {
   assert.notEqual(serverKey(stdio("a")), serverKey(stdio("a", "other")));
   assert.equal(serverKey({ name: "h", transport: "http", url: "http://x", headers: { B: "1", A: "2" } }), serverKey({ name: "h", transport: "http", url: "http://x", headers: { A: "2", B: "1" } }));
   assert.notEqual(serverKey({ name: "h", transport: "http", url: "http://x", headers: { A: "1" } }), serverKey({ name: "h", transport: "http", url: "http://x", headers: { A: "2" } }));
+  assert.equal(serverKey(stdio("a")), serverKey({ ...stdio("a"), visibility: ["child"] }));
+  assert.equal(serverKey(stdio("a")), serverKey({ ...stdio("a"), includeTools: ["scan_*"] }));
+});
+
+test("visibility-only edits reuse the connection and update new-session config", async () => {
+  const { manager, calls } = harness(async (config) => fakeHandle(config.name));
+  const first = await manager.reconcile([stdio("a")]);
+  const second = await manager.reconcile([{ ...stdio("a"), visibility: ["child"], includeTools: ["scan_*"] }]);
+  assert.equal(first[0], second[0]);
+  assert.deepEqual(calls, ["a"]);
+  assert.deepEqual(second[0].config.visibility, ["child"]);
+  assert.deepEqual(second[0].config.includeTools, ["scan_*"]);
 });
 
 test("second reconcile with the same config is a cache hit (zero connects)", async () => {
@@ -80,6 +92,33 @@ test("concurrent reconciles serialize — no double connect", async () => {
   const { manager, calls } = harness(async (config) => fakeHandle(config.name));
   await Promise.all([manager.reconcile([stdio("a")]), manager.reconcile([stdio("a")]), manager.reconcile([stdio("a")])]);
   assert.deepEqual(calls, ["a"]);
+});
+
+test("manager wraps each connected server with the shared per-service call limit", async () => {
+  let active = 0;
+  let peak = 0;
+  const releases: Array<() => void> = [];
+  const manager = new McpManager({ connect: async () => ({
+    tools: [{ name: "work", inputSchema: { type: "object", properties: {} } }],
+    call: async () => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise<void>((resolve) => releases.push(resolve));
+      active -= 1;
+      return { content: [] };
+    },
+    close: async () => undefined
+  }) });
+  const [entry] = await manager.reconcile([stdio("a")]);
+  assert.equal(entry.state, "connected");
+  if (entry.state !== "connected") return;
+  const calls = [entry.handle.call("work", {}), entry.handle.call("work", {}), entry.handle.call("work", {})];
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(peak, 2);
+  releases.splice(0).forEach((release) => release());
+  await new Promise((resolve) => setImmediate(resolve));
+  releases.splice(0).forEach((release) => release());
+  await Promise.all(calls);
 });
 
 test("a hanging connect factory is cut off by the manager-side timeout", async () => {

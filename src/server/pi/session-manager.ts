@@ -43,18 +43,20 @@ import { abortSessionRecord, shutdownSessionRecord } from "./session-shutdown";
 import { switchSessionProfile, withProfileSwitchLock } from "./apply-session-profile";
 import { registerTrackedProfile, registerProfileModel, restoreProviderRegistration, memoizedTitleRuntime, type ProviderRegistrations } from "./model-registration";
 import { extractLastAssistantResult, buildSummaryTranscript } from "./subagent-result";
+import { buildInvestigationCapsule, refreshInvestigationCapsule } from "./investigation-capsule";
 import { archivedRestoreError, classifyArchivedRestore, restoredArchiveState } from "./session-archive";
 import { sessions, sessionCreation, RUNTIME_VERSION, type RuntimeDeps, type SessionRecord } from "./session-registry";
 import { createFindingTool, type FindingSourceInfo } from "./tools/finding-tool";
 import { createSubagentTool } from "./tools/subagent-tool";
 import { listRunningSessionIds, listSessions, getSessionSnapshot, getSessionMessages as getMessages, summaryName, usageFromRecord, listWorkspaceSessionInfos } from "./session-snapshot";
+import { createToolOutputStore, listToolArtifacts, toolArtifactDir } from "@/server/tool-output";
 
 // Facade re-exports: the API routes import everything from this module.
 export { listRunningSessionIds, listSessions, getSessionSnapshot };
 export async function getSessionMessages(id: string) {
   return getMessages(() => getOrCreateSession(id));
 }
-import { deliverSubagentCompletion, dispatchSessionAction, undeliveredTerminalTasks } from "./session-join";
+import { deliverSubagentCompletion, dispatchSessionAction, enqueueSessionAction, undeliveredTerminalTasks } from "./session-join";
 
 function eventPayload(event: AgentSessionEvent): RiftxEvent {
   const base = event as unknown as Record<string, unknown>;
@@ -112,7 +114,6 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   const providerRegistrations: ProviderRegistrations = new Map();
   const model = registerTrackedProfile(providerRegistrations, authStorage, modelRegistry, profile, true);
 
-  const mcpTools = mcpEntries.flatMap(buildMcpTools);
   const bashConcurrency = bashConcurrencyOverride ?? new BashConcurrency(config.maxConcurrentSubagents + 1);
   // Browser state changes have their own lock. Bash still shares the file
   // mutation lock with write/edit, but a long read-heavy Bash scan must not
@@ -151,6 +152,8 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   settingsManager.setTransport(profile.transport);
   const sessionManager = sessionManagerOverride ?? AgentSessionManager.create(cwd, child ? join(paths.subagents, "runtime") : paths.sessions);
   const evidenceSessionId = runtimeDeps?.evidenceSessionId ?? sessionManager.getSessionId();
+  const outputStore = createToolOutputStore(paths.artifacts, evidenceSessionId, child ? findingSource.subagentId : undefined);
+  const mcpTools = mcpEntries.flatMap((entry) => buildMcpTools(entry, { audience: child ? "child" : "main", outputStore }));
   const browser = new BrowserManager({ evidenceRoot: paths.evidence, evidenceSessionId, scope: { rules: config.browserScope }, ignoreTlsErrors: config.browserIgnoreTlsErrors });
   const permission = createPermissionExtension(
     gate,
@@ -180,10 +183,11 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   // lazily, after the session below has been created.
   // eslint-disable-next-line prefer-const
   let evidenceSession: AgentSession | undefined;
-  const customTools = [createTimedBashTool(cwd, { commandPrefix: settingsManager.getShellCommandPrefix(), shellPath: settingsManager.getShellPath() }) as unknown as ToolDefinition, createFindingTool(evidenceStore, findingSource, browser, () => evidenceSession), createCrawlTool(browser), ...createWebTools({
+  const customTools = [createTimedBashTool(cwd, { commandPrefix: settingsManager.getShellCommandPrefix(), shellPath: settingsManager.getShellPath() }) as unknown as ToolDefinition, createFindingTool(evidenceStore, findingSource, browser, () => evidenceSession), createCrawlTool(browser, outputStore), ...createWebTools({
         // Read per call: saving a key in settings applies to already-running
         // sessions on their next search, with no re-open needed.
-        getTavilyApiKey: async () => (await readConfig()).webSearch?.tavilyApiKey
+        getTavilyApiKey: async () => (await readConfig()).webSearch?.tavilyApiKey,
+        outputStore
       }), ...(subagents ? [createSubagentTool(subagents, getChildProfile, cwd, mutationLock, bashConcurrency, { evidenceStore, evidenceSessionId }, runChildSession)] : []), ...mcpTools];
   const browserExtension = createBrowserExtension({ evidenceRoot: paths.evidence, evidenceSessionId }, browser);
   const resourceLoader = new DefaultResourceLoader({
@@ -215,7 +219,19 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     settingsManager
   });
   evidenceSession = result.session;
-  installMidTurnCompaction(result.session);
+  const getInvestigationCapsule = async () => {
+    const findings = await evidenceStore.list();
+    const relevantFindings = child
+      ? findings.filter((finding) => finding.source === "main" || finding.subagentId === findingSource.subagentId)
+      : findings;
+    const artifacts = await listToolArtifacts(paths.artifacts, evidenceSessionId);
+    return buildInvestigationCapsule(relevantFindings, subagents?.list() ?? [], artifacts);
+  };
+  const refreshCapsule = async () => {
+    const capsule = await getInvestigationCapsule();
+    refreshInvestigationCapsule(result.session, capsule);
+  };
+  installMidTurnCompaction(result.session, getInvestigationCapsule);
   // The runtime prepares parallel calls before executing them. The SDK runs
   // an ENTIRE batch sequentially if any single tool is marked sequential
   // (agent-loop.js:235: hasSequentialToolCall → executeToolCallsSequential),
@@ -300,7 +316,16 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   };
   const unsubscribe = result.session.subscribe((event) => {
     if (event.type === "compaction_start") record.compacting = true;
-    else if (event.type === "compaction_end") record.compacting = false;
+    else if (event.type === "compaction_end") {
+      record.compacting = false;
+      // Covers ordinary end-of-turn/manual compaction. Mid-turn compaction
+      // also refreshes its detached sampling array inside the transform hook.
+      // Serialized on the prompt chain so the capsule splice can never
+      // interleave with a running SDK turn.
+      void enqueueSessionAction(record, refreshCapsule).catch((error) => {
+        console.warn("RiftX could not refresh the investigation capsule after compaction:", error);
+      });
+    }
     if (event.type === "agent_end" && subagents && !record.subagentDeliveryInProgress) {
       // Only enter the waiting state when subagents are actually still
       // running. Setting it unconditionally would make SSE reconnects replay
@@ -362,6 +387,11 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     });
     await subagents.initialize((context) => runChildSession(getChildProfile(), cwd, mutationLock, bashConcurrency, context, { evidenceStore, evidenceSessionId }));
   }
+  // Session JSONL intentionally does not store capsule messages. Rebuild one
+  // from the canonical persisted stores whenever a runtime is created/resumed.
+  await refreshCapsule().catch((error) => {
+    console.warn("RiftX could not restore the investigation capsule:", error);
+  });
   return record;
 }
 
@@ -788,6 +818,12 @@ export async function deleteArchivedSession(id: string) {
     }
   }
   await removeEvidence(id, getAppPaths().evidence);
+  const artifactPath = resolve(toolArtifactDir(getAppPaths().artifacts, id));
+  const artifactRoot = resolve(getAppPaths().artifacts);
+  const artifactRelative = relative(artifactRoot, artifactPath);
+  if (artifactRelative && !artifactRelative.startsWith("..") && !isAbsolute(artifactRelative)) {
+    await rm(artifactPath, { recursive: true, force: true });
+  }
   const subagentPath = resolve(getAppPaths().subagents, id);
   const subagentRoot = resolve(getAppPaths().subagents);
   // Containment via path.relative works on both separators; a string prefix

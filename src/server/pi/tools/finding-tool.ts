@@ -2,29 +2,12 @@ import { Type } from "@sinclair/typebox";
 import { defineTool, type AgentSession, type ToolDefinition } from "@mariozechner/pi-coding-agent";
 import type { FindingInput, FindingSource } from "@/lib/types";
 import type { EvidenceStore } from "../evidence-store";
-import { textFromContent } from "../text-content";
+import { bindToolEvidence, requireFindingEvidence } from "../finding-evidence";
 import type { BrowserManager } from "@/browser";
 
 /** The record_finding tool: writes evidence-backed conclusions to the parent session's store. */
 
 export type FindingSourceInfo = { source: FindingSource; subagentId?: string };
-
-type ToolEvidenceSnapshot = { toolCallId: string; toolName: string; content: string };
-
-function resolveToolEvidence(session: AgentSession | undefined, requestedId: string): ToolEvidenceSnapshot | undefined {
-  if (!session) return undefined;
-  const messages = session.messages as unknown as Array<{ role?: string; content?: unknown; toolCallId?: string }>;
-  const calls = messages.flatMap((message) => {
-    const parts = Array.isArray(message.content) ? message.content : [];
-    return parts.filter((part): part is { type?: string; id?: string; name?: string } => Boolean(part && typeof part === "object" && (part as { type?: string }).type === "toolCall"))
-      .map((part) => ({ id: String(part.id ?? ""), name: String(part.name ?? "tool") }));
-  });
-  const selected = calls.find((call) => call.id === requestedId);
-  if (!selected) return undefined;
-  const result = messages.find((message) => message.role === "toolResult" && message.toolCallId === selected.id);
-  const content = textFromContent(result?.content);
-  return content ? { toolCallId: selected.id, toolName: selected.name, content } : undefined;
-}
 
 export function createFindingTool(store: EvidenceStore, source: FindingSourceInfo, browser: BrowserManager, getSession: () => AgentSession | undefined): ToolDefinition {
   return defineTool({
@@ -49,13 +32,16 @@ export function createFindingTool(store: EvidenceStore, source: FindingSourceInf
       const input = params as FindingInput;
       const evidence = await Promise.all(input.evidence.map(async (item) => {
         if (item.type === "tool") {
-          const snapshot = resolveToolEvidence(getSession(), item.toolCallId);
-          return snapshot ? { ...item, ...snapshot } : item;
+          // Tool identity and captured content come from the transcript when
+          // present. Confirmed findings reject unknown/empty refs; likely and
+          // suspected keep the original pointer after compaction.
+          return bindToolEvidence(item, getSession()?.messages ?? [], input.confidence);
         }
         if (item.type === "request") return browser.requestEvidence(item.requestRef);
         if (item.type === "screenshot") return browser.screenshotEvidence(item.screenshotId);
         return item;
       }));
+      requireFindingEvidence(input.confidence, evidence);
       const finding = await store.upsert({ ...input, evidence }, source.source, source.subagentId);
       return { content: [{ type: "text", text: `Finding recorded: ${finding.title}` }], details: { findingId: finding.id } };
     }

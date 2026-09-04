@@ -5,6 +5,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { McpServerConfig } from "@/lib/types";
 import { RIFTX_VERSION } from "@/lib/version";
 import { createSerializer } from "@/server/serializer";
+import { McpCallGuard } from "./call-guard";
 
 /**
  * Process-wide MCP connection manager with reference counting. Sessions
@@ -35,7 +36,19 @@ export type McpServerEntry =
 /** Test seam: the only SDK dependency of the manager logic. Production impl below. */
 export type ConnectFactory = (config: McpServerConfig, timeoutMs: number) => Promise<McpServerHandle>;
 
-/** Stable identity of a server config: sorted env/headers keys, so any edit means a new connection. */
+function governedHandle(config: McpServerConfig, handle: McpServerHandle): McpServerHandle {
+  const guard = new McpCallGuard(config.name);
+  return {
+    tools: handle.tools,
+    call: (rawName, args, signal) => guard.run((guardSignal) => handle.call(rawName, args, guardSignal), signal),
+    close: () => handle.close(),
+    get dead() { return handle.dead; },
+    set dead(value) { handle.dead = value; }
+  };
+}
+
+/** Stable identity of connection-affecting config. Visibility filters shape
+ * new Agent sessions but must not spawn a duplicate server process. */
 export function serverKey(config: McpServerConfig): string {
   const sorted = (value?: Record<string, string>) => JSON.stringify(Object.keys(value ?? {}).sort().map((key) => [key, value![key]]));
   return JSON.stringify({
@@ -93,13 +106,21 @@ export class McpManager {
     });
     await Promise.all(pending.map(async ([key, config]) => {
       try {
-        const handle = await this.raceTimeout(this.deps.connect(config, this.timeoutMs), this.timeoutMs);
+        const rawHandle = await this.raceTimeout(this.deps.connect(config, this.timeoutMs), this.timeoutMs);
+        const handle = governedHandle(config, rawHandle);
         this.entries.set(key, { state: "connected", key, config, handle, refs: 0 });
       } catch (error) {
         console.warn(`RiftX MCP server "${config.name}" unavailable (will retry on the next new session):`, error instanceof Error ? error.message : error);
         this.entries.set(key, { state: "error", key, config, error: error instanceof Error ? error.message : String(error), refs: 0 });
       }
     }));
+    // Filters do not affect the transport. Reuse the connection while letting
+    // newly built sessions see the latest role/tool visibility config; tools
+    // already materialized in older sessions retain their snapshot.
+    for (const config of desired) {
+      const entry = this.entries.get(serverKey(config));
+      if (entry) entry.config = config;
+    }
     return desired.map((config) => this.entries.get(serverKey(config))).filter((entry): entry is McpServerEntry => Boolean(entry));
   }
 

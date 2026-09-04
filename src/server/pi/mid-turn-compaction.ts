@@ -2,6 +2,7 @@ import type { AgentSession } from "@mariozechner/pi-coding-agent";
 import type { ContextUsage } from "@/lib/types";
 
 import { replaceAgentMessages, runAutoCompaction, waitForAgentEvents } from "./pi-internals";
+import { refreshInvestigationCapsule, upsertInvestigationCapsule } from "./investigation-capsule";
 
 export function shouldCompactBeforeSampling(tokens: number | null | undefined, contextWindow: number, reserveTokens: number) {
   return Number.isFinite(tokens)
@@ -78,7 +79,7 @@ async function runMidTurnCompaction(session: AgentSession, signal?: AbortSignal)
  * tool turn. The public compact() API aborts the active run, so this uses the
  * SDK's auto-compaction path and keeps the current message array in place.
  */
-export function installMidTurnCompaction(session: AgentSession) {
+export function installMidTurnCompaction(session: AgentSession, getInvestigationCapsule?: () => Promise<string>) {
   const agent = session.agent;
   const originalTransform = agent.transformContext;
   let compacting = false;
@@ -105,7 +106,22 @@ export function installMidTurnCompaction(session: AgentSession) {
     compacting = true;
     try {
       const compacted = await runMidTurnCompaction(session, signal);
-      if (compacted) replaceAgentMessages(session, messages, session.agent.state.messages);
+      if (compacted) {
+        replaceAgentMessages(session, messages, session.agent.state.messages);
+        if (getInvestigationCapsule) {
+          try {
+            const capsule = await getInvestigationCapsule();
+            // `messages` is the detached array currently being sampled while
+            // auto-compaction replaces agent.state.messages with a new array.
+            // Refresh both so this very request and every later turn see the
+            // same durable continuity state.
+            upsertInvestigationCapsule(messages as unknown[], capsule);
+            refreshInvestigationCapsule(session, capsule);
+          } catch (error) {
+            console.warn("RiftX could not refresh the investigation capsule after compaction:", error);
+          }
+        }
+      }
       return messages;
     } finally {
       compacting = false;

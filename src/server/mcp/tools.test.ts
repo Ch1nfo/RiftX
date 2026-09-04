@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildMcpTools } from "./tools";
+import { buildMcpTools, isMcpToolVisible } from "./tools";
 import type { McpServerEntry, McpServerHandle } from "./manager";
 
 const stdioConfig = { name: "tools", transport: "stdio" as const, command: "run", args: [], env: {} };
@@ -43,6 +43,49 @@ test("builds named tools with prompt snippets and raw schemas; sanitize siblings
 test("error entries produce no tools", () => {
   const entry: McpServerEntry = { state: "error", key: "k", config: stdioConfig, error: "down", refs: 0 };
   assert.deepEqual(buildMcpTools(entry), []);
+});
+
+test("filters tools by Agent role and raw-name include/exclude patterns", () => {
+  const config = { ...stdioConfig, visibility: ["child" as const], includeTools: ["scan_*", "query"], excludeTools: ["*_admin"] };
+  assert.equal(isMcpToolVisible(config, "scan_host", "main"), false);
+  assert.equal(isMcpToolVisible(config, "scan_host", "child"), true);
+  assert.equal(isMcpToolVisible(config, "scan_admin", "child"), false);
+  assert.equal(isMcpToolVisible(config, "unrelated", "child"), false);
+  const entry: McpServerEntry = {
+    state: "connected",
+    key: "k",
+    config,
+    handle: handleWith([{ name: "scan_host" }, { name: "scan_admin" }, { name: "query" }, { name: "other" }]),
+    refs: 0
+  };
+  assert.deepEqual(buildMcpTools(entry, { audience: "child" }).map((tool) => tool.label), ["tools: scan_host", "tools: query"]);
+  assert.deepEqual(buildMcpTools(entry, { audience: "main" }), []);
+});
+
+test("externalizes long MCP text while retaining image content", async () => {
+  const writes: string[][] = [];
+  const entry: McpServerEntry = {
+    state: "connected",
+    key: "k",
+    config: stdioConfig,
+    handle: {
+      tools: [{ name: "large", inputSchema: { type: "object", properties: {} } }],
+      call: async () => ({ content: [{ type: "text", text: "x".repeat(20_000) }, { type: "image", data: "aGk=", mimeType: "image/png" }] }),
+      close: async () => undefined
+    },
+    refs: 0
+  };
+  const [tool] = buildMcpTools(entry, { outputStore: {
+    project: async (_name, chunks) => {
+      writes.push([...chunks]);
+      return { text: "summary + /artifact/path", artifactPath: "/artifact/path", truncation: { truncated: true, totalChars: 20_001, shownChars: 100 } };
+    }
+  } });
+  const result = await tool.execute("call", {}, undefined, undefined, {} as Parameters<typeof tool.execute>[4]);
+  assert.equal(writes[0].join("").length, 20_001);
+  assert.deepEqual(result.content[0], { type: "text", text: "summary + /artifact/path" });
+  assert.equal(result.content[1].type, "image");
+  assert.equal((result.details as { artifactPath?: string }).artifactPath, "/artifact/path");
 });
 
 test("execute calls the raw tool name with params and signal, and maps the result", async () => {

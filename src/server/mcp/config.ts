@@ -4,6 +4,8 @@ import type { McpServerConfig } from "@/lib/types";
 
 const NAME_PATTERN = /^[A-Za-z0-9_-]{1,32}$/;
 export const MAX_MCP_SERVERS = 20;
+const MAX_TOOL_FILTERS = 100;
+const MAX_TOOL_FILTER_LENGTH = 256;
 
 function stringRecord(value: unknown): Record<string, string> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -26,6 +28,14 @@ function httpUrlError(value: unknown): string | null {
   return null;
 }
 
+function stringListError(value: unknown, field: string): string | null {
+  if (value === undefined) return null;
+  if (!Array.isArray(value) || value.length > MAX_TOOL_FILTERS || value.some((item) => typeof item !== "string" || !item.trim() || item.length > MAX_TOOL_FILTER_LENGTH)) {
+    return `${field} must be an array of at most ${MAX_TOOL_FILTERS} non-empty strings (max ${MAX_TOOL_FILTER_LENGTH} chars each)`;
+  }
+  return null;
+}
+
 /** Ecosystem configs (Claude Code, Cursor, …) spell the transport key "type" — accept both. */
 function transportOf(server: Partial<McpServerConfig> & { type?: unknown }): "stdio" | "http" | undefined {
   const value = server.transport ?? server.type;
@@ -43,6 +53,13 @@ function serverError(server: unknown): string | null {
   const transport = transportOf(candidate);
   if (typeof candidate.name !== "string" || !NAME_PATTERN.test(candidate.name)) return "MCP server name must match [A-Za-z0-9_-] and be 1-32 characters";
   if (!transport) return `MCP server "${candidate.name}": transport must be "stdio" or "http"`;
+  if (candidate.visibility !== undefined && (!Array.isArray(candidate.visibility) || candidate.visibility.some((role) => role !== "main" && role !== "child") || new Set(candidate.visibility).size !== candidate.visibility.length)) {
+    return `MCP server "${candidate.name}": visibility must contain unique "main" and/or "child" values`;
+  }
+  const includeError = stringListError(candidate.includeTools, "includeTools");
+  if (includeError) return `MCP server "${candidate.name}": ${includeError}`;
+  const excludeError = stringListError(candidate.excludeTools, "excludeTools");
+  if (excludeError) return `MCP server "${candidate.name}": ${excludeError}`;
   if (transport === "stdio") {
     if (typeof candidate.command !== "string" || !candidate.command.trim()) return `MCP server "${candidate.name}": stdio transport requires a command`;
     if (candidate.args !== undefined && (!Array.isArray(candidate.args) || candidate.args.some((arg) => typeof arg !== "string"))) return `MCP server "${candidate.name}": args must be an array of strings`;
@@ -88,6 +105,9 @@ export function normalizeMcpServers(value: unknown): McpServerConfig[] {
     out.push({
       name,
       transport,
+      ...(candidate.visibility !== undefined ? { visibility: [...candidate.visibility] } : {}),
+      ...(candidate.includeTools?.length ? { includeTools: [...candidate.includeTools] } : {}),
+      ...(candidate.excludeTools?.length ? { excludeTools: [...candidate.excludeTools] } : {}),
       ...(transport === "stdio"
         ? { command: candidate.command, args: candidate.args ?? [], env: candidate.env ?? {} }
         : { url: candidate.url, headers: candidate.headers ?? {} })

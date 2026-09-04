@@ -236,6 +236,12 @@ export type McpServerConfig = {
   url?: string;
   /** http: extra request headers (e.g. auth tokens). */
   headers?: Record<string, string>;
+  /** Which Agent roles receive this server's tool schemas. Omitted means both. */
+  visibility?: Array<"main" | "child">;
+  /** Optional raw MCP tool-name allowlist. Supports `*` wildcards; omitted/empty means all. */
+  includeTools?: string[];
+  /** Raw MCP tool names to hide. Supports `*` wildcards and wins over includeTools. */
+  excludeTools?: string[];
 };
 
 export type AppConfig = {

@@ -3,6 +3,7 @@ import { defineTool, type ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { WEB_TOOL_NAMES } from "@/server/session-tools";
 import { webSearch } from "./search";
 import { fetchPage } from "./fetch-page";
+import type { ToolOutputStore } from "@/server/tool-output";
 
 /**
  * Web research tools: keyless DuckDuckGo search by default, Tavily when a key
@@ -12,6 +13,7 @@ import { fetchPage } from "./fetch-page";
 type WebToolOptions = {
   /** Read at execution time so a saved key applies to running sessions immediately. */
   getTavilyApiKey?: () => Promise<string | undefined>;
+  outputStore?: ToolOutputStore;
 };
 
 export function createWebTools(options: WebToolOptions = {}): ToolDefinition[] {
@@ -32,9 +34,13 @@ export function createWebTools(options: WebToolOptions = {}): ToolDefinition[] {
         `${index + 1}. ${result.title}\n   ${result.url}${result.snippet ? `\n   ${result.snippet}` : ""}`
       );
       const text = [outcome.cveDetail, listing.join("\n")].filter(Boolean).join("\n\n") || "No results found.";
+      const raw = `web_search (${outcome.provider}):\n\n${text}`;
+      const projected = options.outputStore
+        ? await options.outputStore.project("web-search", [raw], `web_search returned ${outcome.results.length} result(s) via ${outcome.provider}.`)
+        : { text: raw };
       return {
-        content: [{ type: "text" as const, text: `web_search (${outcome.provider}):\n\n${text}` }],
-        details: { provider: outcome.provider, resultCount: outcome.results.length, query: params.query }
+        content: [{ type: "text" as const, text: projected.text }],
+        details: { provider: outcome.provider, resultCount: outcome.results.length, query: params.query, artifactPath: projected.artifactPath, truncation: projected.truncation }
       };
     }
   });
@@ -43,16 +49,19 @@ export function createWebTools(options: WebToolOptions = {}): ToolDefinition[] {
     name: WEB_TOOL_NAMES[1],
     label: "Web fetch",
     description:
-      "Fetch a public web page or document as clean text for research (CVE advisories, exploit write-ups, product docs, API references). Use it for out-of-target research URLs; use the browser tool for interactions with the target. Long pages are truncated; use web_search first when you do not have a URL.",
+      "Fetch a public web page or document as clean text for research (CVE advisories, exploit write-ups, product docs, API references). Use it for out-of-target research URLs; use the browser tool for interactions with the target. Long pages return a bounded preview plus a local full-output path; use web_search first when you do not have a URL.",
     promptSnippet: "web_fetch(url)",
     parameters: Type.Object({
       url: Type.String({ description: "http(s) URL to fetch" })
     }),
     async execute(_toolCallId, params, signal) {
       const page = await fetchPage(params.url, { signal });
+      const projected = options.outputStore
+        ? await options.outputStore.project("web-fetch", [page.content], `web_fetch loaded ${params.url} via ${page.source}.`)
+        : { text: page.content };
       return {
-        content: [{ type: "text" as const, text: page.content }],
-        details: { url: params.url, source: page.source }
+        content: [{ type: "text" as const, text: projected.text }],
+        details: { url: params.url, source: page.source, artifactPath: projected.artifactPath, truncation: projected.truncation }
       };
     }
   });

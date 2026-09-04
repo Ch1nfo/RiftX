@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fetchPage, htmlToText, truncateContent } from "./fetch-page";
+import { fetchPage, htmlToText } from "./fetch-page";
 
 const publicResolve = async () => ["93.184.216.34"];
 
@@ -13,12 +13,6 @@ test("htmlToText strips scripts and styles, decodes entities, keeps structure", 
   assert.equal(text.includes("Title & more"), true);
   assert.equal(text.includes("First <paragraph>"), true);
   assert.match(text, /Second\n+after br/);
-});
-
-test("truncateContent marks the cut", () => {
-  const truncated = truncateContent("a".repeat(40_000));
-  assert.match(truncated, /truncated at 30000 characters/);
-  assert.equal(truncateContent("short").includes("truncated"), false);
 });
 
 test("fetchPage rejects non-http schemes and internal addresses at the entry guard", async () => {
@@ -99,9 +93,9 @@ test("oversized responses stop reading at the byte budget", async () => {
   try {
     const page = await fetchPage("https://example.com/huge", { resolveDns: publicResolve });
     assert.equal(page.source, "jina");
-    // 640 KiB of input collapses to the bounded content: reading stopped at
-    // the byte budget and the final projection truncated to the char budget.
-    assert.match(page.content, /truncated at 30000 characters/);
+    // Reading stops at the byte budget. The tool layer preserves this bounded
+    // full content as an artifact and projects only a short preview.
+    assert.match(page.content, /stopped reading/);
     assert.ok(page.content.length < 200_000, `content should be bounded, got ${page.content.length}`);
   } finally {
     globalThis.fetch = original;

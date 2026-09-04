@@ -2,6 +2,7 @@ import { Type } from "@sinclair/typebox";
 import { defineTool, type ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { BrowserManager, BrowserDegradedError } from "../runtime/browser-manager";
 import { authSignal, extractApiRoutes, normalizeUrl, sameHost } from "./crawl-core";
+import type { ToolOutputStore } from "@/server/tool-output";
 
 /**
  * The crawl tool: breadth-first attack-surface discovery through the scoped
@@ -129,12 +130,12 @@ async function crawlPage(browser: BrowserManager, url: string, signal?: AbortSig
   }, signal);
 }
 
-export function createCrawlTool(browser: BrowserManager): ToolDefinition {
+export function createCrawlTool(browser: BrowserManager, outputStore?: ToolOutputStore): ToolDefinition {
   return defineTool({
     name: "crawl",
     label: "Crawl attack surface",
     description:
-      "Breadth-first crawl of an in-scope web application through the scoped browser: collects every link, form (including hidden fields), API routes extracted from loaded JS bundles, and auth boundaries into one structured inventory. Use it right after the first navigate to map the attack surface before hypothesizing vulnerabilities, and feed the discovered endpoints into the matching exploit skills. Only same-host links are followed (cross-host links are recorded as leads); every hop is scope-checked. Returns the inventory in the conversation — record actual exposures with record_finding.",
+      "Breadth-first crawl of an in-scope web application through the scoped browser: collects every link, form (including hidden fields), API routes extracted from loaded JS bundles, and auth boundaries into one structured inventory. Use it right after the first navigate to map the attack surface before hypothesizing vulnerabilities, and feed the discovered endpoints into the matching exploit skills. Only same-host links are followed (cross-host links are recorded as leads); every hop is scope-checked. Verbose inventories return a bounded preview plus a local full-output path — record actual exposures with record_finding.",
     promptSnippet: "crawl(entry, maxPages?, maxDepth?)",
     executionMode: "parallel",
     parameters: Type.Object({
@@ -215,7 +216,13 @@ export function createCrawlTool(browser: BrowserManager): ToolDefinition {
         generators.length ? `\nGenerators: ${generators.join(", ")}` : "",
         errors.length ? `\nSkipped/errors (${errors.length}):\n${errors.slice(0, 10).map((line) => `- ${line}`).join("\n")}` : ""
       ].filter(Boolean).join("\n");
-      return { content: [{ type: "text" as const, text: report }], details: { entry, pages: pages.length, links: links.size, forms: forms.length, routes: allRoutes.size } };
+      const projected = outputStore
+        ? await outputStore.project("crawl", [report], `crawl mapped ${pages.length} page(s), ${links.size} link(s), ${forms.length} form(s), and ${allRoutes.size} JS route(s).`)
+        : { text: report };
+      return {
+        content: [{ type: "text" as const, text: projected.text }],
+        details: { entry, pages: pages.length, links: links.size, forms: forms.length, routes: allRoutes.size, artifactPath: projected.artifactPath, truncation: projected.truncation }
+      };
     }
   });
 }

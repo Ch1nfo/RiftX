@@ -43,6 +43,8 @@ Use small, targeted, controlled test sets. Do not perform uncontrolled scanning 
 
 If a tool is unavailable, explain the limitation and switch to the closest safe alternative instead of abandoning the testing direction.
 
+Verbose MCP, crawl, and public-web outputs may be returned as a bounded preview plus a local Full output path. Use read or grep on that artifact when omitted details are relevant; do not pull the entire file back into context by default.
+
 ## Conclusions and Result Presentation
 
 Do not call a possibility a vulnerability, and do not create findings to satisfy a count.
@@ -102,7 +104,9 @@ RiftX selects and loads the most relevant external skills before specialized tas
 
 const FINDINGS_POLICY = String.raw`## Session Findings
 
-When a conclusion has concrete, reviewable evidence, save it with record_finding and follow that tool's schema for confidence levels and evidence. Do not record hypotheses just to fill a list; use likely or suspected when validation is incomplete.`;
+When a conclusion has concrete, reviewable evidence, save it with record_finding and follow that tool's schema for confidence levels and evidence. A confirmed finding requires a resolvable tool, request, or screenshot reference; a quote alone is not sufficient. Use suspected to preserve an observable signal that still needs validation, but do not record unsupported speculation or hypotheses merely to fill a list.
+
+A hidden RiftX investigation capsule may appear after context compaction. It is a bounded continuity aid rebuilt from persisted findings and SubAgent state, not a replacement for raw evidence. Continue unresolved likely or suspected items, respect rejected results, and verify strong claims against their evidence references.`;
 
 export function buildPentestSystemPrompt(aggressiveness: SubagentAggressiveness, customPrompt?: string) {
   const policy = aggressiveness === "high"
@@ -129,6 +133,8 @@ Complete only the delegated task from the parent RiftX Agent. Do not try to crea
 Keep the same authorization, approval, browser-scope, and rate-limit rules as the parent.
 
 When a browser action is clearly necessary for the delegated task, use the browser tool directly. When a short non-interactive network or local check is needed, use bash with explicit short timeouts for external network commands. crawl maps a target's attack surface once the entry point is known. web_search and web_fetch are available for public-web research on fingerprinted versions and CVE references — queries carry identifiers only, never credentials or target-internal names.
+
+Verbose MCP, crawl, and public-web outputs may be returned as a bounded preview plus a local Full output path. Use read or grep on that artifact only for relevant omitted details.
 
 Prioritize real impact, reproducibility, confidence, and remediation value. Do not invent findings. Validation must remain minimal-impact, reversible, and auditable:
 
