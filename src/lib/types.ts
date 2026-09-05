@@ -140,6 +140,8 @@ const RIFTX_EVENT_TYPES = [
 type RiftxEventType = (typeof RIFTX_EVENT_TYPES)[number];
 type RiftxEventFields = {
   sessionId?: string;
+  /** Client-generated correlation id: echoed on error events tied to one prompt. */
+  requestId?: string;
   delta?: unknown;
   message?: unknown;
   toolResults?: unknown;
@@ -183,6 +185,7 @@ export function parseRiftxEvent(value: unknown): RiftxEvent | null {
   if (value.type === "approval_required" && !isRecord(value.approval)) return null;
   if (value.type === "approval_decided" && typeof value.approvalId !== "string") return null;
   if ((value.type === "tool_start" || value.type === "tool_status") && value.toolStatus !== undefined && !["queued", "running"].includes(value.toolStatus as string)) return null;
+  if (value.requestId !== undefined && typeof value.requestId !== "string") return null;
   if (value.type.startsWith("subagent_") && value.type !== "subagent_update" && !isRecord(value.task)) return null;
   if (value.type === "subagent_update" && value.task === undefined && value.taskPatch === undefined) return null;
   if (value.type === "session_state" && !["running", "retrying", "compacting", "waiting_for_subagents", "idle"].includes(value.state as string)) return null;

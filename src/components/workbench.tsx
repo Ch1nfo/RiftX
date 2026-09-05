@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { Archive, ArrowDown, ArrowUp, Brain, Command, FolderOpen, Gear, List, Plus, Stop, WarningCircle, X } from "@phosphor-icons/react";
+import { Archive, ArrowDown, ArrowUp, Brain, Command, FolderOpen, Gear, List, Paperclip, Plus, Stop, WarningCircle, X } from "@phosphor-icons/react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ApprovalModeMenu, ContextRing, ErrorNotice, LanguageToggle, ModelMenu, RiftxLogo, ThemeToggle } from "./ui";
@@ -11,7 +11,10 @@ import { FindingsPanel } from "./findings-panel";
 import { parseRiftxEvent, type ApprovalMode, type ApprovalRequest, type ContextUsage, type Finding, type FindingPatch, type ModelProfile, type RiftxEvent, type SessionSummary, type SubagentTask, type SubagentTaskPatch } from "@/lib/types";
 import { cloneSubagentTask, mergeSubagentTaskPatch, mergeSubagentTasks } from "@/lib/subagent-merge";
 import { withSessionProfile } from "@/lib/session-profile-sync";
+import { screenshotUrl } from "@/lib/screenshot-url";
+import { ATTACHMENT_EXTENSIONS, MAX_ATTACHMENT_CHARS, MAX_IMAGE_BYTES, composeAttachmentText, mergeRecoveredAttachments, promptAttachmentsError, promptImagesError, sessionAttachments, withSessionAttachments, type PromptAttachment, type SessionAttachments } from "@/lib/attachments";
 import { sessionDraft, withSessionDraft, type SessionDrafts } from "@/lib/session-drafts";
+import { promptRequestDisposition, type PromptRequestState } from "@/lib/prompt-request-state";
 import { orderSessionsByActivity, withRunningSessionIds, withSessionActivity } from "@/lib/session-activity";
 import { useLanguage } from "@/lib/i18n";
 import { mergeFetchedMessages, type MergeableMessage } from "@/lib/message-merge";
@@ -25,6 +28,8 @@ type MessageLabels = { you: string; thinking: string; thinkingNow: string; think
 
 const MESSAGE_BATCH_SIZE = 200;
 const MARKDOWN_PLUGINS = [remarkGfm];
+/** File-picker accept list: whitelisted text/code extensions plus image types. */
+const ATTACHMENT_ACCEPT = [...ATTACHMENT_EXTENSIONS.map((extension) => `.${extension}`), ...["image/png", "image/jpeg", "image/webp", "image/gif"]];
 
 function makeEmptyUsage(contextWindow = 0): ContextUsage {
   const safeWindow = Number.isFinite(contextWindow) && contextWindow > 0 ? contextWindow : 0;
@@ -49,21 +54,44 @@ function summarizeApprovalInput(input: unknown) {
   return formatApprovalInput(input).replace(/\s+/g, " ").trim();
 }
 
-const ToolCard = memo(function ToolCard({ message, labels }: { message: Message; labels: MessageLabels }) {
-  const [open, setOpen] = useState(message.status === "running");
-  useEffect(() => { setOpen(message.status === "running"); }, [message.status]);
+const ToolCard = memo(function ToolCard({ message, labels, sessionId, onImageClick }: { message: Message; labels: MessageLabels; sessionId: string; onImageClick: (src: string, alt: string) => void }) {
+  const hasScreenshot = Boolean(message.screenshotId && sessionId);
+  const [open, setOpen] = useState(message.status === "running" || hasScreenshot);
+  useEffect(() => { setOpen(message.status === "running" || hasScreenshot); }, [message.status, hasScreenshot]);
   return <details id={message.toolCallId ? `tool-${encodeURIComponent(message.toolCallId)}` : undefined} className={`tool-card ${message.isError ? "error" : ""}`} open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
     <summary className="tool-card-head"><span><Command size={14} />{message.toolName}</span><span className={`tool-status ${message.status}`}>{message.status === "queued" ? labels.queued : message.status === "running" ? labels.running : message.status === "error" ? labels.failed : message.status === "cancelled" ? labels.stopped : labels.complete}</span></summary>
+    {hasScreenshot ? /* Local screenshot-route image; next/image cannot optimize it. */
+    // eslint-disable-next-line @next/next/no-img-element
+    <button type="button" className="tool-screenshot" onClick={() => onImageClick(screenshotUrl(sessionId, message.screenshotId!), `${message.toolName} screenshot`)}><img src={screenshotUrl(sessionId, message.screenshotId!)} alt={`${message.toolName} screenshot`} loading="lazy" /></button> : null}
     <pre>{message.content}</pre>
   </details>;
 });
 
-const MessageItem = memo(function MessageItem({ message, labels }: { message: Message; labels: MessageLabels }) {
+const MessageItem = memo(function MessageItem({ message, labels, sessionId, onImageClick }: { message: Message; labels: MessageLabels; sessionId: string; onImageClick: (src: string, alt: string) => void }) {
   return <article className={`message ${message.role}${message.status === "error" ? " error" : ""}`}>
     {message.role === "user" ? <div className="avatar user-avatar">{labels.you}</div> : message.role === "assistant" ? <div className="avatar assistant-avatar"><RiftxLogo decorative /></div> : null}
-    <div className="message-body">{message.role === "thinking" ? <details className="thinking-block" open={message.status === "streaming"}><summary><span className="thinking-title"><Brain size={14} weight="bold" />{labels.thinking}</span><span className="thinking-state">{message.status === "streaming" ? labels.thinkingNow : labels.thinkingDone}</span></summary><div className="thinking-copy">{message.content}</div></details> : message.role === "tool" ? <ToolCard message={message} labels={labels} /> : <div className="markdown"><ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>{message.content}</ReactMarkdown></div>}</div>
+    <div className="message-body">{message.role === "thinking" ? <details className="thinking-block" open={message.status === "streaming"}><summary><span className="thinking-title"><Brain size={14} weight="bold" />{labels.thinking}</span><span className="thinking-state">{message.status === "streaming" ? labels.thinkingNow : labels.thinkingDone}</span></summary><div className="thinking-copy">{message.content}</div></details> : message.role === "tool" ? <ToolCard message={message} labels={labels} sessionId={sessionId} onImageClick={onImageClick} /> : <>
+      {message.images?.length ? <div className="message-images">{message.images.map((image, index) => <button type="button" key={index} className="message-image" onClick={() => onImageClick(image.src, "attached image")}>{/* data-URI or local-route image; next/image cannot optimize either */}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={image.src} alt={`attached image ${index + 1}`} loading="lazy" /></button>)}</div> : null}
+      <div className="markdown"><ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>{message.content}</ReactMarkdown></div>
+    </>}</div>
   </article>;
 });
+
+/** Full-screen image viewer: click the backdrop or press Esc to close. */
+function Lightbox({ image, t, onClose }: { image: { src: string; alt: string }; t: Translate; onClose: () => void }) {
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+  return <div className="lightbox" role="dialog" aria-modal="true" aria-label={t("close")} onClick={onClose}>
+    {/* Full-screen viewer over data-URI/route images; next/image adds nothing here. */}
+    {/* eslint-disable-next-line @next/next/no-img-element */}
+    <img src={image.src} alt={image.alt} onClick={(event) => event.stopPropagation()} />
+  </div>;
+}
 
 type Translate = ReturnType<typeof useLanguage>["t"];
 
@@ -149,7 +177,12 @@ function ApprovalCard({ approval, scopeExpansion, t, onDecide }: { approval: App
   </div>;
 }
 
-function Composer({ value, onChange, onSubmit, onStop, busy, running, activeId, bootstrapping, streamReady, mainAgentRunning, approvalMode, onApprovalModeChange, usage, modelProfiles, activeProfileId, modelName, modelSwitching, onModelChange, t }: {
+/** One pending image or text attachment in the composer. */
+export type ComposerAttachment =
+  | { kind: "image"; name: string; mimeType: string; dataUrl: string }
+  | { kind: "file"; name: string; content: string };
+
+function Composer({ value, onChange, onSubmit, onStop, busy, running, activeId, bootstrapping, streamReady, mainAgentRunning, approvalMode, onApprovalModeChange, usage, modelProfiles, activeProfileId, modelName, modelSwitching, onModelChange, attachments, onAddAttachments, onRemoveAttachment, supportsImages, t }: {
   value: string;
   onChange: (value: string) => void;
   onSubmit: (mode?: "prompt" | "steer" | "followUp") => void;
@@ -168,6 +201,10 @@ function Composer({ value, onChange, onSubmit, onStop, busy, running, activeId, 
   modelName: string;
   modelSwitching: boolean;
   onModelChange: (profileId: string) => void;
+  attachments: ComposerAttachment[];
+  onAddAttachments: (files: FileList | File[]) => void;
+  onRemoveAttachment: (index: number) => void;
+  supportsImages: boolean;
   t: Translate;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -202,8 +239,21 @@ function Composer({ value, onChange, onSubmit, onStop, busy, running, activeId, 
       onCompositionEnd={() => { compositionActiveRef.current = false; compositionEndedAtRef.current = Date.now(); }}
       onKeyDown={handleKeyDown}
       placeholder={bootstrapping ? t("loadingWorkspace") : busy ? t("guide") : activeId ? t("ask") : t("createSessionFirst")} rows={1} />
+    {attachments.length ? <div className="composer-attachments">
+      {attachments.map((attachment, index) => <div key={index} className={`composer-attachment ${attachment.kind}`}>
+        {attachment.kind === "image" ? /* Local data-URI thumbnail. */
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={attachment.dataUrl} alt={attachment.name} /> : <span className="composer-attachment-name">{attachment.name}</span>}
+        <button type="button" className="composer-attachment-remove" aria-label={`${t("removeAttachment")}: ${attachment.name}`} onClick={() => onRemoveAttachment(index)}><X size={12} weight="bold" /></button>
+      </div>)}
+      {!supportsImages && attachments.some((attachment) => attachment.kind === "image") ? <span className="composer-attachment-hint">{t("attachImagesHint")}</span> : null}
+    </div> : null}
     <div className="composer-bottom">
       <div className="composer-tools">
+        <label className={`icon-button attach-button ${!activeId || bootstrapping ? "disabled" : ""}`} title={t("attachFiles")} aria-label={t("attachFiles")}>
+          <Paperclip size={15} />
+          <input type="file" multiple accept={supportsImages ? [...ATTACHMENT_ACCEPT] .join(",") : ATTACHMENT_ACCEPT.filter((type) => !type.startsWith("image/")).join(",")} disabled={!activeId || bootstrapping} onChange={(event) => { if (event.target.files?.length) onAddAttachments(event.target.files); event.target.value = ""; }} />
+        </label>
         <ApprovalModeMenu value={approvalMode} onValueChange={onApprovalModeChange} disabled={bootstrapping || mainAgentRunning} />
         <span className="composer-hint"><span className="keycap">Shift</span> + <span className="keycap">Enter</span> {t("shiftEnter")}</span>
       </div>
@@ -240,6 +290,89 @@ export function Workbench() {
   const [mainAgentRunning, setMainAgentRunning] = useState(false);
   const [contextCompacting, setContextCompacting] = useState(false);
   const [streamReady, setStreamReady] = useState(false);
+  const [lightbox, setLightbox] = useState<{ src: string; alt: string } | null>(null);
+  // Composer attachments are scoped per session, exactly like input drafts:
+  // switching sessions must never carry (or strand) another session's files.
+  const [attachmentsBySession, setAttachmentsBySession] = useState<SessionAttachments<ComposerAttachment>>({});
+  const openLightbox = (src: string, alt: string) => setLightbox({ src, alt });
+  const activeSupportsImages = Boolean(modelProfiles.find((profile) => profile.id === activeProfileId)?.supportsImages);
+  const addAttachments = (files: FileList | File[]) => {
+    const targetSessionId = activeIdRef.current;
+    if (!targetSessionId) return;
+    void (async () => {
+      const accepted: ComposerAttachment[] = [];
+      for (const file of Array.from(files)) {
+        if (file.type.startsWith("image/")) {
+          if (!activeSupportsImages) { setError(t("imagesNotSupported")); continue; }
+          if (file.size > MAX_IMAGE_BYTES) { setError(`${t("attachmentTooLarge")}: ${file.name}`); continue; }
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result));
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(file);
+          }).catch(() => "");
+          if (dataUrl) accepted.push({ kind: "image", name: file.name, mimeType: file.type, dataUrl });
+          continue;
+        }
+        if (file.size > MAX_ATTACHMENT_CHARS) { setError(`${t("attachmentTooLarge")}: ${file.name}`); continue; }
+        const content = await file.text();
+        accepted.push({ kind: "file", name: file.name, content });
+      }
+      if (!accepted.length) return;
+      // Candidate list is validated with the SAME server rules (image count,
+      // file count, totals, mime whitelist) via functional state — no stale
+      // closures, no second-class client-side approximation.
+      setAttachmentsBySession((current) => {
+        const existing = sessionAttachments(current, targetSessionId);
+        const nextFiles: PromptAttachment[] = [...existing, ...accepted]
+          .filter((attachment): attachment is Extract<ComposerAttachment, { kind: "file" }> => attachment.kind === "file")
+          .map((attachment) => ({ name: attachment.name, content: attachment.content }));
+        const nextImages = [...existing, ...accepted]
+          .filter((attachment): attachment is Extract<ComposerAttachment, { kind: "image" }> => attachment.kind === "image")
+          .map((attachment) => ({ data: attachment.dataUrl.slice(attachment.dataUrl.indexOf(",") + 1), mimeType: attachment.mimeType }));
+        const imageError = promptImagesError(nextImages);
+        const attachmentError = promptAttachmentsError(nextFiles);
+        if (imageError || attachmentError) {
+          setError(imageError ? `${t("attachmentTooMany")}: ${imageError}` : `${t("attachmentTooMany")}: ${attachmentError}`);
+          return current;
+        }
+        return withSessionAttachments(current, targetSessionId, [...existing, ...accepted]);
+      });
+    })();
+  };
+  const removeAttachment = (index: number) => setAttachmentsBySession((current) => {
+    const existing = sessionAttachments(current, activeIdRef.current);
+    return withSessionAttachments(current, activeIdRef.current, existing.filter((_, position) => position !== index));
+  });
+  const restoreAttachments = (sessionId: string, restored: ComposerAttachment[]) => {
+    // Keep both batches visible. A temporarily over-limit composer is safer
+    // than silently destroying failed-send data; send() blocks until the user
+    // deliberately removes enough chips to satisfy the shared validators.
+    setAttachmentsBySession((current) => {
+      const existing = sessionAttachments(current, sessionId);
+      return withSessionAttachments(current, sessionId, mergeRecoveredAttachments(existing, restored));
+    });
+  };
+  const pendingAttachments = sessionAttachments(attachmentsBySession, activeId);
+  // One pending-send entry per request, keyed by requestId: consecutive steers
+  // and cross-session events can no longer clobber each other's recovery.
+  const pendingSendsRef = useRef<Map<string, { sessionId: string; messageId: string; attachments: ComposerAttachment[]; composedText?: string }>>(new Map());
+  const failPendingSend = (requestId: string) => {
+    const sent = pendingSendsRef.current.get(requestId);
+    if (!sent) return;
+    pendingSendsRef.current.delete(requestId);
+    setMessages((current) => current.map((message) => message.id === sent.messageId ? { ...message, status: "error", isError: true } : message));
+    restoreAttachments(sent.sessionId, sent.attachments);
+  };
+  // Compatibility path for a correlated error event. Current servers keep
+  // pre-acceptance failures on the synchronous HTTP path; uncorrelated runtime
+  // errors must never clear or restore pending sends.
+  const handlePromptOutcome = (_ok: boolean, requestId?: string) => {
+    // Only an explicitly correlated pre-acceptance failure owns attachments.
+    // Generic runtime errors may happen after a message was accepted and must
+    // never consume an unrelated pending send heuristically.
+    if (requestId !== undefined) failPendingSend(requestId);
+  };
   const [bootstrapping, setBootstrapping] = useState(true);
   const [approvalQueue, setApprovalQueue] = useState<ApprovalRequest[]>([]);
   const [subagents, setSubagents] = useState<SubagentTask[]>([]);
@@ -432,11 +565,24 @@ export function Workbench() {
       }
       refetchInFlight = true;
       void fetch(`/api/sessions/${activeId}/messages`, { signal: controller.signal })
-        .then((response) => response.ok ? response.json() as Promise<Message[]> : [])
-        .then((items) => {
+        .then((response) => response.ok ? response.json() as Promise<Message[] | { messages: Message[]; promptRequestStates?: Record<string, PromptRequestState>; failedRequestIds?: string[] }> : [])
+        .then((payload) => {
           if (disposed || controller.signal.aborted || activeIdRef.current !== activeId) return;
+          const items = Array.isArray(payload) ? payload : payload.messages ?? [];
+          const failedRequestIds = new Set(Array.isArray(payload) ? [] : payload.failedRequestIds ?? []);
+          const requestStates = Array.isArray(payload) ? {} : payload.promptRequestStates ?? {};
           flushMessageDeltas();
           setMessages((current) => mergeFetchedMessages(current, normalizeMessages(items)));
+          // Consume only explicit terminal states. Missing means unknown (for
+          // example a pending dispatch, capped history, or a restarted WebUI),
+          // never implicit success.
+          for (const [key, entry] of [...pendingSendsRef.current.entries()]) {
+            if (entry.sessionId !== activeId) continue;
+            const state = requestStates[key] ?? (failedRequestIds.has(key) ? "failed" : undefined);
+            const disposition = promptRequestDisposition(state, entry.composedText !== undefined);
+            if (disposition === "restore") failPendingSend(key);
+            else if (disposition === "clear") pendingSendsRef.current.delete(key);
+          }
         })
         .catch(() => undefined)
         .finally(() => {
@@ -514,7 +660,7 @@ export function Workbench() {
   const subagentRunning = useMemo(() => subagents.filter((task) => task.status === "queued" || task.status === "running").length, [subagents]);
   const visibleMessages = useMemo(() => messages.filter((message) => message.toolName !== "spawn_subagent"), [messages]);
   const { conversationRef, conversationInnerRef, showJumpToLatest, visibleMessageCount, handleConversationScroll, revealToolCard, requestToolReveal, expandVisibleMessages, loadEarlierMessages, jumpToLatest, pauseAutoFollow, resumeAutoFollow, resetConversationView } = useConversationScroll(messages, visibleMessages.length, MESSAGE_BATCH_SIZE);
-  const eventContext: Omit<SessionEventContext, "reconcileMessages"> = { activeId, t, queueMessageDelta, flushMessageDeltas, setMessages, setFindings, queueSubagentTask, queueSubagentTaskPatch, setApprovalQueue, setUsage, setSessions, setSessionRunning, setMainAgentRunning, setContextCompacting, setStreamReady, setError };
+  const eventContext: Omit<SessionEventContext, "reconcileMessages"> = { activeId, t, queueMessageDelta, flushMessageDeltas, setMessages, setFindings, queueSubagentTask, queueSubagentTaskPatch, setApprovalQueue, setUsage, setSessions, setSessionRunning, setMainAgentRunning, setContextCompacting, setStreamReady, onPromptOutcome: handlePromptOutcome, setError };
   // Clear every piece of per-session view state (messages stay: the fetch
   // merge reconciles them, and callers clear them for instant feedback).
   const resetSessionState = () => {
@@ -556,35 +702,91 @@ export function Workbench() {
   const send = async (requestedMode?: "prompt" | "steer" | "followUp") => {
     const text = input.trim();
     if (!text || !activeId || !streamReady) return;
+    const targetSessionId = activeId;
+    const outgoingAttachments = pendingAttachments;
+    // A model switch since picking must BLOCK the send — silently filtering the
+    // images out would be exactly the "user believes the model saw it" failure.
+    if (outgoingAttachments.some((attachment) => attachment.kind === "image") && !activeSupportsImages) {
+      setError(t("imagesNotSupported"));
+      return;
+    }
+    const fileAttachments = outgoingAttachments
+      .filter((attachment): attachment is Extract<ComposerAttachment, { kind: "file" }> => attachment.kind === "file")
+      .map((attachment) => ({ name: attachment.name, content: attachment.content }));
+    const promptImages = outgoingAttachments
+      .filter((attachment): attachment is Extract<ComposerAttachment, { kind: "image" }> => attachment.kind === "image")
+      .map((attachment) => ({ data: attachment.dataUrl.slice(attachment.dataUrl.indexOf(",") + 1), mimeType: attachment.mimeType }));
+    const attachmentError = promptImagesError(promptImages) ?? promptAttachmentsError(fileAttachments);
+    if (attachmentError) {
+      setError(`${t("attachmentTooMany")}: ${attachmentError}`);
+      return;
+    }
     const wasRunning = composerBusy;
     const mode = requestedMode ?? (wasRunning ? "steer" : "prompt");
     const messageId = crypto.randomUUID();
+    const requestId = crypto.randomUUID();
     const markMessageFailed = () => setMessages((current) => current.map((message) => message.id === messageId ? { ...message, status: "error", isError: true } : message));
     setInput("");
+    setAttachmentsBySession((current) => withSessionAttachments(current, targetSessionId, []));
     resumeAutoFollow();
-    setMessages((current) => [...current, { id: messageId, role: "user", content: text }]);
-    const currentSession = sessions.find((session) => session.id === activeId);
+    // Optimistic content mirrors the server composition; composedText in the
+    // response is authoritative (skill auto-injection changes it) and patches
+    // the bubble before any snapshot reconcile can see a mismatch.
+    const optimisticContent = `${text}${composeAttachmentText(fileAttachments)}`;
+    const optimisticImages = outgoingAttachments
+      .filter((attachment): attachment is Extract<ComposerAttachment, { kind: "image" }> => attachment.kind === "image")
+      .map((attachment) => ({ src: attachment.dataUrl, mimeType: attachment.mimeType }));
+    setMessages((current) => [...current, { id: messageId, role: "user", content: optimisticContent, ...(optimisticImages.length ? { images: optimisticImages } : {}) }]);
+    pendingSendsRef.current.set(requestId, { sessionId: targetSessionId, messageId, attachments: outgoingAttachments });
+    const currentSession = sessions.find((session) => session.id === targetSessionId);
     const hasExistingUserMessage = Boolean(currentSession?.firstMessage?.trim()) || messages.some((message) => message.role === "user");
     if (!hasExistingUserMessage) queueSessionTitle(text);
     setMainAgentRunning(true);
-    setSessionRunning(activeId, true);
+    setSessionRunning(targetSessionId, true);
     try {
-      const response = await fetch(`/api/sessions/${activeId}/prompt`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, mode }) });
+      const body: Record<string, unknown> = { text, mode, requestId };
+      if (promptImages.length) body.images = promptImages;
+      if (fileAttachments.length) body.attachments = fileAttachments;
+      const response = await fetch(`/api/sessions/${targetSessionId}/prompt`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (!response.ok) {
         const data = await response.json().catch(() => ({})) as { error?: string };
         if (!wasRunning) {
           setMainAgentRunning(false);
-          setSessionRunning(activeId, false);
+          setSessionRunning(targetSessionId, false);
         }
         markMessageFailed();
+        // The send failed: bring the attachments back to THEIR session so the
+        // user can retry — never to whatever session is being viewed now.
+        restoreAttachments(targetSessionId, outgoingAttachments);
+        pendingSendsRef.current.delete(requestId);
         setError(data.error ?? t("sendFailed"));
-      } else setSessionRunning(activeId, true, true);
+      } else {
+        setSessionRunning(targetSessionId, true, true);
+        // The server owns the final accepted text (attachments included): sync
+        // the optimistic bubble to it so reconnect merges by equality.
+        const data = await response.json().catch(() => ({})) as { composedText?: string; requestState?: "accepted" };
+        if (typeof data.composedText === "string") {
+          // The terminal event may already have consumed this entry (a very
+          // fast turn completing before the POST response): re-read instead of
+          // asserting, and treat absence as settled — nothing left to patch.
+          const entry = pendingSendsRef.current.get(requestId);
+          if (entry) {
+            entry.composedText = data.composedText;
+            if (data.composedText !== optimisticContent) {
+              setMessages((current) => current.map((message) => message.id === messageId ? { ...message, content: data.composedText! } : message));
+            }
+            if (data.requestState === "accepted") pendingSendsRef.current.delete(requestId);
+          }
+        }
+      }
     } catch (error) {
       if (!wasRunning) {
         setMainAgentRunning(false);
-        setSessionRunning(activeId, false);
+        setSessionRunning(targetSessionId, false);
       }
       markMessageFailed();
+      restoreAttachments(targetSessionId, outgoingAttachments);
+      pendingSendsRef.current.delete(requestId);
       setError(error instanceof Error ? error.message : t("sendFailed"));
     }
   };
@@ -821,6 +1023,7 @@ export function Workbench() {
   return <div className="app-shell">
     <Sidebar open={mobileNav} bootstrapping={bootstrapping} sessions={orderedSessions} activeId={activeId} t={t} onNewSession={() => void newSession()} onSelect={(id) => { if (id !== activeId) { selectSession(id); setMessages([]); resetSessionState(); } setMobileNav(false); }} onArchive={(id) => void archiveSession(id)} onClose={() => setMobileNav(false)} />
     {mobileNav ? <button className="scrim mobile-only" onClick={() => setMobileNav(false)} aria-label={t("closeNav")} /> : null}
+    {lightbox ? <Lightbox image={lightbox} t={t} onClose={() => setLightbox(null)} /> : null}
     <main className="main-panel">
       <Topbar bootstrapping={bootstrapping} choosing={workspaceChoosing} cwd={cwd} t={t} onOpenNav={() => setMobileNav(true)} onChooseDirectory={() => void chooseWorkingDirectory()} />
       <section ref={conversationRef} className="conversation" onScroll={handleConversationScroll}>
@@ -829,7 +1032,7 @@ export function Workbench() {
             ? <EmptyState bootstrapping={bootstrapping} activeId={activeId} t={t} onSuggestion={setInput} />
             : <>
               {hasEarlierMessages ? <button className="load-earlier" type="button" onClick={loadEarlierMessages}><ArrowUp size={14} />{t("loadEarlierMessages")}</button> : null}
-              {displayedMessages.map((message) => <MessageItem key={message.id} message={message} labels={messageLabels} />)}
+              {displayedMessages.map((message) => <MessageItem key={message.id} message={message} labels={messageLabels} sessionId={activeId} onImageClick={openLightbox} />)}
             </>}
           {contextCompacting ? <article className="message thinking context-compaction-message" role="status" aria-live="polite"><div className="message-body"><div className="thinking-copy"><span className="thinking-title"><Brain size={14} weight="bold" />{t("contextCompacting")}</span></div></div></article> : null}
         </div>
@@ -837,7 +1040,7 @@ export function Workbench() {
       </section>
       <footer className="composer-wrap">
         {approval ? <ApprovalCard approval={approval} scopeExpansion={scopeExpansion} t={t} onDecide={(approved, scope) => void decide(approved, scope)} /> : null}
-        <Composer value={input} onChange={setInput} onSubmit={(mode) => void send(mode)} onStop={stopAll} busy={composerBusy} running={running} activeId={activeId} bootstrapping={bootstrapping} streamReady={streamReady} mainAgentRunning={mainAgentRunning} approvalMode={approvalMode} onApprovalModeChange={(mode) => void changeApprovalMode(mode)} usage={usage} modelProfiles={modelProfiles} activeProfileId={activeProfileId} modelName={modelName} modelSwitching={modelSwitching} onModelChange={(profileId) => void changeModel(profileId)} t={t} />
+        <Composer value={input} onChange={setInput} onSubmit={(mode) => void send(mode)} onStop={stopAll} busy={composerBusy} running={running} activeId={activeId} bootstrapping={bootstrapping} streamReady={streamReady} mainAgentRunning={mainAgentRunning} approvalMode={approvalMode} onApprovalModeChange={(mode) => void changeApprovalMode(mode)} usage={usage} modelProfiles={modelProfiles} activeProfileId={activeProfileId} modelName={modelName} modelSwitching={modelSwitching} onModelChange={(profileId) => void changeModel(profileId)} attachments={pendingAttachments} onAddAttachments={addAttachments} onRemoveAttachment={removeAttachment} supportsImages={activeSupportsImages} t={t} />
       </footer>
     </main>
     <aside className="right-rail" aria-label={t("subagents")}>

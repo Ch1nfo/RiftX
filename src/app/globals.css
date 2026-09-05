@@ -576,3 +576,24 @@ a { color: inherit; text-decoration: none; }
 :root[data-design="terminal"] .jump-latest, :root[data-theme="light"][data-design="terminal"] .jump-latest { left: calc(var(--sidebar-width) + ((100vw - var(--sidebar-width) - var(--right-rail-space)) / 2)); }
 
 @media (max-width: 800px) { :root[data-design="terminal"] .composer-wrap, :root[data-theme="light"][data-design="terminal"] .composer-wrap { left: 0; right: 0; } :root[data-design="terminal"] .jump-latest, :root[data-theme="light"][data-design="terminal"] .jump-latest { left: 50%; } }
+
+/* Conversation images and the full-screen viewer. */
+.message-images { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.message-image { border: 1px solid var(--line); border-radius: 8px; padding: 0; background: var(--panel-2); cursor: zoom-in; overflow: hidden; }
+.message-image img { display: block; width: 180px; height: 130px; object-fit: cover; }
+.tool-screenshot { display: block; width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 0; margin: 8px 0; background: var(--panel-2); cursor: zoom-in; overflow: hidden; }
+.tool-screenshot img { display: block; width: 100%; max-height: 320px; object-fit: contain; }
+.lightbox { position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; background: rgba(5, 6, 7, .82); cursor: zoom-out; }
+.lightbox img { max-width: 92vw; max-height: 92vh; border-radius: 6px; cursor: default; }
+
+/* Composer attachment chips and the attach button. */
+.attach-button { position: relative; display: inline-grid; place-items: center; }
+.attach-button.disabled { opacity: .5; pointer-events: none; }
+.attach-button input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.composer-attachments { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 10px 0; }
+.composer-attachment { position: relative; display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel-2); padding: 3px 6px; font-size: 11px; color: var(--muted); }
+.composer-attachment img { width: 34px; height: 34px; object-fit: cover; border-radius: 4px; display: block; }
+.composer-attachment-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-attachment-remove { border: 0; border-radius: 50%; background: var(--panel-3); color: var(--muted); width: 16px; height: 16px; display: inline-grid; place-items: center; cursor: pointer; padding: 0; }
+.composer-attachment-remove:hover { color: var(--danger); }
+.composer-attachment-hint { font-size: 11px; color: var(--muted-2); }

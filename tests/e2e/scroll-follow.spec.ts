@@ -119,7 +119,31 @@ test.describe("conversation auto-follow", () => {
     // persisted snapshot and make the otherwise-missed reply visible.
     await expect(page.locator(".message.assistant").last()).toContainText("persisted answer after a dropped stream segment");
   });
-});
+test("renders tool screenshots and user images inline with a lightbox viewer", async ({ page, context }) => {
+  await routeApiToMock(context);
+  await page.goto("/");
+  await page.waitForSelector(".message.tool");
+
+  // Tool card with a screenshot stays open and shows the inline image.
+  const toolCard = page.locator(".tool-card", { hasText: "browser" }).filter({ has: page.locator(".tool-screenshot") }).first();
+  await expect(toolCard).toBeVisible();
+  const toolImage = toolCard.locator(".tool-screenshot img");
+  await expect(toolImage).toBeVisible();
+  await expect(toolImage).toHaveAttribute("src", /\/findings\/screenshot\/s-e2e-/);
+
+  // User-sent images render as thumbnails from their data URI.
+  const userThumb = page.locator(".message.user .message-image img").first();
+  await expect(userThumb).toBeVisible();
+  await expect(userThumb).toHaveAttribute("src", /^data:image\/png;base64,/);
+
+  // Clicking opens the lightbox; Esc closes it.
+  await toolCard.locator(".tool-screenshot").click();
+  const lightbox = page.locator(".lightbox");
+  await expect(lightbox).toBeVisible();
+  await expect(lightbox.locator("img")).toHaveAttribute("src", /\/findings\/screenshot\/s-e2e-/);
+  await page.keyboard.press("Escape");
+  await expect(lightbox).toHaveCount(0);
+});});
 
 async function expectBottomed(page: Page, bottomed: boolean) {
   await expect

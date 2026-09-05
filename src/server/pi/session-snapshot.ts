@@ -1,6 +1,6 @@
+import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
-import { SessionManager as AgentSessionManager } from "@mariozechner/pi-coding-agent";
 import { readConfig, getAppPaths, getLaunchDirectory } from "@/server/config-store";
 import { RiftxError } from "@/server/errors";
 import type { AppConfig, ContextUsage, ModelProfile, SessionSummary } from "@/lib/types";
@@ -159,7 +159,8 @@ async function buildSessionSnapshot(id: string, path: string | undefined, config
 
 export async function listWorkspaceSessionInfos(cwd: string) {
   const target = resolve(cwd);
-  const infos = await AgentSessionManager.list(cwd, getAppPaths().sessions);
+  const { SessionManager } = await import("@mariozechner/pi-coding-agent");
+  const infos = await SessionManager.list(cwd, getAppPaths().sessions);
   const launchDirectory = getLaunchDirectory();
   return infos.filter((info) => info.cwd ? resolve(info.cwd) === target : target === launchDirectory);
 }
@@ -191,28 +192,111 @@ export async function getSessionSnapshot(id: string) {
   };
 }
 
+/** Content-hash reference for one transcript image part: stable across snapshot
+ * calls (append-only branch) and resolvable on demand by the image route, so a
+ * reconciliation snapshot never re-encodes megabytes of base64 history. */
+export function imageRefFor(data: string) {
+  return createHash("sha256").update(data).digest("hex").slice(0, 24);
+}
+
+/**
+ * Per-record incremental image index. getBranch() returns a fresh array on
+ * every call, but the ENTRY objects inside are stable — so per-entry WeakSet
+ * membership drives incrementality: each user image is hashed exactly once
+ * no matter how many snapshots or image GETs follow. A non-append branch
+ * rewrite rebuilds the index so removed images are released.
+ */
+function ensureImageIndex(record: SessionRecord) {
+  const branch = record.sessionManager.getBranch() as object[];
+  const previousBranch = record.imageIndexedBranch;
+  const appendOnly = previousBranch !== undefined
+    && previousBranch.length <= branch.length
+    && previousBranch.every((entry, index) => branch[index] === entry);
+
+  // Compaction, rollback, and branch switching can remove entries. Rebuild in
+  // that case so old URLs stop resolving and their base64 strings are no
+  // longer strongly retained. Fresh-array snapshots with the same entries and
+  // ordinary append-only growth keep the incremental fast path.
+  if (!appendOnly) {
+    record.imageSeenEntries = new WeakSet();
+    record.imageEntryImages = new WeakMap();
+    record.imageRefIndex = new Map();
+  }
+  record.imageSeenEntries ??= new WeakSet();
+  record.imageEntryImages ??= new WeakMap();
+  record.imageRefIndex ??= new Map();
+  const seen = record.imageSeenEntries;
+  const perEntry = record.imageEntryImages;
+  const index = record.imageRefIndex;
+  for (const entry of branch) {
+    if (!entry || typeof entry !== "object" || seen.has(entry)) continue;
+    seen.add(entry);
+    const images: Array<{ ref: string; mimeType: string }> = [];
+    const candidate = (entry as { type?: string; message?: { role?: string; content?: unknown } }).message;
+    const role = candidate?.role;
+    const content = candidate?.content;
+    if ((entry as { type?: string }).type === "message" && role === "user" && Array.isArray(content)) {
+      for (const part of content as Array<{ type?: string; data?: unknown; mimeType?: unknown }>) {
+        if (part?.type === "image" && typeof part.data === "string" && typeof part.mimeType === "string") {
+          const ref = imageRefFor(part.data);
+          images.push({ ref, mimeType: part.mimeType });
+          index.set(ref, { data: part.data, mimeType: part.mimeType });
+        }
+      }
+    }
+    perEntry.set(entry, images);
+  }
+  record.imageIndexedBranch = branch;
+  // The SAME branch array this index was built from: callers walking messages
+  // must use it, not a second getBranch() that can already include entries
+  // written between the two reads.
+  return { index, perEntry, branch };
+}
+
+/** Finds the transcript image whose content hash matches ref. */
+export function findTranscriptImage(record: SessionRecord, ref: string): { bytes: Buffer; mimeType: string } | undefined {
+  if (!/^[a-f0-9]{24}$/.test(ref)) return undefined;
+  const indexed = ensureImageIndex(record).index.get(ref);
+  return indexed ? { bytes: Buffer.from(indexed.data, "base64"), mimeType: indexed.mimeType } : undefined;
+}
+
 export async function getSessionMessages(getRecord: () => Promise<SessionRecord>) {
+  // One index pass serves both the ref URLs below and later image GETs; entry
+  // objects are hashed exactly once across all snapshots and image requests.
+  // The walk reuses the SAME branch array the index was built from — a second
+  // getBranch() could include a message written between the two reads whose
+  // image refs the first pass never computed.
   const record = await getRecord();
-  const messages: Array<{ id: string; role: "user" | "assistant" | "thinking" | "tool"; content: string; toolName?: string; toolCallId?: string; status?: "queued" | "running" | "done" | "error" | "cancelled"; isError?: boolean }> = [];
+  const { perEntry, branch } = ensureImageIndex(record);
+  const messages: Array<{ id: string; role: "user" | "assistant" | "thinking" | "tool"; content: string; toolName?: string; toolCallId?: string; status?: "queued" | "running" | "done" | "error" | "cancelled"; isError?: boolean; images?: Array<{ src: string; mimeType: string }>; screenshotId?: string }> = [];
   const toolIndexes = new Map<string, number>();
-  const entries = record.sessionManager.getBranch();
+  const entries = branch as Array<{ type: string; message: unknown }>;
   entries.forEach((entry, messageIndex) => {
     if (entry.type !== "message") return;
     const message = entry.message;
-    const candidate = message as unknown as { role?: string; content?: unknown; toolCallId?: string; toolName?: string; isError?: boolean };
+    const candidate = message as unknown as { role?: string; content?: unknown; toolCallId?: string; toolName?: string; isError?: boolean; details?: { screenshotId?: unknown } };
     if (candidate.role === "toolResult") {
       const toolCallId = candidate.toolCallId ?? `${record.id}-${messageIndex}`;
       const result = textFromContent(candidate.content);
+      // Browser screenshots carry a stable id the UI renders via the existing
+      // screenshot route; other image parts (MCP) only reach the model.
+      const screenshotId = typeof candidate.details?.screenshotId === "string" ? candidate.details.screenshotId : undefined;
       const toolIndex = toolIndexes.get(toolCallId);
       if (toolIndex === undefined) {
-        messages.push({ id: `${record.id}-${messageIndex}`, role: "tool", toolCallId, toolName: candidate.toolName ?? "tool", content: result, status: candidate.isError ? "error" : "done", isError: Boolean(candidate.isError) });
+        messages.push({ id: `${record.id}-${messageIndex}`, role: "tool", toolCallId, toolName: candidate.toolName ?? "tool", content: result, status: candidate.isError ? "error" : "done", isError: Boolean(candidate.isError), ...(screenshotId ? { screenshotId } : {}) });
       } else {
-        messages[toolIndex] = { ...messages[toolIndex], content: result, status: candidate.isError ? "error" : "done", isError: Boolean(candidate.isError) };
+        messages[toolIndex] = { ...messages[toolIndex], content: result, status: candidate.isError ? "error" : "done", isError: Boolean(candidate.isError), ...(screenshotId ? { screenshotId } : {}) };
       }
       return;
     }
 
     const parts = Array.isArray(candidate.content) ? candidate.content : [{ type: "text", text: String(candidate.content ?? "") }];
+    // Precomputed by the index pass: no re-hashing while building ref URLs.
+    const entryImages = candidate.role === "user" ? perEntry.get(entry as object) : undefined;
+    const userImages = entryImages?.length
+      ? entryImages.map((image) => ({ src: `/api/sessions/${record.id}/messages/image/${image.ref}`, mimeType: image.mimeType }))
+      : undefined;
+    let imagesAttached = false;
     parts.forEach((part: unknown, partIndex: number) => {
       if (!part || typeof part !== "object") return;
       const item = part as { type?: string; text?: unknown; thinking?: unknown; id?: string; name?: string; arguments?: unknown };
@@ -220,7 +304,9 @@ export async function getSessionMessages(getRecord: () => Promise<SessionRecord>
       if (candidate.role === "user" && item.type === "text") {
         const content = String(item.text ?? "");
         if (isSubagentInjectionMessage(content)) return;
-        messages.push({ id, role: "user", content });
+        const images = !imagesAttached && userImages?.length ? userImages : undefined;
+        imagesAttached = true;
+        messages.push({ id, role: "user", content, ...(images ? { images } : {}) });
       } else if (candidate.role === "assistant" && item.type === "thinking") {
         messages.push({ id, role: "thinking", content: String(item.thinking ?? ""), status: "done" });
       } else if (candidate.role === "assistant" && item.type === "text") {

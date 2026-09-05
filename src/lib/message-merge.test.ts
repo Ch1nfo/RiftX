@@ -84,3 +84,34 @@ test("a completed snapshot still updates a locally running card", () => {
   const [merged] = mergeFetchedMessages([local], [remote]);
   assert.equal(merged.status, "done");
 });
+
+test("remote canonical identity wins: hash-image URLs and positional id replace the optimistic echo", () => {
+  const local = [message({ id: "client-uuid", role: "user", content: "look", images: [{ src: "data:image/png;base64,QUJD", mimeType: "image/png" }] })];
+  const fetched = [message({ id: "sess-1-7-1", role: "user", content: "look", images: [{ src: "/api/sessions/sess-1/messages/image/abc", mimeType: "image/png" }] })];
+  const merged = mergeFetchedMessages(local, fetched);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].id, "sess-1-7-1");
+  assert.deepEqual(merged[0].images, [{ src: "/api/sessions/sess-1/messages/image/abc", mimeType: "image/png" }], "data URI must not survive once the snapshot's route URL exists");
+});
+
+test("same-text duplicate locals: one matches the snapshot, the other stays trailing without stealing it", () => {
+  const local = [
+    message({ id: "u1", role: "user", content: "continue", images: [{ src: "data:image/png;base64,QQ==", mimeType: "image/png" }] }),
+    message({ id: "u2", role: "user", content: "continue", images: [{ src: "data:image/png;base64,V1o=", mimeType: "image/png" }] })
+  ];
+  const fetched = [message({ id: "srv-latest", role: "user", content: "continue", images: [{ src: "/api/sessions/s/messages/image/xyz", mimeType: "image/png" }] })];
+  const merged = mergeFetchedMessages(local, fetched);
+  // The snapshot's single message keeps the canonical id + route URL; the
+  // unmatched trailing optimistic echo survives (it predates the snapshot).
+  assert.equal(merged.length, 2);
+  assert.ok(merged.some((message) => message.id === "srv-latest" && message.images?.[0]?.src === "/api/sessions/s/messages/image/xyz"));
+});
+
+test("local images are kept when the snapshot predates them (no remote images)", () => {
+  const local: MergeableMessage[] = [{ id: "u9", role: "user", content: "pic", images: [{ src: "data:image/png;base64,QUJD", mimeType: "image/png" }] }];
+  const fetched: MergeableMessage[] = [{ id: "srv-1", role: "user", content: "pic" }];
+  const merged = mergeFetchedMessages(local, fetched);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].id, "srv-1");
+  assert.deepEqual(merged[0].images, [{ src: "data:image/png;base64,QUJD", mimeType: "image/png" }]);
+});

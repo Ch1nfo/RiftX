@@ -6,6 +6,10 @@ export type MergeableMessage = {
   toolCallId?: string;
   status?: string;
   isError?: boolean;
+  /** User-sent images: an opaque src (optimistic data URI or server image-route URL). */
+  images?: Array<{ src: string; mimeType: string }>;
+  /** Browser screenshot captured by this tool call, served by id-based route. */
+  screenshotId?: string;
 };
 
 // Tool cards only move forward through these states. A refetch snapshot can
@@ -55,14 +59,24 @@ export function mergeFetchedMessages<T extends MergeableMessage>(current: T[], f
     }
     const remote = next[index];
     const content = local.content.length >= remote.content.length ? local.content : remote.content;
-    next[index] = remote.role === "tool"
-      ? toolStatusRank(local.status) > toolStatusRank(remote.status)
+    if (remote.role === "tool") {
+      next[index] = toolStatusRank(local.status) > toolStatusRank(remote.status)
         // status is set explicitly: a locally settled card stored without the
         // property must still override a stale remote "running" — a plain
         // spread skips absent keys and would let it through.
         ? { ...remote, ...local, status: local.status }
-        : { ...local, ...remote, content }
-      : local.content.length >= remote.content.length ? { ...remote, ...local } : { ...local, ...remote };
+        : { ...local, ...remote, content };
+      return;
+    }
+    // User/assistant: the remote snapshot is canonical for identity-bearing
+    // fields — its positional id and its hash-addressed images win over the
+    // optimistic echo's client UUID and inline data URIs, so base64 payloads
+    // are dropped from state as soon as the server view arrives.
+    next[index] = {
+      ...(local.content.length >= remote.content.length ? { ...remote, ...local } : { ...local, ...remote }),
+      id: remote.id,
+      images: remote.images?.length ? remote.images : local.images
+    };
   });
   return next;
 }

@@ -18,7 +18,7 @@ import { RiftxError } from "@/server/errors";
 import { clampConcurrency, type AppConfig, type ApprovalMode, type ArchivedSession, type ModelProfile, type RiftxEvent, type SessionSummary } from "@/lib/types";
 import { ApprovalGate } from "./approval-gate";
 import { createPermissionExtension, isGuardedTool } from "./permission-extension";
-import { resolvePromptMode } from "@/lib/prompt-mode";
+import { preparePromptDispatch } from "@/lib/prompt-mode";
 import { normalizeContextUsage } from "./usage";
 import { buildChildPentestSystemPrompt, buildPentestSystemPrompt } from "./system-prompt";
 import { evaluateApproval } from "./approval-evaluator";
@@ -36,6 +36,7 @@ import { createTimedBashTool } from "./bash-timeout";
 import { createWebTools } from "@/server/web/tools";
 import { createCrawlTool } from "@/browser/tools/crawl";
 import { sessionToolNames } from "@/server/session-tools";
+import { composeAttachmentText, type PromptAttachment, type PromptImage } from "@/lib/attachments";
 import { withMcpReferences, type McpServerEntry } from "@/server/mcp/manager";
 import { buildMcpTools } from "@/server/mcp/tools";
 import { BashConcurrency } from "./bash-concurrency";
@@ -48,15 +49,44 @@ import { archivedRestoreError, classifyArchivedRestore, restoredArchiveState } f
 import { sessions, sessionCreation, RUNTIME_VERSION, type RuntimeDeps, type SessionRecord } from "./session-registry";
 import { createFindingTool, type FindingSourceInfo } from "./tools/finding-tool";
 import { createSubagentTool } from "./tools/subagent-tool";
-import { listRunningSessionIds, listSessions, getSessionSnapshot, getSessionMessages as getMessages, summaryName, usageFromRecord, listWorkspaceSessionInfos } from "./session-snapshot";
+import { listRunningSessionIds, listSessions, getSessionSnapshot, getSessionMessages as getMessages, summaryName, usageFromRecord, listWorkspaceSessionInfos, findTranscriptImage } from "./session-snapshot";
 import { createToolOutputStore, listToolArtifacts, toolArtifactDir } from "@/server/tool-output";
+import { beginPromptRequest, promptRequestStates as requestStatesFor, settlePromptRequest } from "./prompt-requests";
 
 // Facade re-exports: the API routes import everything from this module.
 export { listRunningSessionIds, listSessions, getSessionSnapshot };
 export async function getSessionMessages(id: string) {
   return getMessages(() => getOrCreateSession(id));
 }
+
+/** Explicit request states for reconnect reconciliation. Absence is unknown,
+ * never an implicit success signal. */
+export function promptRequestStates(id: string) {
+  const record = sessions.get(id);
+  return record ? requestStatesFor(record) : {};
+}
+
+/** Compatibility projection for clients from the first attachment revision. */
+export function failedPromptRequestIds(id: string) {
+  return Object.entries(promptRequestStates(id)).filter(([, state]) => state === "failed").map(([key]) => key);
+}
+
+/** Resolves one transcript image on demand; materializes the record like /messages does. */
+export async function getTranscriptImage(id: string, ref: string) {
+  const record = await getOrCreateSession(id);
+  return findTranscriptImage(record, ref);
+}
 import { deliverSubagentCompletion, dispatchSessionAction, enqueueSessionAction, undeliveredTerminalTasks } from "./session-join";
+
+/** SSE diets: drop image parts (the UI renders screenshots via their id-based URL) so a
+ * single capture no longer ships its full base64 payload through the stream. */
+function withoutImageParts<T>(result: T): T {
+  const record = result as unknown as { content?: unknown };
+  if (!result || typeof result !== "object" || !Array.isArray(record.content)) return result;
+  const content = record.content
+    .filter((part) => !(part && typeof part === "object" && (part as { type?: string }).type === "image"));
+  return { ...(result as object), content } as T;
+}
 
 function eventPayload(event: AgentSessionEvent): RiftxEvent {
   const base = event as unknown as Record<string, unknown>;
@@ -74,10 +104,10 @@ function eventPayload(event: AgentSessionEvent): RiftxEvent {
     // undefined, which the UI then renders literally after approval.
     return { type: "tool_update", toolName: base.toolName, toolCallId: base.toolCallId, update: base.partialResult ?? base.update } as RiftxEvent;
   }
-  if (event.type === "tool_execution_end") return { type: "tool_end", toolName: base.toolName, toolCallId: base.toolCallId, result: base.result, isError: base.isError } as RiftxEvent;
+  if (event.type === "tool_execution_end") return { type: "tool_end", toolName: base.toolName, toolCallId: base.toolCallId, result: withoutImageParts(base.result), isError: base.isError } as RiftxEvent;
   if (event.type === "agent_start") return { type: "session_state", state: "running" };
   if (event.type === "agent_end") return { type: "done" };
-  if (event.type === "turn_end") return { type: "message", message: base.message, toolResults: base.toolResults, turnEnd: true } as RiftxEvent;
+  if (event.type === "turn_end") return { type: "message", message: base.message, toolResults: Array.isArray(base.toolResults) ? base.toolResults.map((item) => withoutImageParts(item)) : base.toolResults, turnEnd: true } as RiftxEvent;
   if (event.type === "auto_retry_start") return { type: "session_state", state: "retrying", attempt: base.attempt, error: base.errorMessage } as RiftxEvent;
   if (event.type === "compaction_start") return { type: "session_state", state: "compacting", reason: base.reason } as RiftxEvent;
   if (event.type === "compaction_end") return { type: "session_state", state: "running", reason: base.reason } as RiftxEvent;
@@ -557,36 +587,83 @@ export async function setWorkingDirectory(input: string) {
   return { cwd, sessions: sessionsList, activeSessionId: sessionsList[0]?.id ?? "" };
 }
 
-async function promptSession(id: string, text: string, mode: "prompt" | "steer" | "followUp" = "prompt") {
+type PromptExtras = { images?: PromptImage[]; attachments?: PromptAttachment[]; requestId?: string };
+type PromptDispatchHooks = { onAccepted?: (composedText: string) => void; onFailed?: (error: unknown) => void };
+
+async function promptSession(id: string, text: string, mode: "prompt" | "steer" | "followUp" = "prompt", extras: PromptExtras = {}, hooks?: PromptDispatchHooks) {
   const record = await getOrCreateSession(id);
-  const resolvedMode = resolvePromptMode(mode, record.session.isStreaming);
-  const prepared = resolvedMode === "steer" ? { prompt: text, skillContext: "", loaded: [] as string[] } : await prepareSkillPrompt(text, record.skills, record.loadedSkills);
+  const dispatch = await preparePromptDispatch(
+    mode,
+    () => record.session.isStreaming,
+    () => prepareSkillPrompt(text, record.skills, record.loadedSkills),
+    () => ({ prompt: text, skillContext: "", loaded: [] as string[] })
+  );
+  const resolvedMode = dispatch.mode;
+  const ready = dispatch.prepared;
+  // Skill delivery is mode-split so the skill body is read exactly once:
+  // - prompt/followUp: the hidden custom message carries ready.skillContext
+  //   and the persisted user message stays the RAW text + attachments.
+  //   (ready.prompt ALSO embeds the skill body — sending it here would make
+  //   the model read the full SKILL.md twice and leak it into the bubble.)
+  // - steer: no separate persistence channel exists, so the composed prompt
+  //   (skill inline + text) goes through the steer queue as before.
+  const attachmentBlock = composeAttachmentText(extras.attachments ?? []);
+  const finalText = `${resolvedMode === "steer" ? ready.prompt : text}${attachmentBlock}`;
+  const images = extras.images?.length ? extras.images.map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType })) : undefined;
   const promptAbortEpoch = record.abortEpoch ?? 0;
   const knownTaskIds = new Set(record.subagents?.list().map((task) => task.id) ?? []);
   const activeBefore = new Set(record.subagents?.list().filter((task) => task.status === "queued" || task.status === "running").map((task) => task.id) ?? []);
   let skillInjected = false;
+  let dispatchAccepted = false;
+  const acceptDispatch = () => {
+    if (dispatchAccepted) return;
+    dispatchAccepted = true;
+    settlePromptRequest(record, extras.requestId, "accepted");
+    // Reports the composed text THIS dispatch actually accepted — the single
+    // mode resolution above is the only authority on what that text is.
+    hooks?.onAccepted?.(finalText);
+  };
   try {
     await dispatchSessionAction(record, resolvedMode, async () => {
-      if (resolvedMode === "steer") await record.session.steer(prepared.prompt);
+      if (resolvedMode === "steer") {
+        await record.session.steer(finalText, images);
+        acceptDispatch();
+      }
       else if (resolvedMode === "followUp") {
         record.gate.beginTask();
-        if (prepared.skillContext) {
-          await record.session.sendCustomMessage({ customType: "riftx_skill_context", content: prepared.skillContext, display: false }, { deliverAs: "followUp" });
+        if (ready.skillContext) {
+          await record.session.sendCustomMessage({ customType: "riftx_skill_context", content: ready.skillContext, display: false }, { deliverAs: "followUp" });
           skillInjected = true;
         }
-        await record.session.followUp(text);
+        await record.session.followUp(finalText, images);
+        acceptDispatch();
       }
       else {
         record.gate.beginTask();
-        if (prepared.skillContext) {
-          await record.session.sendCustomMessage({ customType: "riftx_skill_context", content: prepared.skillContext, display: false });
+        if (ready.skillContext) {
+          await record.session.sendCustomMessage({ customType: "riftx_skill_context", content: ready.skillContext, display: false });
           skillInjected = true;
         }
-        await record.session.prompt(text);
+        let preflightReported = false;
+        await record.session.prompt(finalText, {
+          images,
+          // Pi reports this only after model/auth/compaction/extensions pass,
+          // immediately before the agent run starts. This is the acceptance
+          // boundary; marking before the call made failed unreachable.
+          preflightResult: (success) => {
+            preflightReported = true;
+            if (success) acceptDispatch();
+          }
+        });
+        // Defensive compatibility with a future SDK that omits the internal
+        // hook after resolving successfully.
+        if (!preflightReported) acceptDispatch();
       }
     });
   } catch (error) {
-    if (!skillInjected) prepared.loaded.forEach((name) => record.loadedSkills.delete(name));
+    settlePromptRequest(record, extras.requestId, "failed", error instanceof Error ? error.message : String(error));
+    if (!dispatchAccepted) hooks?.onFailed?.(error);
+    if (!skillInjected) ready.loaded.forEach((name) => record.loadedSkills.delete(name));
     throw error;
   }
   // Reset the waiting flag after ANY response (steer included). The flag was
@@ -632,14 +709,48 @@ export async function summarizeSessionTitle(id: string, task: string) {
   return { title, sessions: (await listSessions()).filter((session) => !session.archived) };
 }
 
-export async function startPromptSession(id: string, text: string, mode: "prompt" | "steer" | "followUp" = "prompt") {
+export async function startPromptSession(id: string, text: string, mode: "prompt" | "steer" | "followUp" = "prompt", extras: PromptExtras = {}) {
   const record = await getOrCreateSession(id);
+  // Reject images on the synchronous path so the route answers 400 instead of
+  // letting the provider layer silently degrade them to placeholders — the
+  // user believes the model saw the image.
+  if (extras.images?.length && record.profile.supportsImages !== true) {
+    throw new RiftxError("当前模型不支持图像输入，请在模型配置中开启“支持图像输入”或移除图片", "MODEL_DOES_NOT_SUPPORT_IMAGES", 400);
+  }
   // Keep the Agent single-run while a previous stop is still unwinding a tool.
   if (record.abortPromise) await record.abortPromise;
-  void promptSession(id, text, mode).catch((error) => {
+  // Idempotency key FIRST: a replayed requestId must be rejected before any
+  // skill preparation mutates record.loadedSkills, or the 409 would leave the
+  // skill marked loaded without ever being injected.
+  if (!beginPromptRequest(record, extras.requestId)) {
+    throw new RiftxError("Duplicate request id — this send was already accepted", "DUPLICATE_REQUEST_ID", 409);
+  }
+  // The response below does NOT pre-resolve the mode or pre-compose text:
+  // promptSession resolves it once, at dispatch time, against the live
+  // isStreaming — anything computed here could race a turn boundary and
+  // disagree with what is actually persisted. The REAL composed text of this
+  // dispatch travels back through the acceptance hook.
+  let accepted = false;
+  let acceptRequest!: (composedText: string) => void;
+  let rejectRequest!: (error: unknown) => void;
+  const acceptance = new Promise<string>((resolve, reject) => {
+    acceptRequest = (composedText: string) => { accepted = true; resolve(composedText); };
+    rejectRequest = reject;
+  });
+  const running = promptSession(id, text, mode, extras, { onAccepted: acceptRequest, onFailed: rejectRequest });
+  void running.catch((error) => {
+    if (!accepted) {
+      settlePromptRequest(record, extras.requestId, "failed", error instanceof Error ? error.message : String(error));
+      rejectRequest(error);
+      return;
+    }
+    // A failure after acceptance must not make the user retry an already
+    // dispatched or queued message. Surface it as a session error without a
+    // requestId so attachment recovery is not triggered.
     record.emitter.emit("event", { type: "error", error: error instanceof Error ? error.message : "Agent request failed" });
   });
-  return record;
+  const composedText = await acceptance;
+  return { record, composedText, requestState: "accepted" as const };
 }
 
 export async function abortSession(id: string) {

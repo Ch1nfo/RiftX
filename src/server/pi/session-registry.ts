@@ -10,6 +10,7 @@ import { SubagentManager } from "./subagent-manager";
 import type { SkillDescriptor } from "./skill-router";
 import type { ProviderRegistrations } from "./model-registration";
 import type { McpServerEntry } from "@/server/mcp/manager";
+import type { PromptRequestOutcome } from "./prompt-requests";
 
 /**
  * Process-global session registry: the live SessionRecord map, the in-flight
@@ -35,6 +36,19 @@ export type SessionRecord = {
   browser?: BrowserManager;
   /** MCP connection references acquired at creation; released on shutdown. */
   mcpEntries?: McpServerEntry[];
+  /** Per-request prompt lifecycle for reconnect-safe failure recovery:
+   * requestId → pending|accepted|failed. Completed history is capped; pending
+   * dispatches are retained until they reach a terminal state. */
+  promptRequests?: Map<string, PromptRequestOutcome>;
+  /** Incremental transcript-image index. Entry objects are stable across
+   * getBranch() calls even though the array itself is fresh every time, so
+   * membership is tracked per entry: hashing happens exactly once per entry. */
+  imageSeenEntries?: WeakSet<object>;
+  imageEntryImages?: WeakMap<object, Array<{ ref: string; mimeType: string }>>;
+  imageRefIndex?: Map<string, { data: string; mimeType: string }>;
+  /** Last indexed branch, used to distinguish append-only growth from a
+   * compaction/rollback that must invalidate stale image references. */
+  imageIndexedBranch?: object[];
   mutationLock: MutationLock;
   bashConcurrency: BashConcurrency;
   subagents?: SubagentManager;
@@ -62,7 +76,7 @@ export type RuntimeDeps = {
 };
 
 /** Bump to force process-global session objects to rebuild from disk. */
-export const RUNTIME_VERSION = 32;
+export const RUNTIME_VERSION = 33;
 
 declare global {
   var __riftxSessions: Map<string, SessionRecord> | undefined;

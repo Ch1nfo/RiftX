@@ -19,11 +19,18 @@ const TALL_TEXT = `${"Streaming content that grows the conversation by well over
 
 /** 210 seeds exceed the 200-message window, so every append slides the window. */
 function seedMessages(count: number) {
-  return Array.from({ length: count }, (_, index) => ({
+  const seeded = Array.from({ length: count }, (_, index) => ({
     id: `seed-${index}`,
     role: index % 2 === 0 ? "user" : "assistant",
     content: `Seed message ${index}.\n\n${"Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore. ".repeat(10)}`
   }));
+  // A settled browser-screenshot tool card plus a user image exercise the
+  // inline-image rendering and the lightbox without a live browser runtime.
+  seeded.push(
+    { id: "seed-tool-screenshot", role: "tool", toolName: "browser", toolCallId: "seed-tool-screenshot", content: "Screenshot captured: s-e2e", status: "done", screenshotId: "s-e2e-00000000-0000-4000-8000-000000000000" },
+    { id: "seed-user-image", role: "user", content: "check this picture", images: [{ src: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", mimeType: "image/png" }] }
+  );
+  return seeded;
 }
 
 /**
@@ -106,20 +113,32 @@ export class MockApi {
         return;
       }
       if (url === `/api/sessions/${SECOND_SESSION_ID}/prompt` && request.method === "POST") {
-        this.secondSessionRunning = true;
-        this.secondSessionMessages = [];
-        json({ ok: true, sessionId: SECOND_SESSION_ID });
+        let body = "";
+        request.on("data", (chunk) => { body += String(chunk); });
+        request.on("end", () => {
+          const parsed = JSON.parse(body || "{}") as { text?: string };
+          this.secondSessionRunning = true;
+          this.secondSessionMessages = [];
+          json({ ok: true, sessionId: SECOND_SESSION_ID, composedText: parsed.text ?? "", requestState: "accepted" });
+        });
         return;
       }
       if (url === `/api/sessions/${SESSION_ID}/messages`) {
-        json(seedMessages(210));
+        json({ messages: seedMessages(210), promptRequestStates: {}, failedRequestIds: [] });
         return;
       }
       if (url === `/api/sessions/${SECOND_SESSION_ID}/messages`) {
-        json(this.secondSessionMessages);
+        json({ messages: this.secondSessionMessages, promptRequestStates: {}, failedRequestIds: [] });
         return;
       }
       if (url === `/api/sessions/${SESSION_ID}` || url === `/api/sessions/${SECOND_SESSION_ID}`) json({});
+      else if (url.startsWith(`/api/sessions/${SESSION_ID}/findings/screenshot/`)) {
+        // 1x1 PNG: enough for <img> to load and render in the assertions.
+        const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+        response.writeHead(200, { "content-type": "image/png", "cache-control": "no-store" });
+        response.end(png);
+        return;
+      }
       else if (url === `/api/sessions/${SESSION_ID}/subagents` || url === `/api/sessions/${SECOND_SESSION_ID}/subagents`) json({ tasks: [], running: 0, maxConcurrent: 3 });
       else if (url === `/api/sessions/${SESSION_ID}/findings` || url === `/api/sessions/${SECOND_SESSION_ID}/findings`) json({ findings: [] });
       else json({});

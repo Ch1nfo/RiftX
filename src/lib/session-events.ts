@@ -1,7 +1,7 @@
 import type { Dispatch, SetStateAction } from "react";
 import type { ApprovalRequest, ContextUsage, Finding, RiftxEvent, SessionSummary, SubagentTask, SubagentTaskPatch } from "@/lib/types";
 import type { MergeableMessage } from "@/lib/message-merge";
-import { summarizeToolResult } from "@/lib/tool-result";
+import { extractScreenshotId, summarizeToolResult } from "@/lib/tool-result";
 import { isAlreadyProcessingError } from "@/lib/prompt-mode";
 
 /**
@@ -29,6 +29,10 @@ export type SessionEventContext = {
   setContextCompacting: (value: boolean) => void;
   setStreamReady: (value: boolean) => void;
   reconcileMessages: () => void;
+  /** Compatibility hook for a server error carrying an exact requestId. New
+   * servers keep pre-acceptance failures on the prompt HTTP response; generic
+   * post-acceptance runtime errors deliberately carry no requestId. */
+  onPromptOutcome?: (ok: boolean, requestId?: string) => void;
   setError: (value: string) => void;
 };
 
@@ -148,6 +152,7 @@ export function applyRiftxEvent(payload: RiftxEvent, ctx: SessionEventContext) {
     return;
   }
   if (payload.type === "done") {
+    ctx.onPromptOutcome?.(true);
     // `done` may be the only terminal event received after a brief SSE gap.
     // A final reconciliation makes completed replies visible without forcing
     // the user to switch sessions and back.
@@ -183,12 +188,14 @@ export function applyRiftxEvent(payload: RiftxEvent, ctx: SessionEventContext) {
   }
   if (payload.type === "tool_end") {
     const toolCallId = String(payload.toolCallId ?? "");
-    ctx.setMessages((current) => current.map((message) => message.id === toolCallId ? { ...message, status: payload.isError ? "error" : "done", isError: Boolean(payload.isError), content: summarizeToolResult(payload.result) } : message));
+    const screenshotId = extractScreenshotId(payload.result);
+    ctx.setMessages((current) => current.map((message) => message.id === toolCallId ? { ...message, status: payload.isError ? "error" : "done", isError: Boolean(payload.isError), content: summarizeToolResult(payload.result), ...(screenshotId ? { screenshotId } : {}) } : message));
     return;
   }
   if (payload.type === "error") {
     const message = String(payload.error ?? "Agent error");
     if (isAlreadyProcessingError(message)) return;
+    ctx.onPromptOutcome?.(false, typeof payload.requestId === "string" ? payload.requestId : undefined);
     ctx.setMainAgentRunning(false);
     ctx.setSessionRunning(ctx.activeId, false);
     ctx.setContextCompacting(false);

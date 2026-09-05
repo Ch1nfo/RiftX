@@ -2,6 +2,7 @@
 
 import { CaretDown, Eye, EyeSlash, WarningCircle } from "@phosphor-icons/react";
 import { useLanguage } from "@/lib/i18n";
+import { screenshotUrl } from "@/lib/screenshot-url";
 import type { Finding, FindingConfidence, FindingEvidence, FindingPatch } from "@/lib/types";
 import { useState } from "react";
 
@@ -9,10 +10,6 @@ const confidenceValues: FindingConfidence[] = ["confirmed", "likely", "suspected
 
 function confidenceLabel(confidence: FindingConfidence, t: ReturnType<typeof useLanguage>["t"]) {
   return confidence === "confirmed" ? t("confidenceConfirmed") : confidence === "likely" ? t("confidenceLikely") : confidence === "suspected" ? t("confidenceSuspected") : t("confidenceNotReproducible");
-}
-
-function screenshotUrl(sessionId: string, screenshotId: string) {
-  return `/api/sessions/${sessionId}/findings/screenshot/${encodeURIComponent(screenshotId)}`;
 }
 
 function evidenceNode(finding: Finding, evidence: FindingEvidence, sessionId: string | undefined, onToolClick: (toolCallId: string, toolName: string, subagentId?: string) => void, onRequestClick: (requestRef: string, finding: Finding) => void, t: ReturnType<typeof useLanguage>["t"]) {
