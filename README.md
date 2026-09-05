@@ -33,7 +33,8 @@ Web security validation is often split across terminals, browsers, proxies, note
 - **Parallel multi-agent work** - Delegate independent tasks to background subagents and consolidate the result after all required work completes.
 - **Browser-native validation** - Operate a real page and inspect DOM snapshots, network traffic, console output, cookies, storage, and screenshots.
 - **Evidence-backed findings** - Link findings to tool calls, browser requests, quotes, and screenshots with impact, confidence, and reproduction notes.
-- **Local first** - No database or RiftX cloud account. Configuration, sessions, Skills, and evidence stay in the current user's home directory.
+- **Long-run continuity** - Reconcile missed streamed messages, compact context during active work, and rebuild a bounded investigation capsule from persisted findings, subagents, and artifacts.
+- **Local first** - No database or RiftX cloud account. Configuration, sessions, Skills, evidence, and generated artifacts stay in the current user's home directory.
 - **Flexible model access** - Connect OpenAI, Anthropic, Google, and compatible endpoints, with per-session model switching.
 
 ## Interface Preview
@@ -66,10 +67,12 @@ The current RiftX version was rerun on TSECBENCH's XBOW Validation Benchmarks. T
 
 ### Agent Workbench
 
-- **Streaming sessions** - Render text, thinking, tool calls, errors, and task state as they happen; restore session state after reconnecting.
+- **Streaming sessions** - Render text, thinking, tool calls, errors, and task state as they happen. Terminal events reconcile against the persisted transcript so replies missed during an SSE gap appear without switching sessions.
 - **Continuous guidance** - Send follow-up instructions while the Agent is running. The conversation follows new output while still allowing manual history review.
-- **Session management** - Scope sessions to a working directory, keep unsent drafts isolated per session, show live running indicators, and promote the most recently active running session to the top. Sessions also support AI-generated titles, switching, archiving, and permanent deletion of archived records.
-- **Context management** - Show input, output, cache, and remaining tokens. Compact context automatically near the limit and expose the compaction state in the conversation.
+- **Session management** - Scope sessions to a working directory, keep unsent drafts isolated per session, show live running indicators, and promote the most recently active running session to the top. Sessions also support AI-generated titles, switching, archiving, restoring archived sessions, and permanent deletion.
+- **Context management** - Show input, output, cache, and remaining tokens. Near the limit, RiftX can compact between tool turns without abandoning the active run, then rebuild a hidden, bounded investigation capsule from persisted findings, SubAgent state, and local output artifacts.
+- **Images and attachments** - Attach up to four images (8 MB each) and five supported text/code files (2 MB each, 4 MB total), paste screenshots directly with `Ctrl/Cmd + V`, preview or remove pending items, and keep them isolated per session. Unsupported image models fail explicitly, failed sends restore their attachments for retry, and message snapshots use hash-referenced local image URLs instead of retransmitting base64 data.
+- **Result-first completion** - The Agent presents the result when work ends and offers report generation as an optional next step instead of spending time and tokens on a report for every task.
 - **Model switching** - Change the selected session's model from the composer without affecting other foreground or background sessions.
 - **Bilingual UI** - Switch between English and Chinese, with light and dark themes.
 
@@ -101,7 +104,7 @@ RiftX exposes one action-based `browser` tool backed by Playwright and Chromium:
 - **Network controls** - `set_host_mappings`, `set_user_agent`, `set_extra_headers`
 - **Page management** - `tabs`, `close`
 
-Snapshots produce an Agent-friendly text representation with stable element references such as `e1` and `e2`. Each identity has isolated cookies and storage, allowing anonymous, low-privilege, and high-privilege states to be tested in parallel. When image input is enabled for the model, screenshots can be sent directly as visual context.
+Snapshots produce an Agent-friendly text representation with stable element references such as `e1` and `e2`. Each identity has isolated cookies and storage, allowing anonymous, low-privilege, and high-privilege states to be tested in parallel. When image input is enabled for the model, screenshots can be sent directly as visual context. Browser screenshots also render inline in the tool card and open in a full-screen viewer.
 
 Browser scope accepts CIDR, host, host and port, wildcard domain, and scheme-restricted URL rules. With no configured rules, the first navigation locks the host; out-of-scope navigation requires approval. Host mappings preserve the Host header and TLS SNI for virtual-host testing, and self-signed or invalid certificates can be accepted for controlled internal environments.
 
@@ -116,6 +119,8 @@ Browser scope accepts CIDR, host, host and port, wildcard domain, and scheme-res
 
 RiftX can act as an MCP client: external MCP servers configured in settings (a JSON array — stdio servers with `command`/`args`/`env`, or remote servers with `url`/`headers`) are connected when a session is created, and their tools are exposed to the main Agent and SubAgents as `mcp__<server>__<tool>`. Scope is deliberately tools-only (no resources, prompts, sampling, or OAuth). MCP tool calls follow the session's approval mode like bash or the browser: request mode asks, AI-assisted mode evaluates the call, and full access bypasses — configuring a server does not blanket-approve every operation it offers. Config changes apply to new or reopened sessions; a server that fails to connect yields zero tools and is retried on the next new session instead of blocking session creation. The settings card has a "Test connection" button that probes the draft list without saving — each server reports connected-with-N-tools or the exact error, and the probe uses throwaway connections that never disturb live sessions.
 
+Each connected server has an independent call guard: at most two active calls, a 120-second deadline, and a circuit breaker that opens after three consecutive failures and probes again after a 30-second cooldown. Queued calls honor cancellation, and a server that ignores cancellation keeps its occupied slot until the underlying call settles, preventing timed-out zombie calls from accumulating without bound.
+
 ### Attack-Surface Crawl
 
 The `crawl` tool maps an in-scope web application through the scoped browser in one call: every link, form (including hidden fields), API routes extracted from loaded JS bundles, and authentication boundaries are collected into a structured inventory. Use it right after the first navigation to map the attack surface before hypothesizing vulnerabilities — the most common agent failure is not exploiting a weakness but never finding the endpoint.
@@ -125,6 +130,11 @@ The `crawl` tool maps an in-scope web application through the scoped browser in 
 - JS bundle analysis extracts API routes from quoted path strings (SPA endpoint map)
 - Login-walled pages are flagged for authenticated re-testing with identities
 - Whole-crawl time budget is bounded (page-level navigation/probe caps + total deadline)
+- Large crawl inventories are written to a local output artifact; the Agent receives a bounded preview and can inspect the full file with `read` or `grep`.
+
+### Long Tool Outputs
+
+Verbose `crawl`, MCP, `web_search`, and `web_fetch` results no longer have to consume the model context in full. Outputs up to 16,000 characters stay inline; larger results are saved under the session's local artifact directory while the Agent receives a bounded head/tail preview and the exact file path. Artifacts are isolated between parent and child Agents and capped by file size and retained-file count.
 
 ### Approvals and Operational Control
 
@@ -143,6 +153,7 @@ Read-only operations such as `read`, `grep`, `find`, and `ls` run directly. `bas
 - The main Agent and subagents can write structured findings to the parent session.
 - A finding includes the affected asset, confidence, impact, reproduction notes, source, and timestamps.
 - Evidence can link a message quote, tool call, captured browser request, or retained screenshot.
+- A `confirmed` finding must include resolvable hard evidence from a real tool result, captured request, or screenshot. Scheduling or recording acknowledgements cannot prove their own claims.
 - Findings are deduplicated by normalized asset and title, then enriched with later evidence.
 - Operators can change confidence, dismiss a finding, or restore it without deleting the underlying evidence.
 
@@ -168,7 +179,8 @@ The `SKILL.md` frontmatter must contain a lowercase `name` matching its director
 
 - Sessions use local JSON/JSONL persistence and remain available after a restart.
 - Subagent tasks, logs, summaries, and approvals are restored with their parent. Tasks still running during a restart become `interrupted` and are not replayed automatically.
-- Findings and retained screenshots are stored separately. Corrupt JSON preserves a backup of the original bytes, and writes use temporary files with atomic replacement.
+- Findings, retained screenshots, and long-output artifacts are stored separately. Corrupt JSON preserves a backup of the original bytes, and writes use temporary files with atomic replacement.
+- The investigation capsule is rebuilt from canonical persisted state after reopen or context compaction instead of accumulating a second model-generated memory store.
 - Stop, archive, working-directory changes, and deletion share one cleanup path that terminates Agent, Bash, and browser resources.
 
 ## Architecture
@@ -181,11 +193,11 @@ The `SKILL.md` frontmatter must contain a lowercase `name` matching its director
                               | REST + SSE
 +-----------------------------v--------------------------------+
 |                     RiftX Server Runtime                     |
-| Session Manager - Approval Gate - Context Compaction         |
+| Session Manager - Approval Gate - Context + Capsule          |
 |        |                 |                  |                |
 |        +-- Main Agent    +-- Local Tools    +-- JSONL Store  |
 |        +-- Subagents     +-- Browser Scope  +-- Evidence     |
-|        +-- Skills                                            |
+|        +-- Skills        +-- MCP Call Guard +-- Artifacts    |
 +-----------------------------+--------------------------------+
                               |
 +-----------------------------v--------------------------------+
@@ -279,6 +291,7 @@ All RiftX runtime data is stored under `~/.riftx/` by default:
 | `~/.riftx/agent/` | RiftX-isolated model and authentication metadata |
 | `~/.riftx/subagents/<session-id>/` | Subagent state, logs, summaries, and thread metadata |
 | `~/.riftx/evidence/<session-id>/` | Findings and retained screenshots |
+| `~/.riftx/artifacts/<session-id>/` | Full text captured from long tool outputs |
 | `~/.riftx/skills/` | User-installed Agent Skills |
 
 Do not commit API keys, authorization headers, cookies, target data, certificates, private keys, session history, or generated assessment artifacts. Always inspect `git status` before committing.
@@ -325,8 +338,10 @@ RiftX/
 | `POST` | `/api/sessions` | Create a session |
 | `DELETE` | `/api/sessions/:id` | Permanently delete an archived session |
 | `POST` | `/api/sessions/:id/archive` | Archive a session |
+| `DELETE` | `/api/sessions/:id/archive` | Restore an archived session |
 | `GET` | `/api/sessions/:id/stream` | Subscribe to SSE session events |
 | `GET` | `/api/sessions/:id/messages` | Read session messages |
+| `GET` | `/api/sessions/:id/messages/image/:ref` | Read a hash-referenced transcript image |
 | `POST` | `/api/sessions/:id/prompt` | Send a task or follow-up instruction |
 | `POST` | `/api/sessions/:id/abort` | Stop the running task |
 | `POST` | `/api/sessions/:id/approval` | Resolve an approval request |
