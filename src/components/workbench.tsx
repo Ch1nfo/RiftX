@@ -233,11 +233,21 @@ function Composer({ value, onChange, onSubmit, onStop, busy, running, activeId, 
       onSubmit();
     }
   };
+  // Pasted images go straight into the attachment tray — the clipboard is the
+  // fastest path for screenshots, no file picker needed. Text pastes (and
+  // mixed clipboard payloads without image files) pass through untouched.
+  const handlePaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.clipboardData?.files ?? []).filter((file) => file.type.startsWith("image/"));
+    if (!files.length) return;
+    event.preventDefault();
+    onAddAttachments(files);
+  };
   return <div className="composer">
     <textarea ref={textareaRef} value={value} disabled={!activeId || bootstrapping} onChange={(event) => onChange(event.target.value)}
       onCompositionStart={() => { compositionActiveRef.current = true; compositionEndedAtRef.current = 0; }}
       onCompositionEnd={() => { compositionActiveRef.current = false; compositionEndedAtRef.current = Date.now(); }}
       onKeyDown={handleKeyDown}
+      onPaste={handlePaste}
       placeholder={bootstrapping ? t("loadingWorkspace") : busy ? t("guide") : activeId ? t("ask") : t("createSessionFirst")} rows={1} />
     {attachments.length ? <div className="composer-attachments">
       {attachments.map((attachment, index) => <div key={index} className={`composer-attachment ${attachment.kind}`}>
