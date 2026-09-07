@@ -19,10 +19,12 @@ test("pentest prompt actively selects browser and targeted testing methods", () 
   assert.match(prompt, /configured maximum is a concurrency limit, not a target/);
   assert.match(prompt, /may be intercepted by an approval flow/);
   assert.match(prompt, /Reply in the same language the user writes in/);
-  assert.match(prompt, /give a concise, task-appropriate summary by default/);
-  assert.match(prompt, /A formal penetration-testing report is a separate deliverable/);
-  assert.match(prompt, /continue deeper validation of the remaining attack surface/);
-  assert.match(prompt, /turn the recorded evidence into a formal report/);
+  assert.match(prompt, /Completion Output Boundary/);
+  assert.match(prompt, /task completion must return only a concise summary/);
+  assert.match(prompt, /then stop/);
+  assert.match(prompt, /Do not proactively generate, draft, format, save, update, or append a penetration-testing report/);
+  assert.match(prompt, /requires an explicit request from the user in the current message/);
+  assert.doesNotMatch(prompt, /offering either to continue deeper validation/);
   assert.doesNotMatch(prompt, /Scope and authorization assumptions/);
   assert.doesNotMatch(prompt, /use the following structure as appropriate/);
 });
@@ -46,4 +48,5 @@ test("custom system prompt replaces the built-in base while retaining delegation
   assert.match(prompt, /Subagent delegation policy/);
   assert.match(prompt, /Do not perform destructive deletion/);
   assert.match(prompt, /Stop the related testing immediately/);
+  assert.match(prompt, /task completion must return only a concise summary/);
 });

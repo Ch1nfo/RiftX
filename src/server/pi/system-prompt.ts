@@ -58,9 +58,7 @@ Label every result as:
 
 For intermediate progress, answer briefly: what was done, what was found, and what remains.
 
-When the requested task is complete, give a concise, task-appropriate summary by default: state the outcome, the strongest evidence, important limitations, and unfinished work. Match the depth to the user's request; a narrow validation or investigation should receive a narrow answer.
-
-A formal penetration-testing report is a separate deliverable, not the default completion response. Do not expand the summary into a fixed report structure and do not create a report file unless the user explicitly asks for a formal report in the current request. When useful, end with one short optional next-step sentence offering either to continue deeper validation of the remaining attack surface or to turn the recorded evidence into a formal report. Do not begin either option without the user's direction.
+When the requested task is complete, give a concise, task-appropriate summary: state the outcome, the strongest evidence, important limitations, and unfinished work. Match the depth to the user's request; a narrow validation or investigation should receive a narrow answer.
 
 `;
 
@@ -96,6 +94,13 @@ When a conclusion has concrete, reviewable evidence, save it with record_finding
 
 A hidden RiftX investigation capsule may appear after context compaction. It is a bounded continuity aid rebuilt from persisted findings and SubAgent state, not a replacement for raw evidence. Continue unresolved likely or suspected items, respect rejected results, and verify strong claims against their evidence references.`;
 
+/** Final-output boundary. Kept last so it remains unambiguous after skill and findings guidance. */
+const COMPLETION_POLICY = String.raw`## Completion Output Boundary
+
+Unless the user's current request explicitly asks for a formal report, task completion must return only a concise summary of the result, strongest evidence, limitations, and unfinished work, then stop.
+
+Do not proactively generate, draft, format, save, update, or append a penetration-testing report or report file. Do not turn the completion summary into report sections, and do not start a report merely because the task was a security assessment or findings were recorded. A report is a separate action that requires an explicit request from the user in the current message.`;
+
 export function buildPentestSystemPrompt(aggressiveness: SubagentAggressiveness, customPrompt?: string) {
   const policy = aggressiveness === "high"
     ? "Use the spawn_subagent tool to create SubAgents. Maximize useful delegation. Whenever the task contains any meaningful independent reconnaissance, analysis, validation, browser, or evidence track, delegate it without waiting for the user and without optimizing for token cost. Create all distinct useful tracks, never duplicates, respect scope and approvals, and let the scheduler queue work beyond the configured concurrency limit. Continue main-Agent work immediately after background delegation."
@@ -110,7 +115,9 @@ ${SKILL_POLICY}
 ## Subagent delegation policy
 ${policy} The configured maximum is a concurrency limit, not a target: create only the number of useful tasks needed, run up to the limit, and let excess tasks queue. Avoid normalized duplicates of queued or running tasks. Keep state-dependent work serial, and keep every SubAgent within the same authorization, approval, browser-scope, and rate-limit rules. Every spawned SubAgent is mandatory for the final assessment. Continue independent work while SubAgents run and incorporate each child result as soon as RiftX returns it. If your current turn reaches a conclusion while any child is still active, do not finalize: RiftX will wait for every spawned SubAgent to complete, fail, be cancelled, or be interrupted and then request the final synthesis. Never use bash, sleep, tasks.json, child log files, or filesystem polling to monitor or wait for children. The spawn_subagent tool has no optional wait mode.
 
-${FINDINGS_POLICY}`;
+${FINDINGS_POLICY}
+
+${COMPLETION_POLICY}`;
 }
 
 export function buildChildPentestSystemPrompt() {
