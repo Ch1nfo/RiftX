@@ -34,6 +34,7 @@ import { setAgentTransport } from "./pi-internals";
 import { prepareSkillPrompt, type SkillDescriptor } from "./skill-router";
 import { installReportSkillContextScope, PENTEST_REPORT_SKILL_NAME } from "./report-skill";
 import { createTimedBashTool } from "./bash-timeout";
+import { createTimedLocalTools } from "./local-tool-timeout";
 import { createWebTools } from "@/server/web/tools";
 import { createCrawlTool } from "@/browser/tools/crawl";
 import { sessionToolNames } from "@/server/session-tools";
@@ -214,7 +215,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   // lazily, after the session below has been created.
   // eslint-disable-next-line prefer-const
   let evidenceSession: AgentSession | undefined;
-  const customTools = [createTimedBashTool(cwd, { commandPrefix: settingsManager.getShellCommandPrefix(), shellPath: settingsManager.getShellPath() }) as unknown as ToolDefinition, createFindingTool(evidenceStore, findingSource, browser, () => evidenceSession), createCrawlTool(browser, outputStore), ...createWebTools({
+  const customTools = [...createTimedLocalTools(cwd), createTimedBashTool(cwd, { commandPrefix: settingsManager.getShellCommandPrefix(), shellPath: settingsManager.getShellPath() }) as unknown as ToolDefinition, createFindingTool(evidenceStore, findingSource, browser, () => evidenceSession), createCrawlTool(browser, outputStore), ...createWebTools({
         // Read per call: saving a key in settings applies to already-running
         // sessions on their next search, with no re-open needed.
         getTavilyApiKey: async () => (await readConfig()).webSearch?.tavilyApiKey,

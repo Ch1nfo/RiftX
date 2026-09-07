@@ -4,6 +4,10 @@ import { WEB_TOOL_NAMES } from "@/server/session-tools";
 import { webSearch } from "./search";
 import { fetchPage } from "./fetch-page";
 import type { ToolOutputStore } from "@/server/tool-output";
+import { runWithDeadline } from "@/server/deadline";
+
+const WEB_SEARCH_TOOL_TIMEOUT_MS = 35_000;
+const WEB_FETCH_TOOL_TIMEOUT_MS = 70_000;
 
 /**
  * Web research tools: keyless DuckDuckGo search by default, Tavily when a key
@@ -28,20 +32,22 @@ export function createWebTools(options: WebToolOptions = {}): ToolDefinition[] {
       limit: Type.Optional(Type.Number({ minimum: 1, maximum: 10, description: "Maximum results (default 5)" }))
     }),
     async execute(_toolCallId, params, signal) {
-      const tavilyApiKey = (await options.getTavilyApiKey?.())?.trim() || undefined;
-      const outcome = await webSearch(params.query, { tavilyApiKey, limit: params.limit, signal });
-      const listing = outcome.results.map((result, index) =>
-        `${index + 1}. ${result.title}\n   ${result.url}${result.snippet ? `\n   ${result.snippet}` : ""}`
-      );
-      const text = [outcome.cveDetail, listing.join("\n")].filter(Boolean).join("\n\n") || "No results found.";
-      const raw = `web_search (${outcome.provider}):\n\n${text}`;
-      const projected = options.outputStore
-        ? await options.outputStore.project("web-search", [raw], `web_search returned ${outcome.results.length} result(s) via ${outcome.provider}.`)
-        : { text: raw };
-      return {
-        content: [{ type: "text" as const, text: projected.text }],
-        details: { provider: outcome.provider, resultCount: outcome.results.length, query: params.query, artifactPath: projected.artifactPath, truncation: projected.truncation }
-      };
+      return runWithDeadline(async (toolSignal) => {
+        const tavilyApiKey = (await options.getTavilyApiKey?.())?.trim() || undefined;
+        const outcome = await webSearch(params.query, { tavilyApiKey, limit: params.limit, signal: toolSignal });
+        const listing = outcome.results.map((result, index) =>
+          `${index + 1}. ${result.title}\n   ${result.url}${result.snippet ? `\n   ${result.snippet}` : ""}`
+        );
+        const text = [outcome.cveDetail, listing.join("\n")].filter(Boolean).join("\n\n") || "No results found.";
+        const raw = `web_search (${outcome.provider}):\n\n${text}`;
+        const projected = options.outputStore
+          ? await options.outputStore.project("web-search", [raw], `web_search returned ${outcome.results.length} result(s) via ${outcome.provider}.`)
+          : { text: raw };
+        return {
+          content: [{ type: "text" as const, text: projected.text }],
+          details: { provider: outcome.provider, resultCount: outcome.results.length, query: params.query, artifactPath: projected.artifactPath, truncation: projected.truncation }
+        };
+      }, { signal, timeoutMs: WEB_SEARCH_TOOL_TIMEOUT_MS, timeoutMessage: `web_search timed out after ${WEB_SEARCH_TOOL_TIMEOUT_MS}ms` });
     }
   });
 
@@ -55,14 +61,16 @@ export function createWebTools(options: WebToolOptions = {}): ToolDefinition[] {
       url: Type.String({ description: "http(s) URL to fetch" })
     }),
     async execute(_toolCallId, params, signal) {
-      const page = await fetchPage(params.url, { signal });
-      const projected = options.outputStore
-        ? await options.outputStore.project("web-fetch", [page.content], `web_fetch loaded ${params.url} via ${page.source}.`)
-        : { text: page.content };
-      return {
-        content: [{ type: "text" as const, text: projected.text }],
-        details: { url: params.url, source: page.source, artifactPath: projected.artifactPath, truncation: projected.truncation }
-      };
+      return runWithDeadline(async (toolSignal) => {
+        const page = await fetchPage(params.url, { signal: toolSignal });
+        const projected = options.outputStore
+          ? await options.outputStore.project("web-fetch", [page.content], `web_fetch loaded ${params.url} via ${page.source}.`)
+          : { text: page.content };
+        return {
+          content: [{ type: "text" as const, text: projected.text }],
+          details: { url: params.url, source: page.source, artifactPath: projected.artifactPath, truncation: projected.truncation }
+        };
+      }, { signal, timeoutMs: WEB_FETCH_TOOL_TIMEOUT_MS, timeoutMessage: `web_fetch timed out after ${WEB_FETCH_TOOL_TIMEOUT_MS}ms` });
     }
   });
 

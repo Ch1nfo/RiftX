@@ -4,6 +4,9 @@ import type { FindingInput, FindingSource } from "@/lib/types";
 import type { EvidenceStore } from "../evidence-store";
 import { bindToolEvidence, requireFindingEvidence } from "../finding-evidence";
 import type { BrowserManager } from "@/browser";
+import { runWithDeadline } from "@/server/deadline";
+
+const FINDING_TOOL_TIMEOUT_MS = 30_000;
 
 /** The record_finding tool: writes evidence-backed conclusions to the parent session's store. */
 
@@ -28,22 +31,24 @@ export function createFindingTool(store: EvidenceStore, source: FindingSourceInf
         Type.Object({ type: Type.Literal("screenshot"), screenshotId: Type.String() })
       ]), { minItems: 1 })
     }),
-    async execute(_toolCallId, params) {
-      const input = params as FindingInput;
-      const evidence = await Promise.all(input.evidence.map(async (item) => {
-        if (item.type === "tool") {
-          // Tool identity and captured content come from the transcript when
-          // present. Confirmed findings reject unknown/empty refs; likely and
-          // suspected keep the original pointer after compaction.
-          return bindToolEvidence(item, getSession()?.messages ?? [], input.confidence);
-        }
-        if (item.type === "request") return browser.requestEvidence(item.requestRef);
-        if (item.type === "screenshot") return browser.screenshotEvidence(item.screenshotId);
-        return item;
-      }));
-      requireFindingEvidence(input.confidence, evidence);
-      const finding = await store.upsert({ ...input, evidence }, source.source, source.subagentId);
-      return { content: [{ type: "text", text: `Finding recorded: ${finding.title}` }], details: { findingId: finding.id } };
+    async execute(_toolCallId, params, signal) {
+      return runWithDeadline(async () => {
+        const input = params as FindingInput;
+        const evidence = await Promise.all(input.evidence.map(async (item) => {
+          if (item.type === "tool") {
+            // Tool identity and captured content come from the transcript when
+            // present. Confirmed findings reject unknown/empty refs; likely and
+            // suspected keep the original pointer after compaction.
+            return bindToolEvidence(item, getSession()?.messages ?? [], input.confidence);
+          }
+          if (item.type === "request") return browser.requestEvidence(item.requestRef);
+          if (item.type === "screenshot") return browser.screenshotEvidence(item.screenshotId);
+          return item;
+        }));
+        requireFindingEvidence(input.confidence, evidence);
+        const finding = await store.upsert({ ...input, evidence }, source.source, source.subagentId);
+        return { content: [{ type: "text", text: `Finding recorded: ${finding.title}` }], details: { findingId: finding.id } };
+      }, { signal, timeoutMs: FINDING_TOOL_TIMEOUT_MS, timeoutMessage: `record_finding timed out after ${FINDING_TOOL_TIMEOUT_MS}ms` });
     }
   });
 }

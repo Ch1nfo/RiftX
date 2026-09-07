@@ -2,6 +2,10 @@ import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { mapCallResult, mcpToolName, parameterSchema, promptSnippetFor, sanitizeSegment, type McpCallResultLike } from "./bridge";
 import type { McpServerEntry } from "./manager";
 import type { ToolOutputStore } from "@/server/tool-output";
+import { runWithDeadline } from "@/server/deadline";
+import { MCP_CALL_TIMEOUT_MS } from "./call-guard";
+
+const MCP_TOOL_TOTAL_TIMEOUT_MS = MCP_CALL_TIMEOUT_MS + 10_000;
 
 /**
  * Builds RiftX ToolDefinitions from connected MCP servers. Literals annotated
@@ -60,23 +64,25 @@ export function buildMcpTools(entry: McpServerEntry, options: { audience?: McpTo
       promptSnippet: promptSnippetFor(name, parameters),
       parameters: parameters as unknown as ToolDefinition["parameters"],
       async execute(_toolCallId, params, signal) {
-        const result = await entry.handle.call(tool.name, params as Record<string, unknown>, signal) as McpCallResultLike;
-        const mapped = mapCallResult(result, entry.config.name, tool.name);
-        const chunks = textualChunks(result);
-        if (!options.outputStore || !chunks.length) return mapped;
-        const projected = await options.outputStore.project(
-          `mcp-${entry.config.name}-${tool.name}`,
-          chunks,
-          `MCP ${entry.config.name}/${tool.name}: ${result.content?.length ?? 0} content part(s).`
-        );
-        if (!projected.truncation) return mapped;
-        return {
-          content: [
-            { type: "text" as const, text: projected.text },
-            ...mapped.content.filter((part) => part.type === "image")
-          ],
-          details: { ...mapped.details, artifactPath: projected.artifactPath, truncation: projected.truncation }
-        };
+        return runWithDeadline(async (toolSignal) => {
+          const result = await entry.handle.call(tool.name, params as Record<string, unknown>, toolSignal) as McpCallResultLike;
+          const mapped = mapCallResult(result, entry.config.name, tool.name);
+          const chunks = textualChunks(result);
+          if (!options.outputStore || !chunks.length) return mapped;
+          const projected = await options.outputStore.project(
+            `mcp-${entry.config.name}-${tool.name}`,
+            chunks,
+            `MCP ${entry.config.name}/${tool.name}: ${result.content?.length ?? 0} content part(s).`
+          );
+          if (!projected.truncation) return mapped;
+          return {
+            content: [
+              { type: "text" as const, text: projected.text },
+              ...mapped.content.filter((part) => part.type === "image")
+            ],
+            details: { ...mapped.details, artifactPath: projected.artifactPath, truncation: projected.truncation }
+          };
+        }, { signal, timeoutMs: MCP_TOOL_TOTAL_TIMEOUT_MS, timeoutMessage: `MCP tool ${entry.config.name}/${tool.name} exceeded its total ${MCP_TOOL_TOTAL_TIMEOUT_MS}ms budget` });
       }
     });
   }

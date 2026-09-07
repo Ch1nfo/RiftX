@@ -512,33 +512,24 @@ export class BrowserManager {
       }
     }
     if (!closed) {
-      // The page is missing or uncloseable (crash, protocol error, or the
-      // Stop teardown racing us). Destroy the WHOLE browser context — that
-      // guarantees every execution context is gone — while PRESERVING the
-      // authorization state (lockedHost, sessionRules, tempAuthorizations,
-      // identity settings): a full teardown() would drop the first-host lock
-      // and session grants, silently widening scope. Pages rebuild lazily.
-      this.pages.clear();
-      this.refs.clear();
-      for (const identityState of this.identities.values()) identityState.activePageId = undefined;
-      // Teardown-grade cleanup order (live routed sockets can stall a context
-      // close), while authorization state stays intact. Destruction is only
-      // CONFIRMED when the context close reports success — a failed close
-      // means execution contexts may still be alive, and the caller must not
-      // be told otherwise.
-      // Teardown-grade cleanup order — routed sockets, then the browser
-      // context BEFORE the proxy (a still-alive page reconnecting to a
-      // closed proxy stalls the context close) — while authorization state
-      // stays intact.
-      await Promise.race([
-        Promise.allSettled([...this.routedWebSockets].map((entry) => this.closeRoutedWebSocket(entry))),
-        new Promise<void>((resolve) => setTimeout(resolve, 5_000))
-      ]).catch(() => undefined);
-      this.routedWebSockets.clear();
-      destroyed = await this.contextManager.close();
-      this.mappingProxy.close();
-      if (!destroyed) this.destructionFailed = true;
+      destroyed = await this.resetContextPreservingAuthorization();
     }
+    return destroyed;
+  }
+
+  /** Destroy every page/context while retaining scope grants and identity settings. */
+  private async resetContextPreservingAuthorization(): Promise<boolean> {
+    this.pages.clear();
+    this.refs.clear();
+    for (const identityState of this.identities.values()) identityState.activePageId = undefined;
+    await Promise.race([
+      Promise.allSettled([...this.routedWebSockets].map((entry) => this.closeRoutedWebSocket(entry))),
+      new Promise<void>((resolve) => setTimeout(resolve, 5_000))
+    ]).catch(() => undefined);
+    this.routedWebSockets.clear();
+    const destroyed = await this.contextManager.close();
+    this.mappingProxy.close();
+    if (!destroyed) this.destructionFailed = true;
     return destroyed;
   }
 
@@ -576,15 +567,6 @@ export class BrowserManager {
   async back(identityId?: string) { await this.pageManager(identityId).page.goBack({ waitUntil: "domcontentloaded" }).catch(() => undefined); return this.snapshot(identityId); }
   async reload(identityId?: string) { await this.pageManager(identityId).page.reload({ waitUntil: "domcontentloaded" }); return this.snapshot(identityId); }
 
-  /** Evaluate a JavaScript expression in the identity's active page and return a serialized result. */
-  /**
-   * The shared timing contract for long browser-side evaluations: bounded
-   * patience (the race), forced destruction on timeout (resetActivePage —
-   * page or whole context, authorization state preserved), and the lane held
-   * until the underlying evaluate actually settles. Returns the evaluation
-   * result, or undefined when the deadline hit (destruction confirmed) —
-   * callers degrade, they never overlap a possibly-live evaluate.
-   */
   /**
    * The shared timing contract for any potentially-blocking browser operation:
    * bounded patience (the race), forced destruction on timeout
@@ -593,7 +575,7 @@ export class BrowserManager {
    * Returns the result, or undefined when the deadline hit (destruction
    * confirmed) — callers degrade, they never overlap a possibly-live op.
    */
-  async withDeadline<T>(operation: () => Promise<T>, deadlineMs: number): Promise<T | undefined> {
+  async withDeadline<T>(operation: () => Promise<T>, deadlineMs: number, options: { identity?: string; wholeContext?: boolean } = {}): Promise<T | undefined> {
     const op = operation();
     let raceTimer: ReturnType<typeof setTimeout> | undefined;
     let timedOut = false;
@@ -620,7 +602,7 @@ export class BrowserManager {
 
       const boundedRecovery = (async () => {
         const destroyed = await Promise.race([
-          this.resetActivePage(),
+          options.wholeContext ? this.resetContextPreservingAuthorization() : this.resetActivePage(options.identity),
           new Promise<never>((_, reject) => {
             recoveryTimer = setTimeout(() => reject(new Error("recovery exceeded 10s")), RECOVERY_CAP_MS);
           })
@@ -919,8 +901,9 @@ export class BrowserManager {
    * model-facing browser "close" action expects a later navigate to lazily
    * relaunch everything. Queued operations still run afterwards.
    */
-  close() {
-    return this.teardown();
+  async close() {
+    await this.teardown();
+    if (this.destructionFailed) throw new BrowserDegradedError("Browser close could not confirm context destruction; reopen the session before using browser again");
   }
 
   /**

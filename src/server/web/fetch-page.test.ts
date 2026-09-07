@@ -101,3 +101,13 @@ test("oversized responses stop reading at the byte budget", async () => {
     globalThis.fetch = original;
   }
 });
+
+test("fetchPage bounds entry DNS resolution", async () => {
+  await assert.rejects(
+    fetchPage("https://stuck.example/path", {
+      dnsTimeoutMs: 10,
+      resolveDns: () => new Promise<string[]>(() => undefined)
+    }),
+    /DNS lookup timed out/
+  );
+});

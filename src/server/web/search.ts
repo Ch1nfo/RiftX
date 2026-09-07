@@ -1,5 +1,7 @@
 /** Web research: provider-backed public-web search with CVE direct routing and OPSEC screening. */
 
+import { runWithDeadline } from "@/server/deadline";
+
 type WebSearchResult = { title: string; url: string; snippet: string };
 
 type WebSearchOutcome = {
@@ -8,7 +10,9 @@ type WebSearchOutcome = {
   cveDetail?: string;
 };
 
-type WebSearchOptions = { tavilyApiKey?: string; limit?: number; signal?: AbortSignal };
+type WebSearchOptions = { tavilyApiKey?: string; limit?: number; signal?: AbortSignal; timeoutMs?: number };
+
+export const WEB_SEARCH_TIMEOUT_MS = 25_000;
 
 const USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 
@@ -128,23 +132,26 @@ async function fetchCveDetail(cveId: string, signal?: AbortSignal): Promise<stri
 export async function webSearch(query: string, options: WebSearchOptions = {}): Promise<WebSearchOutcome> {
   const screened = screenQuery(query);
   if (screened) throw screened;
-  const limit = Math.min(10, Math.max(1, options.limit ?? 5));
-  const useTavily = Boolean(options.tavilyApiKey?.trim());
-  const search = useTavily
-    ? () => searchTavily(query, options.tavilyApiKey!.trim(), limit, options.signal)
-    : () => searchDuckDuckGo(query, limit, options.signal);
+  const timeoutMs = options.timeoutMs ?? WEB_SEARCH_TIMEOUT_MS;
+  return runWithDeadline(async (deadlineSignal) => {
+    const limit = Math.min(10, Math.max(1, options.limit ?? 5));
+    const useTavily = Boolean(options.tavilyApiKey?.trim());
+    const search = useTavily
+      ? () => searchTavily(query, options.tavilyApiKey!.trim(), limit, deadlineSignal)
+      : () => searchDuckDuckGo(query, limit, deadlineSignal);
 
-  const cveId = query.trim().match(CVE_ID_PATTERN)?.[0];
-  if (cveId) {
-    // CVE-bearing queries get the structured record plus ordinary results.
-    // The CVE detail is optional: a failed lookup (unknown id, API down) must
-    // not discard the already-fetched search results or re-run the provider —
-    // that would double rate-limit usage for every unknown id.
-    const [results, cveDetail] = await Promise.all([
-      search(),
-      fetchCveDetail(cveId, options.signal).then((detail) => detail, () => undefined)
-    ]);
-    return { results, provider: useTavily ? "tavily+cve" : "duckduckgo+cve", cveDetail };
-  }
-  return { results: await search(), provider: useTavily ? "tavily" : "duckduckgo" };
+    const cveId = query.trim().match(CVE_ID_PATTERN)?.[0];
+    if (cveId) {
+      // CVE-bearing queries get the structured record plus ordinary results.
+      // The CVE detail is optional: a failed lookup (unknown id, API down) must
+      // not discard the already-fetched search results or re-run the provider —
+      // that would double rate-limit usage for every unknown id.
+      const [results, cveDetail] = await Promise.all([
+        search(),
+        fetchCveDetail(cveId, deadlineSignal).then((detail) => detail, () => undefined)
+      ]);
+      return { results, provider: useTavily ? "tavily+cve" : "duckduckgo+cve", cveDetail };
+    }
+    return { results: await search(), provider: useTavily ? "tavily" : "duckduckgo" };
+  }, { signal: options.signal, timeoutMs, timeoutMessage: `web_search timed out after ${timeoutMs}ms` });
 }

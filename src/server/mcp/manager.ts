@@ -18,6 +18,7 @@ import { McpCallGuard } from "./call-guard";
  */
 
 export const CONNECT_TIMEOUT_MS = 10_000;
+export const MCP_CLOSE_TIMEOUT_MS = 5_000;
 
 export type McpListedTool = { name: string; description?: string; inputSchema: unknown };
 
@@ -36,14 +37,44 @@ export type McpServerEntry =
 /** Test seam: the only SDK dependency of the manager logic. Production impl below. */
 export type ConnectFactory = (config: McpServerConfig, timeoutMs: number) => Promise<McpServerHandle>;
 
+function raceTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error instanceof Error ? error : new Error(String(error))); }
+    );
+  });
+}
+
 function governedHandle(config: McpServerConfig, handle: McpServerHandle): McpServerHandle {
-  const guard = new McpCallGuard(config.name);
+  let retired = false;
+  let closePromise: Promise<void> | undefined;
+  const closeOnce = () => closePromise ??= raceTimeout(
+    handle.close(),
+    MCP_CLOSE_TIMEOUT_MS,
+    `MCP server "${config.name}" close timed out`
+  );
+  const retire = () => {
+    if (retired) return;
+    retired = true;
+    // A protocol peer that ignored cancellation must not remain reusable. Do
+    // not await here: the timed-out tool call has to return even if close also
+    // hangs. The next session acquire observes dead=true and reconnects.
+    void closeOnce().catch(() => undefined);
+  };
+  const guard = new McpCallGuard(config.name, { onTimeout: retire });
   return {
     tools: handle.tools,
-    call: (rawName, args, signal) => guard.run((guardSignal) => handle.call(rawName, args, guardSignal), signal),
-    close: () => handle.close(),
-    get dead() { return handle.dead; },
-    set dead(value) { handle.dead = value; }
+    call: (rawName, args, signal) => retired
+      ? Promise.reject(new Error(`MCP server "${config.name}" was retired after an unresponsive call — reopen the session to reconnect`))
+      : guard.run((guardSignal) => handle.call(rawName, args, guardSignal), signal),
+    close: async () => {
+      retired = true;
+      await closeOnce();
+    },
+    get dead() { return retired || handle.dead; },
+    set dead(value) { if (value) retired = true; }
   };
 }
 
@@ -150,10 +181,7 @@ export class McpManager {
 
   /** Belt-and-braces: a misbehaving connect factory can never hang session creation. */
   private raceTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`connect timeout after ${timeoutMs}ms`)), timeoutMs);
-      promise.then((value) => { clearTimeout(timer); resolve(value); }, (error) => { clearTimeout(timer); reject(error instanceof Error ? error : new Error(String(error))); });
-    });
+    return raceTimeout(promise, timeoutMs, `connect timeout after ${timeoutMs}ms`);
   }
 }
 
@@ -177,10 +205,7 @@ function sdkConnect(config: McpServerConfig, timeoutMs: number): Promise<McpServ
 /** Client wiring shared by stdio/http and the in-memory integration test. */
 export function wireClient(client: Client, transport: Transport, config: McpServerConfig, timeoutMs: number): Promise<McpServerHandle> {
   return (async () => {
-    const guard = <T>(promise: Promise<T>) => new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`connect timeout after ${timeoutMs}ms`)), timeoutMs);
-      promise.then((value) => { clearTimeout(timer); resolve(value); }, (error: unknown) => { clearTimeout(timer); reject(error instanceof Error ? error : new Error(String(error))); });
-    });
+    const guard = <T>(promise: Promise<T>) => raceTimeout(promise, timeoutMs, `connect timeout after ${timeoutMs}ms`);
     let closed = false;
     // The protocol invokes this when the transport closes for ANY reason —
     // server exit, network drop, or our own close() — flipping the handle
@@ -198,14 +223,14 @@ export function wireClient(client: Client, transport: Transport, config: McpServ
         },
         close: async () => {
           closed = true;
-          await client.close();
+          await raceTimeout(client.close(), MCP_CLOSE_TIMEOUT_MS, `MCP server "${config.name}" close timed out`);
         },
         get dead() {
           return closed;
         }
       };
     } catch (error) {
-      await client.close().catch(() => undefined);
+      await raceTimeout(client.close(), MCP_CLOSE_TIMEOUT_MS, `MCP server "${config.name}" close timed out`).catch(() => undefined);
       throw error;
     }
   })();

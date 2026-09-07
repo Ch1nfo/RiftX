@@ -1,5 +1,7 @@
 import { chromium, type Browser, type BrowserContext } from "playwright";
 
+const CONTEXT_CLOSE_TIMEOUT_MS = 10_000;
+
 /**
  * One isolated browser context per identity. Contexts own their cookie jar and
  * storage, so parallel identities (anonymous / low-privilege / admin) never
@@ -70,13 +72,27 @@ export class ContextManager {
   async close(): Promise<boolean> {
     let closed = true;
     const contexts = [...this.contexts.values()];
+    const browser = this.browser;
+    const browserPromise = this.browserPromise;
     this.contexts.clear();
     this.contextPromises.clear();
-    await Promise.all(contexts.map((context) => context.close().catch(() => { closed = false; })));
-    const browser = this.browser ?? await this.browserPromise?.catch(() => undefined);
-    await browser?.close().catch(() => { closed = false; });
     this.browserPromise = undefined;
     this.browser = undefined;
-    return closed;
+    const cleanup = (async () => {
+      await Promise.all(contexts.map((context) => context.close().catch(() => { closed = false; })));
+      const activeBrowser = browser ?? await browserPromise?.catch(() => undefined);
+      await activeBrowser?.close().catch(() => { closed = false; });
+      return closed;
+    })();
+    // Playwright protocol shutdown can itself wedge. Report an unconfirmed
+    // close within a finite period; callers mark the manager degraded and
+    // refuse to launch a second browser beside possibly-live resources.
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), CONTEXT_CLOSE_TIMEOUT_MS);
+      cleanup.then(
+        (result) => { clearTimeout(timer); resolve(result); },
+        () => { clearTimeout(timer); resolve(false); }
+      );
+    });
   }
 }

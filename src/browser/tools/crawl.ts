@@ -3,6 +3,9 @@ import { defineTool, type ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { BrowserManager, BrowserDegradedError } from "../runtime/browser-manager";
 import { authSignal, extractApiRoutes, normalizeUrl, sameHost } from "./crawl-core";
 import type { ToolOutputStore } from "@/server/tool-output";
+import { runWithDeadline } from "@/server/deadline";
+
+const CRAWL_OUTPUT_TIMEOUT_MS = 15_000;
 
 /**
  * The crawl tool: breadth-first attack-surface discovery through the scoped
@@ -217,7 +220,10 @@ export function createCrawlTool(browser: BrowserManager, outputStore?: ToolOutpu
         errors.length ? `\nSkipped/errors (${errors.length}):\n${errors.slice(0, 10).map((line) => `- ${line}`).join("\n")}` : ""
       ].filter(Boolean).join("\n");
       const projected = outputStore
-        ? await outputStore.project("crawl", [report], `crawl mapped ${pages.length} page(s), ${links.size} link(s), ${forms.length} form(s), and ${allRoutes.size} JS route(s).`)
+        ? await runWithDeadline(
+          () => outputStore.project("crawl", [report], `crawl mapped ${pages.length} page(s), ${links.size} link(s), ${forms.length} form(s), and ${allRoutes.size} JS route(s).`),
+          { signal, timeoutMs: CRAWL_OUTPUT_TIMEOUT_MS, timeoutMessage: `crawl output persistence timed out after ${CRAWL_OUTPUT_TIMEOUT_MS}ms` }
+        )
         : { text: report };
       return {
         content: [{ type: "text" as const, text: projected.text }],

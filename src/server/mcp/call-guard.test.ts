@@ -29,6 +29,17 @@ test("times out a call but keeps its semaphore slot until ignored work settles",
   assert.equal(nextStarted, true);
 });
 
+test("queued calls have a deadline when ignored work retains every slot", async () => {
+  let retired = 0;
+  const guard = new McpCallGuard("demo", { maxConcurrent: 2, timeoutMs: 10, failureThreshold: 10, onTimeout: () => { retired += 1; } });
+  const never = () => new Promise<void>(() => undefined);
+  const first = guard.run(never);
+  const second = guard.run(never);
+  await Promise.all([assert.rejects(first, /timed out/), assert.rejects(second, /timed out/)]);
+  await assert.rejects(guard.run(async () => undefined), /timed out/, "queue wait must not be infinite");
+  assert.equal(retired, 3);
+});
+
 test("opens after consecutive failures, cools down, and resets on success", async () => {
   let now = 100;
   const guard = new McpCallGuard("demo", { failureThreshold: 2, cooldownMs: 50, timeoutMs: 1_000, now: () => now });

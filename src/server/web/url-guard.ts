@@ -1,5 +1,6 @@
 import { isIP } from "node:net";
 import { lookup } from "node:dns/promises";
+import { raceWithAbort } from "@/server/deadline";
 
 /**
  * SSRF guard for web research: web_fetch runs from the RiftX process and must
@@ -115,7 +116,11 @@ export function isBlockedIp(address: string): string | null {
   return null;
 }
 
-export type UrlGuardOptions = { resolveDns?: (hostname: string) => Promise<string[]> };
+export type UrlGuardOptions = {
+  resolveDns?: (hostname: string) => Promise<string[]>;
+  /** Bounds DNS resolution when the caller has a tool/network deadline. */
+  signal?: AbortSignal;
+};
 
 export async function assertFetchableUrl(rawUrl: string, options: UrlGuardOptions = {}): Promise<URL> {
   let parsed: URL;
@@ -144,8 +149,19 @@ export async function assertFetchableUrl(rawUrl: string, options: UrlGuardOption
     const resolve = options.resolveDns ?? (async (name: string) => (await lookup(name, { all: true })).map((entry) => entry.address));
     let addresses: string[];
     try {
-      addresses = await resolve(hostname);
-    } catch {
+      const resolution = resolve(hostname);
+      addresses = options.signal
+        ? await raceWithAbort(resolution, options.signal, `DNS lookup for ${hostname} was aborted`)
+        : await resolution;
+    } catch (error) {
+      // Preserve a caller cancellation/deadline. Collapsing it into a DNS
+      // failure hides whether the resolver was slow or the name was absent.
+      if (options.signal?.aborted) {
+        throw options.signal.reason instanceof Error
+          ? options.signal.reason
+          : new Error(`DNS lookup for ${hostname} was aborted`);
+      }
+      void error;
       throw new Error(`web_fetch could not resolve ${hostname}.`);
     }
     for (const address of addresses) {

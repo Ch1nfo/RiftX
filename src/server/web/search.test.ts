@@ -104,3 +104,13 @@ test("an unknown CVE id keeps the single search call and its results", async () 
     globalThis.fetch = original;
   }
 });
+
+test("webSearch has a hard deadline even when fetch ignores AbortSignal", async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = (() => new Promise<Response>(() => undefined)) as typeof fetch;
+  try {
+    await assert.rejects(webSearch("stuck provider", { timeoutMs: 10 }), /timed out/);
+  } finally {
+    globalThis.fetch = original;
+  }
+});

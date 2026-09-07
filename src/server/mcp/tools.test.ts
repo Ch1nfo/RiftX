@@ -97,7 +97,8 @@ test("execute calls the raw tool name with params and signal, and maps the resul
   assert.deepEqual(result.content, [{ type: "text", text: "echo:scan" }]);
   assert.equal(calls[0].name, "scan");
   assert.deepEqual(calls[0].args, { host: "x" });
-  assert.equal(calls[0].signal, controller.signal);
+  assert.notEqual(calls[0].signal, controller.signal, "the total tool deadline uses a child signal");
+  assert.equal(calls[0].signal?.aborted, false);
 });
 
 test("execute surfaces MCP isError as a thrown error", async () => {

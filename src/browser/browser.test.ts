@@ -661,6 +661,28 @@ test("a failed run operation does not block the chain", async () => {
   assert.deepEqual(order, ["ran"]);
 });
 
+test("a browser operation deadline destroys the stuck page and the next call starts cleanly", async () => {
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end("<main>recovered</main>");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/`;
+  const browser = new BrowserManager({ scope: { rules: ["127.0.0.1"] } });
+  try {
+    await browser.navigate(url);
+    const result = await browser.run(() => browser.withDeadline(
+      () => browser.evaluate("new Promise(() => {})"),
+      20
+    ));
+    assert.equal(result, undefined);
+    assert.match((await browser.navigate(url)).text, /recovered/);
+  } finally {
+    await browser.close();
+    await closeServers(server);
+  }
+});
+
 test("queued operations never start after shutdown", async () => {
   const manager = new BrowserManager({ scope: { rules: ["10.0.0.0/8"] } });
   const order: string[] = [];

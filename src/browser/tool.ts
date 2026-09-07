@@ -41,13 +41,49 @@ const parameters = Type.Object({
   cookies: Type.Optional(Type.String({ description: "JSON array of cookies to import (cookies_import action)" })),
   userAgent: Type.Optional(Type.String({ description: "User-Agent override for the identity; omit or empty to restore the browser default (set_user_agent action)" })),
   headers: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Extra HTTP headers for the identity; empty object clears them (set_extra_headers action)" })),
-  mappings: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Host to ip[:port] mappings with curl --resolve semantics; empty object clears them (set_host_mappings action)" }))
+  mappings: Type.Optional(Type.Record(Type.String(), Type.String(), { description: "Host to ip[:port] mappings with curl --resolve semantics; empty object clears them (set_host_mappings action)" })),
+  timeoutSeconds: Type.Optional(Type.Number({ minimum: 1, maximum: 300, description: "Hard deadline for this browser action; action-specific defaults apply and the maximum is 300 seconds" }))
 });
 
 // Single source of truth for the tool contract: the input and action types
 // derive from the TypeBox schema above instead of being maintained separately.
 type BrowserToolInput = Static<typeof parameters>;
 type BrowserAction = BrowserToolInput["action"];
+
+export const BROWSER_MAX_TIMEOUT_MS = 300_000;
+
+const BROWSER_ACTION_TIMEOUT_MS: Record<BrowserAction, number> = {
+  navigate: 45_000,
+  snapshot: 15_000,
+  click: 30_000,
+  fill: 30_000,
+  press: 30_000,
+  select: 30_000,
+  back: 30_000,
+  reload: 30_000,
+  evaluate: 30_000,
+  console: 5_000,
+  requests: 5_000,
+  request_detail: 5_000,
+  response_body: 5_000,
+  use_identity: 5_000,
+  identities: 5_000,
+  cookies: 20_000,
+  cookies_export: 20_000,
+  cookies_import: 20_000,
+  set_host_mappings: 5_000,
+  set_user_agent: 20_000,
+  set_extra_headers: 20_000,
+  storage: 20_000,
+  screenshot: 30_000,
+  tabs: 20_000,
+  close: 15_000
+};
+
+export function resolveBrowserTimeoutMs(action: BrowserAction, timeoutSeconds?: number) {
+  if (timeoutSeconds === undefined || !Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) return BROWSER_ACTION_TIMEOUT_MS[action];
+  return Math.min(BROWSER_MAX_TIMEOUT_MS, Math.max(1_000, Math.round(timeoutSeconds * 1_000)));
+}
 
 function requireString(value: string | undefined, name: string): string {
   if (!value) throw new Error(`browser ${name} is required for this action`);
@@ -78,6 +114,7 @@ export function createBrowserExtension(options: BrowserManagerOptions, existingM
       ],
       parameters,
       async execute(_toolCallId, params: BrowserToolInput, signal) {
+        const timeoutMs = resolveBrowserTimeoutMs(params.action, params.timeoutSeconds);
         let onAbort: (() => void) | undefined;
         const aborted = new Promise<never>((_, reject) => {
           onAbort = () => {
@@ -91,50 +128,66 @@ export function createBrowserExtension(options: BrowserManagerOptions, existingM
         // The signal lets a queued call be dropped when its tool call is
         // aborted or the manager closes before the call starts.
         const operation = manager.run(async () => {
-          let result: unknown;
-          switch (params.action) {
-            case "navigate": {
-              const startedAt = Date.now();
-              const snapshot = await manager.navigate(requireString(params.url, "url"), params.identity);
-              const consoleErrors = manager.recentConsoleErrors(params.identity, startedAt);
-              result = consoleErrors ? `${snapshot.text}\n\nRecent console errors:\n${consoleErrors}` : snapshot.text;
-              break;
+          const executeAction = async () => {
+            let result: unknown;
+            switch (params.action) {
+              case "navigate": {
+                const startedAt = Date.now();
+                const snapshot = await manager.navigate(requireString(params.url, "url"), params.identity);
+                const consoleErrors = manager.recentConsoleErrors(params.identity, startedAt);
+                result = consoleErrors ? `${snapshot.text}\n\nRecent console errors:\n${consoleErrors}` : snapshot.text;
+                break;
+              }
+              case "snapshot": result = (await manager.snapshot(params.identity)).text; break;
+              case "click": result = (await manager.click(requireString(params.ref, "ref"), params.identity)).text; break;
+              case "fill": result = (await manager.fill(requireString(params.ref, "ref"), params.value ?? "", params.identity)).text; break;
+              case "press": result = (await manager.press(requireString(params.ref, "ref"), requireString(params.key, "key"), params.identity)).text; break;
+              case "select": result = (await manager.select(requireString(params.ref, "ref"), params.values?.length ? params.values : [requireString(params.value, "value")], params.identity)).text; break;
+              case "back": result = (await manager.back(params.identity)).text; break;
+              case "reload": result = (await manager.reload(params.identity)).text; break;
+              case "evaluate": result = await manager.evaluate(requireString(params.expression, "expression"), params.identity); break;
+              case "console": result = manager.consoleLog(params.identity); break;
+              case "requests": result = await manager.requestsList(); break;
+              case "request_detail": result = manager.requestDetail(requireString(params.ref, "ref")); break;
+              case "response_body": result = manager.responseBody(requireString(params.ref, "ref")); break;
+              case "use_identity": result = manager.useIdentity(requireString(params.identity, "identity")); break;
+              case "identities": result = manager.identitiesOverview(); break;
+              case "cookies": result = await manager.cookies(params.identity); break;
+              case "cookies_export": result = await manager.cookiesExport(params.identity); break;
+              case "cookies_import": result = await manager.cookiesImport(requireString(params.cookies, "cookies"), params.identity); break;
+              case "set_host_mappings": result = manager.setHostMappings(params.mappings ?? {}); break;
+              case "set_user_agent": result = await manager.setUserAgent(params.userAgent, params.identity); break;
+              case "set_extra_headers": result = await manager.setExtraHeaders(params.headers ?? {}, params.identity); break;
+              case "storage": result = await manager.storage(params.identity); break;
+              case "screenshot": {
+                const screenshot = await manager.captureScreenshot(params.identity);
+                return {
+                  content: [
+                    { type: "text" as const, text: `Screenshot captured: ${screenshot.screenshotId}` },
+                    { type: "image" as const, data: screenshot.base64, mimeType: "image/png" }
+                  ],
+                  details: { action: params.action, screenshotId: screenshot.screenshotId, url: screenshot.url }
+                };
+              }
+              case "tabs": result = await manager.tabs(); break;
+              case "close": await manager.close(); result = "Browser closed"; break;
             }
-            case "snapshot": result = (await manager.snapshot(params.identity)).text; break;
-            case "click": result = (await manager.click(requireString(params.ref, "ref"), params.identity)).text; break;
-            case "fill": result = (await manager.fill(requireString(params.ref, "ref"), params.value ?? "", params.identity)).text; break;
-            case "press": result = (await manager.press(requireString(params.ref, "ref"), requireString(params.key, "key"), params.identity)).text; break;
-            case "select": result = (await manager.select(requireString(params.ref, "ref"), params.values?.length ? params.values : [requireString(params.value, "value")], params.identity)).text; break;
-            case "back": result = (await manager.back(params.identity)).text; break;
-            case "reload": result = (await manager.reload(params.identity)).text; break;
-            case "evaluate": result = await manager.evaluate(requireString(params.expression, "expression"), params.identity); break;
-            case "console": result = manager.consoleLog(params.identity); break;
-            case "requests": result = await manager.requestsList(); break;
-            case "request_detail": result = manager.requestDetail(requireString(params.ref, "ref")); break;
-            case "response_body": result = manager.responseBody(requireString(params.ref, "ref")); break;
-            case "use_identity": result = manager.useIdentity(requireString(params.identity, "identity")); break;
-            case "identities": result = manager.identitiesOverview(); break;
-            case "cookies": result = await manager.cookies(params.identity); break;
-            case "cookies_export": result = await manager.cookiesExport(params.identity); break;
-            case "cookies_import": result = await manager.cookiesImport(requireString(params.cookies, "cookies"), params.identity); break;
-            case "set_host_mappings": result = manager.setHostMappings(params.mappings ?? {}); break;
-            case "set_user_agent": result = await manager.setUserAgent(params.userAgent, params.identity); break;
-            case "set_extra_headers": result = await manager.setExtraHeaders(params.headers ?? {}, params.identity); break;
-            case "storage": result = await manager.storage(params.identity); break;
-            case "screenshot": {
-              const screenshot = await manager.captureScreenshot(params.identity);
-              return {
-                content: [
-                  { type: "text" as const, text: `Screenshot captured: ${screenshot.screenshotId}` },
-                  { type: "image" as const, data: screenshot.base64, mimeType: "image/png" }
-                ],
-                details: { action: params.action, screenshotId: screenshot.screenshotId, url: screenshot.url }
-              };
-            }
-            case "tabs": result = await manager.tabs(); break;
-            case "close": await manager.close(); result = "Browser closed"; break;
-          }
-          return { content: [{ type: "text" as const, text: typeof result === "string" ? result : JSON.stringify(result, null, 2) }], details: { action: params.action, url: manager.currentUrl } };
+            return { content: [{ type: "text" as const, text: typeof result === "string" ? result : JSON.stringify(result, null, 2) }], details: { action: params.action, url: manager.currentUrl } };
+          };
+          // close() has its own teardown cap; wrapping it in page-reset
+          // recovery would race two destruction paths. Every other action is
+          // bounded and destroys the relevant execution context before the
+          // serialized browser lane is released.
+          if (params.action === "close") return executeAction();
+          const wholeContext = params.action === "tabs"
+            || params.action === "cookies"
+            || params.action === "cookies_export"
+            || params.action === "cookies_import"
+            || params.action === "set_user_agent"
+            || params.action === "set_extra_headers";
+          const result = await manager.withDeadline(executeAction, timeoutMs, { identity: params.identity, wholeContext });
+          if (result === undefined) throw new Error(`browser ${params.action} timed out after ${timeoutMs}ms; the stuck page/context was destroyed and the next browser call will start cleanly`);
+          return result;
         }, signal);
         try {
           return await Promise.race([operation, aborted]);
