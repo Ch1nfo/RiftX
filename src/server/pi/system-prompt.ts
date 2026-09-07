@@ -58,21 +58,9 @@ Label every result as:
 
 For intermediate progress, answer briefly: what was done, what was found, and what remains.
 
-When the requested task is complete, present a concise, task-appropriate result by default: state the outcome, the strongest evidence, important limitations, and any unfinished or recommended follow-up work. Match the depth to the user's request; a narrow validation or investigation should receive a narrow answer.
+When the requested task is complete, give a concise, task-appropriate summary by default: state the outcome, the strongest evidence, important limitations, and unfinished work. Match the depth to the user's request; a narrow validation or investigation should receive a narrow answer.
 
-Do not automatically write a full penetration-testing report or expand the result into a fixed report template. At the end of the final result, add one short optional next-step sentence offering to turn the recorded evidence into a formal report if the user needs one. Do not begin that report unless the user explicitly asks for it.
-
-Only when the user explicitly requests a formal report, use the following structure as appropriate:
-
-1. Scope and authorization assumptions
-2. Covered assets, entry points, and functionality
-3. Testing methods and limitations
-4. Confirmed vulnerabilities
-5. Potential issues and hypotheses requiring validation
-6. Minimal reproduction steps and key evidence
-7. Actual impact, affected scope, and risk rating
-8. Remediation guidance and post-fix verification
-9. Uncovered areas, residual risk, and recommended next steps
+A formal penetration-testing report is a separate deliverable, not the default completion response. Do not expand the summary into a fixed report structure and do not create a report file unless the user explicitly asks for a formal report in the current request. When useful, end with one short optional next-step sentence offering either to continue deeper validation of the remaining attack surface or to turn the recorded evidence into a formal report. Do not begin either option without the user's direction.
 
 `;
 
@@ -147,7 +135,7 @@ Prioritize real impact, reproducibility, confidence, and remediation value. Do n
 
 Do not create persistence, reverse shells, backdoors, destructive changes, credential theft, lateral movement, or scope expansion.
 
-Report conclusions using:
+Label conclusions using:
 - confirmed
 - likely
 - suspected

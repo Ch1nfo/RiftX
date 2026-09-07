@@ -20,6 +20,31 @@ test("ranks a domain skill from English and Chinese task wording", () => {
   assert.equal(rankSkills("生成渗透测试报告", skills, 1)[0]?.name, "pentest-report");
 });
 
+test("loads the report skill only for an explicit report request", async () => {
+  const root = await mkdtemp(join(tmpdir(), "riftx-report-skill-"));
+  const filePath = join(root, "pentest-report", "SKILL.md");
+  try {
+    await mkdir(join(root, "pentest-report"), { recursive: true });
+    await writeFile(filePath, "---\nname: pentest-report\ndescription: Formal report generation.\ndisable-model-invocation: true\n---\n\nUse the formal report template.\n");
+    const descriptor = { ...skill("pentest-report", "Formal report generation."), filePath, disableModelInvocation: true };
+    const loaded = new Set<string>();
+
+    assert.deepEqual((await prepareSkillPrompt("总结本次漏洞发现", [descriptor], loaded)).loaded, []);
+    assert.deepEqual((await prepareSkillPrompt("输出安全测试结果", [descriptor], loaded)).loaded, []);
+    assert.deepEqual((await prepareSkillPrompt("为什么每次都会自动生成报告？", [descriptor], loaded)).loaded, []);
+    assert.deepEqual((await prepareSkillPrompt("不要写报告，只给我简短总结", [descriptor], loaded)).loaded, []);
+
+    const first = await prepareSkillPrompt("请生成一份正式渗透测试报告", [descriptor], loaded);
+    const second = await prepareSkillPrompt("Generate a formal penetration testing report", [descriptor], loaded);
+    assert.deepEqual(first.loaded, ["pentest-report"]);
+    assert.deepEqual(second.loaded, ["pentest-report"]);
+    assert.match(first.skillContext, /formal report template/i);
+    assert.equal(loaded.has("pentest-report"), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("does not auto-load a skill disabled for model invocation", () => {
   const matches = rankSkills("test SQL injection", [
     { ...skill("exploit-sqli", "SQL injection testing."), disableModelInvocation: true },

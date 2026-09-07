@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { isExplicitReportRequest, PENTEST_REPORT_SKILL_NAME } from "./report-skill";
 
 export type SkillDescriptor = {
   name: string;
@@ -111,7 +112,12 @@ export async function loadSkillContext(skill: SkillDescriptor) {
 
 export async function prepareSkillPrompt(task: string, skills: readonly SkillDescriptor[], loadedSkills: Set<string>) {
   if (!task.trim() || task.trimStart().startsWith("/skill:")) return { prompt: task, skillContext: "", loaded: [] as string[] };
-  const matches = rankSkills(task, skills, 1);
+  // The report skill is opt-in. It stays hidden from the general model/router
+  // catalog and is selected only for an explicit report request.
+  const explicitReportSkill = isExplicitReportRequest(task)
+    ? skills.find((skill) => skill.name === PENTEST_REPORT_SKILL_NAME)
+    : undefined;
+  const matches: readonly SkillDescriptor[] = explicitReportSkill ? [explicitReportSkill] : rankSkills(task, skills, 1);
   const selected = matches.filter((skill) => !loadedSkills.has(skill.name));
   if (selected.length === 0) return { prompt: task, skillContext: "", loaded: [] as string[] };
   const loaded = await Promise.all(selected.map(async (skill) => {
@@ -123,7 +129,12 @@ export async function prepareSkillPrompt(task: string, skills: readonly SkillDes
   }));
   const successful = loaded.filter((item): item is { skill: SkillMatch; context: string } => Boolean(item));
   if (successful.length === 0) return { prompt: task, skillContext: "", loaded: [] as string[] };
-  successful.forEach(({ skill }) => loadedSkills.add(skill.name));
+  // Report guidance is scoped to a single explicit request, so allow it to be
+  // injected again for a later explicit report rather than treating it as a
+  // permanent session capability.
+  successful.forEach(({ skill }) => {
+    if (skill.name !== PENTEST_REPORT_SKILL_NAME) loadedSkills.add(skill.name);
+  });
   const skillContext = successful.map(({ context }) => context).join("\n\n");
   return {
     prompt: `${skillContext}\n\nUser task:\n${task}`,

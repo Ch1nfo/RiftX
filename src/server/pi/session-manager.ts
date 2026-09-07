@@ -32,6 +32,7 @@ import { estimateCompactedUsage, installMidTurnCompaction } from "./mid-turn-com
 import { waitForSubagentsBeforeConclusion } from "./session-join";
 import { setAgentTransport } from "./pi-internals";
 import { prepareSkillPrompt, type SkillDescriptor } from "./skill-router";
+import { installReportSkillContextScope, PENTEST_REPORT_SKILL_NAME } from "./report-skill";
 import { createTimedBashTool } from "./bash-timeout";
 import { createWebTools } from "@/server/web/tools";
 import { createCrawlTool } from "@/browser/tools/crawl";
@@ -227,6 +228,14 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     extensionFactories: [permission, browserExtension],
     noExtensions: true,
     noSkills: true,
+    // `pentest-report` is a reserved opt-in skill. Force the policy even for
+    // an older user-installed copy whose frontmatter predates the flag.
+    skillsOverride: ({ skills, diagnostics }) => ({
+      skills: skills.map((skill) => skill.name === PENTEST_REPORT_SKILL_NAME
+        ? { ...skill, disableModelInvocation: true }
+        : skill),
+      diagnostics
+    }),
     systemPrompt: child ? buildChildPentestSystemPrompt() : buildPentestSystemPrompt(config.subagentAggressiveness, config.systemPromptEnabled ? config.systemPrompt : undefined)
   });
   // The SDK only reloads a resource loader it creates internally. RiftX supplies
@@ -262,6 +271,9 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     refreshInvestigationCapsule(result.session, capsule);
   };
   installMidTurnCompaction(result.session, getInvestigationCapsule);
+  // Install after compaction so the final context sent to the provider drops
+  // stale report-skill messages unless the current user request asks for one.
+  installReportSkillContextScope(result.session);
   // The runtime prepares parallel calls before executing them. The SDK runs
   // an ENTIRE batch sequentially if any single tool is marked sequential
   // (agent-loop.js:235: hasSequentialToolCall → executeToolCallsSequential),

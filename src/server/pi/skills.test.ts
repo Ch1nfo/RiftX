@@ -41,3 +41,26 @@ test("loads skills from the RiftX user skills directory", async () => {
 test("uses a platform-native user skill path", () => {
   assert.equal(getAppPaths().skills, join(homedir(), ".riftx", "skills"));
 });
+
+test("the bundled report skill stays out of the model-invokable catalog", async () => {
+  const { DefaultResourceLoader, formatSkillsForPrompt } = await import(pathToFileURL(join(process.cwd(), "node_modules/@mariozechner/pi-coding-agent/dist/index.js")).href);
+  const skillDir = join(process.cwd(), "recommended-skills", "pentest-report");
+  const loader = new DefaultResourceLoader({
+    cwd: process.cwd(),
+    agentDir: join(process.cwd(), ".test-agent-does-not-exist"),
+    additionalSkillPaths: [skillDir],
+    extensionFactories: [],
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    noContextFiles: true,
+    systemPrompt: "RiftX test prompt"
+  });
+  await loader.reload();
+  const { skills, diagnostics } = loader.getSkills();
+  assert.equal(diagnostics.length, 0);
+  assert.equal(skills[0]?.name, "pentest-report");
+  assert.equal(skills[0]?.disableModelInvocation, true);
+  assert.doesNotMatch(formatSkillsForPrompt(skills), /pentest-report/);
+});

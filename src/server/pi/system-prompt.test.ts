@@ -19,10 +19,12 @@ test("pentest prompt actively selects browser and targeted testing methods", () 
   assert.match(prompt, /configured maximum is a concurrency limit, not a target/);
   assert.match(prompt, /may be intercepted by an approval flow/);
   assert.match(prompt, /Reply in the same language the user writes in/);
-  assert.match(prompt, /present a concise, task-appropriate result by default/);
-  assert.match(prompt, /Do not automatically write a full penetration-testing report/);
-  assert.match(prompt, /offering to turn the recorded evidence into a formal report/);
-  assert.match(prompt, /Only when the user explicitly requests a formal report/);
+  assert.match(prompt, /give a concise, task-appropriate summary by default/);
+  assert.match(prompt, /A formal penetration-testing report is a separate deliverable/);
+  assert.match(prompt, /continue deeper validation of the remaining attack surface/);
+  assert.match(prompt, /turn the recorded evidence into a formal report/);
+  assert.doesNotMatch(prompt, /Scope and authorization assumptions/);
+  assert.doesNotMatch(prompt, /use the following structure as appropriate/);
 });
 
 test("aggressiveness changes delegation policy", () => {
