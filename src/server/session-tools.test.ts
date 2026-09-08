@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { WEB_TOOL_NAMES, sessionToolNames } from "./session-tools";
+import { CONTINUITY_TOOL_NAMES, WEB_TOOL_NAMES, sessionToolNames } from "./session-tools";
 
 test("every web tool name is on the session tool whitelist", () => {
   for (const variant of [sessionToolNames(true), sessionToolNames(false)]) {
@@ -8,6 +8,12 @@ test("every web tool name is on the session tool whitelist", () => {
     for (const name of WEB_TOOL_NAMES) {
       assert.equal(variant.includes(name), true, `${name} must be whitelisted`);
     }
+  }
+});
+
+test("every session can write a lightweight continuity checkpoint", () => {
+  for (const variant of [sessionToolNames(true), sessionToolNames(false)]) {
+    for (const name of CONTINUITY_TOOL_NAMES) assert.equal(variant.includes(name), true);
   }
 });
 

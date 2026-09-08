@@ -11,6 +11,7 @@ test("pentest prompt actively selects browser and targeted testing methods", () 
   assert.match(prompt, /When blocked, change perspective instead of giving up/);
   assert.match(prompt, /Do not test only one input or one path/);
   assert.match(prompt, /small, targeted, controlled test sets/);
+  assert.match(prompt, /checkpoint_progress/);
   assert.match(prompt, /Use the spawn_subagent tool to create SubAgents/);
   assert.match(prompt, /Every spawned SubAgent is mandatory for the final assessment/);
   assert.match(prompt, /If your current turn reaches a conclusion while any child is still active/);
@@ -37,6 +38,7 @@ test("aggressiveness changes delegation policy", () => {
 
 test("child prompt requires a final text summary", () => {
   const prompt = buildChildPentestSystemPrompt();
+  assert.match(prompt, /Use checkpoint_progress at meaningful phase boundaries/);
   assert.match(prompt, /Always finish the delegated task with a concise plain-text final summary/);
   assert.match(prompt, /Do not stop immediately after a tool call/);
 });

@@ -92,3 +92,21 @@ test("capsule preserves recent full-output pointers across compaction", () => {
   assert.match(capsule, /mcp-scan\.txt/);
   assert.match(capsule, /bytes=42000/);
 });
+
+test("capsule carries terminal subagent outcomes and browser continuity without credentials", () => {
+  const capsule = buildInvestigationCapsule([], [subagent({
+    status: "completed",
+    summary: "Confirmed authorization differential at request req-child-7."
+  })], [], {
+    activeIdentity: "analyst",
+    tabs: [{ identity: "analyst", url: "https://target.test/admin", active: true }],
+    requests: [{ ref: "req-42", method: "POST", url: "https://target.test/api/users", status: 403 }],
+    hostMappings: ["target.test -> 127.0.0.1:8443"],
+    latestScreenshotId: "shot-9"
+  });
+  assert.match(capsule, /result=Confirmed authorization differential/);
+  assert.match(capsule, /tab\[active\].*\/admin/);
+  assert.match(capsule, /request:req-42 POST .* status=403/);
+  assert.match(capsule, /screenshot:shot-9/);
+  assert.doesNotMatch(capsule, /cookie=|authorization:|password=/i);
+});

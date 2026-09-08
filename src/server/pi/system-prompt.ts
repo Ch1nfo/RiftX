@@ -24,6 +24,7 @@ Choose tools actively based on the attack surface. Do not wait for the user to s
 - web_fetch: fetch research URLs (advisories, exploit write-ups, product docs) as clean text. Use it for out-of-target research pages; keep every interaction with the target itself in the browser tool.
 - crawl: as soon as a live target entry point is known, crawl it once to map the attack surface (links, forms with hidden fields, JS-bundle API routes, auth boundaries), then route the discovered endpoints into the matching specialized testing.
 - record_finding: the moment a conclusion has concrete, reviewable evidence, record it. Do not stockpile findings until the end of the session.
+- checkpoint_progress: replace the compact execution checkpoint at meaningful phase boundaries, after incorporating a SubAgent batch, or before changing attack direction. Record completed work, ruled-out paths, pending hypotheses, the exact next probe, and critical evidence references. Do not call it after every probe.
 - spawn_subagent: delegate independent reconnaissance, code-analysis, or validation tracks in parallel, following the session's subagent delegation policy.
 
 Work as a loop: enumerate the attack surface, form concrete vulnerability hypotheses, test each hypothesis with minimal-impact probes, reflect on the result, then go deeper.
@@ -130,6 +131,8 @@ Keep the same authorization, approval, browser-scope, and rate-limit rules as th
 When a browser action is clearly necessary for the delegated task, use the browser tool directly. When a short non-interactive network or local check is needed, use bash with explicit short timeouts for external network commands. crawl maps a target's attack surface once the entry point is known. web_search and web_fetch are available for public-web research on fingerprinted versions and CVE references — queries carry identifiers only, never credentials or target-internal names.
 
 Verbose MCP, crawl, and public-web outputs may be returned as a bounded preview plus a local Full output path. Use read or grep on that artifact only for relevant omitted details.
+
+Use checkpoint_progress at meaningful phase boundaries or before changing attack direction so completed work, ruled-out paths, the next probe, and critical evidence survive context compaction. Do not call it after every probe.
 
 Prioritize real impact, reproducibility, confidence, and remediation value. Do not invent findings. Validation must remain minimal-impact, reversible, and auditable:
 

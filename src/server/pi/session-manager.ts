@@ -31,7 +31,7 @@ import { getEvidenceStore, removeEvidence } from "./evidence-store";
 import { estimateCompactedUsage, installMidTurnCompaction } from "./mid-turn-compaction";
 import { waitForSubagentsBeforeConclusion } from "./session-join";
 import { setAgentTransport } from "./pi-internals";
-import { prepareSkillPrompt, type SkillDescriptor } from "./skill-router";
+import { activeSkillNamesFromBranch, loadSkillContext, prepareSkillPrompt, type SkillDescriptor } from "./skill-router";
 import { installReportSkillContextScope, PENTEST_REPORT_SKILL_NAME } from "./report-skill";
 import { createTimedBashTool } from "./bash-timeout";
 import { createTimedLocalTools } from "./local-tool-timeout";
@@ -46,7 +46,12 @@ import { abortSessionRecord, shutdownSessionRecord } from "./session-shutdown";
 import { switchSessionProfile, withProfileSwitchLock } from "./apply-session-profile";
 import { registerTrackedProfile, registerProfileModel, restoreProviderRegistration, memoizedTitleRuntime, type ProviderRegistrations } from "./model-registration";
 import { extractLastAssistantResult, buildSummaryTranscript } from "./subagent-result";
-import { buildInvestigationCapsule, refreshInvestigationCapsule } from "./investigation-capsule";
+import { buildInvestigationCapsule } from "./investigation-capsule";
+import { refreshContinuityContext, type ContinuityContext } from "./continuity-context";
+import { buildTaskContract, userRequestsFromBranch } from "./task-contract";
+import { buildProgressCheckpointContext, progressCheckpointFromBranch, type ProgressCheckpoint } from "./progress-checkpoint";
+import { createProgressCheckpointTool } from "./tools/checkpoint-tool";
+import { createPentestCompactionExtension } from "./pentest-compaction";
 import { archivedRestoreError, classifyArchivedRestore, restoredArchiveState } from "./session-archive";
 import { sessions, sessionCreation, RUNTIME_VERSION, type RuntimeDeps, type SessionRecord } from "./session-registry";
 import { createFindingTool, type FindingSourceInfo } from "./tools/finding-tool";
@@ -183,6 +188,9 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   const settingsManager = SettingsManager.create(cwd, paths.agent);
   settingsManager.setTransport(profile.transport);
   const sessionManager = sessionManagerOverride ?? AgentSessionManager.create(cwd, child ? join(paths.subagents, "runtime") : paths.sessions);
+  const initialBranch = sessionManager.getBranch();
+  const activeSkillNames = new Set(activeSkillNamesFromBranch(initialBranch));
+  let progressCheckpoint: ProgressCheckpoint | undefined = progressCheckpointFromBranch(initialBranch);
   const evidenceSessionId = runtimeDeps?.evidenceSessionId ?? sessionManager.getSessionId();
   const outputStore = createToolOutputStore(paths.artifacts, evidenceSessionId, child ? findingSource.subagentId : undefined);
   const mcpTools = mcpEntries.flatMap((entry) => buildMcpTools(entry, { audience: child ? "child" : "main", outputStore }));
@@ -215,18 +223,26 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   // lazily, after the session below has been created.
   // eslint-disable-next-line prefer-const
   let evidenceSession: AgentSession | undefined;
-  const customTools = [...createTimedLocalTools(cwd), createTimedBashTool(cwd, { commandPrefix: settingsManager.getShellCommandPrefix(), shellPath: settingsManager.getShellPath() }) as unknown as ToolDefinition, createFindingTool(evidenceStore, findingSource, browser, () => evidenceSession), createCrawlTool(browser, outputStore), ...createWebTools({
+  const customTools = [...createTimedLocalTools(cwd), createTimedBashTool(cwd, { commandPrefix: settingsManager.getShellCommandPrefix(), shellPath: settingsManager.getShellPath() }) as unknown as ToolDefinition, createFindingTool(evidenceStore, findingSource, browser, () => evidenceSession), createProgressCheckpointTool((checkpoint) => {
+    progressCheckpoint = checkpoint;
+    if (record) record.progressCheckpoint = checkpoint;
+  }), createCrawlTool(browser, outputStore), ...createWebTools({
         // Read per call: saving a key in settings applies to already-running
         // sessions on their next search, with no re-open needed.
         getTavilyApiKey: async () => (await readConfig()).webSearch?.tavilyApiKey,
         outputStore
       }), ...(subagents ? [createSubagentTool(subagents, getChildProfile, cwd, mutationLock, bashConcurrency, { evidenceStore, evidenceSessionId }, runChildSession)] : []), ...mcpTools];
   const browserExtension = createBrowserExtension({ evidenceRoot: paths.evidence, evidenceSessionId }, browser);
+  const compactionExtension = createPentestCompactionExtension({
+    getSession: () => evidenceSession,
+    modelRegistry,
+    getActiveSkills: () => [...activeSkillNames]
+  });
   const resourceLoader = new DefaultResourceLoader({
     cwd,
     agentDir: paths.agent,
     additionalSkillPaths: [paths.skills],
-    extensionFactories: [permission, browserExtension],
+    extensionFactories: [permission, browserExtension, compactionExtension],
     noExtensions: true,
     noSkills: true,
     // `pentest-report` is a reserved opt-in skill. Force the policy even for
@@ -259,19 +275,31 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     settingsManager
   });
   evidenceSession = result.session;
-  const getInvestigationCapsule = async () => {
+  const skills = resourceLoader.getSkills().skills as SkillDescriptor[];
+  const getContinuityContext = async (): Promise<ContinuityContext> => {
     const findings = await evidenceStore.list();
     const relevantFindings = child
       ? findings.filter((finding) => finding.source === "main" || finding.subagentId === findingSource.subagentId)
       : findings;
     const artifacts = await listToolArtifacts(paths.artifacts, evidenceSessionId);
-    return buildInvestigationCapsule(relevantFindings, subagents?.list() ?? [], artifacts);
+    const skillParts = await Promise.all([...activeSkillNames].map(async (name) => {
+      const skill = skills.find((candidate) => candidate.name === name);
+      if (!skill) return "";
+      try { return await loadSkillContext(skill); } catch { return ""; }
+    }));
+    return {
+      taskContract: buildTaskContract(userRequestsFromBranch(sessionManager.getBranch()), { cwd, browserScope: config.browserScope }),
+      skillContext: skillParts.filter(Boolean).join("\n\n"),
+      investigationCapsule: buildInvestigationCapsule(relevantFindings, subagents?.list() ?? [], artifacts, browser.continuitySnapshot()),
+      progressCheckpoint: buildProgressCheckpointContext(progressCheckpoint)
+    };
   };
-  const refreshCapsule = async () => {
-    const capsule = await getInvestigationCapsule();
-    refreshInvestigationCapsule(result.session, capsule);
+  const refreshContinuity = async (includeTaskContract = true) => {
+    const continuity = await getContinuityContext();
+    if (!includeTaskContract) continuity.taskContract = "";
+    refreshContinuityContext(result.session, continuity);
   };
-  installMidTurnCompaction(result.session, getInvestigationCapsule);
+  installMidTurnCompaction(result.session, getContinuityContext);
   // Install after compaction so the final context sent to the provider drops
   // stale report-skill messages unless the current user request asks for one.
   installReportSkillContextScope(result.session);
@@ -352,9 +380,11 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     compacting: false,
     deliveredSubagentResults: new Set(),
     deliveringSubagentResults: new Set(),
-    skills: resourceLoader.getSkills().skills as SkillDescriptor[],
+    skills,
+    activeSkillNames,
+    progressCheckpoint,
     providerRegistrations,
-    loadedSkills: new Set(),
+    loadedSkills: new Set([...activeSkillNames].filter((name) => name !== PENTEST_REPORT_SKILL_NAME)),
     unsubscribe: () => undefined
   };
   const unsubscribe = result.session.subscribe((event) => {
@@ -363,10 +393,10 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
       record.compacting = false;
       // Covers ordinary end-of-turn/manual compaction. Mid-turn compaction
       // also refreshes its detached sampling array inside the transform hook.
-      // Serialized on the prompt chain so the capsule splice can never
+      // Serialized on the prompt chain so the continuity splice can never
       // interleave with a running SDK turn.
-      void enqueueSessionAction(record, refreshCapsule).catch((error) => {
-        console.warn("RiftX could not refresh the investigation capsule after compaction:", error);
+      void enqueueSessionAction(record, refreshContinuity).catch((error) => {
+        console.warn("RiftX could not refresh continuity context after compaction:", error);
       });
     }
     if (event.type === "agent_end" && subagents && !record.subagentDeliveryInProgress) {
@@ -430,10 +460,12 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     });
     await subagents.initialize((context) => runChildSession(getChildProfile(), cwd, mutationLock, bashConcurrency, context, { evidenceStore, evidenceSessionId }));
   }
-  // Session JSONL intentionally does not store capsule messages. Rebuild one
-  // from the canonical persisted stores whenever a runtime is created/resumed.
-  await refreshCapsule().catch((error) => {
-    console.warn("RiftX could not restore the investigation capsule:", error);
+  // Continuity messages are rebuilt from canonical JSONL/findings/task state.
+  // The task contract and active skill are needed immediately only when this
+  // runtime resumes an already-compacted branch; otherwise avoid duplicating
+  // the still-verbatim initial user request and skill message.
+  await refreshContinuity(initialBranch.some((entry) => entry.type === "compaction")).catch((error) => {
+    console.warn("RiftX could not restore continuity context:", error);
   });
   return record;
 }
@@ -609,7 +641,7 @@ async function promptSession(id: string, text: string, mode: "prompt" | "steer" 
     mode,
     () => record.session.isStreaming,
     () => prepareSkillPrompt(text, record.skills, record.loadedSkills),
-    () => ({ prompt: text, skillContext: "", loaded: [] as string[] })
+    () => ({ prompt: text, skillContext: "", loaded: [] as string[], matched: [] as string[] })
   );
   const resolvedMode = dispatch.mode;
   const ready = dispatch.prepared;
@@ -631,6 +663,15 @@ async function promptSession(id: string, text: string, mode: "prompt" | "steer" 
   const acceptDispatch = () => {
     if (dispatchAccepted) return;
     dispatchAccepted = true;
+    // A matched skill remains part of the task's operational contract after
+    // its original custom message is compacted away. Only change the active
+    // set when this dispatch actually selected a skill: generic continuation
+    // prompts such as "继续" must not accidentally forget it.
+    const persistentMatches = ready.matched.filter((name) => name !== PENTEST_REPORT_SKILL_NAME);
+    if (persistentMatches.length > 0) {
+      record.activeSkillNames.clear();
+      persistentMatches.forEach((name) => record.activeSkillNames.add(name));
+    }
     settlePromptRequest(record, extras.requestId, "accepted");
     // Reports the composed text THIS dispatch actually accepted — the single
     // mode resolution above is the only authority on what that text is.

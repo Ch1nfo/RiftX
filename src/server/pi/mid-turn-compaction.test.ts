@@ -1,7 +1,25 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
-import { estimateMessagesContextUsage, installMidTurnCompaction, shouldCompactBeforeSampling } from "./mid-turn-compaction";
+import { estimateMessagesContextUsage, installMidTurnCompaction, keepRecentTokensForContext, shouldCompactBeforeSampling } from "./mid-turn-compaction";
+
+test("keeps exactly twenty percent of the current model context", () => {
+  assert.equal(keepRecentTokensForContext(64_000), 12_800);
+  assert.equal(keepRecentTokensForContext(128_000), 25_600);
+  assert.equal(keepRecentTokensForContext(1_000_000), 200_000);
+});
+
+test("installs the twenty-percent policy where Pi computes its cut point", () => {
+  const settingsManager = { getCompactionSettings: () => ({ enabled: true, reserveTokens: 16_384, keepRecentTokens: 20_000 }) };
+  const session = {
+    agent: { state: { messages: [] }, transformContext: undefined },
+    model: { contextWindow: 128_000 },
+    settingsManager,
+    getContextUsage: () => undefined
+  } as unknown as AgentSession;
+  installMidTurnCompaction(session);
+  assert.equal(settingsManager.getCompactionSettings().keepRecentTokens, 25_600);
+});
 
 test("mid-turn compaction leaves room for the next model response", () => {
   assert.equal(shouldCompactBeforeSampling(47_999, 64_000, 16_000), false);
@@ -101,7 +119,7 @@ test("mid-turn compaction replaces the active loop context in place", async () =
   assert.equal(activeMessages[0]?.content, "summary");
 });
 
-test("mid-turn compaction restores the investigation capsule to the detached and future contexts", async () => {
+test("mid-turn compaction restores the ordered continuity packet to detached and future contexts", async () => {
   const listeners = new Set<(event: { type: string; reason?: string; result?: unknown }) => void>();
   const state: { messages: Array<Record<string, unknown>> } = { messages: [{ role: "toolResult", content: "old" }] };
   const session = {
@@ -122,9 +140,16 @@ test("mid-turn compaction restores the investigation capsule to the detached and
     }
   } as unknown as AgentSession;
 
-  installMidTurnCompaction(session, async () => "<riftx-investigation-capsule>durable finding</riftx-investigation-capsule>");
+  installMidTurnCompaction(session, async () => ({
+    taskContract: "task",
+    skillContext: "skill",
+    investigationCapsule: "capsule",
+    progressCheckpoint: "checkpoint"
+  }));
   const activeMessages = session.messages as unknown as Array<Record<string, unknown>>;
   const transformed = await session.agent.transformContext!(activeMessages as never) as unknown as Array<Record<string, unknown>>;
-  assert.equal(transformed.filter((message) => message.customType === "riftx_investigation_capsule").length, 1);
-  assert.equal(state.messages.filter((message) => message.customType === "riftx_investigation_capsule").length, 1);
+  const expected = ["riftx_task_contract", "riftx_skill_context", "riftx_investigation_capsule", "riftx_progress_checkpoint"];
+  assert.deepEqual(transformed.slice(-4).map((message) => message.customType), expected);
+  assert.deepEqual(state.messages.slice(-4).map((message) => message.customType), expected);
+  for (const type of expected) assert.equal(transformed.filter((message) => message.customType === type).length, 1);
 });

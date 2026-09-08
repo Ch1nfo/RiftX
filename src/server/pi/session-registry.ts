@@ -11,6 +11,7 @@ import type { SkillDescriptor } from "./skill-router";
 import type { ProviderRegistrations } from "./model-registration";
 import type { McpServerEntry } from "@/server/mcp/manager";
 import type { PromptRequestOutcome } from "./prompt-requests";
+import type { ProgressCheckpoint } from "./progress-checkpoint";
 
 /**
  * Process-global session registry: the live SessionRecord map, the in-flight
@@ -66,6 +67,10 @@ export type SessionRecord = {
   deliveringSubagentResults: Set<string>;
   skills: SkillDescriptor[];
   loadedSkills: Set<string>;
+  /** Skill bodies that must be present after a compaction in this task. */
+  activeSkillNames: Set<string>;
+  /** Latest lightweight execution checkpoint, recoverable from tool-call history. */
+  progressCheckpoint?: ProgressCheckpoint;
   providerRegistrations: ProviderRegistrations;
   profileSwitch?: Promise<unknown>;
 };
@@ -76,7 +81,7 @@ export type RuntimeDeps = {
 };
 
 /** Bump to force process-global session objects to rebuild from disk. */
-export const RUNTIME_VERSION = 36;
+export const RUNTIME_VERSION = 37;
 
 declare global {
   var __riftxSessions: Map<string, SessionRecord> | undefined;

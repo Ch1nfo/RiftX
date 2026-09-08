@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { loadSkillContext, prepareSkillPrompt, rankSkills, type SkillDescriptor } from "./skill-router";
+import { activeSkillNamesFromBranch, loadSkillContext, prepareSkillPrompt, rankSkills, type SkillDescriptor } from "./skill-router";
 
 function skill(name: string, description: string): SkillDescriptor {
   return { name, description, filePath: `/skills/${name}/SKILL.md` };
@@ -82,11 +82,23 @@ test("automatically injects a matching skill once per session", async () => {
     const second = await prepareSkillPrompt("Test SQL injection again", [descriptor], loaded);
     assert.match(first.prompt, /Use a minimal SQLi canary/);
     assert.deepEqual(first.loaded, ["exploit-sqli"]);
+    assert.deepEqual(first.matched, ["exploit-sqli"]);
     assert.equal(second.prompt, "Test SQL injection again");
     assert.deepEqual(second.loaded, []);
+    assert.deepEqual(second.matched, ["exploit-sqli"]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("restores active skills from the newest compaction metadata or historic skill context", () => {
+  assert.deepEqual(activeSkillNamesFromBranch([
+    { type: "custom_message", customType: "riftx_skill_context", content: '<skill name="old-skill">x</skill>' },
+    { type: "compaction", details: { riftx: { activeSkills: ["exploit-authz", "api-testing"] } } }
+  ]), ["exploit-authz", "api-testing"]);
+  assert.deepEqual(activeSkillNamesFromBranch([
+    { type: "custom_message", customType: "riftx_skill_context", content: '<skill name="exploit-sqli">x</skill>' }
+  ]), ["exploit-sqli"]);
 });
 
 test("routes authz, upload, API, and SSRF tasks to the gap-filling skills", () => {

@@ -2,7 +2,30 @@ import type { AgentSession } from "@mariozechner/pi-coding-agent";
 import type { ContextUsage } from "@/lib/types";
 
 import { replaceAgentMessages, runAutoCompaction, waitForAgentEvents } from "./pi-internals";
-import { refreshInvestigationCapsule, upsertInvestigationCapsule } from "./investigation-capsule";
+import { refreshContinuityContext, upsertContinuityContext, type ContinuityContext } from "./continuity-context";
+
+export const COMPACTION_KEEP_RECENT_RATIO = 0.2;
+
+export function keepRecentTokensForContext(contextWindow: number) {
+  return Number.isFinite(contextWindow) && contextWindow > 0
+    ? Math.max(1, Math.floor(contextWindow * COMPACTION_KEEP_RECENT_RATIO))
+    : 0;
+}
+
+const budgetInstalled = new WeakSet<object>();
+
+/** Pi computes its cut point from SettingsManager, so apply the 20% policy at that source. */
+function installCompactionBudget(session: AgentSession) {
+  const manager = session.settingsManager;
+  if (budgetInstalled.has(manager)) return;
+  budgetInstalled.add(manager);
+  const original = manager.getCompactionSettings.bind(manager);
+  manager.getCompactionSettings = () => {
+    const settings = original();
+    const keepRecentTokens = keepRecentTokensForContext(session.model?.contextWindow ?? 0);
+    return keepRecentTokens ? { ...settings, keepRecentTokens } : settings;
+  };
+}
 
 export function shouldCompactBeforeSampling(tokens: number | null | undefined, contextWindow: number, reserveTokens: number) {
   return Number.isFinite(tokens)
@@ -79,7 +102,8 @@ async function runMidTurnCompaction(session: AgentSession, signal?: AbortSignal)
  * tool turn. The public compact() API aborts the active run, so this uses the
  * SDK's auto-compaction path and keeps the current message array in place.
  */
-export function installMidTurnCompaction(session: AgentSession, getInvestigationCapsule?: () => Promise<string>) {
+export function installMidTurnCompaction(session: AgentSession, getContinuityContext?: () => Promise<ContinuityContext>) {
+  installCompactionBudget(session);
   const agent = session.agent;
   const originalTransform = agent.transformContext;
   let compacting = false;
@@ -108,17 +132,17 @@ export function installMidTurnCompaction(session: AgentSession, getInvestigation
       const compacted = await runMidTurnCompaction(session, signal);
       if (compacted) {
         replaceAgentMessages(session, messages, session.agent.state.messages);
-        if (getInvestigationCapsule) {
+        if (getContinuityContext) {
           try {
-            const capsule = await getInvestigationCapsule();
+            const continuity = await getContinuityContext();
             // `messages` is the detached array currently being sampled while
             // auto-compaction replaces agent.state.messages with a new array.
             // Refresh both so this very request and every later turn see the
             // same durable continuity state.
-            upsertInvestigationCapsule(messages as unknown[], capsule);
-            refreshInvestigationCapsule(session, capsule);
+            upsertContinuityContext(messages as unknown[], continuity);
+            refreshContinuityContext(session, continuity);
           } catch (error) {
-            console.warn("RiftX could not refresh the investigation capsule after compaction:", error);
+            console.warn("RiftX could not refresh continuity context after compaction:", error);
           }
         }
       }

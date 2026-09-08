@@ -882,6 +882,29 @@ export class BrowserManager {
     return lines.join("\n");
   }
 
+  /** Small secret-free browser state packet for post-compaction continuity. */
+  continuitySnapshot() {
+    const tabs = [...this.pages.values()].slice(-12).map((manager) => ({
+      identity: manager.identity,
+      url: manager.page.url(),
+      active: this.identities.get(manager.identity)?.activePageId === manager.id
+    }));
+    const requests = this.requests.list().slice(-12).map((request) => ({
+      ref: request.ref,
+      method: request.method,
+      url: request.url,
+      status: request.status
+    }));
+    if (!tabs.length && !requests.length && !this.hostMappings.size && !this.latestScreenshotId) return undefined;
+    return {
+      activeIdentity: this.activeIdentity,
+      tabs,
+      requests,
+      hostMappings: [...this.hostMappings.entries()].slice(0, 20).map(([host, target]) => `${host} -> ${target}`),
+      latestScreenshotId: this.latestScreenshotId
+    };
+  }
+
   /** Close both ends of a routed WebSocket explicitly. */
   private async closeRoutedWebSocket(entry: { route: WebSocketRoute; serverRoute?: WebSocketRoute }) {
     // Safely wrap each close (a sync throw from an already-closed page must

@@ -11,6 +11,14 @@ import type { ToolArtifactRef } from "@/server/tool-output";
 export const INVESTIGATION_CAPSULE_TYPE = "riftx_investigation_capsule";
 export const MAX_INVESTIGATION_CAPSULE_CHARS = 12_000;
 
+export type BrowserContinuityState = {
+  activeIdentity: string;
+  tabs: Array<{ identity: string; url: string; active: boolean }>;
+  requests: Array<{ ref: string; method: string; url: string; status?: number }>;
+  hostMappings: string[];
+  latestScreenshotId?: string;
+};
+
 type CapsuleMessage = {
   role: "custom";
   customType: typeof INVESTIGATION_CAPSULE_TYPE;
@@ -45,7 +53,8 @@ function findingLine(finding: Finding) {
 }
 
 function subagentLine(task: SubagentTask) {
-  return `- [${task.status}] ${escapeXml(oneLine(task.name || "Subagent", 80))}: ${escapeXml(oneLine(task.task, 220))}`;
+  const outcome = task.summary?.trim() || task.error?.trim();
+  return `- [${task.status}] ${escapeXml(oneLine(task.name || "Subagent", 80))}: ${escapeXml(oneLine(task.task, 220))}${outcome ? ` | result=${escapeXml(oneLine(outcome, 1_000))}` : ""}`;
 }
 
 function section(title: string, lines: string[]) {
@@ -66,7 +75,7 @@ function fitCapsule(lines: string[]) {
   return [opener, note, closer].join("\n");
 }
 
-export function buildInvestigationCapsule(findings: readonly Finding[], subagents: readonly SubagentTask[], artifacts: readonly ToolArtifactRef[] = []) {
+export function buildInvestigationCapsule(findings: readonly Finding[], subagents: readonly SubagentTask[], artifacts: readonly ToolArtifactRef[] = [], browser?: BrowserContinuityState) {
   const newestFindings = [...findings].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   // Confirmed and active state outrank old closed trails when the capsule must
   // shed detail to remain small.
@@ -80,7 +89,7 @@ export function buildInvestigationCapsule(findings: readonly Finding[], subagent
 
   const recentArtifacts = [...artifacts].sort((left, right) => right.createdAt.localeCompare(left.createdAt)).slice(0, 12);
 
-  if (!recentFindings.length && !recentSubagents.length && !recentArtifacts.length) return "";
+  if (!recentFindings.length && !recentSubagents.length && !recentArtifacts.length && !browser) return "";
 
   const assets = [...new Set(recentFindings.map((finding) => oneLine(finding.asset, 240)).filter(Boolean))]
     .slice(0, 20)
@@ -90,6 +99,13 @@ export function buildInvestigationCapsule(findings: readonly Finding[], subagent
     ...recentSubagents.filter((task) => task.status === "queued" || task.status === "running").slice(0, 8)
       .map((task) => `- Await and incorporate SubAgent ${escapeXml(oneLine(task.name || "Subagent", 80))}; do not repeat its task.`)
   ];
+  const browserLines = browser ? [
+    `- active_identity=${escapeXml(oneLine(browser.activeIdentity, 100))}`,
+    ...browser.tabs.map((tab) => `- tab${tab.active ? "[active]" : ""} identity=${escapeXml(oneLine(tab.identity, 100))} url=${escapeXml(oneLine(tab.url, 500))}`),
+    ...browser.requests.map((request) => `- request:${escapeXml(oneLine(request.ref, 80))} ${escapeXml(oneLine(request.method, 20))} ${escapeXml(oneLine(request.url, 500))}${request.status === undefined ? "" : ` status=${request.status}`}`),
+    ...browser.hostMappings.map((mapping) => `- mapping=${escapeXml(oneLine(mapping, 500))}`),
+    ...(browser.latestScreenshotId ? [`- screenshot:${escapeXml(oneLine(browser.latestScreenshotId, 100))}`] : [])
+  ] : [];
 
   const lines = [
     "<riftx-investigation-capsule>",
@@ -99,6 +115,7 @@ export function buildInvestigationCapsule(findings: readonly Finding[], subagent
     ...section("Rejected or closed hypotheses", closed.map(findingLine)),
     ...section("Known assets", assets),
     ...section("Delegated work", recentSubagents.map(subagentLine)),
+    ...section("Browser continuity", browserLines),
     ...section("Recent full-output artifacts", recentArtifacts.map((artifact) => `- ${escapeXml(oneLine(artifact.path, 500))} | bytes=${Math.max(0, Math.round(artifact.size))}`)),
     ...section("Continuity actions", nextActions),
     "</riftx-investigation-capsule>"

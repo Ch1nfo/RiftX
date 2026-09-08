@@ -110,16 +110,36 @@ export async function loadSkillContext(skill: SkillDescriptor) {
   return `<skill name="${escapeXml(skill.name)}" location="${location}">\nReferences are relative to ${baseDir}.\n\n${body}\n</skill>`;
 }
 
+function unescapeXml(value: string) {
+  return value.replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/&amp;/g, "&");
+}
+
+/** Recover active skill names from the newest RiftX compaction metadata or historic skill message. */
+export function activeSkillNamesFromBranch(entries: readonly unknown[]) {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index] as { type?: unknown; details?: unknown; customType?: unknown; content?: unknown } | undefined;
+    if (entry?.type === "compaction" && entry.details && typeof entry.details === "object") {
+      const active = (entry.details as { riftx?: { activeSkills?: unknown } }).riftx?.activeSkills;
+      if (Array.isArray(active)) return active.filter((name): name is string => typeof name === "string");
+    }
+    if (entry?.type === "custom_message" && entry.customType === "riftx_skill_context" && typeof entry.content === "string") {
+      return [...entry.content.matchAll(/<skill\s+name="([^"]+)"/g)].map((match) => unescapeXml(match[1]));
+    }
+  }
+  return [];
+}
+
 export async function prepareSkillPrompt(task: string, skills: readonly SkillDescriptor[], loadedSkills: Set<string>) {
-  if (!task.trim() || task.trimStart().startsWith("/skill:")) return { prompt: task, skillContext: "", loaded: [] as string[] };
+  if (!task.trim() || task.trimStart().startsWith("/skill:")) return { prompt: task, skillContext: "", loaded: [] as string[], matched: [] as string[] };
   // The report skill is opt-in. It stays hidden from the general model/router
   // catalog and is selected only for an explicit report request.
   const explicitReportSkill = isExplicitReportRequest(task)
     ? skills.find((skill) => skill.name === PENTEST_REPORT_SKILL_NAME)
     : undefined;
   const matches: readonly SkillDescriptor[] = explicitReportSkill ? [explicitReportSkill] : rankSkills(task, skills, 1);
+  const matched = matches.map((skill) => skill.name);
   const selected = matches.filter((skill) => !loadedSkills.has(skill.name));
-  if (selected.length === 0) return { prompt: task, skillContext: "", loaded: [] as string[] };
+  if (selected.length === 0) return { prompt: task, skillContext: "", loaded: [] as string[], matched };
   const loaded = await Promise.all(selected.map(async (skill) => {
     try {
       return { skill, context: await loadSkillContext(skill) };
@@ -128,7 +148,7 @@ export async function prepareSkillPrompt(task: string, skills: readonly SkillDes
     }
   }));
   const successful = loaded.filter((item): item is { skill: SkillMatch; context: string } => Boolean(item));
-  if (successful.length === 0) return { prompt: task, skillContext: "", loaded: [] as string[] };
+  if (successful.length === 0) return { prompt: task, skillContext: "", loaded: [] as string[], matched };
   // Report guidance is scoped to a single explicit request, so allow it to be
   // injected again for a later explicit report rather than treating it as a
   // permanent session capability.
@@ -139,6 +159,7 @@ export async function prepareSkillPrompt(task: string, skills: readonly SkillDes
   return {
     prompt: `${skillContext}\n\nUser task:\n${task}`,
     skillContext,
-    loaded: successful.map(({ skill }) => skill.name)
+    loaded: successful.map(({ skill }) => skill.name),
+    matched
   };
 }
