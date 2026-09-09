@@ -24,7 +24,7 @@ test.after(async () => {
 
 function platformChallenge(code: string, overrides: Partial<Challenge> = {}): Challenge {
   return {
-    unique_code: code, description: `Challenge ${code}`, difficulty: "easy", level: "L1",
+    unique_code: code, description: `Challenge ${code}`, difficulty: "easy", level: 1,
     total_score: 100, flag_count: 1, correct_flag_count: 0, is_completed: false,
     container_status: "stopped", container_addr: [], ...overrides
   };
@@ -43,6 +43,7 @@ async function setupTool(routes: Route[]) {
   const controller = new BenchmarkController({
     baseUrl: "https://bench.test",
     token: "test",
+    vpnUrl: "https://bench.test",
     fetchImpl: async (input, init) => {
       const url = new URL(input);
       const method = init?.method ?? "GET";
@@ -76,6 +77,38 @@ test("sync pulls challenges (bare array) and updates ledger", async () => {
   const result = await execute(tool, { action: "sync" });
   assert.match((result.content[0] as { text: string }).text, /VPN.*ok/);
   assert.equal(ledger.getState().totalChallenges, 2);
+});
+
+test("sync persists a failed VPN preflight instead of retaining stale success", async () => {
+  let vpnAvailable = true;
+  const browser = fakeBrowser();
+  const sessionId = `tools-vpn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const controller = new BenchmarkController({
+    baseUrl: "https://bench.test",
+    token: "test",
+    vpnUrl: "https://vpn.test",
+    fetchImpl: async (input) => {
+      const url = new URL(input);
+      if (url.hostname === "vpn.test") {
+        return vpnAvailable
+          ? new Response(JSON.stringify({ status: "ok", client_ip: "10.0.0.1" }), { status: 200 })
+          : new Response(JSON.stringify({ status: "fail" }), { status: 503 });
+      }
+      return new Response(JSON.stringify([platformChallenge("ch-1")]), { status: 200 });
+    }
+  });
+  const ledger = await new BenchmarkLedger(sessionId).initialize();
+  const tool = createBenchmarkControlTool(controller, ledger, browser, () => "main");
+
+  await execute(tool, { action: "sync" });
+  assert.equal(ledger.getState().vpnOk, true);
+  vpnAvailable = false;
+
+  const result = await execute(tool, { action: "sync" });
+  assert.match((result.content[0] as { text: string }).text, /VPN check failed/);
+  assert.equal(ledger.getState().vpnChecked, true);
+  assert.equal(ledger.getState().vpnOk, false);
+  assert.equal(ledger.getState().vpnClientIp, "");
 });
 
 test("acquire starts container and grants browser scope", async () => {
@@ -192,7 +225,7 @@ test("child session with assignedChallenge: only allowed actions, locked uniqueC
     fetchImpl: async () => new Response("[]", { status: 200, headers: { Connection: "close" } })
   });
   const ledger = await new BenchmarkLedger(sessionId).initialize();
-  await ledger.syncFromPlatform([platformChallenge("ch-1"), platformChallenge("ch-2")], 0, true, "ip");
+  await ledger.syncFromPlatform([platformChallenge("ch-1"), platformChallenge("ch-2")], true, "ip");
   await ledger.acquire("ch-1", "subagent:t1", ["10.0.0.1:80"]);
   const tool = createBenchmarkControlTool(controller, ledger, browser, () => "subagent:t1", "ch-1");
   const ctx = {} as Parameters<typeof tool.execute>[4];
@@ -221,7 +254,7 @@ test("assign tool dispatches and passes uniqueCode to spawnSubagent", async () =
     }
   });
   const ledger = await new BenchmarkLedger(sessionId).initialize();
-  await ledger.syncFromPlatform([platformChallenge("ch-1")], 0, true, "ip");
+  await ledger.syncFromPlatform([platformChallenge("ch-1")], true, "ip");
   let dispatched = "";
   let passedUniqueCode = "";
   const tool = createAssignBenchmarkChallengeTool(controller, ledger, browser, async (task, uniqueCode, _containerAddrs, reservationOwner) => {
@@ -257,7 +290,7 @@ test("assign tool reports a SubAgent cancelled during dispatch as not assigned",
     }
   });
   const ledger = await new BenchmarkLedger(sessionId).initialize();
-  await ledger.syncFromPlatform([platformChallenge("ch-1")], 0, true, "ip");
+  await ledger.syncFromPlatform([platformChallenge("ch-1")], true, "ip");
   const tool = createAssignBenchmarkChallengeTool(controller, ledger, browser, async (_task, uniqueCode, _containerAddrs, reservationOwner) => {
     // Mirror the real bridge: binding completes, then the task turns out to
     // have been cancelled during the binding window and the challenge was

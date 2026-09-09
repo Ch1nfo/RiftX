@@ -1,7 +1,8 @@
 /**
  * TSec Benchmark platform API client, matched to the real platform contract:
  * - Auth header: `BENCHMARK_TOKEN: <token>` (NOT Bearer)
- * - VPN check: GET the base URL host directly (connectivity check)
+ * - VPN check: optional explicit BENCHMARK_VPN_URL health endpoint. The public
+ *   Challenges API does not define a VPN-check route.
  * - Challenge list: GET /openapi/v1/challenges → direct JSON array
  * - Start/close/hint: ?unique_code=<code> query parameter
  * - Submit: POST /openapi/v1/challenges/submit with { unique_code, flag } body
@@ -17,7 +18,7 @@ export type Challenge = {
   unique_code: string;
   description: string;
   difficulty: string;
-  level: string;
+  level: number;
   total_score: number;
   flag_count: number;
   correct_flag_count: number;
@@ -89,13 +90,13 @@ function classifyError(status: number, body: Record<string, unknown> | null): Be
   if (code === "task_not_found") return "not_found";
   if (code === "internal_error") return "internal_error";
   if (code === "invalid_state") {
-    if (message.includes("max active") || message.includes("最大")) return "invalid_state_max_active";
+    if (message.includes("max active") || message.includes("最大") || message.includes("上限")) return "invalid_state_max_active";
     if (message.includes("ended") || message.includes("timeout") || message.includes("finished") || message.includes("结束")) return "invalid_state_task_ended";
     return "invalid_state";
   }
   if (status === 404) return "not_found";
   if (status === 409) {
-    if (message.includes("max active") || message.includes("最大")) return "invalid_state_max_active";
+    if (message.includes("max active") || message.includes("最大") || message.includes("上限")) return "invalid_state_max_active";
     return "invalid_state";
   }
   if (status === 422) return "validation_error";
@@ -129,12 +130,14 @@ function wait(ms: number) {
 export class BenchmarkController {
   private readonly baseUrl: string;
   private readonly token: string;
+  private readonly vpnUrl: string;
   private readonly fetchImpl: FetchLike;
   private readonly serializeMutation = createSerializer();
 
-  constructor(options: { baseUrl?: string; token?: string; fetchImpl?: FetchLike } = {}) {
+  constructor(options: { baseUrl?: string; token?: string; vpnUrl?: string; fetchImpl?: FetchLike } = {}) {
     this.baseUrl = (options.baseUrl ?? process.env.BENCHMARK_BASE_URL ?? "").replace(/\/$/, "");
     this.token = options.token ?? process.env.BENCHMARK_TOKEN ?? "";
+    this.vpnUrl = (options.vpnUrl ?? process.env.BENCHMARK_VPN_URL ?? "").trim();
     this.fetchImpl = options.fetchImpl ?? ((input, init) => fetch(input, init));
     if (!this.baseUrl || !this.token) {
       throw new BenchmarkError("validation_error", "BENCHMARK_BASE_URL and BENCHMARK_TOKEN must be set");
@@ -171,13 +174,13 @@ export class BenchmarkController {
     }
   }
 
-  /** Real VPN check: GET http://10.0.100.58 and validate JSON status === "ok". */
+  /** Optional VPN health check. The raw Challenges API defines no such route. */
   async checkVpn(): Promise<VpnCheckResult> {
-    const vpnUrl = process.env.BENCHMARK_VPN_URL ?? "http://10.0.100.58";
+    if (!this.vpnUrl) return { status: "unchecked", client_ip: "", ok: false };
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), BENCHMARK_QUERY_TIMEOUT_MS);
     try {
-      const response = await this.fetchImpl(vpnUrl, { signal: controller.signal });
+      const response = await this.fetchImpl(this.vpnUrl, { signal: controller.signal });
       if (!response.ok) {
         throw new BenchmarkError("vpn_check_failed", `VPN endpoint returned HTTP ${response.status}`);
       }
@@ -194,7 +197,7 @@ export class BenchmarkController {
       if (error instanceof Error && error.name === "AbortError") {
         throw new BenchmarkError("vpn_check_failed", "VPN check timed out — check VPN connection");
       }
-      throw new BenchmarkError("vpn_check_failed", `Cannot reach VPN endpoint ${vpnUrl} — check VPN connection`);
+      throw new BenchmarkError("vpn_check_failed", `Cannot reach VPN endpoint ${this.vpnUrl} — check VPN connection`);
     } finally {
       clearTimeout(timer);
     }
@@ -236,9 +239,9 @@ export class BenchmarkController {
         const record = item as Record<string, unknown>;
         const challenge = {
           unique_code: String(record.unique_code ?? ""),
-          description: String(record.description ?? "").slice(0, 20_000),
+          description: typeof record.description === "string" ? record.description.slice(0, 20_000) : "",
           difficulty: String(record.difficulty ?? "medium"),
-          level: String(record.level ?? ""),
+          level: finiteNumber(record.level ?? 0, "level"),
           total_score: finiteNumber(record.total_score ?? 0, "total_score"),
           flag_count: finiteNumber(record.flag_count ?? 1, "flag_count"),
           correct_flag_count: finiteNumber(record.correct_flag_count ?? 0, "correct_flag_count"),

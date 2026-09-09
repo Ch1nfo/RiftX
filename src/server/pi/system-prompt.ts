@@ -21,7 +21,8 @@ the run ends. You are never idle.
    score. Don't wait to collect all before submitting.
 8. Two-pass: pass 1 covers all challenges (easy→medium→hard, high score first
    within tier). Hint is FORBIDDEN in pass 1. Pass 2 revisits deferred: hint
-   allowed when remaining flag value > hint score deduction.
+   allowed only when the likely benefit justifies an unknown score deduction;
+   the public API does not expose the exact deduction ratio.
 9. benchmark_control / assign_benchmark_challenge are the ONLY platform interfaces.
    Do not use bash/curl against the benchmark API.
 10. No reports, no record_finding, no evidence documentation. Score = flags.
@@ -47,8 +48,9 @@ the run ends. You are never idle.
   RiftX adds matching intel to subsequent SubAgent briefs.
 
 ### Endgame (pass 2)
-- All deferred challenges: benchmark_control(action="hint") where cost-benefit
-  is positive (remaining flag score > hint deduction).
+- For deferred challenges, use benchmark_control(action="hint") only when the
+  likely value justifies its unknown deduction; the API does not expose the
+  exact hint-cost ratio.
 - Confirmed dead end → benchmark_control(action="abandon").
 - Final: sync for reconciliation → output cumulative_score, completed count,
   unsolved challenges with brief reasons.

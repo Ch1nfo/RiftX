@@ -25,10 +25,14 @@ export type ChallengeState = {
   uniqueCode: string;
   description: string;
   difficulty: string;
-  level: string;
+  level: number;
   totalScore: number;
   flagCount: number;
   correctFlagCount: number;
+  /** Per-challenge cumulative score from submit responses (hint deductions already included). */
+  scoreObtained: number;
+  /** Whether scoreObtained reflects the platform's score at the current correctFlagCount. */
+  scoreKnown: boolean;
   isCompleted: boolean;
   status: ChallengeStatus;
   owner: ChallengeOwner;
@@ -60,6 +64,7 @@ export type BenchmarkState = {
   activeContainers: number;
   lastSyncAt: number;
   vpnOk: boolean;
+  vpnChecked: boolean;
   vpnClientIp: string;
   sharedIntel: SharedIntel[];
   challenges: Record<string, ChallengeState>;
@@ -119,6 +124,10 @@ function newChallengeState(challenge: Challenge): ChallengeState {
     totalScore: challenge.total_score,
     flagCount: challenge.flag_count,
     correctFlagCount: challenge.correct_flag_count,
+    // The list endpoint exposes no score; per-challenge values arrive only
+    // from submit responses, so a pre-solved challenge starts as unknown.
+    scoreObtained: 0,
+    scoreKnown: false,
     isCompleted: challenge.is_completed,
     status,
     owner: null,
@@ -166,6 +175,7 @@ function defaultState(): BenchmarkState {
     activeContainers: 0,
     lastSyncAt: 0,
     vpnOk: false,
+    vpnChecked: false,
     vpnClientIp: "",
     sharedIntel: [],
     challenges: {}
@@ -206,6 +216,11 @@ function recalculate(state: BenchmarkState): BenchmarkState {
   state.exhaustedCount = challenges.filter((challenge) => challenge.status === "exhausted").length;
   state.totalChallenges = challenges.length;
   state.activeContainers = countActiveContainers(state);
+  // cumulative_score from the platform is PER-CHALLENGE (该题累计总得分).
+  // The run total is the sum of the per-challenge values; it is exact only
+  // when every challenge that has scored flags carries an authoritative value.
+  state.cumulativeScore = challenges.reduce((total, challenge) => total + (Number.isFinite(challenge.scoreObtained) ? challenge.scoreObtained : 0), 0);
+  state.scoreExact = challenges.filter((challenge) => challenge.correctFlagCount > 0).every((challenge) => challenge.scoreKnown === true);
   const allTerminal = challenges.length > 0 && challenges.every((challenge) => challenge.status === "solved" || challenge.status === "exhausted");
   if (allTerminal) state.phase = "completed";
   return state;
@@ -229,10 +244,17 @@ export class BenchmarkLedger {
     this.metrics = await readJsonStore<BenchmarkMetrics>(metricsPath(this.parentSessionId)) ?? defaultMetrics();
     // Backward-compatible defaults for ledgers created before these fields existed.
     if (typeof this.state.scoreExact !== "boolean") this.state.scoreExact = false;
+    if (typeof this.state.vpnChecked !== "boolean") this.state.vpnChecked = false;
     if (!Array.isArray(this.state.sharedIntel)) this.state.sharedIntel = [];
     for (const challenge of Object.values(this.state.challenges)) {
       challenge.reservationPreviousStatus ??= undefined;
       challenge.closeFailureRecorded ??= false;
+      challenge.level = Number.isFinite(Number(challenge.level)) ? Number(challenge.level) : 0;
+      // Ledgers from the pre-per-challenge era have no authoritative values;
+      // scoreKnown=false makes recalculate() report the run total as a lower
+      // bound until the next authoritative submit.
+      challenge.scoreObtained = Number.isFinite(Number(challenge.scoreObtained)) ? Number(challenge.scoreObtained) : 0;
+      challenge.scoreKnown = challenge.scoreKnown === true;
     }
     // Restart recovery: running/claimed/reserved → orphaned (prioritize re-acquire);
     // closing → keep closing (the platform close attempt must be re-confirmed by sync).
@@ -297,8 +319,10 @@ export class BenchmarkLedger {
       const hash = flagHash(flag);
       if (!challenge.triedFlags.includes(hash)) challenge.triedFlags.push(hash);
       // The platform may have accepted, rejected, or penalized the request;
-      // without its response the cached cumulative score is no longer exact.
-      this.state.scoreExact = false;
+      // without its response this challenge's per-challenge score may have
+      // moved, so its cached value is no longer authoritative.
+      challenge.scoreKnown = false;
+      recalculate(this.state);
       await this.persist();
     });
   }
@@ -325,28 +349,44 @@ export class BenchmarkLedger {
     return this.state.sharedIntel.filter((entry) => entry.scope === "global" || haystack.includes(entry.target.toLocaleLowerCase())).slice(-8);
   }
 
-  /** Full platform sync: platform values override local. Omit cumulativeScore when the list endpoint does not provide it. */
-  async syncFromPlatform(challenges: Challenge[], cumulativeScore: number | undefined, vpnOk: boolean, vpnClientIp: string): Promise<BenchmarkState> {
+  /** Persist the latest VPN preflight result independently of platform sync.
+   * A failed preflight happens before listChallenges(), so it needs its own
+   * write path or a previous successful result would remain visible. */
+  async recordVpnCheck(vpnOk: boolean, vpnClientIp: string, vpnChecked = true): Promise<BenchmarkState> {
     return this.serialize(async () => {
       this.state.vpnOk = vpnOk;
+      this.state.vpnChecked = vpnChecked;
+      this.state.vpnClientIp = vpnClientIp;
+      await this.persist();
+      return this.state;
+    });
+  }
+
+  /** Full platform sync: platform values override local. The list endpoint provides no score —
+   * per-challenge values arrive only from submit responses, so platform progress the ledger
+   * cannot price marks the run total as a lower bound (scoreExact=false via recalculate). */
+  async syncFromPlatform(challenges: Challenge[], vpnOk: boolean, vpnClientIp: string, vpnChecked = true): Promise<BenchmarkState> {
+    return this.serialize(async () => {
+      this.state.vpnOk = vpnOk;
+      this.state.vpnChecked = vpnChecked;
       this.state.vpnClientIp = vpnClientIp;
       this.state.lastSyncAt = Date.now();
-      // Only overwrite the score when the caller actually has a real value.
-      if (cumulativeScore !== undefined) {
-        this.state.cumulativeScore = cumulativeScore;
-        this.state.scoreExact = true;
-      }
       for (const platform of challenges) {
         const existing = this.state.challenges[platform.unique_code];
         if (!existing) {
           this.state.challenges[platform.unique_code] = newChallengeState(platform);
-          if (cumulativeScore === undefined && platform.correct_flag_count > 0) this.state.scoreExact = false;
           continue;
         }
-        // Platform is source of truth for these fields.
-        if (cumulativeScore === undefined && platform.correct_flag_count > existing.correctFlagCount) {
-          this.state.scoreExact = false;
+        // A list sync can observe progress that happened after a timed-out
+        // submit, a process crash, or another worker. The list endpoint has no
+        // score, so the cached score no longer corresponds to this progress.
+        // On a backwards count change even the cached value is not a safe lower
+        // bound; reset it to zero until a priced submit response is available.
+        if (platform.correct_flag_count !== existing.correctFlagCount) {
+          if (platform.correct_flag_count < existing.correctFlagCount) existing.scoreObtained = 0;
+          existing.scoreKnown = false;
         }
+        // Platform is source of truth for these fields.
         existing.correctFlagCount = platform.correct_flag_count;
         existing.isCompleted = platform.is_completed;
         existing.containerStatus = platform.container_status;
@@ -528,17 +568,21 @@ export class BenchmarkLedger {
     });
   }
 
-  /** Record a flag submission result. Flags are stored as SHA-256 hashes to avoid persisting plaintext answers. */
-  async recordSubmission(uniqueCode: string, flag: string, correct: boolean, cumulativeScore: number | undefined, correctFlagCount: number, matchedFlagIndex: number | null, expectedOwner: Exclude<ChallengeOwner, null>): Promise<ChallengeState> {
+  /** Record a flag submission result. `challengeScore` is the platform's PER-CHALLENGE
+   * cumulative score (hint deductions already included). Flags are stored as SHA-256
+   * hashes to avoid persisting plaintext answers. */
+  async recordSubmission(uniqueCode: string, flag: string, correct: boolean, challengeScore: number | undefined, correctFlagCount: number, matchedFlagIndex: number | null, expectedOwner: Exclude<ChallengeOwner, null>): Promise<ChallengeState> {
     return this.serialize(async () => {
       const challenge = this.state.challenges[uniqueCode];
       if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
       requireOwner(challenge, expectedOwner);
-      if (cumulativeScore !== undefined) {
-        this.state.cumulativeScore = cumulativeScore;
-        this.state.scoreExact = true;
+      if (challengeScore !== undefined) {
+        challenge.scoreObtained = challengeScore;
+        challenge.scoreKnown = true;
       } else if (correct) {
-        this.state.scoreExact = false;
+        // Progress advanced without a priced response — this challenge's
+        // cached value no longer matches its correctFlagCount.
+        challenge.scoreKnown = false;
       }
       challenge.correctFlagCount = correctFlagCount;
       const hash = flagHash(flag);
@@ -551,13 +595,16 @@ export class BenchmarkLedger {
         if (!correct) metric.wrongFlags += 1;
         this.metrics.totalWrongSubmissions += correct ? 0 : 1;
       }
+      recalculate(this.state);
       await this.persist();
       return challenge;
     });
   }
 
-  /** Mark logical completion. A live container remains in closing until confirmed stopped. */
-  async markSolved(uniqueCode: string, cumulativeScore: number | undefined, expectedOwner: Exclude<ChallengeOwner, null>): Promise<ChallengeState> {
+  /** Mark logical completion. A live container remains in closing until confirmed stopped.
+   * `challengeScore` is the platform's per-challenge cumulative; omit it when no priced
+   * response was received (recalculate keeps the run total a lower bound). */
+  async markSolved(uniqueCode: string, challengeScore: number | undefined, expectedOwner: Exclude<ChallengeOwner, null>): Promise<ChallengeState> {
     return this.serialize(async () => {
       const challenge = this.state.challenges[uniqueCode];
       if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
@@ -572,11 +619,9 @@ export class BenchmarkLedger {
         challenge.containerAddrs = [];
         challenge.containerStatus = "stopped";
       }
-      if (cumulativeScore !== undefined) {
-        this.state.cumulativeScore = cumulativeScore;
-        this.state.scoreExact = true;
-      } else {
-        this.state.scoreExact = false;
+      if (challengeScore !== undefined) {
+        challenge.scoreObtained = challengeScore;
+        challenge.scoreKnown = true;
       }
       const metric = this.metrics.challenges[uniqueCode];
       if (metric && challenge.acquiredAt) {
@@ -684,9 +729,9 @@ export class BenchmarkLedger {
       requireOwner(challenge, expectedOwner, expectedOwner === "main");
       challenge.hintUsed = true;
       challenge.hintContent = hint;
-      // Hint cost changes the platform score, but this endpoint does not
-      // return the new cumulative total.
-      this.state.scoreExact = false;
+      // The raw API contract applies the deduction to subsequent flag awards;
+      // points already obtained remain authoritative. The next submit response
+      // will update scoreObtained with the post-hint per-challenge total.
       const metric = this.metrics.challenges[uniqueCode];
       if (metric) metric.hintsUsed += 1;
       this.metrics.totalHintsUsed += 1;

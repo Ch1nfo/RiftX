@@ -25,7 +25,7 @@ function platformChallenge(code: string, overrides: Partial<Challenge> = {}): Ch
     unique_code: code,
     description: `Challenge ${code}`,
     difficulty: "easy",
-    level: "L1",
+    level: 1,
     total_score: 100,
     flag_count: 1,
     correct_flag_count: 0,
@@ -39,7 +39,7 @@ function platformChallenge(code: string, overrides: Partial<Challenge> = {}): Ch
 async function setupLedger(codes: string[] = ["ch-1", "ch-2", "ch-3", "ch-4"]) {
   const sessionId = `test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const ledger = await new BenchmarkLedger(sessionId).initialize();
-  await ledger.syncFromPlatform(codes.map((code) => platformChallenge(code)), 0, true, "10.0.0.1");
+  await ledger.syncFromPlatform(codes.map((code) => platformChallenge(code)), true, "10.0.0.1");
   return { ledger, sessionId };
 }
 
@@ -95,6 +95,54 @@ test("signal budget exhaustion and check", async () => {
   const challenge = ledger.getChallenge("ch-1") as ChallengeState;
   challenge.lastSignalAt = Date.now() - 9 * 60 * 1000; // 9 minutes ago
   assert.equal(ledger.isBudgetExhausted("ch-1"), true);
+});
+
+test("per-challenge cumulative scores sum into the run total (API: 该题累计总得分)", async () => {
+  const { ledger } = await setupLedger(["ch-1", "ch-2"]);
+  await ledger.acquire("ch-1", "main", ["a"]);
+  await ledger.acquire("ch-2", "subagent:t1", ["b"]);
+  // ch-1 fully solved; the platform reports THIS challenge's cumulative = 100.
+  await ledger.recordSubmission("ch-1", "flag{1}", true, 100, 1, 0, "main");
+  await ledger.markSolved("ch-1", 100, "main");
+  // ch-2 first flag correct; the platform reports THIS challenge's cumulative
+  // = 30 — treating it as a global value would clobber the run total to 30.
+  await ledger.recordSubmission("ch-2", "flag{a}", true, 30, 1, 0, "subagent:t1");
+  assert.equal(ledger.getState().cumulativeScore, 130, "run total must be the sum of per-challenge scores");
+  assert.equal(ledger.getState().scoreExact, true);
+});
+
+test("run total becomes a lower bound when progress advances without a priced response", async () => {
+  const { ledger } = await setupLedger(["ch-1"]);
+  await ledger.acquire("ch-1", "main", ["a"]);
+  // Duplicate/timeout reconciliation path: correct flag, no score value.
+  await ledger.recordSubmission("ch-1", "flag{1}", true, undefined, 1, null, "main");
+  assert.equal(ledger.getState().cumulativeScore, 0);
+  assert.equal(ledger.getState().scoreExact, false, "unpriced progress keeps the total a lower bound");
+});
+
+test("platform sync invalidates a cached challenge score when flag progress changes", async () => {
+  const { ledger } = await setupLedger(["ch-1"]);
+  await ledger.acquire("ch-1", "main", ["a"]);
+  await ledger.recordSubmission("ch-1", "flag{1}", true, 30, 1, 0, "main");
+  assert.equal(ledger.getState().scoreExact, true);
+
+  await ledger.syncFromPlatform([
+    platformChallenge("ch-1", { flag_count: 2, correct_flag_count: 2, is_completed: true })
+  ], true, "10.0.0.1");
+
+  assert.equal(ledger.getState().cumulativeScore, 30, "the last known score remains a lower bound when progress increases");
+  assert.equal(ledger.getState().scoreExact, false, "list progress has no matching score value");
+});
+
+test("platform sync clears a cached score when flag progress moves backwards", async () => {
+  const { ledger } = await setupLedger(["ch-1"]);
+  await ledger.acquire("ch-1", "main", ["a"]);
+  await ledger.recordSubmission("ch-1", "flag{1}", true, 30, 1, 0, "main");
+
+  await ledger.syncFromPlatform([platformChallenge("ch-1")], true, "10.0.0.1");
+
+  assert.equal(ledger.getState().cumulativeScore, 0, "a score from later progress is not a safe lower bound after rollback");
+  assert.equal(ledger.getState().scoreExact, true, "zero flags has an exact zero score");
 });
 
 test("submit + markSolved update state, metrics, and phase", async () => {
@@ -157,7 +205,7 @@ test("platform-stopped orphans release their container slots; live orphans still
   // The platform stopped all three idle containers; sync observes that.
   await restarted.syncFromPlatform([
     platformChallenge("ch-1"), platformChallenge("ch-2"), platformChallenge("ch-3"), platformChallenge("ch-4")
-  ], 0, true, "ip");
+  ], true, "ip");
   assert.equal(restarted.getState().activeContainers, 0, "stopped orphans must free their slots");
   // The freed capacity must be usable — defer/abandon cannot clear an unowned
   // orphan, so a false count here would deadlock every future acquire.
@@ -171,7 +219,7 @@ test("platform sync overrides local stale solved state", async () => {
   await ledger.markSolved("ch-1", 100, "main");
   await ledger.confirmClosed("ch-1");
   // Platform now says not completed.
-  await ledger.syncFromPlatform([platformChallenge("ch-1", { is_completed: false })], 0, true, "ip");
+  await ledger.syncFromPlatform([platformChallenge("ch-1", { is_completed: false })], true, "ip");
   assert.equal(ledger.getChallenge("ch-1")?.status, "deferred", "local stale solved reverts to deferred");
 });
 
@@ -199,7 +247,7 @@ test("candidates: orphaned first, then easy→hard, then score descending", asyn
     platformChallenge("easy-low", { difficulty: "easy", total_score: 50 }),
     platformChallenge("easy-high", { difficulty: "easy", total_score: 200 }),
     platformChallenge("med", { difficulty: "medium", total_score: 100 })
-  ], 0, true, "ip");
+  ], true, "ip");
   // Make one orphaned.
   const challenge = ledger.getChallenge("med") as ChallengeState;
   challenge.status = "orphaned";
@@ -286,7 +334,7 @@ test("failed second-pass start restores deferred scheduling state", async () => 
 test("platform sync cannot steal an in-flight reservation", async () => {
   const { ledger } = await setupLedger(["ch-1"]);
   await ledger.reserve("ch-1", "subagent:res", { isSubagent: true });
-  await ledger.syncFromPlatform([platformChallenge("ch-1", { container_status: "stopped" })], undefined, true, "ip");
+  await ledger.syncFromPlatform([platformChallenge("ch-1", { container_status: "stopped" })], true, "ip");
   assert.equal(ledger.getChallenge("ch-1")?.status, "reserved");
   assert.equal(ledger.getChallenge("ch-1")?.owner, "subagent:res");
   await ledger.confirmStarted("ch-1", ["a"], "subagent:res");

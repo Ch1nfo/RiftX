@@ -29,6 +29,7 @@ test("checkVpn succeeds when real VPN endpoint returns status=ok", async () => {
   const controller = new BenchmarkController({
     baseUrl: "https://bench.test",
     token: "t",
+    vpnUrl: "http://vpn.test",
     fetchImpl: async (_input, _init) => new Response(JSON.stringify({ status: "ok", client_ip: "10.0.0.1" }), { status: 200, headers: { Connection: "close" } })
   });
   const result = await controller.checkVpn();
@@ -36,10 +37,28 @@ test("checkVpn succeeds when real VPN endpoint returns status=ok", async () => {
   assert.equal(result.client_ip, "10.0.0.1");
 });
 
+test("checkVpn is explicitly skipped when the raw API provides no health endpoint", async () => {
+  let called = false;
+  const controller = new BenchmarkController({
+    baseUrl: "https://bench.test",
+    token: "t",
+    vpnUrl: "",
+    fetchImpl: async () => {
+      called = true;
+      throw new Error("should not be called");
+    }
+  });
+  const result = await controller.checkVpn();
+  assert.equal(result.status, "unchecked");
+  assert.equal(result.ok, false);
+  assert.equal(called, false);
+});
+
 test("checkVpn throws when base URL is unreachable", async () => {
   const controller = new BenchmarkController({
     baseUrl: "https://bench.test",
     token: "t",
+    vpnUrl: "http://vpn.test",
     fetchImpl: async () => { throw new Error("ECONNREFUSED"); }
   });
   await assert.rejects(() => controller.checkVpn(), (error: BenchmarkError) => error.kind === "vpn_check_failed");
@@ -48,14 +67,16 @@ test("checkVpn throws when base URL is unreachable", async () => {
 test("listChallenges handles bare array response (real contract)", async () => {
   const { controller } = makeController([
     { method: "GET", path: "/openapi/v1/challenges", respond: () => ({ status: 200, body: [
-      { unique_code: "ch-1", description: "SQL injection", difficulty: "easy", level: "L1", total_score: 100, flag_count: 2, correct_flag_count: 1, is_completed: false, container_status: "stopped", container_addr: [] },
-      { unique_code: "ch-2", description: "XSS", difficulty: "hard", level: "L3", total_score: 300, flag_count: 1, correct_flag_count: 1, is_completed: true, container_status: "available", container_addr: ["10.0.0.5:8080"] }
+      { unique_code: "ch-1", description: "SQL injection", difficulty: "easy", level: 1, total_score: 100, flag_count: 2, correct_flag_count: 1, is_completed: false, container_status: "stopped", container_addr: [] },
+      { unique_code: "ch-2", description: null, difficulty: "hard", level: 3, total_score: 300, flag_count: 1, correct_flag_count: 1, is_completed: true, container_status: "available", container_addr: ["10.0.0.5:8080"] }
     ] }) }
   ]);
   const challenges = await controller.listChallenges();
   assert.equal(challenges.length, 2);
   assert.equal(challenges[0].unique_code, "ch-1");
   assert.equal(challenges[0].flag_count, 2);
+  assert.equal(challenges[0].level, 1);
+  assert.equal(challenges[1].description, "");
   assert.equal(challenges[1].container_addr[0], "10.0.0.5:8080");
 });
 
@@ -125,6 +146,27 @@ test("classifies max-active from 409 + message", async () => {
     { method: "POST", path: "/openapi/v1/challenges/start", query: "ch-1", respond: () => ({ status: 409, body: { code: "invalid_state", message: "max active challenges reached" } }) }
   ]);
   await assert.rejects(() => controller.startChallenge("ch-1"), (error: BenchmarkError) => error.kind === "invalid_state_max_active");
+});
+
+test("classifies max-active from the API doc's Chinese phrasing (上限)", async () => {
+  const { controller } = makeController([
+    { method: "POST", path: "/openapi/v1/challenges/start", query: "ch-1", respond: () => ({ status: 409, body: { code: "invalid_state", message: "当前活跃的题目实例数已达到上限" } }) }
+  ]);
+  await assert.rejects(() => controller.startChallenge("ch-1"), (error: BenchmarkError) => error.kind === "invalid_state_max_active");
+});
+
+test("classifies task-ended from the API doc's Chinese phrasing (已结束)", async () => {
+  const { controller } = makeController([
+    { method: "POST", path: "/openapi/v1/challenges/start", query: "ch-1", respond: () => ({ status: 409, body: { code: "invalid_state", message: "任务已结束（超时过期或手动停止）" } }) }
+  ]);
+  await assert.rejects(() => controller.startChallenge("ch-1"), (error: BenchmarkError) => error.kind === "invalid_state_task_ended");
+});
+
+test("classifies invalid/missing token as not_found (doc: 404 task_not_found)", async () => {
+  const { controller } = makeController([
+    { method: "GET", path: "/openapi/v1/challenges", respond: () => ({ status: 404, body: { code: "task_not_found", message: "task does not exist" } }) }
+  ]);
+  await assert.rejects(() => controller.listChallenges(), (error: BenchmarkError) => error.kind === "not_found");
 });
 
 test("classifies task-ended from 409 + message", async () => {

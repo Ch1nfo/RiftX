@@ -1,6 +1,6 @@
 import { Type } from "@sinclair/typebox";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
-import { BenchmarkError, type BenchmarkController } from "../controller";
+import { BenchmarkError, type BenchmarkController, type VpnCheckResult } from "../controller";
 import type { BenchmarkLedger, ChallengeState } from "../ledger";
 import type { BrowserManager } from "@/browser";
 
@@ -12,6 +12,7 @@ function friendlyError(error: BenchmarkError): string {
     case "resource_unavailable": return `Platform resource unavailable. Skip to the next challenge; retry this one later.`;
     case "duplicate_submit": return `This flag was already submitted (duplicate — no penalty). Continue finding remaining flags.`;
     case "challenge_not_found": return `Challenge not found on the platform. It may have been removed; sync and move on.`;
+    case "not_found": return `Benchmark task not found — BENCHMARK_TOKEN is invalid/missing or the task no longer exists. Report this to the user instead of retrying.`;
     case "timeout": return `${error.message}. Sync first to check state before retrying.`;
     case "connection_error": return `Cannot reach the benchmark platform: ${error.message}. Check VPN/network and retry.`;
     default: return error.message;
@@ -23,7 +24,7 @@ function isBenchmarkError(error: unknown): error is BenchmarkError {
 }
 
 function scoreLabel(state: Readonly<ReturnType<BenchmarkLedger["getState"]>>): string {
-  return state.scoreExact ? String(state.cumulativeScore) : `${state.cumulativeScore}+ (exact score unavailable until the next authoritative submit)`;
+  return state.scoreExact ? String(state.cumulativeScore) : `${state.cumulativeScore}+ (one or more challenge scores are unavailable from the list endpoint)`;
 }
 
 function recoveryText(challenge: ChallengeState): string {
@@ -91,10 +92,22 @@ export function createBenchmarkControlTool(
       try {
         switch (action) {
           case "sync": {
-            const vpn = await controller.checkVpn();
+            let vpn: VpnCheckResult;
+            try {
+              vpn = await controller.checkVpn();
+            } catch (error) {
+              if (isBenchmarkError(error) && error.kind === "vpn_check_failed") {
+                // Do not leave a previous successful check visible after the
+                // configured health endpoint reports a failure.
+                await ledger.recordVpnCheck(false, "", true);
+              }
+              throw error;
+            }
             const challenges = await controller.listChallenges();
-            // Only pass vpnOk=true when the real VPN check succeeded.
-            await ledger.syncFromPlatform(challenges, undefined, vpn.ok, vpn.client_ip);
+            // The public API has no VPN-check route. Preserve an explicit
+            // checked/unchecked distinction instead of claiming success.
+            const vpnChecked = vpn.status !== "unchecked";
+            await ledger.syncFromPlatform(challenges, vpn.ok, vpn.client_ip, vpnChecked);
             // Reconcile containers that outlived a completed submit or a prior
             // close timeout. Platform completion alone must not leak one of the
             // three global slots.
@@ -112,7 +125,7 @@ export function createBenchmarkControlTool(
             const state = ledger.getState();
             return {
               content: [{ type: "text" as const, text: [
-                `VPN: ok (${vpn.client_ip})`,
+                vpnChecked ? `VPN: ok (${vpn.client_ip})` : `VPN: not prechecked (BENCHMARK_VPN_URL is not configured; ensure SSLVPN is connected before opening containers)`,
                 `Phase: ${state.phase}`,
                 `Score: ${scoreLabel(state)}`,
                 `Challenges: ${state.totalChallenges} total, ${state.solvedCount} solved, ${state.exhaustedCount} exhausted, ${state.activeContainers} active containers`,
@@ -286,8 +299,8 @@ export function createBenchmarkControlTool(
               }
               return {
                 content: [{ type: "text" as const, text: reconciledAfterTimeout
-                  ? `✓ Platform reconciliation confirms ${uniqueCode} is fully solved. Exact awarded/cumulative score is unavailable until a later authoritative response. ${closeNote} Acquire the next challenge.`
-                  : `✓ CORRECT! Challenge ${uniqueCode} fully solved (+${submitResult.awarded} pts). Cumulative: ${submitResult.cumulative_score}. ${closeNote} Acquire the next challenge.` }],
+                  ? `✓ Platform reconciliation confirms ${uniqueCode} is fully solved. Exact awarded/challenge score is unavailable from the list endpoint. ${closeNote} Acquire the next challenge.`
+                  : `✓ CORRECT! Challenge ${uniqueCode} fully solved (+${submitResult.awarded} pts). Challenge score: ${submitResult.cumulative_score}. Run total: ${scoreLabel(ledger.getState())}. ${closeNote} Acquire the next challenge.` }],
                 details: { correct: true, solved: true, awarded: submitResult.awarded }
               };
             }

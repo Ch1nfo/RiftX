@@ -41,7 +41,7 @@ test("bulk lifecycle: sequential acquire → submit → close with zero leaks", 
 
   const vpn = await controller.checkVpn();
   const challenges = await controller.listChallenges();
-  await ledger.syncFromPlatform(challenges, 0, true, vpn.client_ip);
+  await ledger.syncFromPlatform(challenges, true, vpn.client_ip);
   assert.equal(ledger.getState().totalChallenges, 10);
 
   const flagsMap = (mock as unknown as { challenges: Map<string, { flags: string[] }> }).challenges;
@@ -53,7 +53,7 @@ test("bulk lifecycle: sequential acquire → submit → close with zero leaks", 
       const submit = await controller.submitFlag(challenge.unique_code, flag);
       await ledger.recordSubmission(challenge.unique_code, flag, submit.correct, submit.cumulative_score, submit.correct_flag_count, submit.matched_flag_index, "main");
     }
-    await ledger.markSolved(challenge.unique_code, mock.cumulativeScore, "main");
+    await ledger.markSolved(challenge.unique_code, undefined, "main");
     await controller.closeChallenge(challenge.unique_code);
     await ledger.confirmClosed(challenge.unique_code);
   }
@@ -74,7 +74,7 @@ test("container limit: 3 concurrent max, 4th rejected (distinct owners)", async 
   const controller = await makeController(mock);
   const ledger = await new BenchmarkLedger(`e2e-limit-${Date.now()}`).initialize();
   const challenges = await controller.listChallenges();
-  await ledger.syncFromPlatform(challenges, 0, true, "ip");
+  await ledger.syncFromPlatform(challenges, true, "ip");
 
   await controller.startChallenge("ch-001");
   await ledger.acquire("ch-001", "main", ["a"]);
@@ -124,7 +124,7 @@ test("restart recovery: running → orphaned, orphaned re-acquirable, signal sta
   const sessionId = `e2e-restart-${Date.now()}`;
   const ledger = await new BenchmarkLedger(sessionId).initialize();
   const challenges = await controller.listChallenges();
-  await ledger.syncFromPlatform(challenges, 0, true, "ip");
+  await ledger.syncFromPlatform(challenges, true, "ip");
   await controller.startChallenge("ch-001");
   await ledger.acquire("ch-001", "main", ["10.0.0.1:80"]);
   await ledger.checkpoint("ch-001", "found login", ["web"], "try sqli", "main");
@@ -148,7 +148,7 @@ test("token never appears in ledger state or metrics files", async () => {
   const sessionId = `e2e-token-${Date.now()}`;
   const ledger = await new BenchmarkLedger(sessionId).initialize();
   const challenges = await controller.listChallenges();
-  await ledger.syncFromPlatform(challenges, 0, true, "ip");
+  await ledger.syncFromPlatform(challenges, true, "ip");
   await controller.startChallenge("ch-001");
   await ledger.acquire("ch-001", "main", ["a"]);
 
@@ -166,7 +166,7 @@ test("subagent crash: challenge released to closing then confirmed, container cl
   const controller = await makeController(mock);
   const ledger = await new BenchmarkLedger(`e2e-crash-${Date.now()}`).initialize();
   const challenges = await controller.listChallenges();
-  await ledger.syncFromPlatform(challenges, 0, true, "ip");
+  await ledger.syncFromPlatform(challenges, true, "ip");
   await controller.startChallenge("ch-001");
   await ledger.acquire("ch-001", "subagent:t1", ["a"]);
 

@@ -696,7 +696,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
           const platform = (await recoveryController.listChallenges()).find((item) => item.unique_code === meta.benchmarkChallenge);
           if (!platform) throw new Error(`Benchmark challenge ${meta.benchmarkChallenge} no longer exists on the platform`);
           const currentState = recoveryLedger.getState();
-          await recoveryLedger.syncFromPlatform([platform], undefined, currentState.vpnOk, currentState.vpnClientIp);
+          await recoveryLedger.syncFromPlatform([platform], currentState.vpnOk, currentState.vpnClientIp, currentState.vpnChecked);
           if (platform.is_completed) throw new Error(`Benchmark challenge ${meta.benchmarkChallenge} is already complete; the recovered child will not rerun it`);
           if (platform.container_status !== "available" || platform.container_addr.length === 0) {
             throw new Error(`Benchmark challenge ${meta.benchmarkChallenge} has no live recoverable container (status=${platform.container_status})`);

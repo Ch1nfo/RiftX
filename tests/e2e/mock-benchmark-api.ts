@@ -5,7 +5,7 @@ type MockChallenge = {
   unique_code: string;
   description: string;
   difficulty: string;
-  level: string;
+  level: number;
   total_score: number;
   flag_count: number;
   correct_flag_count: number;
@@ -13,6 +13,8 @@ type MockChallenge = {
   container_status: string;
   container_addr: string[];
   flags: string[];
+  /** Per-challenge cumulative score, as the real submit response reports (该题累计总得分). */
+  obtainedScore: number;
 };
 
 type SubmittedFlag = { code: string; flag: string };
@@ -48,14 +50,15 @@ export class MockBenchmarkApi {
         unique_code: code,
         description: `Mock challenge ${index + 1}: find the flag. Difficulty: ${difficulties[index % 3]}.`,
         difficulty: difficulties[index % 3],
-        level: `L${(index % 3) + 1}`,
+        level: (index % 3) + 1,
         total_score: 100 + (index % 3) * 100,
         flag_count: 1 + (index % 3),
         correct_flag_count: 0,
         is_completed: false,
         container_status: "stopped",
         container_addr: [],
-        flags: Array.from({ length: 1 + (index % 3) }, (_, flagIndex) => `flag{mock_${code}_${flagIndex}}`)
+        flags: Array.from({ length: 1 + (index % 3) }, (_, flagIndex) => `flag{mock_${code}_${flagIndex}}`),
+        obtainedScore: 0
       });
     }
   }
@@ -138,6 +141,7 @@ export class MockBenchmarkApi {
             challenge.correct_flag_count += 1;
             const awarded = Math.floor(challenge.total_score / challenge.flag_count);
             this.cumulativeScore += awarded;
+            challenge.obtainedScore += awarded;
             if (challenge.correct_flag_count >= challenge.flag_count) {
               challenge.is_completed = true;
               challenge.container_status = "stopped";
@@ -147,7 +151,8 @@ export class MockBenchmarkApi {
           }
           json(200, {
             unique_code: code, correct, awarded: correct ? Math.floor(challenge.total_score / challenge.flag_count) : 0,
-            cumulative_score: this.cumulativeScore,
+            // Real contract: cumulative_score is the CHALLENGE's total, not the run total.
+            cumulative_score: challenge.obtainedScore,
             correct_flag_count: challenge.correct_flag_count,
             total_flag_count: challenge.flag_count,
             matched_flag_index: correct ? flagIndex : null

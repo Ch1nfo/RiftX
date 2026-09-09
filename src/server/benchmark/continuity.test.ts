@@ -22,7 +22,7 @@ test.after(async () => {
 
 function platformChallenge(code: string, overrides: Partial<Challenge> = {}): Challenge {
   return {
-    unique_code: code, description: `Challenge ${code}`, difficulty: "easy", level: "L1",
+    unique_code: code, description: `Challenge ${code}`, difficulty: "easy", level: 1,
     total_score: 100, flag_count: 1, correct_flag_count: 0, is_completed: false,
     container_status: "stopped", container_addr: [], ...overrides
   };
@@ -33,7 +33,7 @@ async function setup() {
   const ledger = await new BenchmarkLedger(sessionId).initialize();
   await ledger.syncFromPlatform([
     platformChallenge("ch-1"), platformChallenge("ch-2"), platformChallenge("ch-3")
-  ], 0, true, "10.0.0.1");
+  ], true, "10.0.0.1");
   return { ledger };
 }
 

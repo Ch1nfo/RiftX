@@ -81,7 +81,7 @@ export function buildBenchmarkContinuity(ledger: BenchmarkLedger, worker: "main"
     ...myLines,
     ...(isMain ? [`## SubAgent challenges (${subagentChallenges.length}/2):`, ...subagentLines] : []),
     ...(candidates.length ? ["## Next candidates:", ...candidates.map(challengeLine)] : []),
-    `## Platform sync: ${state.lastSyncAt ? fmtElapsed(Date.now() - state.lastSyncAt) : "never"} ago | VPN: ${state.vpnOk ? "ok" : "FAIL"}`,
+    `## Platform sync: ${state.lastSyncAt ? fmtElapsed(Date.now() - state.lastSyncAt) : "never"} ago | VPN: ${state.vpnChecked ? (state.vpnOk ? "ok" : "FAIL") : "not prechecked"}`,
     "</riftx-benchmark-continuity>"
   ];
 
