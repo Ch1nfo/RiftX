@@ -153,3 +153,46 @@ test("mid-turn compaction restores the ordered continuity packet to detached and
   assert.deepEqual(state.messages.slice(-4).map((message) => message.customType), expected);
   for (const type of expected) assert.equal(transformed.filter((message) => message.customType === type).length, 1);
 });
+
+test("samplingRefresh injects continuity into the transformed provider context on ordinary sampling", async () => {
+  const input: Array<Record<string, unknown>> = [{ role: "user", content: "task" }];
+  const session = {
+    agent: {
+      state: { messages: input },
+      // Pi's base transform returns a structured clone rather than the input
+      // array. The continuity packet must be added to this returned array.
+      transformContext: async (messages: Array<Record<string, unknown>>) => structuredClone(messages)
+    },
+    model: { contextWindow: 1_000 },
+    settingsManager: { getCompactionSettings: () => ({ enabled: true, reserveTokens: 100 }) },
+    getContextUsage: () => ({ tokens: 100, contextWindow: 1_000, percent: 10, input: null, output: null, cacheRead: null, cacheWrite: null, remaining: 900 })
+  } as unknown as AgentSession;
+
+  installMidTurnCompaction(session, async () => ({ investigationCapsule: "fresh benchmark state" }), { samplingRefresh: true });
+  const transformed = await session.agent.transformContext!(input as never) as unknown as Array<Record<string, unknown>>;
+
+  assert.notEqual(transformed, input);
+  assert.equal(input.some((message) => message.customType === "riftx_investigation_capsule"), false);
+  assert.equal(transformed.at(-1)?.customType, "riftx_investigation_capsule");
+  assert.equal(transformed.at(-1)?.content, "fresh benchmark state");
+});
+
+test("without samplingRefresh, ordinary sampling leaves the provider context untouched", async () => {
+  const input: Array<Record<string, unknown>> = [{ role: "user", content: "task" }];
+  let refreshCalls = 0;
+  const session = {
+    agent: {
+      state: { messages: input },
+      transformContext: async (messages: Array<Record<string, unknown>>) => structuredClone(messages)
+    },
+    model: { contextWindow: 1_000 },
+    settingsManager: { getCompactionSettings: () => ({ enabled: true, reserveTokens: 100 }) },
+    getContextUsage: () => ({ tokens: 100, contextWindow: 1_000, percent: 10, input: null, output: null, cacheRead: null, cacheWrite: null, remaining: 900 })
+  } as unknown as AgentSession;
+
+  installMidTurnCompaction(session, async () => { refreshCalls += 1; return { investigationCapsule: "stale" }; });
+  const transformed = await session.agent.transformContext!(input as never) as unknown as Array<Record<string, unknown>>;
+
+  assert.equal(refreshCalls, 0, "ordinary sessions must not pay the continuity refresh on every sampling");
+  assert.deepEqual(transformed, input);
+});

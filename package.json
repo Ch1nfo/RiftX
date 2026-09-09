@@ -31,7 +31,8 @@
     "test": "tsx --test 'src/**/*.test.ts'",
     "postinstall": "playwright install chromium",
     "prepare": "npm run build",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:benchmark": "node --test --test-timeout=60000 --import tsx src/server/benchmark/controller.integration.ts"
   },
   "dependencies": {
     "@mariozechner/pi-ai": "^0.73.1",

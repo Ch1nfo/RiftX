@@ -78,10 +78,19 @@ export type SessionRecord = {
 export type RuntimeDeps = {
   evidenceStore: EvidenceStore;
   evidenceSessionId: string;
+  /** Shared benchmark runtime passed from parent to child sessions so SubAgents can submit flags directly. */
+  benchmark?: {
+    controller: import("@/server/benchmark/controller").BenchmarkController;
+    ledger: import("@/server/benchmark/ledger").BenchmarkLedger;
+    /** The challenge assigned to this child (binds benchmark_control to one code). */
+    assignedChallenge?: string;
+    /** Container addresses to scope-grant on the child's own BrowserManager after creation. */
+    containerAddrs?: string[];
+  };
 };
 
 /** Bump to force process-global session objects to rebuild from disk. */
-export const RUNTIME_VERSION = 37;
+export const RUNTIME_VERSION = 38;
 
 declare global {
   var __riftxSessions: Map<string, SessionRecord> | undefined;

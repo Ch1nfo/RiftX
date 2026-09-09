@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CONTINUITY_TOOL_NAMES, WEB_TOOL_NAMES, sessionToolNames } from "./session-tools";
+import { BENCHMARK_TOOL_NAMES, WEB_TOOL_NAMES, sessionToolNames } from "./session-tools";
 
 test("every web tool name is on the session tool whitelist", () => {
   for (const variant of [sessionToolNames(true), sessionToolNames(false)]) {
@@ -11,14 +11,16 @@ test("every web tool name is on the session tool whitelist", () => {
   }
 });
 
-test("every session can write a lightweight continuity checkpoint", () => {
+test("benchmark tools are whitelisted; pentest-only tools are removed", () => {
   for (const variant of [sessionToolNames(true), sessionToolNames(false)]) {
-    for (const name of CONTINUITY_TOOL_NAMES) assert.equal(variant.includes(name), true);
+    for (const name of BENCHMARK_TOOL_NAMES) assert.equal(variant.includes(name), true);
+    assert.equal(variant.includes("record_finding"), false, "benchmark branch removes record_finding");
+    assert.equal(variant.includes("checkpoint_progress"), false, "benchmark branch removes checkpoint_progress");
   }
 });
 
-test("spawn_subagent is whitelisted only for main sessions", () => {
-  assert.equal(sessionToolNames(true).includes("spawn_subagent"), true);
+test("spawn_subagent is removed on the benchmark branch", () => {
+  assert.equal(sessionToolNames(true).includes("spawn_subagent"), false, "benchmark branch has no spawn_subagent");
   assert.equal(sessionToolNames(false).includes("spawn_subagent"), false);
 });
 

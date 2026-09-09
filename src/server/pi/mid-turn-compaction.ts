@@ -101,8 +101,12 @@ async function runMidTurnCompaction(session: AgentSession, signal?: AbortSignal)
  * Keep the Agent's active loop alive while replacing its detached context after a
  * tool turn. The public compact() API aborts the active run, so this uses the
  * SDK's auto-compaction path and keeps the current message array in place.
+ *
+ * `samplingRefresh` re-injects the continuity packet on EVERY sampling call —
+ * a benchmark need (8-minute budget, live ownership change constantly). It is
+ * opt-in: ordinary sessions pay the refresh only after a real compaction.
  */
-export function installMidTurnCompaction(session: AgentSession, getContinuityContext?: () => Promise<ContinuityContext>) {
+export function installMidTurnCompaction(session: AgentSession, getContinuityContext?: () => Promise<ContinuityContext>, options?: { samplingRefresh?: boolean }) {
   installCompactionBudget(session);
   const agent = session.agent;
   const originalTransform = agent.transformContext;
@@ -111,6 +115,18 @@ export function installMidTurnCompaction(session: AgentSession, getContinuityCon
   agent.transformContext = async (messages, signal) => {
     const transformed = originalTransform ? await originalTransform(messages, signal) : messages;
     if (compacting || signal?.aborted) return transformed;
+
+    if (options?.samplingRefresh && getContinuityContext) {
+      try {
+        const continuity = await getContinuityContext();
+        // The SDK's base transformContext returns a structured clone. Update
+        // the array that will actually be returned to the provider, not the
+        // pre-transform input that is discarded after this hook.
+        upsertContinuityContext(transformed as unknown[], continuity);
+      } catch {
+        // Continuity refresh is best-effort; sampling must proceed.
+      }
+    }
 
     const settings = session.settingsManager.getCompactionSettings();
     const contextWindow = session.model?.contextWindow ?? 0;

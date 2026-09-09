@@ -316,10 +316,27 @@ export class SubagentManager {
     }
   }
 
+  /** Persist benchmark ownership metadata before a queued runner is released. */
+  async setBenchmarkBinding(taskId: string, uniqueCode: string, containerAddrs: string[]) {
+    const task = this.tasks.get(taskId);
+    if (!task) throw new Error(`Subagent task ${taskId} not found`);
+    task.benchmarkChallenge = uniqueCode;
+    task.benchmarkContainerAddrs = [...containerAddrs];
+    await this.persistOrThrow();
+  }
+
   async retry(taskId: string) {
     const previous = this.tasks.get(taskId);
     if (!previous) throw new Error("Subagent task not found");
     if (previous.status === "queued" || previous.status === "running") throw new Error("Subagent task is still active");
+    // Benchmark tasks must NOT go through the generic retry — the completion
+    // cleanup already released the challenge binding (deferred + container
+    // closed). A retry here would launch an unrestricted child with stale
+    // container addresses. The parent must re-assign via
+    // assign_benchmark_challenge (which does a full reserve→start→bind cycle).
+    if (previous.benchmarkChallenge) {
+      throw new Error(`Benchmark task "${previous.name}" (${previous.benchmarkChallenge}) cannot use generic retry — re-assign it via assign_benchmark_challenge`);
+    }
     return this.enqueue(previous.task).task;
   }
 
@@ -550,7 +567,7 @@ export class SubagentManager {
     else this.schedulePersist();
   }
 
-  private persist() {
+  private persistOrThrow() {
     if (this.persistTimer) {
       clearTimeout(this.persistTimer);
       this.persistTimer = undefined;
@@ -558,7 +575,11 @@ export class SubagentManager {
     return this.persistQueue(async () => {
       await mkdir(join(this.storageRoot, this.parentSessionId), { recursive: true, mode: 0o700 });
       await writeJsonStoreAtomic(this.storagePath, { tasks: this.list() });
-    }).catch((error: unknown) => {
+    });
+  }
+
+  private persist() {
+    return this.persistOrThrow().catch((error: unknown) => {
       // Persistence failures must be visible, never silently swallowed:
       // task history would otherwise stop being written without a trace.
       console.error(`RiftX failed to persist subagent tasks for ${this.parentSessionId}:`, error);

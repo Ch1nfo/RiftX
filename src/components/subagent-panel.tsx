@@ -58,7 +58,7 @@ export function SubagentPanel({ tasks, running, maxConcurrent, onCancel, onRetry
             <summary><strong>{t("errorLabel")}</strong><CaretDown size={12} className="subagent-log-caret" /></summary>
             <p>{task.error}</p>
           </details> : null}
-          <div className="subagent-actions">{active ? <button className="subagent-action danger" onClick={() => onCancel(task.id)} title={t("stop")}><Stop size={14} />{t("stop")}</button> : null}{!active && task.status !== "completed" ? <button className="subagent-action" onClick={() => onRetry(task.id)} title={t("retry")}><ArrowsClockwise size={14} />{t("retry")}</button> : null}</div>
+          <div className="subagent-actions">{active ? <button className="subagent-action danger" onClick={() => onCancel(task.id)} title={t("stop")}><Stop size={14} />{t("stop")}</button> : null}{!active && task.status !== "completed" && !task.benchmarkChallenge ? <button className="subagent-action" onClick={() => onRetry(task.id)} title={t("retry")}><ArrowsClockwise size={14} />{t("retry")}</button> : null}</div>
         </div> : null}
       </article>;
     }) : null}</div> : null}

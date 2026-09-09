@@ -31,7 +31,7 @@ import { getEvidenceStore, removeEvidence } from "./evidence-store";
 import { estimateCompactedUsage, installMidTurnCompaction } from "./mid-turn-compaction";
 import { waitForSubagentsBeforeConclusion } from "./session-join";
 import { setAgentTransport } from "./pi-internals";
-import { activeSkillNamesFromBranch, loadSkillContext, prepareSkillPrompt, type SkillDescriptor } from "./skill-router";
+import { activeSkillNamesFromBranch, loadSkillContext, prepareSkillPrompt, rankSkills, type SkillDescriptor } from "./skill-router";
 import { installReportSkillContextScope, PENTEST_REPORT_SKILL_NAME } from "./report-skill";
 import { createTimedBashTool } from "./bash-timeout";
 import { createTimedLocalTools } from "./local-tool-timeout";
@@ -50,15 +50,25 @@ import { buildInvestigationCapsule } from "./investigation-capsule";
 import { refreshContinuityContext, type ContinuityContext } from "./continuity-context";
 import { buildTaskContract, userRequestsFromBranch } from "./task-contract";
 import { buildProgressCheckpointContext, progressCheckpointFromBranch, type ProgressCheckpoint } from "./progress-checkpoint";
-import { createProgressCheckpointTool } from "./tools/checkpoint-tool";
 import { createPentestCompactionExtension } from "./pentest-compaction";
 import { archivedRestoreError, classifyArchivedRestore, restoredArchiveState } from "./session-archive";
 import { sessions, sessionCreation, RUNTIME_VERSION, type RuntimeDeps, type SessionRecord } from "./session-registry";
-import { createFindingTool, type FindingSourceInfo } from "./tools/finding-tool";
-import { createSubagentTool } from "./tools/subagent-tool";
+import type { FindingSourceInfo } from "./tools/finding-tool";
 import { listRunningSessionIds, listSessions, getSessionSnapshot, getSessionMessages as getMessages, summaryName, usageFromRecord, listWorkspaceSessionInfos, findTranscriptImage } from "./session-snapshot";
 import { createToolOutputStore, listToolArtifacts, toolArtifactDir } from "@/server/tool-output";
 import { beginPromptRequest, promptRequestStates as requestStatesFor, settlePromptRequest } from "./prompt-requests";
+import { BenchmarkController } from "@/server/benchmark/controller";
+import { BenchmarkLedger, BENCHMARK_MAX_SUBAGENTS } from "@/server/benchmark/ledger";
+import { createBenchmarkControlTool } from "@/server/benchmark/tools/control-tool";
+import { createAssignBenchmarkChallengeTool } from "@/server/benchmark/tools/assign-tool";
+import { buildBenchmarkContinuity } from "@/server/benchmark/continuity";
+
+type BenchmarkRuntime = { controller: BenchmarkController; ledger: BenchmarkLedger };
+
+function benchmarkRuntimeCache() {
+  const registry = globalThis as typeof globalThis & { __riftxBenchmark?: Map<string, BenchmarkRuntime> };
+  return registry.__riftxBenchmark ?? (registry.__riftxBenchmark = new Map<string, BenchmarkRuntime>());
+}
 
 // Facade re-exports: the API routes import everything from this module.
 export { listRunningSessionIds, listSessions, getSessionSnapshot };
@@ -190,11 +200,46 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   const sessionManager = sessionManagerOverride ?? AgentSessionManager.create(cwd, child ? join(paths.subagents, "runtime") : paths.sessions);
   const initialBranch = sessionManager.getBranch();
   const activeSkillNames = new Set(activeSkillNamesFromBranch(initialBranch));
-  let progressCheckpoint: ProgressCheckpoint | undefined = progressCheckpointFromBranch(initialBranch);
+  const progressCheckpoint: ProgressCheckpoint | undefined = progressCheckpointFromBranch(initialBranch);
   const evidenceSessionId = runtimeDeps?.evidenceSessionId ?? sessionManager.getSessionId();
   const outputStore = createToolOutputStore(paths.artifacts, evidenceSessionId, child ? findingSource.subagentId : undefined);
   const mcpTools = mcpEntries.flatMap((entry) => buildMcpTools(entry, { audience: child ? "child" : "main", outputStore }));
+  // Benchmark tools: only for sessions that have BENCHMARK_BASE_URL configured.
+  // Controller and Ledger are cached on globalThis so a WebUI restart reuses the
+  // SAME instances (the ledger file is per-parent-session; a second in-memory
+  // instance would overwrite it). Children receive the shared runtime via
+  // RuntimeDeps; restart recovery also finds it through this global cache.
+  const benchmarkEnv = process.env.BENCHMARK_BASE_URL && process.env.BENCHMARK_TOKEN;
+  const cachedBenchmark = benchmarkEnv ? benchmarkRuntimeCache().get(evidenceSessionId) : undefined;
+  const benchmarkController = benchmarkEnv
+    ? runtimeDeps?.benchmark?.controller ?? cachedBenchmark?.controller ?? new BenchmarkController()
+    : undefined;
+  const benchmarkLedger = benchmarkController
+    ? runtimeDeps?.benchmark?.ledger ?? cachedBenchmark?.ledger ?? await new BenchmarkLedger(evidenceSessionId).initialize()
+    : undefined;
+  if (benchmarkController && benchmarkLedger && evidenceSessionId) {
+    benchmarkRuntimeCache().set(evidenceSessionId, { controller: benchmarkController, ledger: benchmarkLedger });
+  }
   const browser = new BrowserManager({ evidenceRoot: paths.evidence, evidenceSessionId, scope: { rules: config.browserScope }, ignoreTlsErrors: config.browserIgnoreTlsErrors });
+  // Child sessions: grant browser scope for the assigned challenge's container
+  // addresses on the child's OWN BrowserManager (the parent's manager is a
+  // different instance and its grants don't transfer).
+  if (child && runtimeDeps?.benchmark?.containerAddrs?.length) {
+    for (const addr of runtimeDeps.benchmark.containerAddrs) {
+      const normalized = addr.includes("://") ? addr : `http://${addr}/`;
+      browser.grantScope(normalized, true);
+    }
+  } else if (!child && benchmarkLedger) {
+    // Archive/reopen rebuilds BrowserManager while retaining the live ledger.
+    // Restore exact scopes for the main worker's active container(s).
+    for (const challenge of Object.values(benchmarkLedger.getState().challenges)) {
+      if (challenge.owner !== "main" || (challenge.status !== "running" && challenge.status !== "reserved")) continue;
+      for (const addr of challenge.containerAddrs) {
+        const normalized = addr.includes("://") ? addr : `http://${addr}/`;
+        browser.grantScope(normalized, true);
+      }
+    }
+  }
   const permission = createPermissionExtension(
     gate,
     (event) => emitRuntimeEvent(event as RiftxEvent),
@@ -217,21 +262,115 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     });
     return generateSessionTitle(titleModelRegistry, titleModel, task, "empty");
   } : undefined;
-  const subagents = !child ? new SubagentManager(sessionManager.getSessionId(), paths.subagents, (event) => emitter.emit("event", event), config.maxConcurrentSubagents, config.approvalMode, subagentNameGenerator) : undefined;
+  // Benchmark branch: hard-code the subagent scheduler to the benchmark's
+  // fixed concurrency, regardless of the user's general setting.
+  const subagentConcurrency = benchmarkController ? BENCHMARK_MAX_SUBAGENTS : config.maxConcurrentSubagents;
+  const subagents = !child ? new SubagentManager(sessionManager.getSessionId(), paths.subagents, (event) => emitter.emit("event", event), subagentConcurrency, config.approvalMode, subagentNameGenerator) : undefined;
   const getChildProfile = () => config.childInherit ? (record?.profile ?? profile) : childProfile;
   // Same forward-closure pattern as `record`: the finding tool reads this
   // lazily, after the session below has been created.
   // eslint-disable-next-line prefer-const
   let evidenceSession: AgentSession | undefined;
-  const customTools = [...createTimedLocalTools(cwd), createTimedBashTool(cwd, { commandPrefix: settingsManager.getShellCommandPrefix(), shellPath: settingsManager.getShellPath() }) as unknown as ToolDefinition, createFindingTool(evidenceStore, findingSource, browser, () => evidenceSession), createProgressCheckpointTool((checkpoint) => {
-    progressCheckpoint = checkpoint;
-    if (record) record.progressCheckpoint = checkpoint;
-  }), createCrawlTool(browser, outputStore), ...createWebTools({
+  let skills: SkillDescriptor[] = [];
+  const benchmarkTools: ToolDefinition[] = benchmarkController && benchmarkLedger
+    ? [createBenchmarkControlTool(
+        benchmarkController,
+        benchmarkLedger,
+        browser,
+        () => child ? `subagent:${findingSource.subagentId ?? "child"}` : "main",
+        child ? runtimeDeps?.benchmark?.assignedChallenge : undefined,
+        child ? undefined : (challenge) => {
+          // Benchmark skills are challenge-scoped. Replacing this set makes
+          // the next sampling refresh drop the previous challenge's guidance.
+          activeSkillNames.clear();
+          const selected = rankSkills(challenge.description, skills, 1)
+            .find((skill) => skill.name !== PENTEST_REPORT_SKILL_NAME);
+          if (selected) activeSkillNames.add(selected.name);
+        }
+      )]
+    : [];
+  const customTools = [...createTimedLocalTools(cwd), createTimedBashTool(cwd, {
+        commandPrefix: settingsManager.getShellCommandPrefix(),
+        shellPath: settingsManager.getShellPath(),
+        ...(benchmarkController ? {
+          spawnHook: (context) => {
+            const env = { ...context.env };
+            delete env.BENCHMARK_TOKEN;
+            delete env.BENCHMARK_BASE_URL;
+            delete env.BENCHMARK_VPN_URL;
+            return { ...context, env };
+          }
+        } : {})
+      }) as unknown as ToolDefinition, ...benchmarkTools, createCrawlTool(browser, outputStore), ...createWebTools({
         // Read per call: saving a key in settings applies to already-running
         // sessions on their next search, with no re-open needed.
         getTavilyApiKey: async () => (await readConfig()).webSearch?.tavilyApiKey,
         outputStore
-      }), ...(subagents ? [createSubagentTool(subagents, getChildProfile, cwd, mutationLock, bashConcurrency, { evidenceStore, evidenceSessionId }, runChildSession)] : []), ...mcpTools];
+      }), ...(subagents && benchmarkController && benchmarkLedger ? [createAssignBenchmarkChallengeTool(benchmarkController, benchmarkLedger, browser, async (task, uniqueCode, containerAddrs, reservationOwner) => {
+        // Bridge to the existing subagent spawn mechanism. The benchmark
+        // metadata (uniqueCode, containerAddrs) is stored on the SubagentTask
+        // itself so retry/restart can recover the binding regardless of the
+        // taskId→owner mapping.
+        const benchmarkRuntime = { controller: benchmarkController, ledger: benchmarkLedger, assignedChallenge: uniqueCode, containerAddrs };
+        let releaseBinding!: () => void;
+        let rejectBinding!: (error: unknown) => void;
+        const bindingReady = new Promise<void>((resolve, reject) => {
+          releaseBinding = resolve;
+          rejectBinding = reject;
+        });
+        const submitted = subagents.submitTask(task, async (context) => {
+          // The queue can start immediately. Do not create the child runtime
+          // until the ledger owner is the real task id, otherwise a fast first
+          // checkpoint/submit races the temporary reservation owner.
+          await bindingReady;
+          return runChildSession(getChildProfile(), cwd, mutationLock, bashConcurrency, context, { evidenceStore, evidenceSessionId, benchmark: benchmarkRuntime });
+        });
+        void submitted.promise.catch(() => undefined);
+        if (submitted.duplicate) {
+          releaseBinding();
+          return { taskId: submitted.task?.id, duplicate: true };
+        }
+        if (!submitted.task) {
+          const error = new Error(`Could not create a SubAgent task for ${uniqueCode}`);
+          rejectBinding(error);
+          throw error;
+        }
+        try {
+          await subagents.setBenchmarkBinding(submitted.task.id, uniqueCode, containerAddrs);
+          await benchmarkLedger.bindOwner(uniqueCode, reservationOwner, `subagent:${submitted.task.id}`);
+          releaseBinding();
+          // A cancel that landed during binding saw the owner as the temporary
+          // reservation, so its completion cleanup found nothing to release.
+          // If the task is already terminal, undo the binding we just wrote —
+          // otherwise the challenge stays owned by a task that will never run.
+          const taskStatus = submitted.task.status;
+          if (taskStatus !== "queued" && taskStatus !== "running") {
+            // Same two-phase release as the completion handler. Ledger methods
+            // use the inner serializer; runAction would deadlock (we already
+            // hold it from assign_benchmark_challenge).
+            let released = false;
+            try {
+              await benchmarkLedger.releaseOnSubagentExit(uniqueCode, `subagent task ${taskStatus} during binding`, `subagent:${submitted.task.id}`);
+              released = true;
+              await benchmarkController.closeChallenge(uniqueCode);
+              await benchmarkLedger.confirmClosed(uniqueCode);
+            } catch {
+              // A failed platform close is a tracked leak; an owner mismatch
+              // means the completion handler's cleanup already released it.
+              if (released) await benchmarkLedger.markCloseFailed(uniqueCode).catch(() => undefined);
+            }
+            return { taskId: submitted.task.id, duplicate: false, cancelled: true };
+          }
+        } catch (error) {
+          rejectBinding(error);
+          throw error;
+        }
+        return { taskId: submitted.task?.id, duplicate: submitted.duplicate };
+      })] : []),
+      // spawn_subagent is NOT created on the benchmark branch — only
+      // assign_benchmark_challenge can dispatch, enforcing reservation,
+      // container limits, and one-worker-one-challenge.
+      ...mcpTools];
   const browserExtension = createBrowserExtension({ evidenceRoot: paths.evidence, evidenceSessionId }, browser);
   const compactionExtension = createPentestCompactionExtension({
     getSession: () => evidenceSession,
@@ -275,21 +414,45 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     settingsManager
   });
   evidenceSession = result.session;
-  const skills = resourceLoader.getSkills().skills as SkillDescriptor[];
+  skills = resourceLoader.getSkills().skills as SkillDescriptor[];
+  const skillContextCache = new Map<string, string>();
+  const activeSkillContext = async () => {
+    const parts = await Promise.all([...activeSkillNames].map(async (name) => {
+      const cached = skillContextCache.get(name);
+      if (cached !== undefined) return cached;
+      const skill = skills.find((candidate) => candidate.name === name);
+      if (!skill) return "";
+      try {
+        const context = await loadSkillContext(skill);
+        skillContextCache.set(name, context);
+        return context;
+      } catch {
+        return "";
+      }
+    }));
+    return parts.filter(Boolean).join("\n\n");
+  };
   const getContinuityContext = async (): Promise<ContinuityContext> => {
+    const skillContext = await activeSkillContext();
+    // Benchmark sampling only consumes the controller ledger and the one
+    // challenge-specific skill. Avoid scanning findings and tool artifacts on
+    // every provider request when neither can appear in this context packet.
+    if (benchmarkLedger) {
+      return {
+        taskContract: "",
+        skillContext,
+        investigationCapsule: buildBenchmarkContinuity(benchmarkLedger, child ? `subagent:${findingSource.subagentId ?? "child"}` : "main"),
+        progressCheckpoint: ""
+      };
+    }
     const findings = await evidenceStore.list();
     const relevantFindings = child
       ? findings.filter((finding) => finding.source === "main" || finding.subagentId === findingSource.subagentId)
       : findings;
     const artifacts = await listToolArtifacts(paths.artifacts, evidenceSessionId);
-    const skillParts = await Promise.all([...activeSkillNames].map(async (name) => {
-      const skill = skills.find((candidate) => candidate.name === name);
-      if (!skill) return "";
-      try { return await loadSkillContext(skill); } catch { return ""; }
-    }));
     return {
       taskContract: buildTaskContract(userRequestsFromBranch(sessionManager.getBranch()), { cwd, browserScope: config.browserScope }),
-      skillContext: skillParts.filter(Boolean).join("\n\n"),
+      skillContext,
       investigationCapsule: buildInvestigationCapsule(relevantFindings, subagents?.list() ?? [], artifacts, browser.continuitySnapshot()),
       progressCheckpoint: buildProgressCheckpointContext(progressCheckpoint)
     };
@@ -299,7 +462,14 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     if (!includeTaskContract) continuity.taskContract = "";
     refreshContinuityContext(result.session, continuity);
   };
-  installMidTurnCompaction(result.session, getContinuityContext);
+  // installMidTurnCompaction now refreshes continuity on every sampling call;
+  // recordCompaction must only fire when a REAL compaction occurred. Split the
+  // two concerns: the mid-turn hook returns whether it compacted, and we
+  // increment only in that case via the compaction_end event handler (below).
+  // Sampling-time continuity refresh is a benchmark need (8-minute budget,
+  // live ownership). Ordinary pentest sessions keep the cheaper contract:
+  // continuity is rebuilt only after a real compaction.
+  installMidTurnCompaction(result.session, getContinuityContext, { samplingRefresh: Boolean(benchmarkLedger) });
   // Install after compaction so the final context sent to the provider drops
   // stale report-skill messages unless the current user request asks for one.
   installReportSkillContextScope(result.session);
@@ -391,6 +561,8 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     if (event.type === "compaction_start") record.compacting = true;
     else if (event.type === "compaction_end") {
       record.compacting = false;
+      // Increment the REAL compaction counter only when a compaction occurred.
+      if (benchmarkLedger) void benchmarkLedger.recordCompaction().catch(() => undefined);
       // Covers ordinary end-of-turn/manual compaction. Mid-turn compaction
       // also refreshes its detached sampling array inside the transform hook.
       // Serialized on the prompt chain so the continuity splice can never
@@ -440,6 +612,36 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   record.unsubscribe = unsubscribe;
   if (subagents) {
     subagents.setCompletionHandler((task, childResult) => {
+      // Benchmark cleanup: when a benchmark subagent exits (any terminal
+      // status), release its challenge from the ledger and close the
+      // container — the child prompt tells it to defer/abandon, but crash,
+      // cancel, or forgetting means the slot would leak otherwise.
+      if (benchmarkController && benchmarkLedger) {
+        const taskId = task.id;
+        const ownerTag: `subagent:${string}` = `subagent:${taskId}`;
+        const owned = Object.values(benchmarkLedger.getState().challenges).find(
+          (challenge) => challenge.owner === ownerTag && (challenge.status === "running" || challenge.status === "reserved")
+        );
+        if (owned) {
+          void benchmarkLedger.runAction(async () => {
+            let released = false;
+            try {
+              const pendingStatus = benchmarkLedger.getState().phase === "second_pass"
+                && (task.status === "completed" || task.status === "empty")
+                ? "exhausted"
+                : "deferred";
+              await benchmarkLedger.releaseOnSubagentExit(owned.uniqueCode, `subagent exited with status=${task.status}`, ownerTag, pendingStatus);
+              released = true;
+              await benchmarkController.closeChallenge(owned.uniqueCode);
+              await benchmarkLedger.confirmClosed(owned.uniqueCode);
+            } catch {
+              // Only a failed platform close is a leak. An owner mismatch means
+              // this stale completion no longer controls the challenge.
+              if (released) await benchmarkLedger.markCloseFailed(owned.uniqueCode).catch(() => undefined);
+            }
+          });
+        }
+      }
       void deliverSubagentCompletion(record, task, childResult.summary)
         .then(() => {
           // When this was the last active subagent, deliver any previously
@@ -458,7 +660,64 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
         })
         .catch(() => undefined);
     });
-    await subagents.initialize((context) => runChildSession(getChildProfile(), cwd, mutationLock, bashConcurrency, context, { evidenceStore, evidenceSessionId }));
+    await subagents.initialize(async (context) => {
+      // Recovery/retry runner: the benchmark metadata is persisted on the
+      // SubagentTask itself (benchmarkChallenge / benchmarkContainerAddrs), so
+      // retry creates a new taskId but still recovers the binding. If the
+      // metadata is absent AND we're in benchmark mode, reject the task —
+      // a benchmark-mode child must NEVER run unrestricted.
+      const meta = context.task;
+      const hasBenchmarkBinding = Boolean(meta.benchmarkChallenge || meta.benchmarkContainerAddrs?.length);
+      if (benchmarkController && benchmarkLedger && !hasBenchmarkBinding) {
+        const message = `Benchmark subagent task ${meta.id} lost its challenge binding (no benchmarkChallenge metadata) — cannot run unrestricted. Re-assign the challenge.`;
+        console.warn(`RiftX: ${message}`);
+        return Promise.reject(new Error(message));
+      }
+      // Partial binding check: challenge code without container addrs (or vice
+      // versa) means the metadata is incomplete — treat as lost binding.
+      const hasCode = Boolean(meta.benchmarkChallenge);
+      const hasAddrs = Boolean(meta.benchmarkContainerAddrs?.length);
+      if (benchmarkController && benchmarkLedger && hasCode !== hasAddrs) {
+        const message = `Benchmark subagent task ${meta.id} has partial binding (code=${hasCode}, addrs=${hasAddrs}) — rejecting to avoid unrestricted child.`;
+        console.warn(`RiftX: ${message}`);
+        return Promise.reject(new Error(message));
+      }
+      const recoverBenchmark = benchmarkController && benchmarkLedger && meta.benchmarkChallenge
+        ? { controller: benchmarkController, ledger: benchmarkLedger, assignedChallenge: meta.benchmarkChallenge, containerAddrs: meta.benchmarkContainerAddrs ?? [] }
+        : undefined;
+      if (recoverBenchmark) {
+        const owner: `subagent:${string}` = `subagent:${context.task.id}`;
+        const recoveryLedger = recoverBenchmark.ledger;
+        const recoveryController = recoverBenchmark.controller;
+        await recoveryLedger.runAction(async () => {
+          // Full-process restart invalidates the local worker lease. Reconcile
+          // with the platform before reviving a child so a stopped or already
+          // solved container is never resumed from stale task metadata.
+          const platform = (await recoveryController.listChallenges()).find((item) => item.unique_code === meta.benchmarkChallenge);
+          if (!platform) throw new Error(`Benchmark challenge ${meta.benchmarkChallenge} no longer exists on the platform`);
+          const currentState = recoveryLedger.getState();
+          await recoveryLedger.syncFromPlatform([platform], undefined, currentState.vpnOk, currentState.vpnClientIp);
+          if (platform.is_completed) throw new Error(`Benchmark challenge ${meta.benchmarkChallenge} is already complete; the recovered child will not rerun it`);
+          if (platform.container_status !== "available" || platform.container_addr.length === 0) {
+            throw new Error(`Benchmark challenge ${meta.benchmarkChallenge} has no live recoverable container (status=${platform.container_status})`);
+          }
+          recoverBenchmark.containerAddrs = platform.container_addr;
+          await subagents.setBenchmarkBinding(context.task.id, meta.benchmarkChallenge!, platform.container_addr);
+          const challenge = recoveryLedger.getChallenge(meta.benchmarkChallenge!);
+          if (!challenge) throw new Error(`Benchmark challenge ${meta.benchmarkChallenge} is missing from the recovered ledger`);
+          if (challenge.owner === owner && challenge.status === "running") return;
+          if (challenge.owner !== null || challenge.status !== "orphaned") {
+            throw new Error(`Benchmark challenge ${challenge.uniqueCode} cannot be recovered by ${owner}: status=${challenge.status}, owner=${challenge.owner ?? "none"}`);
+          }
+          await recoveryLedger.reserve(challenge.uniqueCode, owner, { isSubagent: true });
+          await recoveryLedger.confirmStarted(challenge.uniqueCode, recoverBenchmark.containerAddrs, owner);
+        });
+      }
+      return runChildSession(getChildProfile(), cwd, mutationLock, bashConcurrency, context, {
+        evidenceStore, evidenceSessionId,
+        ...(recoverBenchmark ? { benchmark: recoverBenchmark } : {})
+      });
+    });
   }
   // Continuity messages are rebuilt from canonical JSONL/findings/task state.
   // The task contract and active skill are needed immediately only when this
@@ -624,6 +883,11 @@ export async function setWorkingDirectory(input: string) {
     for (const [id, record] of sessions) {
       await shutdownSessionRecord(record);
       sessions.delete(id);
+      // These sessions are being discarded for a different workspace and will
+      // not reopen in this process — drop their benchmark runtimes too. A later
+      // reopen gets a fresh ledger whose restart recovery orphans stale
+      // challenges instead of resuming workers that no longer exist.
+      benchmarkRuntimeCache().delete(id);
     }
     await updateConfig({ cwd });
   }
@@ -932,6 +1196,24 @@ export async function archiveSession(id: string) {
     await shutdownSessionRecord(record);
     sessions.delete(id);
   }
+  const benchmarkRuntime = benchmarkRuntimeCache().get(id);
+  if (benchmarkRuntime) {
+    const mainChallenges = Object.values(benchmarkRuntime.ledger.getState().challenges)
+      .filter((challenge) => challenge.owner === "main" && (challenge.status === "running" || challenge.status === "reserved"));
+    for (const challenge of mainChallenges) {
+      await benchmarkRuntime.ledger.runAction(async () => {
+        let closing = false;
+        try {
+          await benchmarkRuntime.ledger.defer(challenge.uniqueCode, "session archived", challenge.nextProbe || undefined, "main");
+          closing = true;
+          await benchmarkRuntime.controller.closeChallenge(challenge.uniqueCode);
+          await benchmarkRuntime.ledger.confirmClosed(challenge.uniqueCode);
+        } catch {
+          if (closing) await benchmarkRuntime.ledger.markCloseFailed(challenge.uniqueCode).catch(() => undefined);
+        }
+      });
+    }
+  }
   return listSessions();
 }
 
@@ -969,6 +1251,26 @@ export async function restoreArchivedSession(id: string) {
 export async function deleteArchivedSession(id: string) {
   const config = await readConfig();
   if (!config.archivedSessionIds.includes(id)) throw new RiftxError("session is not archived", "SESSION_NOT_ARCHIVED", 400);
+  const hasBenchmarkLedger = await BenchmarkLedger.exists(id);
+  let benchmarkRuntime = benchmarkRuntimeCache().get(id);
+  if (!benchmarkRuntime && hasBenchmarkLedger) {
+    if (!process.env.BENCHMARK_BASE_URL || !process.env.BENCHMARK_TOKEN) {
+      throw new RiftxError("This session still has benchmark state. Set BENCHMARK_BASE_URL and BENCHMARK_TOKEN so RiftX can close its containers before deletion.", "BENCHMARK_CONFIG_REQUIRED", 409);
+    }
+    benchmarkRuntime = {
+      controller: new BenchmarkController(),
+      ledger: await new BenchmarkLedger(id).initialize()
+    };
+  }
+  if (benchmarkRuntime) {
+    const liveChallenges = Object.values(benchmarkRuntime.ledger.getState().challenges)
+      .filter((challenge) => challenge.containerStatus === "available" || challenge.containerStatus === "pending" || challenge.containerStatus === "stop_pending" || challenge.status === "closing");
+    const closeResults = await Promise.allSettled(liveChallenges.map((challenge) => benchmarkRuntime.controller.closeChallenge(challenge.uniqueCode)));
+    const failed = closeResults.filter((result) => result.status === "rejected");
+    if (failed.length) {
+      throw new RiftxError(`Could not close ${failed.length} benchmark container(s); sync and retry deletion`, "BENCHMARK_CONTAINER_CLOSE_FAILED", 409);
+    }
+  }
   const session = (await listSessions()).find((item) => item.id === id);
   const record = sessions.get(id);
   if (record) {
@@ -997,6 +1299,8 @@ export async function deleteArchivedSession(id: string) {
   if (subagentRelative && !subagentRelative.startsWith("..") && !isAbsolute(subagentRelative)) {
     await rm(subagentPath, { recursive: true, force: true });
   }
+  benchmarkRuntimeCache().delete(id);
+  await BenchmarkLedger.destroy(id);
   await updateConfig((current) => {
     const { [id]: _removedTitle, ...sessionTitles } = current.sessionTitles;
     return {

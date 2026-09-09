@@ -2,53 +2,58 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildChildPentestSystemPrompt, buildPentestSystemPrompt } from "./system-prompt";
 
-test("pentest prompt actively selects browser and targeted testing methods", () => {
+test("benchmark prompt commands platform tools, two-pass scheduling, and the scoring objective", () => {
   const prompt = buildPentestSystemPrompt("default");
-  assert.match(prompt, /browser proactively for live pages/);
-  assert.match(prompt, /Code-derived targets beat blind probing/);
-  assert.match(prompt, /Do not stop at the first payload that fails or gets filtered/);
-  assert.match(prompt, /Verified depth outranks count/);
-  assert.match(prompt, /When blocked, change perspective instead of giving up/);
-  assert.match(prompt, /Do not test only one input or one path/);
-  assert.match(prompt, /small, targeted, controlled test sets/);
-  assert.match(prompt, /checkpoint_progress/);
-  assert.match(prompt, /Use the spawn_subagent tool to create SubAgents/);
-  assert.match(prompt, /Every spawned SubAgent is mandatory for the final assessment/);
-  assert.match(prompt, /If your current turn reaches a conclusion while any child is still active/);
-  assert.match(prompt, /Never use bash, sleep, tasks.json, child log files, or filesystem polling/);
-  assert.match(prompt, /no optional wait mode/);
-  assert.match(prompt, /configured maximum is a concurrency limit, not a target/);
-  assert.match(prompt, /may be intercepted by an approval flow/);
-  assert.match(prompt, /Reply in the same language the user writes in/);
-  assert.match(prompt, /Completion Output Boundary/);
-  assert.match(prompt, /task completion must return only a concise summary/);
-  assert.match(prompt, /then stop/);
-  assert.match(prompt, /Do not proactively generate, draft, format, save, update, or append a penetration-testing report/);
-  assert.match(prompt, /requires an explicit request from the user in the current message/);
-  assert.doesNotMatch(prompt, /offering either to continue deeper validation/);
-  assert.doesNotMatch(prompt, /Scope and authorization assumptions/);
-  assert.doesNotMatch(prompt, /use the following structure as appropriate/);
+  assert.match(prompt, /TSec security benchmark/);
+  assert.match(prompt, /benchmark_control/);
+  assert.match(prompt, /assign_benchmark_challenge/);
+  assert.match(prompt, /cumulative_score/);
+  assert.match(prompt, /Submit EVERY flag immediately/);
+  assert.match(prompt, /Hint is FORBIDDEN in pass 1/);
+  assert.match(prompt, /8 minutes without a NEW signal/);
+  assert.match(prompt, /Do not use bash\/curl against the benchmark API/);
+  assert.match(prompt, /No reports, no record_finding/);
+  assert.match(prompt, /browser.*proactively/s);
+  assert.match(prompt, /crawl.*once you know the entry point/);
+  assert.match(prompt, /max active.*close one existing container/);
+  assert.match(prompt, /ResourceUnavailable.*skip to the next challenge/);
+  assert.match(prompt, /assign_benchmark_challenge to dispatch SubAgents/);
+  assert.match(prompt, /benchmark continuity block may appear after compaction/);
 });
 
-test("aggressiveness changes delegation policy", () => {
-  assert.match(buildPentestSystemPrompt("high"), /without optimizing for token cost/);
-  assert.match(buildPentestSystemPrompt("default"), /Delegate on demand/);
-  assert.match(buildPentestSystemPrompt("low"), /Delegate conservatively/);
-});
-
-test("child prompt requires a final text summary", () => {
-  const prompt = buildChildPentestSystemPrompt();
-  assert.match(prompt, /Use checkpoint_progress at meaningful phase boundaries/);
-  assert.match(prompt, /Always finish the delegated task with a concise plain-text final summary/);
-  assert.match(prompt, /Do not stop immediately after a tool call/);
-});
-
-test("custom system prompt replaces the built-in base while retaining delegation policy", () => {
-  const prompt = buildPentestSystemPrompt("default", "CUSTOM RIFTX PROMPT");
-  assert.match(prompt, /CUSTOM RIFTX PROMPT/);
-  assert.doesNotMatch(prompt, /You are RiftX, an authorized Web penetration testing/);
-  assert.match(prompt, /Subagent delegation policy/);
+test("safety core is always included", () => {
+  const prompt = buildPentestSystemPrompt("default");
+  assert.match(prompt, /Safety, Approval, and Scope/);
   assert.match(prompt, /Do not perform destructive deletion/);
-  assert.match(prompt, /Stop the related testing immediately/);
-  assert.match(prompt, /task completion must return only a concise summary/);
+  assert.match(prompt, /minimal-impact, reversible, and auditable/);
+});
+
+test("completion boundary is benchmark-specific (no reports)", () => {
+  const prompt = buildPentestSystemPrompt("default");
+  assert.match(prompt, /cumulative_score, completed challenge count/);
+  assert.match(prompt, /Do not generate a penetration-testing report/);
+});
+
+test("custom prompt is appended as operator constraints, benchmark protocol always present", () => {
+  const prompt = buildPentestSystemPrompt("default", "My custom benchmark instructions.");
+  assert.match(prompt, /My custom benchmark instructions/);
+  assert.match(prompt, /Safety, Approval, and Scope/);
+  assert.match(prompt, /Skill policy/);
+  assert.match(prompt, /TSec security benchmark/); // benchmark protocol is never replaced
+  assert.match(prompt, /Operator Constraints/);
+});
+
+test("child prompt is benchmark-specific with flag-list return format", () => {
+  const prompt = buildChildPentestSystemPrompt();
+  assert.match(prompt, /Benchmark SubAgent solving ONE challenge/);
+  assert.match(prompt, /flag_count may be >1/);
+  assert.match(prompt, /SUBMIT_STATUS/);
+  assert.match(prompt, /RULED_OUT/);
+  assert.match(prompt, /NEXT/);
+  assert.match(prompt, /benchmark_control IS available.*ONLY for: checkpoint, submit, defer/);
+  assert.match(prompt, /MOMENT you find a flag/);
+  assert.match(prompt, /Do NOT use sync\/status\/acquire\/hint/);
+  assert.match(prompt, /Do NOT use assign_benchmark_challenge/);
+  assert.match(prompt, /Do not generate reports or evidence documentation/);
+  assert.match(prompt, /Safety, Approval, and Scope/);
 });

@@ -97,6 +97,11 @@ export type SubagentTask = {
   // has not reached the model yet (persisted so a restart retries it);
   // undefined marks legacy records, treated as already delivered.
   delivered?: boolean;
+  /** Benchmark metadata: the unique_code this task was assigned to, so retry
+   * and restart can recover the challenge binding without owner-tag lookup. */
+  benchmarkChallenge?: string;
+  /** Benchmark metadata: container addresses for the child's browser scope. */
+  benchmarkContainerAddrs?: string[];
   pendingApprovalCount: number;
   logs: SubagentLogEntry[];
 };
