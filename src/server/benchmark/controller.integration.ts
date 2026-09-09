@@ -179,3 +179,45 @@ test("subagent crash: challenge released to closing then confirmed, container cl
   assert.equal(mock.getActiveContainers(), 0);
   mock.close();
 });
+
+test("100-challenge coverage survives partial progress, three compactions, and Runtime restart", async () => {
+  const mock = new MockBenchmarkApi();
+  mock.seedChallenges(100);
+  await mock.start();
+  const controller = await makeController(mock);
+  const sessionId = `e2e-long-run-${Date.now()}`;
+  const ledger = await new BenchmarkLedger(sessionId).initialize();
+  const challenges = await controller.listChallenges();
+  await ledger.syncFromPlatform(challenges, true, "ip");
+  const flagsMap = (mock as unknown as { challenges: Map<string, { flags: string[] }> }).challenges;
+
+  for (let index = 0; index < challenges.length; index += 1) {
+    const challenge = challenges[index];
+    const start = await controller.startChallenge(challenge.unique_code);
+    await ledger.acquire(challenge.unique_code, "main", start.container_addr);
+    if (index === 1) {
+      const flag = flagsMap.get(challenge.unique_code)?.flags[0];
+      assert.ok(flag, "the multi-flag fixture must expose its first flag");
+      const submit = await controller.submitFlag(challenge.unique_code, flag);
+      await ledger.recordSubmission(challenge.unique_code, flag, submit.correct, submit.cumulative_score, submit.correct_flag_count, submit.matched_flag_index, "main");
+      assert.equal(ledger.getChallenge(challenge.unique_code)?.correctFlagCount, 1);
+      assert.equal(ledger.getChallenge(challenge.unique_code)?.isCompleted, false);
+    }
+    await ledger.defer(challenge.unique_code, "first-pass coverage", "use a distinct recovery approach", "main");
+    await controller.closeChallenge(challenge.unique_code);
+    await ledger.confirmClosed(challenge.unique_code);
+    if (index === 24 || index === 49 || index === 74) await ledger.recordCompaction();
+  }
+  await ledger.maybeAdvancePhase();
+  assert.equal(ledger.getState().phase, "second_pass");
+  assert.equal(mock.getActiveContainers(), 0);
+
+  const restored = await new BenchmarkLedger(sessionId).initialize();
+  assert.equal(restored.getState().totalChallenges, 100);
+  assert.equal(restored.getState().phase, "second_pass");
+  assert.equal(restored.getChallenge("ch-002")?.correctFlagCount, 1);
+  assert.equal(restored.getChallenge("ch-002")?.status, "deferred");
+  assert.equal(restored.getMetrics().compactionCount, 3);
+  assert.equal(restored.getState().activeContainers, 0);
+  mock.close();
+});

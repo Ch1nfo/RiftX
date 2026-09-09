@@ -12,8 +12,10 @@ function fmtElapsed(ms: number): string {
 }
 
 function challengeLine(challenge: ChallengeState): string {
-  return `  ${challenge.uniqueCode} | ${challenge.difficulty} | ${challenge.totalScore}pts | flags ${challenge.correctFlagCount}/${challenge.flagCount} | ${challenge.status}`;
+  return `  ${challenge.uniqueCode} | ${challenge.difficulty} | ${challenge.totalScore}pts | flags ${challenge.correctFlagCount}/${challenge.flagCount} | attempt ${challenge.attemptCount} | ${challenge.status}`;
 }
+
+const APPROACH_FAMILIES = ["source audit", "authorization/IDOR", "SSRF", "injection", "protocol abuse", "version-specific CVE", "alternate role/state", "algorithm recovery"];
 
 /**
  * Builds the benchmark continuity block from the live ledger state, scoped to
@@ -31,11 +33,22 @@ export function buildBenchmarkContinuity(ledger: BenchmarkLedger, worker: "main"
   if (mine[0]) {
     const challenge = mine[0];
     const elapsed = ledger.signalElapsedMs(challenge.uniqueCode);
+    const budget = ledger.budgetFor(challenge.uniqueCode);
+    const previousApproaches = challenge.approachHistory.slice(-4).map((attempt) => `${attempt.attemptNumber}:${attempt.approach}`).join(" | ") || "(none)";
+    const ruledOut = [...new Set(challenge.approachHistory.flatMap((attempt) => attempt.ruledOutFamilies))];
+    const used = new Set([...challenge.approachHistory.flatMap((attempt) => [...attempt.triedFamilies, ...attempt.ruledOutFamilies]), ...challenge.triedFamilies, ...challenge.ruledOutFamilies].map((item) => item.toLocaleLowerCase()));
+    const unused = APPROACH_FAMILIES.filter((item) => !used.has(item.toLocaleLowerCase())).slice(0, 4);
     myLines.push(
-      `## My challenge: ${challenge.uniqueCode} | ${challenge.difficulty} | ${challenge.totalScore}pts`,
+      `## My challenge: ${challenge.uniqueCode} | ${challenge.difficulty} | ${challenge.totalScore}pts | ATTEMPT ${challenge.attemptCount}`,
       `  flags: ${challenge.correctFlagCount}/${challenge.flagCount} | addr: ${challenge.containerAddrs.join(", ") || "(none)"}`,
       `  description: ${challenge.description.slice(0, 3_000) || "(none)"}`,
-      `  last_signal: ${challenge.lastSignalContent || "(none)"} (${fmtElapsed(elapsed)} ago)`,
+      `  timebox: ${budget?.policy.label ?? "unknown"} | elapsed=${fmtElapsed(budget?.elapsedMs ?? 0)} | since_progress=${fmtElapsed(budget?.sinceProgressMs ?? elapsed)} | hard_remaining=${budget?.hardRemainingMs === null ? "unbounded" : fmtElapsed(Math.max(0, budget?.hardRemainingMs ?? 0))}`,
+      `  last_progress: ${challenge.lastMeaningfulSignalContent || challenge.lastSignalContent || "(none)"} (${fmtElapsed(elapsed)} ago; kind=${challenge.lastSignalKind ?? "none"}; evidence=${challenge.lastEvidenceRef || "none"})`,
+      `  current_approach: ${challenge.currentApproach || "(declare one in the next checkpoint)"}`,
+      `  PREVIOUS_APPROACHES: ${previousApproaches}`,
+      `  RULED_OUT: ${ruledOut.join(", ") || "(none recorded)"}`,
+      `  STRATEGY_RESET: ${challenge.attemptCount > 1 ? "This is a recovery attempt. Start from a materially different hypothesis; do not rerun the prior tools with cosmetic parameter changes." : "not required on the first attempt"}`,
+      `  suggested_unused: ${unused.join(", ") || "derive a new hypothesis from the challenge evidence"}`,
       `  tried: ${challenge.triedFamilies.slice(-5).join(", ") || "(none)"}`,
       `  next_probe: ${challenge.nextProbe || "(not set)"}`,
       `  hint: ${challenge.hintUsed ? challenge.hintContent || "requested; no content returned" : "not used"}`
@@ -45,9 +58,9 @@ export function buildBenchmarkContinuity(ledger: BenchmarkLedger, worker: "main"
     if (ledger.isBudgetExhausted(challenge.uniqueCode)) {
       myLines.push(
         "",
-        `  ⚠ 8-MINUTE BUDGET EXHAUSTED (${fmtElapsed(elapsed)} since last new signal).`,
-        `  benchmark_control(action="defer", uniqueCode="${challenge.uniqueCode}") NOW,`,
-        `  or checkpoint with a genuinely NEW signal if one was just found.`
+        `  ⚠ TIMEBOX_EXPIRED (${budget?.policy.label}; ${fmtElapsed(budget?.sinceProgressMs ?? elapsed)} since meaningful progress).`,
+        `  Solving tools are blocked. Submit a confirmed flag, checkpoint NEW evidence, or defer for a different approach.`,
+        `  ${budget?.workerRotationDue ? "A fresh worker is required; preserve the live container through warm handoff." : "Do not extend the same failed hypothesis by rewording it."}`
       );
     }
   } else {
@@ -71,9 +84,10 @@ export function buildBenchmarkContinuity(ledger: BenchmarkLedger, worker: "main"
 
   // Run overview — abbreviated for SubAgents (score/solved totals only).
   const score = state.scoreExact ? String(state.cumulativeScore) : `${state.cumulativeScore}+ (not exact)`;
+  const remainingFlags = Object.values(state.challenges).reduce((total, challenge) => total + Math.max(0, challenge.flagCount - challenge.correctFlagCount), 0);
   const runLine = isMain
-    ? `## Run: phase=${state.phase} | score=${score} | solved=${state.solvedCount}/${state.totalChallenges} | deferred=${Object.values(state.challenges).filter((challenge) => challenge.status === "deferred").length} | exhausted=${state.exhaustedCount} | containers=${state.activeContainers}/3`
-    : `## Run: phase=${state.phase} | score=${score} | solved=${state.solvedCount}/${state.totalChallenges}`;
+    ? `## Run: phase=${state.phase} | elapsed=${fmtElapsed(ledger.runElapsedMs())} | score=${score} | solved=${state.solvedCount}/${state.totalChallenges} | remaining_flags=${remainingFlags} | deferred=${Object.values(state.challenges).filter((challenge) => challenge.status === "deferred").length} | handoff=${Object.values(state.challenges).filter((challenge) => challenge.status === "handoff_waiting").length} | exhausted=${state.exhaustedCount} | containers=${state.activeContainers}/3`
+    : `## Run: phase=${state.phase} | elapsed=${fmtElapsed(ledger.runElapsedMs())} | score=${score} | solved=${state.solvedCount}/${state.totalChallenges}`;
 
   const lines = [
     "<riftx-benchmark-continuity>",
@@ -85,7 +99,10 @@ export function buildBenchmarkContinuity(ledger: BenchmarkLedger, worker: "main"
     "</riftx-benchmark-continuity>"
   ];
 
-  const joined = lines.join("\n");
+  const configuredToken = process.env.BENCHMARK_TOKEN ?? "";
+  const joined = configuredToken
+    ? lines.join("\n").split(configuredToken).join("[REDACTED_BENCHMARK_TOKEN]")
+    : lines.join("\n");
   if (joined.length <= MAX_BENCHMARK_CONTINUITY_CHARS) return joined;
   // Shed candidate lines first, then subagent detail, preserving the header and timeout warning.
   const trimmed = joined.slice(0, MAX_BENCHMARK_CONTINUITY_CHARS - 40);

@@ -86,11 +86,13 @@ export type RuntimeDeps = {
     assignedChallenge?: string;
     /** Container addresses to scope-grant on the child's own BrowserManager after creation. */
     containerAddrs?: string[];
+    /** Local authenticated browser state restored only for a warm handoff. */
+    browserHandoffState?: import("@/browser").BrowserHandoffState;
   };
 };
 
 /** Bump to force process-global session objects to rebuild from disk. */
-export const RUNTIME_VERSION = 38;
+export const RUNTIME_VERSION = 40;
 
 declare global {
   var __riftxSessions: Map<string, SessionRecord> | undefined;

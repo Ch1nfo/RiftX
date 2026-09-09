@@ -62,14 +62,15 @@ test("includes run state, challenge queue, and my-challenge", async () => {
   assert.match(text, /<\/riftx-benchmark-continuity>/);
 });
 
-test("8-minute budget exhaustion emits defer directive", async () => {
+test("phase timebox exhaustion emits an enforced stop directive", async () => {
   const { ledger } = await setup();
   await ledger.acquire("ch-1", "main", ["a"]);
   const challenge = ledger.getChallenge("ch-1") as ChallengeState;
   challenge.lastSignalAt = Date.now() - 9 * 60 * 1000;
+  challenge.lastMeaningfulProgressAt = challenge.lastSignalAt;
   const text = buildBenchmarkContinuity(ledger);
-  assert.match(text, /BUDGET EXHAUSTED/);
-  assert.match(text, /defer.*ch-1/);
+  assert.match(text, /TIMEBOX_EXPIRED/);
+  assert.match(text, /Solving tools are blocked/);
 });
 
 test("fresh signal shows elapsed time without warning", async () => {
@@ -77,8 +78,26 @@ test("fresh signal shows elapsed time without warning", async () => {
   await ledger.acquire("ch-1", "main", ["a"]);
   await ledger.checkpoint("ch-1", "fresh signal", undefined, undefined, "main");
   const text = buildBenchmarkContinuity(ledger);
-  assert.doesNotMatch(text, /BUDGET EXHAUSTED/);
-  assert.match(text, /\(0m ago\)/);
+  assert.doesNotMatch(text, /TIMEBOX_EXPIRED/);
+  assert.match(text, /last_progress: fresh signal \(0m ago/);
+});
+
+test("recovery continuity tells the next attempt to change approach", async () => {
+  const ledger = await new BenchmarkLedger(`recovery-${Date.now()}`).initialize();
+  await ledger.syncFromPlatform([platformChallenge("ch-1")], true, "10.0.0.1");
+  await ledger.acquire("ch-1", "main", ["a"]);
+  await ledger.checkpoint("ch-1", "sqlmap found no injectable parameters", ["SQLi"], "audit authorization", "main", {
+    signalKind: "decisive_rule_out", currentApproach: "generic SQLi automation", ruledOutFamilies: ["SQLi"]
+  });
+  await ledger.defer("ch-1", "timebox", "audit authorization", "main");
+  await ledger.confirmClosed("ch-1");
+  await ledger.maybeAdvancePhase();
+  await ledger.acquire("ch-1", "main", ["b"]);
+  const text = buildBenchmarkContinuity(ledger);
+  assert.match(text, /ATTEMPT 2/);
+  assert.match(text, /PREVIOUS_APPROACHES: 1:generic SQLi automation/);
+  assert.match(text, /STRATEGY_RESET: This is a recovery attempt/);
+  assert.match(text, /RULED_OUT: SQLi/);
 });
 
 test("solved challenges are compact — no description or process detail", async () => {

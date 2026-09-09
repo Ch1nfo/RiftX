@@ -8,7 +8,7 @@ test("system prompt carries benchmark identity and untrusted-data rule", () => {
   assert.match(PENTEST_COMPACTION_SYSTEM_PROMPT, /exact next probe/);
 });
 
-test("prompt embeds all 10 required sections plus conversation and previous checkpoint", () => {
+test("prompt embeds every benchmark continuity section plus conversation and previous checkpoint", () => {
   const prompt = buildPentestCompactionPrompt({
     conversation: "user did stuff",
     turnPrefix: "current turn",
@@ -17,7 +17,8 @@ test("prompt embeds all 10 required sections plus conversation and previous chec
   });
   for (const section of [
     "## Run state", "## Current challenge", "## Confirmed facts",
-    "## Attempts and ruled-out paths", "## Target credentials and session state",
+    "## Attempts and ruled-out paths", "## Attempt and approach history",
+    "## Ruled-out assumptions", "## Required strategy reset", "## Target credentials and session state",
     "## Browser and network references", "## Artifacts", "## SubAgent ownership",
     "## Exact next probe", "## Score optimization notes"
   ]) {
@@ -32,7 +33,9 @@ test("prompt embeds all 10 required sections plus conversation and previous chec
 test("validates only summaries containing every required section with minimum length", () => {
   const valid = [
     "## Run state\npass 1", "## Current challenge\nch-1", "## Confirmed facts\nnone",
-    "## Attempts and ruled-out paths\nnone", "## Target credentials and session state\nnone",
+    "## Attempts and ruled-out paths\nnone", "## Attempt and approach history\nnone",
+    "## Ruled-out assumptions\nnone", "## Required strategy reset\nchoose a different family",
+    "## Target credentials and session state\nnone",
     "## Browser and network references\nnone", "## Artifacts\nnone",
     "## SubAgent ownership\nnone", "## Exact next probe\ndo the thing",
     "## Score optimization notes\nnone"

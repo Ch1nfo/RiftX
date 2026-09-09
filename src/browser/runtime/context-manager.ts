@@ -1,5 +1,7 @@
 import { chromium, type Browser, type BrowserContext } from "playwright";
 
+export type BrowserStorageState = Awaited<ReturnType<BrowserContext["storageState"]>>;
+
 const CONTEXT_CLOSE_TIMEOUT_MS = 10_000;
 
 /**
@@ -13,6 +15,7 @@ export class ContextManager {
   private defaultUA?: string;
   private readonly contexts = new Map<string, BrowserContext>();
   private readonly contextPromises = new Map<string, Promise<BrowserContext>>();
+  private readonly primedStorageStates = new Map<string, BrowserStorageState>();
 
   private async ensureBrowser() {
     if (this.browser) return this.browser;
@@ -48,16 +51,19 @@ export class ContextManager {
     if (existing) return existing;
     const pending = this.contextPromises.get(identity);
     if (pending) return pending;
+    const storageState = this.primedStorageStates.get(identity);
     const creation = this.ensureBrowser().then((browser) => browser.newContext({
       serviceWorkers: "block",
       ignoreHTTPSErrors: options?.ignoreHTTPSErrors ?? true,
-      ...(options?.proxyUrl ? { proxy: { server: options.proxyUrl } } : {})
+      ...(options?.proxyUrl ? { proxy: { server: options.proxyUrl } } : {}),
+      ...(storageState ? { storageState } : {})
     })).then(async (context) => {
       if (this.contextPromises.get(identity) !== creation) {
         await context.close().catch(() => undefined);
         throw new Error("Browser context was closed during initialization");
       }
       this.contextPromises.delete(identity);
+      this.primedStorageStates.delete(identity);
       this.contexts.set(identity, context);
       return context;
     }).catch((error) => {
@@ -68,6 +74,24 @@ export class ContextManager {
     return creation;
   }
 
+  async exportStorageStates(): Promise<Array<{ identity: string; storageState: BrowserStorageState }>> {
+    const active = await Promise.all([...this.contexts.entries()].map(async ([identity, context]) => ({
+      identity,
+      storageState: await context.storageState()
+    })));
+    const activeIds = new Set(active.map((entry) => entry.identity));
+    return [...active, ...[...this.primedStorageStates.entries()]
+      .filter(([identity]) => !activeIds.has(identity))
+      .map(([identity, storageState]) => ({ identity, storageState }))];
+  }
+
+  primeStorageState(identity: string, storageState: BrowserStorageState): void {
+    if (this.contexts.has(identity) || this.contextPromises.has(identity)) {
+      throw new Error(`Cannot restore browser identity "${identity}" after its context was created`);
+    }
+    this.primedStorageStates.set(identity, storageState);
+  }
+
   /** Returns false when any close failed: the execution contexts may still be alive. */
   async close(): Promise<boolean> {
     let closed = true;
@@ -76,6 +100,7 @@ export class ContextManager {
     const browserPromise = this.browserPromise;
     this.contexts.clear();
     this.contextPromises.clear();
+    this.primedStorageStates.clear();
     this.browserPromise = undefined;
     this.browser = undefined;
     const cleanup = (async () => {

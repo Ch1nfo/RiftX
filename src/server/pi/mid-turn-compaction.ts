@@ -103,7 +103,7 @@ async function runMidTurnCompaction(session: AgentSession, signal?: AbortSignal)
  * SDK's auto-compaction path and keeps the current message array in place.
  *
  * `samplingRefresh` re-injects the continuity packet on EVERY sampling call —
- * a benchmark need (8-minute budget, live ownership change constantly). It is
+ * a benchmark need (dynamic attempt budgets and live ownership change constantly). It is
  * opt-in: ordinary sessions pay the refresh only after a real compaction.
  */
 export function installMidTurnCompaction(session: AgentSession, getContinuityContext?: () => Promise<ContinuityContext>, options?: { samplingRefresh?: boolean }) {

@@ -298,7 +298,7 @@ npm start
 
 ## 推荐 Skills
 
-[`recommended-skills/`](recommended-skills/) 目录随仓库附带 36 个渗透测试 Agent Skills（侦察、漏洞利用——注入链、竞态、请求走私、缓存投毒、WebSocket、认证绕过、WAF、CSRF、OAuth、Host 头、业务逻辑、信息泄露、开发面暴露——API、LLM 测试与报告）。推荐将它们安装到技能列表中，以获得开箱即用的测试能力：
+[`recommended-skills/`](recommended-skills/) 目录在 benchmark 分支随仓库附带 7 个 benchmark Agent Skills（Web、Pwn、Crypto、Reverse、Forensics、Misc、AI/ML——每个都是面向路由的 SKILL.md 加深度技术参考，为 TSecBench/CyBench 这类自主跑分场景精选；渗透测试技能集保留在 main 分支）。RiftX 会根据每道题的描述自动选择匹配技能（中英文均可）。安装后即获得开箱即用的解题能力：
 
 ```bash
 cp -r recommended-skills/*/ ~/.riftx/skills/

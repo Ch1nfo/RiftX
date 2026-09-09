@@ -46,6 +46,20 @@ test("join preserves an undelivered terminal child when no tasks remain active",
   assert.match(prompts[0], /Found an authorization gap/);
 });
 
+test("benchmark child injection carries challenge identity and refills slots instead of finalizing", async () => {
+  const task = makeTask("completed");
+  task.benchmarkChallenge = "ch-042";
+  task.summary = "STATUS: PARTIAL\nSUBMIT_STATUS: 1 submitted\nNEXT_DISTINCT_APPROACH: source audit";
+  const prompts: string[] = [];
+  const record = makeRecord(task, () => false, async () => undefined, prompts);
+
+  await waitForSubagentsBeforeConclusion(record, new Set(), new Set(), 0);
+
+  assert.match(prompts[0], /Challenge: ch-042/);
+  assert.match(prompts[0], /refill available SubAgent slots/);
+  assert.doesNotMatch(prompts[0], /Synthesize the final conclusion/);
+});
+
 test("join does not re-synthesize a child already delivered during the parent turn", async () => {
   const task = makeTask("completed");
   task.summary = "Already delivered result.";
@@ -214,8 +228,32 @@ test("streaming sessions deliver partial results while idle sessions batch activ
   assert.equal(shouldDeliverSubagentCompletion({ session: idle, subagents: otherRunning, waitingForSubagents: false }), false, "stale waiting=false must not bypass batch deference");
   assert.equal(shouldDeliverSubagentCompletion({ session: streaming, subagents: otherRunning, waitingForSubagents: false }), true);
   assert.equal(shouldDeliverSubagentCompletion({ session: streaming, subagents: otherRunning, waitingForSubagents: true }), true, "a stale waiting state must not hold a streaming result");
+  const benchmarkTask = makeTask("completed");
+  benchmarkTask.benchmarkChallenge = "ch-fast";
+  assert.equal(shouldDeliverSubagentCompletion({ session: idle, subagents: otherRunning }, benchmarkTask), true, "benchmark completion must wake an idle parent immediately so it can refill the freed slot");
   // No subagents manager at all: deliver.
   assert.equal(shouldDeliverSubagentCompletion({ session: idle }), true);
+});
+
+test("an idle benchmark parent receives the first completed child while its sibling still runs", async () => {
+  const task = makeTask("completed");
+  task.benchmarkChallenge = "ch-fast";
+  task.summary = "STATUS: SOLVED\nSUBMIT_STATUS: 1";
+  const prompts: string[] = [];
+  const record = {
+    subagents: { hasActiveTasks: () => true, markDelivered: () => undefined },
+    deliveredSubagentResults: new Set<string>(),
+    gate: { beginTask: () => undefined },
+    session: {
+      isStreaming: false,
+      prompt: async (message: string) => { prompts.push(message); },
+      steer: async () => { throw new Error("idle benchmark delivery must use prompt"); }
+    }
+  } as unknown as Parameters<typeof deliverSubagentCompletion>[0];
+
+  assert.equal(await deliverSubagentCompletion(record, task, task.summary), true);
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0], /ch-fast/);
 });
 
 test("session prompt actions are serialized", async () => {

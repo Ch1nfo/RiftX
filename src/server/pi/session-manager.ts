@@ -58,10 +58,12 @@ import { listRunningSessionIds, listSessions, getSessionSnapshot, getSessionMess
 import { createToolOutputStore, listToolArtifacts, toolArtifactDir } from "@/server/tool-output";
 import { beginPromptRequest, promptRequestStates as requestStatesFor, settlePromptRequest } from "./prompt-requests";
 import { BenchmarkController } from "@/server/benchmark/controller";
-import { BenchmarkLedger, BENCHMARK_MAX_SUBAGENTS } from "@/server/benchmark/ledger";
+import { BenchmarkLedger, BENCHMARK_MAX_SUBAGENTS, isPartialChallenge } from "@/server/benchmark/ledger";
 import { createBenchmarkControlTool } from "@/server/benchmark/tools/control-tool";
 import { createAssignBenchmarkChallengeTool } from "@/server/benchmark/tools/assign-tool";
 import { buildBenchmarkContinuity } from "@/server/benchmark/continuity";
+import { reconcileExpiredHandoffs, scheduleHandoffCleanup } from "@/server/benchmark/handoff";
+import { installBenchmarkTimeboxGate } from "@/server/benchmark/timebox";
 
 type BenchmarkRuntime = { controller: BenchmarkController; ledger: BenchmarkLedger };
 
@@ -219,6 +221,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     : undefined;
   if (benchmarkController && benchmarkLedger && evidenceSessionId) {
     benchmarkRuntimeCache().set(evidenceSessionId, { controller: benchmarkController, ledger: benchmarkLedger });
+    await benchmarkLedger.runAction(() => reconcileExpiredHandoffs(benchmarkController, benchmarkLedger));
   }
   const browser = new BrowserManager({ evidenceRoot: paths.evidence, evidenceSessionId, scope: { rules: config.browserScope }, ignoreTlsErrors: config.browserIgnoreTlsErrors });
   // Child sessions: grant browser scope for the assigned challenge's container
@@ -228,6 +231,9 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     for (const addr of runtimeDeps.benchmark.containerAddrs) {
       const normalized = addr.includes("://") ? addr : `http://${addr}/`;
       browser.grantScope(normalized, true);
+    }
+    if (runtimeDeps.benchmark.browserHandoffState) {
+      browser.importHandoffState(runtimeDeps.benchmark.browserHandoffState);
     }
   } else if (!child && benchmarkLedger) {
     // Archive/reopen rebuilds BrowserManager while retaining the live ledger.
@@ -272,12 +278,13 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   // eslint-disable-next-line prefer-const
   let evidenceSession: AgentSession | undefined;
   let skills: SkillDescriptor[] = [];
+  const benchmarkOwner: "main" | `subagent:${string}` = child ? `subagent:${findingSource.subagentId ?? "child"}` : "main";
   const benchmarkTools: ToolDefinition[] = benchmarkController && benchmarkLedger
     ? [createBenchmarkControlTool(
         benchmarkController,
         benchmarkLedger,
         browser,
-        () => child ? `subagent:${findingSource.subagentId ?? "child"}` : "main",
+        () => benchmarkOwner,
         child ? runtimeDeps?.benchmark?.assignedChallenge : undefined,
         child ? undefined : (challenge) => {
           // Benchmark skills are challenge-scoped. Replacing this set makes
@@ -286,7 +293,8 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
           const selected = rankSkills(challenge.description, skills, 1)
             .find((skill) => skill.name !== PENTEST_REPORT_SKILL_NAME);
           if (selected) activeSkillNames.add(selected.name);
-        }
+        },
+        child ? undefined : () => activeSkillNames.clear()
       )]
     : [];
   const customTools = [...createTimedLocalTools(cwd), createTimedBashTool(cwd, {
@@ -311,7 +319,13 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
         // metadata (uniqueCode, containerAddrs) is stored on the SubagentTask
         // itself so retry/restart can recover the binding regardless of the
         // taskId→owner mapping.
-        const benchmarkRuntime = { controller: benchmarkController, ledger: benchmarkLedger, assignedChallenge: uniqueCode, containerAddrs };
+        const benchmarkRuntime = {
+          controller: benchmarkController,
+          ledger: benchmarkLedger,
+          assignedChallenge: uniqueCode,
+          containerAddrs,
+          browserHandoffState: benchmarkLedger.getChallenge(uniqueCode)?.browserHandoffState ?? undefined
+        };
         let releaseBinding!: () => void;
         let rejectBinding!: (error: unknown) => void;
         const bindingReady = new Promise<void>((resolve, reject) => {
@@ -349,17 +363,27 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
             // use the inner serializer; runAction would deadlock (we already
             // hold it from assign_benchmark_challenge).
             let released = false;
+            let handoffPreserved = false;
             try {
-              await benchmarkLedger.releaseOnSubagentExit(uniqueCode, `subagent task ${taskStatus} during binding`, `subagent:${submitted.task.id}`);
+              const challenge = benchmarkLedger.getChallenge(uniqueCode);
+              const durableSignal = challenge?.lastSignalKind === "foothold" || challenge?.lastSignalKind === "credential"
+                || challenge?.lastSignalKind === "privilege_change" || challenge?.lastSignalKind === "stage_transition";
+              handoffPreserved = benchmarkLedger.getState().phase !== "first_pass"
+                && Boolean(challenge && (isPartialChallenge(challenge) || durableSignal));
+              await benchmarkLedger.releaseOnSubagentExit(uniqueCode, `subagent task ${taskStatus} during binding`, `subagent:${submitted.task.id}`, "deferred", { preserveContainer: handoffPreserved });
               released = true;
-              await benchmarkController.closeChallenge(uniqueCode);
-              await benchmarkLedger.confirmClosed(uniqueCode);
+              if (handoffPreserved) {
+                scheduleHandoffCleanup(benchmarkController, benchmarkLedger, uniqueCode);
+              } else {
+                await benchmarkController.closeChallenge(uniqueCode);
+                await benchmarkLedger.confirmClosed(uniqueCode);
+              }
             } catch {
               // A failed platform close is a tracked leak; an owner mismatch
               // means the completion handler's cleanup already released it.
               if (released) await benchmarkLedger.markCloseFailed(uniqueCode).catch(() => undefined);
             }
-            return { taskId: submitted.task.id, duplicate: false, cancelled: true };
+            return { taskId: submitted.task.id, duplicate: false, cancelled: true, handoffPreserved };
           }
         } catch (error) {
           rejectBinding(error);
@@ -466,7 +490,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   // recordCompaction must only fire when a REAL compaction occurred. Split the
   // two concerns: the mid-turn hook returns whether it compacted, and we
   // increment only in that case via the compaction_end event handler (below).
-  // Sampling-time continuity refresh is a benchmark need (8-minute budget,
+  // Sampling-time continuity refresh is a benchmark need (dynamic budgets,
   // live ownership). Ordinary pentest sessions keep the cheaper contract:
   // continuity is rebuilt only after a real compaction.
   installMidTurnCompaction(result.session, getContinuityContext, { samplingRefresh: Boolean(benchmarkLedger) });
@@ -487,6 +511,9 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     runtimeAgent.toolExecution = "parallel";
     for (const tool of runtimeAgent.state?.tools ?? []) {
       tool.executionMode = "parallel";
+      // Benchmark timeboxes are enforcement, not prompt decoration. Let an
+      // already-running call finish, then reject subsequent solving calls
+      // until the worker records real progress or yields the challenge.
       // Locks are acquired at EXECUTION time (not beforeToolCall) to avoid
       // the SDK parallel-executor deadlock: beforeToolCall handlers all run
       // before any execution starts, so a shared holder (bash) would never
@@ -522,6 +549,9 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
           }
         };
       }
+      // Keep the timebox as the outermost wrapper. An expired worker must not
+      // wait behind BashConcurrency or MutationLock before being told to yield.
+      if (benchmarkLedger) installBenchmarkTimeboxGate(tool, benchmarkLedger, benchmarkOwner, child ? runtimeDeps?.benchmark?.assignedChallenge : undefined);
     }
   }
   record = {
@@ -626,14 +656,18 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
           void benchmarkLedger.runAction(async () => {
             let released = false;
             try {
-              const pendingStatus = benchmarkLedger.getState().phase === "second_pass"
-                && (task.status === "completed" || task.status === "empty")
-                ? "exhausted"
-                : "deferred";
-              await benchmarkLedger.releaseOnSubagentExit(owned.uniqueCode, `subagent exited with status=${task.status}`, ownerTag, pendingStatus);
+              const phase = benchmarkLedger.getState().phase;
+              const durableSignal = owned.lastSignalKind === "foothold" || owned.lastSignalKind === "credential"
+                || owned.lastSignalKind === "privilege_change" || owned.lastSignalKind === "stage_transition";
+              const preserveContainer = phase !== "first_pass" && (isPartialChallenge(owned) || durableSignal);
+              await benchmarkLedger.releaseOnSubagentExit(owned.uniqueCode, `subagent exited with status=${task.status}`, ownerTag, "deferred", { preserveContainer });
               released = true;
-              await benchmarkController.closeChallenge(owned.uniqueCode);
-              await benchmarkLedger.confirmClosed(owned.uniqueCode);
+              if (preserveContainer) {
+                scheduleHandoffCleanup(benchmarkController, benchmarkLedger, owned.uniqueCode);
+              } else {
+                await benchmarkController.closeChallenge(owned.uniqueCode);
+                await benchmarkLedger.confirmClosed(owned.uniqueCode);
+              }
             } catch {
               // Only a failed platform close is a leak. An owner mismatch means
               // this stale completion no longer controls the challenge.
@@ -683,7 +717,13 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
         return Promise.reject(new Error(message));
       }
       const recoverBenchmark = benchmarkController && benchmarkLedger && meta.benchmarkChallenge
-        ? { controller: benchmarkController, ledger: benchmarkLedger, assignedChallenge: meta.benchmarkChallenge, containerAddrs: meta.benchmarkContainerAddrs ?? [] }
+        ? {
+            controller: benchmarkController,
+            ledger: benchmarkLedger,
+            assignedChallenge: meta.benchmarkChallenge,
+            containerAddrs: meta.benchmarkContainerAddrs ?? [],
+            browserHandoffState: benchmarkLedger.getChallenge(meta.benchmarkChallenge)?.browserHandoffState ?? undefined
+          }
         : undefined;
       if (recoverBenchmark) {
         const owner: `subagent:${string}` = `subagent:${context.task.id}`;
@@ -797,6 +837,15 @@ async function runChildSession(profile: ModelProfile, cwd: string, mutationLock:
   } finally {
     unsubscribe();
     context.signal.removeEventListener("abort", abortChild);
+    const assignedChallenge = runtimeDeps.benchmark?.assignedChallenge;
+    if (assignedChallenge && child.browser) {
+      const owner: `subagent:${string}` = `subagent:${context.task.id}`;
+      const owned = runtimeDeps.benchmark?.ledger.getChallenge(assignedChallenge);
+      if (owned?.owner === owner) {
+        const browserState = await child.browser.exportHandoffState().catch(() => undefined);
+        await runtimeDeps.benchmark?.ledger.saveBrowserHandoffState(assignedChallenge, browserState, owner).catch(() => undefined);
+      }
+    }
     if (context.signal.aborted) await child.session.abort().catch(() => undefined);
     await shutdownSessionRecord(child);
   }

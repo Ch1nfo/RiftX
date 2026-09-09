@@ -13,6 +13,9 @@ Required sections:
 ## Current challenge
 ## Confirmed facts
 ## Attempts and ruled-out paths
+## Attempt and approach history
+## Ruled-out assumptions
+## Required strategy reset
 ## Target credentials and session state
 ## Browser and network references
 ## Artifacts
@@ -27,6 +30,9 @@ const REQUIRED_SECTIONS = [
   "## Current challenge",
   "## Confirmed facts",
   "## Attempts and ruled-out paths",
+  "## Attempt and approach history",
+  "## Ruled-out assumptions",
+  "## Required strategy reset",
   "## Target credentials and session state",
   "## Browser and network references",
   "## Artifacts",

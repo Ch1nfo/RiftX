@@ -49,7 +49,18 @@ const TERM_ALIASES: Record<string, string[]> = {
   "jwt": ["token", "api"],
   "graphql": ["api"],
   "爬取": ["crawl", "spider"],
-  "攻击面": ["attack", "surface", "crawl"]
+  "攻击面": ["attack", "surface", "crawl"],
+  // Benchmark domain bridges: challenge descriptions are often Chinese
+  // while the benchmark-* skill descriptions are English keyword lists.
+  "逆向": ["reverse", "reversing"],
+  "反编译": ["decompile", "decompilation"],
+  "密码学": ["crypto", "cryptography"],
+  "取证": ["forensics"],
+  "隐写": ["steganography", "stego"],
+  "音频": ["audio"],
+  "解码": ["decode", "decoding"],
+  "溢出": ["overflow"],
+  "逃逸": ["escape", "jail"]
 };
 
 function expandAliases(term: string) {
@@ -63,9 +74,12 @@ function expandAliases(term: string) {
 function terms(text: string) {
   const normalized = text.toLocaleLowerCase();
   const words = normalized.match(/[a-z0-9]+/g) ?? [];
+  // Naive plural stemming: benchmark skill descriptions mix "pyjail"/"pyjails",
+  // "puzzle"/"puzzles" \u2014 emitting both forms lets either side match.
+  const singulars = words.filter((word) => word.length > 3 && word.endsWith("s")).map((word) => word.slice(0, -1));
   const cjk = normalized.match(/[\u3400-\u9fff]/g) ?? [];
   const bigrams = cjk.slice(0, -1).map((char, index) => `${char}${cjk[index + 1]}`);
-  const expanded = [...words, ...cjk, ...bigrams].flatMap(expandAliases);
+  const expanded = [...words, ...singulars, ...cjk, ...bigrams].flatMap(expandAliases);
   return [...new Set(expanded.filter((term) => term.length > 1 && !STOP_WORDS.has(term)))];
 }
 

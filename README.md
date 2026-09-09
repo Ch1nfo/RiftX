@@ -298,7 +298,7 @@ Do not commit API keys, authorization headers, cookies, target data, certificate
 
 ## Recommended Skills
 
-The [`recommended-skills/`](recommended-skills/) folder ships 36 penetration-testing Agent Skills (reconnaissance, exploitation — injection chains, race conditions, request smuggling, cache poisoning, WebSocket, auth bypass, WAF, CSRF, OAuth, Host-header, business logic, info leak, dev-surface exposure — API, LLM testing, and reporting). We recommend installing them into your skill list to boost testing capability out of the box:
+The [`recommended-skills/`](recommended-skills/) folder ships 7 benchmark Agent Skills for the benchmark branch (web, pwn, crypto, reverse, forensics, misc, AI/ML — each a routing-oriented SKILL.md with deep technique references, curated for autonomous benchmark runs such as TSecBench/CyBench-style suites). RiftX auto-selects the matching skill from each challenge's description, Chinese or English. Install them into your skill list to boost solving capability out of the box:
 
 ```bash
 cp -r recommended-skills/*/ ~/.riftx/skills/

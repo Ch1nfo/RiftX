@@ -42,25 +42,34 @@ test("uses a platform-native user skill path", () => {
   assert.equal(getAppPaths().skills, join(homedir(), ".riftx", "skills"));
 });
 
-test("the bundled report skill stays out of the model-invokable catalog", async () => {
-  const { DefaultResourceLoader, formatSkillsForPrompt } = await import(pathToFileURL(join(process.cwd(), "node_modules/@mariozechner/pi-coding-agent/dist/index.js")).href);
-  const skillDir = join(process.cwd(), "recommended-skills", "pentest-report");
-  const loader = new DefaultResourceLoader({
-    cwd: process.cwd(),
-    agentDir: join(process.cwd(), ".test-agent-does-not-exist"),
-    additionalSkillPaths: [skillDir],
-    extensionFactories: [],
-    noExtensions: true,
-    noSkills: true,
-    noPromptTemplates: true,
-    noThemes: true,
-    noContextFiles: true,
-    systemPrompt: "RiftX test prompt"
-  });
-  await loader.reload();
-  const { skills, diagnostics } = loader.getSkills();
-  assert.equal(diagnostics.length, 0);
-  assert.equal(skills[0]?.name, "pentest-report");
-  assert.equal(skills[0]?.disableModelInvocation, true);
-  assert.doesNotMatch(formatSkillsForPrompt(skills), /pentest-report/);
+test("a skill with disable-model-invocation stays out of the model-invokable catalog", async () => {
+  // The repo's shipped skill set changed on the benchmark branch, so the
+  // loader contract is exercised with an inline fixture instead.
+  const root = await mkdtemp(join(tmpdir(), "riftx-skills-gated-"));
+  const skillDir = join(root, "gated-report");
+  try {
+    const { DefaultResourceLoader, formatSkillsForPrompt } = await import(pathToFileURL(join(process.cwd(), "node_modules/@mariozechner/pi-coding-agent/dist/index.js")).href);
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(join(skillDir, "SKILL.md"), "---\nname: gated-report\ndescription: Generate a structured report.\ndisable-model-invocation: true\n---\n\nReserved for explicit requests.\n");
+    const loader = new DefaultResourceLoader({
+      cwd: root,
+      agentDir: join(root, "agent"),
+      additionalSkillPaths: [root],
+      extensionFactories: [],
+      noExtensions: true,
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      noContextFiles: true,
+      systemPrompt: "RiftX test prompt"
+    });
+    await loader.reload();
+    const { skills, diagnostics } = loader.getSkills();
+    assert.equal(diagnostics.length, 0);
+    assert.equal(skills[0]?.name, "gated-report");
+    assert.equal(skills[0]?.disableModelInvocation, true);
+    assert.doesNotMatch(formatSkillsForPrompt(skills), /gated-report/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

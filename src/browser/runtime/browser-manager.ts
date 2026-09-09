@@ -2,19 +2,20 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { BrowserContext, CDPSession, Page, Route, WebSocketRoute } from "playwright";
-import { ContextManager } from "./context-manager";
+import { ContextManager, type BrowserStorageState } from "./context-manager";
 import { HostMappingProxy, type HostMappingTarget } from "./host-mapping-proxy";
 import { PageManager } from "./page-manager";
 import { createSnapshot } from "../snapshot/snapshot";
 import { ElementRefMapper } from "../snapshot/element-refs";
 import { RequestStore, redactHeaders } from "../network/request-store";
 import { hostMatches, matchScopeUrl, parseScopeRule, parseScopeRules, parseScopeTarget, type ParsedScopeRule, type ScopeDecision, type ScopeTarget } from "@/lib/scope-rules";
-import type { BrowserManagerOptions, BrowserPageInfo, PageSnapshot } from "../types";
+import type { BrowserHandoffState, BrowserManagerOptions, BrowserPageInfo, PageSnapshot } from "../types";
 import { getScreenshotPath } from "@/lib/evidence-path";
 import { createSerializer } from "@/server/serializer";
 
 const EVALUATION_OUTPUT_LIMIT = 8000;
 const IDENTITY_PATTERN = /^[a-z0-9_-]{1,32}$/;
+const HANDOFF_STATE_MAX_BYTES = 256 * 1024;
 
 type IdentityState = {
   userAgent?: string;
@@ -903,6 +904,58 @@ export class BrowserManager {
       hostMappings: [...this.hostMappings.entries()].slice(0, 20).map(([host, target]) => `${host} -> ${target}`),
       latestScreenshotId: this.latestScreenshotId
     };
+  }
+
+  /** Export cookies and origin storage for a benchmark warm handoff. The
+   * caller persists this locally but must never place it in model context. */
+  async exportHandoffState(): Promise<BrowserHandoffState | undefined> {
+    const operation = this.run(async () => {
+      const storageStates = await this.contextManager.exportStorageStates();
+      if (!storageStates.length) return undefined;
+      const identities = storageStates.slice(0, 8).map(({ identity, storageState }) => {
+        const state = this.identities.get(identity) ?? {};
+        const page = [...this.pages.values()].find((candidate) => candidate.identity === identity
+          && candidate.id === state.activePageId);
+        return {
+          id: identity,
+          ...(state.userAgent ? { userAgent: state.userAgent } : {}),
+          ...(state.extraHeaders ? { extraHeaders: state.extraHeaders } : {}),
+          ...(page && page.page.url() !== "about:blank" ? { lastUrl: page.page.url() } : {}),
+          storageState: {
+            cookies: storageState.cookies as unknown as Array<Record<string, unknown>>,
+            origins: storageState.origins as unknown as Array<Record<string, unknown>>
+          }
+        };
+      });
+      const snapshot: BrowserHandoffState = { version: 1, activeIdentity: this.activeIdentity, identities };
+      return Buffer.byteLength(JSON.stringify(snapshot), "utf8") <= HANDOFF_STATE_MAX_BYTES ? snapshot : undefined;
+    });
+    const timeout = new Promise<undefined>((resolve) => {
+      const timer = setTimeout(() => resolve(undefined), 5_000);
+      timer.unref?.();
+      void operation.finally(() => clearTimeout(timer)).catch(() => undefined);
+    });
+    return Promise.race([operation, timeout]);
+  }
+
+  /** Restore a handoff before the new worker opens any page. This restores
+   * cookie and localStorage authentication without automatically navigating
+   * or replaying target actions. */
+  importHandoffState(snapshot: BrowserHandoffState): void {
+    if (snapshot.version !== 1 || !Array.isArray(snapshot.identities)) throw new Error("Unsupported browser handoff state");
+    if (Buffer.byteLength(JSON.stringify(snapshot), "utf8") > HANDOFF_STATE_MAX_BYTES) throw new Error("Browser handoff state exceeds 256 KiB");
+    for (const entry of snapshot.identities.slice(0, 8)) {
+      if (!entry || typeof entry.id !== "string" || !entry.storageState
+        || !Array.isArray(entry.storageState.cookies) || !Array.isArray(entry.storageState.origins)) {
+        throw new Error("Invalid browser handoff identity state");
+      }
+      const identity = this.resolveIdentity(entry.id);
+      const state = this.ensureIdentityState(identity);
+      if (entry.userAgent) state.userAgent = entry.userAgent.slice(0, 1_000);
+      if (entry.extraHeaders) state.extraHeaders = Object.fromEntries(Object.entries(entry.extraHeaders).slice(0, 30).map(([key, value]) => [key.slice(0, 200), String(value).slice(0, 4_000)]));
+      this.contextManager.primeStorageState(identity, entry.storageState as unknown as BrowserStorageState);
+    }
+    if (snapshot.identities.some((entry) => entry.id === snapshot.activeIdentity)) this.activeIdentity = snapshot.activeIdentity;
   }
 
   /** Close both ends of a routed WebSocket explicitly. */
