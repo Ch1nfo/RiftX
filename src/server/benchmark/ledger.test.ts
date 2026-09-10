@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { BenchmarkLedger, BENCHMARK_MAX_CONTAINERS, budgetPolicyFor, type ChallengeState } from "./ledger";
+import { BenchmarkLedger, BENCHMARK_MAX_CONTAINERS, FIRST_ATTEMPT_LIMIT_MS, FIRST_ATTEMPT_WARNING_MS, type ChallengeState } from "./ledger";
 import type { Challenge } from "./controller";
 
 // Redirect homedir to a temp dir for ledger persistence tests.
@@ -89,16 +89,68 @@ test("checkpoint only resets budget on genuinely new signal", async () => {
   assert.equal(changed.extended, false);
 });
 
-test("signal budget exhaustion uses the injected clock", async () => {
+test("first attempt warns at 25 minutes and expires at 30 minutes", async () => {
   let now = 1_000_000;
   const { ledger } = await setupLedger(["ch-1"], () => now);
   await ledger.acquire("ch-1", "main", ["a"]);
   assert.equal(ledger.isBudgetExhausted("ch-1"), false);
-  now += 9 * 60 * 1000;
+  now += FIRST_ATTEMPT_WARNING_MS;
+  assert.equal(ledger.isBudgetExhausted("ch-1"), false);
+  assert.equal((await ledger.consumeFirstAttemptWarning("main"))?.uniqueCode, "ch-1");
+  assert.equal(await ledger.consumeFirstAttemptWarning("main"), undefined, "warning is emitted once");
+  now += FIRST_ATTEMPT_LIMIT_MS - FIRST_ATTEMPT_WARNING_MS;
   assert.equal(ledger.isBudgetExhausted("ch-1"), true);
 });
 
-test("evidence-backed progress extends once per stable evidence key", async () => {
+test("the first-attempt clock starts after the platform start is confirmed", async () => {
+  let now = 1_500_000;
+  const { ledger } = await setupLedger(["ch-1"], () => now);
+  await ledger.reserve("ch-1", "main");
+  assert.equal(ledger.getChallenge("ch-1")?.currentAttemptStartedAt, null);
+  now += 10 * 60_000; // Slow control-plane start must not consume solve time.
+  await ledger.confirmStarted("ch-1", ["a"], "main");
+  assert.equal(ledger.getChallenge("ch-1")?.currentAttemptStartedAt, now);
+  assert.equal(ledger.getChallenge("ch-1")?.hardDeadlineAt, now + FIRST_ATTEMPT_LIMIT_MS);
+});
+
+test("challenge action locks serialize one challenge without blocking another", async () => {
+  const { ledger } = await setupLedger(["ch-1", "ch-2"]);
+  const events: string[] = [];
+  let releaseFirst!: () => void;
+  const firstBlocked = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const first = ledger.runChallengeAction("ch-1", async () => {
+    events.push("first:start");
+    await firstBlocked;
+    events.push("first:end");
+  });
+  const sameChallenge = ledger.runChallengeAction("ch-1", async () => { events.push("same:start"); });
+  const otherChallenge = ledger.runChallengeAction("ch-2", async () => { events.push("other:start"); });
+  await otherChallenge;
+  assert.deepEqual(events, ["first:start", "other:start"]);
+  releaseFirst();
+  await Promise.all([first, sameChallenge]);
+  assert.deepEqual(events, ["first:start", "other:start", "first:end", "same:start"]);
+});
+
+test("challenge blackboard redacts the benchmark platform token", async () => {
+  const previousToken = process.env.BENCHMARK_TOKEN;
+  process.env.BENCHMARK_TOKEN = "platform-secret-token";
+  try {
+    const { ledger } = await setupLedger(["ch-1"]);
+    await ledger.acquire("ch-1", "main", ["a"]);
+    await ledger.checkpoint("ch-1", "observed platform-secret-token in copied output", undefined, "do not use platform-secret-token", "main", {
+      signalKind: "note", evidenceRef: "artifact:platform-secret-token", currentApproach: "inspect platform-secret-token"
+    });
+    const serialized = JSON.stringify(ledger.getChallenge("ch-1")?.blackboard);
+    assert.doesNotMatch(serialized, /platform-secret-token/);
+    assert.match(serialized, /REDACTED_BENCHMARK_TOKEN/);
+  } finally {
+    if (previousToken === undefined) delete process.env.BENCHMARK_TOKEN;
+    else process.env.BENCHMARK_TOKEN = previousToken;
+  }
+});
+
+test("evidence-backed progress updates the blackboard but never extends attempt 1", async () => {
   let now = 2_000_000;
   const { ledger } = await setupLedger(undefined, () => now);
   await ledger.acquire("ch-1", "main", ["a"]);
@@ -107,8 +159,9 @@ test("evidence-backed progress extends once per stable evidence key", async () =
   const first = await ledger.checkpoint("ch-1", "obtained admin session", ["auth"], "query admin API", "main", {
     signalKind: "privilege_change", evidenceRef: "request:req-7", currentApproach: "auth bypass"
   });
-  assert.equal(first.extended, true);
-  assert.equal(first.challenge.hardDeadlineAt, initialDeadline + 3 * 60 * 1000);
+  assert.equal(first.extended, false);
+  assert.equal(first.challenge.hardDeadlineAt, initialDeadline);
+  assert.equal(first.challenge.blackboard.at(-1)?.evidenceRef, "request:req-7");
   now += 60_000;
   const paraphrase = await ledger.checkpoint("ch-1", "admin access confirmed", ["auth"], "query admin API", "main", {
     signalKind: "privilege_change", evidenceRef: "request:req-7", currentApproach: "auth bypass"
@@ -139,7 +192,7 @@ test("a fresh recovery attempt cannot reuse evidence from the previous attempt t
   assert.equal(replay.challenge.hardDeadlineAt, before);
 });
 
-test("a newly accepted partial flag renews progress and momentum without solving", async () => {
+test("a newly accepted partial flag records progress without extending attempt 1", async () => {
   let now = 3_000_000;
   const { ledger } = await setupLedger(["ch-1"], () => now);
   await ledger.syncFromPlatform([platformChallenge("ch-1", { flag_count: 3 })], true, "ip");
@@ -151,7 +204,8 @@ test("a newly accepted partial flag renews progress and momentum without solving
   assert.equal(challenge.correctFlagCount, 1);
   assert.equal(challenge.lastAcceptedFlagAt, now);
   assert.equal(ledger.isBudgetExhausted("ch-1"), false);
-  assert.ok(challenge.hardDeadlineAt! >= now + 6 * 60 * 1000);
+  assert.equal(challenge.hardDeadlineAt, 3_000_000 + FIRST_ATTEMPT_LIMIT_MS);
+  assert.equal(challenge.blackboard.at(-1)?.kind, "submission");
 });
 
 test("a restart-interrupted attempt lands in history before a fresh attempt starts", async () => {
@@ -167,6 +221,7 @@ test("a restart-interrupted attempt lands in history before a fresh attempt star
   // The platform has since stopped the idle container, so the orphan cannot
   // be resumed — re-acquiring must start a fresh attempt.
   await restarted.syncFromPlatform([platformChallenge("ch-1")], true, "ip");
+  assert.deepEqual(restarted.candidates(10).map((candidate) => candidate.uniqueCode), ["ch-1"], "the interrupted coverage attempt must remain visible");
   await restarted.acquire("ch-1", "subagent:t1", ["a"]);
 
   const challenge = restarted.getChallenge("ch-1")!;
@@ -214,15 +269,16 @@ test("platform sync invalidates a cached challenge score when flag progress chan
   assert.equal(ledger.getState().scoreExact, false, "list progress has no matching score value");
 });
 
-test("platform sync clears a cached score when flag progress moves backwards", async () => {
+test("a stale concurrent platform sync cannot move flag progress backwards", async () => {
   const { ledger } = await setupLedger(["ch-1"]);
   await ledger.acquire("ch-1", "main", ["a"]);
   await ledger.recordSubmission("ch-1", "flag{1}", true, 30, 1, 0, "main");
 
   await ledger.syncFromPlatform([platformChallenge("ch-1")], true, "10.0.0.1");
 
-  assert.equal(ledger.getState().cumulativeScore, 0, "a score from later progress is not a safe lower bound after rollback");
-  assert.equal(ledger.getState().scoreExact, true, "zero flags has an exact zero score");
+  assert.equal(ledger.getChallenge("ch-1")?.correctFlagCount, 1);
+  assert.equal(ledger.getState().cumulativeScore, 30);
+  assert.equal(ledger.getState().scoreExact, true);
 });
 
 test("submit + markSolved update state, metrics, and phase", async () => {
@@ -293,33 +349,56 @@ test("platform-stopped orphans release their container slots; live orphans still
   assert.equal(restarted.getChallenge("ch-4")?.status, "reserved");
 });
 
-test("platform sync overrides local stale solved state", async () => {
+test("a stale concurrent sync cannot erase locally confirmed completion", async () => {
   const { ledger } = await setupLedger(["ch-1"]);
   await ledger.acquire("ch-1", "main", ["a"]);
+  const guard = ledger.captureSyncGuard();
   await ledger.markSolved("ch-1", 100, "main");
   await ledger.confirmClosed("ch-1");
-  // Platform now says not completed.
-  await ledger.syncFromPlatform([platformChallenge("ch-1", { is_completed: false })], true, "ip");
-  assert.equal(ledger.getChallenge("ch-1")?.status, "deferred", "local stale solved reverts to deferred");
+  // A list request that started before submit may return after local completion.
+  await ledger.syncFromPlatform([platformChallenge("ch-1", {
+    is_completed: false,
+    container_status: "available",
+    container_addr: ["stale"]
+  })], true, "ip", true, guard);
+  assert.equal(ledger.getChallenge("ch-1")?.status, "solved");
+  assert.equal(ledger.getChallenge("ch-1")?.containerStatus, "stopped");
 });
 
-test("a small run advances directly from first-pass settlement into endgame", async () => {
+test("a stale sync snapshot cannot resurrect a container closed by a concurrent defer", async () => {
+  const { ledger } = await setupLedger(["ch-1"]);
+  await ledger.acquire("ch-1", "main", ["a"]);
+  const guard = ledger.captureSyncGuard();
+  await ledger.defer("ch-1", "covered", undefined, "main");
+  await ledger.confirmClosed("ch-1");
+
+  await ledger.syncFromPlatform([platformChallenge("ch-1", {
+    container_status: "available",
+    container_addr: ["stale"]
+  })], true, "ip", true, guard);
+
+  assert.equal(ledger.getChallenge("ch-1")?.status, "deferred");
+  assert.equal(ledger.getChallenge("ch-1")?.containerStatus, "stopped");
+  assert.equal(ledger.getState().activeContainers, 0);
+});
+
+test("coverage advances to revisit only after the first attempt settles", async () => {
   const { ledger } = await setupLedger(["ch-1"]);
   await ledger.acquire("ch-1", "main", ["a"]);
   await ledger.defer("ch-1", "first pass", undefined, "main");
   await ledger.confirmClosed("ch-1");
   const phase = await ledger.maybeAdvancePhase();
-  assert.equal(phase, "endgame");
+  assert.equal(phase, "revisit");
 });
 
 test("phase does not advance while first-pass workers are still active", async () => {
   const { ledger } = await setupLedger(["ch-1", "ch-2"]);
   await ledger.acquire("ch-1", "main", ["a"]);
   await ledger.acquire("ch-2", "subagent:t1", ["b"]);
-  assert.equal(await ledger.maybeAdvancePhase(), "first_pass");
+  assert.equal(await ledger.maybeAdvancePhase(), "coverage");
 });
 
-test("candidates: orphaned first, then easy→hard, then score descending", async () => {
+test("coverage candidates are ordered strictly from low score to high score", async () => {
   const sessionId = `test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const ledger = await new BenchmarkLedger(sessionId).initialize();
   await ledger.syncFromPlatform([
@@ -328,14 +407,82 @@ test("candidates: orphaned first, then easy→hard, then score descending", asyn
     platformChallenge("easy-high", { difficulty: "easy", total_score: 200 }),
     platformChallenge("med", { difficulty: "medium", total_score: 100 })
   ], true, "ip");
-  // Make one orphaned.
-  const challenge = ledger.getChallenge("med") as ChallengeState;
-  challenge.status = "orphaned";
   const candidates = ledger.candidates(10);
-  assert.equal(candidates[0].uniqueCode, "med", "orphaned first");
-  assert.equal(candidates[1].uniqueCode, "easy-high", "easy + high score");
-  assert.equal(candidates[2].uniqueCode, "easy-low", "easy + lower score");
-  assert.equal(candidates[3].uniqueCode, "hard-high", "hard last");
+  assert.deepEqual(candidates.map((candidate) => candidate.uniqueCode), ["easy-low", "med", "easy-high", "hard-high"]);
+  await assert.rejects(() => ledger.reserve("hard-high", "main"), /low score to high score/);
+  await ledger.acquire("easy-low", "main", ["a"]);
+  await ledger.defer("easy-low", "covered", undefined, "main");
+  await ledger.confirmClosed("easy-low");
+  assert.deepEqual(ledger.candidates(10).map((candidate) => candidate.uniqueCode), ["med", "easy-high", "hard-high"]);
+});
+
+test("stranded revisit live orphans stay resumable during coverage to free container slots", async () => {
+  const sessionId = `test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const ledger = await new BenchmarkLedger(sessionId).initialize();
+  await ledger.syncFromPlatform([
+    platformChallenge("a", { total_score: 50 }),
+    platformChallenge("b", { total_score: 100 }),
+    platformChallenge("c", { total_score: 200 })
+  ], true, "ip");
+  for (const [code, owner] of [["a", "main"], ["b", "subagent:t1"], ["c", "subagent:t2"]] as const) {
+    await ledger.acquire(code, owner, [code]);
+    await ledger.defer(code, "first attempt done", undefined, owner);
+    await ledger.confirmClosed(code);
+  }
+  await ledger.maybeAdvancePhase();
+  assert.equal(ledger.getState().phase, "revisit");
+
+  // All three workers start revisit attempts, the platform adds an unseen
+  // challenge, and the process restarts with every container still live.
+  await ledger.acquire("a", "main", ["a"]);
+  await ledger.acquire("b", "subagent:t1", ["b"]);
+  await ledger.acquire("c", "subagent:t2", ["c"]);
+  const restarted = await new BenchmarkLedger(sessionId).initialize();
+  await restarted.syncFromPlatform([
+    platformChallenge("a", { total_score: 50, container_status: "available", container_addr: ["a"] }),
+    platformChallenge("b", { total_score: 100, container_status: "available", container_addr: ["b"] }),
+    platformChallenge("c", { total_score: 200, container_status: "available", container_addr: ["c"] }),
+    platformChallenge("new", { total_score: 30 })
+  ], true, "ip");
+  assert.equal(restarted.getState().activeContainers, 3);
+  assert.equal(restarted.getState().phase, "coverage");
+
+  // The unseen challenge is blocked by the saturated container cap...
+  await assert.rejects(() => restarted.reserve("new", "main"), /Container limit/);
+  // ...so the stranded revisit orphans must stay resumable (they already own
+  // their slots) and visible at the back of the coverage candidates.
+  const candidateCodes = restarted.candidates(10).map((challenge) => challenge.uniqueCode);
+  // Stranded revisit orphans are tier 2: listed after the unseen queue,
+  // ordered lowest score first within the tier.
+  assert.deepEqual(candidateCodes, ["new", "a", "b", "c"]);
+  const resumed = await restarted.reserve("a", "main");
+  assert.equal(resumed.status, "reserved");
+  assert.equal(resumed.attemptCount, 2, "resuming continues the in-flight revisit attempt, not a new one");
+
+  // Deferring the resumed orphan frees a slot and unblocks the unseen queue.
+  await restarted.defer("a", "freed the stranded slot", undefined, "main");
+  await restarted.confirmClosed("a");
+  await restarted.reserve("new", "main");
+  assert.equal(restarted.getChallenge("new")?.status, "reserved");
+});
+
+test("coverage opens the next-lowest challenge as soon as a worker reserves the current one", async () => {
+  const sessionId = `test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const ledger = await new BenchmarkLedger(sessionId).initialize();
+  await ledger.syncFromPlatform([
+    platformChallenge("high", { total_score: 300 }),
+    platformChallenge("low", { total_score: 50 }),
+    platformChallenge("mid", { total_score: 100 })
+  ], true, "ip");
+
+  assert.deepEqual(ledger.candidates(10).map((challenge) => challenge.uniqueCode), ["low", "mid", "high"]);
+  await ledger.reserve("low", "main");
+  assert.deepEqual(ledger.candidates(10).map((challenge) => challenge.uniqueCode), ["mid", "high"]);
+  await ledger.reserve("mid", "subagent:t1", { isSubagent: true });
+  assert.deepEqual(ledger.candidates(10).map((challenge) => challenge.uniqueCode), ["high"]);
+  await ledger.reserve("high", "subagent:t2", { isSubagent: true });
+
+  assert.deepEqual(ledger.candidates(10), []);
 });
 
 test("subagent exit releases challenge back to deferred", async () => {
@@ -361,6 +508,7 @@ test("recordHint tracks usage", async () => {
   await ledger.defer("ch-1", "first pass", undefined, "main");
   await ledger.confirmClosed("ch-1");
   await ledger.maybeAdvancePhase();
+  await ledger.acquire("ch-1", "main", ["b"]);
   await ledger.recordHint("ch-1", "look at /backup", "main");
   assert.equal(ledger.getChallenge("ch-1")?.hintUsed, true);
   assert.equal(ledger.getChallenge("ch-1")?.hintContent, "look at /backup");
@@ -411,53 +559,37 @@ test("failed second-pass start restores deferred scheduling state", async () => 
   assert.equal(ledger.getChallenge("ch-1")?.status, "deferred");
 });
 
-test("recovery partial defer preserves the live container for warm handoff", async () => {
-  let now = 4_000_000;
+test("defer always closes the container and preserves the blackboard", async () => {
+  const now = 4_000_000;
   const { ledger } = await setupLedger(["ch-1"], () => now);
   await ledger.syncFromPlatform([platformChallenge("ch-1", { flag_count: 2 })], true, "ip");
   await ledger.acquire("ch-1", "main", ["a"]);
+  await ledger.checkpoint("ch-1", "admin session captured", ["auth"], "query admin API", "main", {
+    signalKind: "credential", evidenceRef: "artifact:cookie", currentApproach: "auth bypass"
+  });
   await ledger.recordSubmission("ch-1", "flag{one}", true, 50, 1, 0, "main");
   await ledger.defer("ch-1", "first pass done", "try source audit", "main");
+  assert.equal(ledger.getChallenge("ch-1")?.status, "closing");
   await ledger.confirmClosed("ch-1");
   await ledger.maybeAdvancePhase();
-  assert.equal(ledger.getState().phase, "endgame");
-
-  await ledger.acquire("ch-1", "subagent:t1", ["b"]);
-  await ledger.defer("ch-1", "switch approach", "inspect authorization", "subagent:t1", { preserveContainer: true });
-  const handoff = ledger.getChallenge("ch-1")!;
-  assert.equal(handoff.status, "handoff_waiting");
-  assert.deepEqual(handoff.containerAddrs, ["b"]);
-  assert.equal(handoff.containerStatus, "available");
-  assert.equal(ledger.getState().activeContainers, 1);
+  assert.equal(ledger.getState().phase, "revisit");
+  assert.equal(ledger.getChallenge("ch-1")?.containerStatus, "stopped");
+  assert.match(ledger.getChallenge("ch-1")?.blackboard.map((entry) => entry.summary).join("\n") ?? "", /admin session captured/);
   assert.equal(ledger.candidates(1)[0]?.uniqueCode, "ch-1");
-
-  now += 2 * 60 * 1000;
-  assert.equal(ledger.expiredHandoffs()[0]?.uniqueCode, "ch-1");
-  await ledger.expireHandoff("ch-1");
-  assert.equal(ledger.getChallenge("ch-1")?.status, "closing");
 });
 
-test("adaptive recovery policy grows as the queue shrinks", async () => {
-  const many = await setupLedger(Array.from({ length: 11 }, (_, index) => `many-${index}`));
-  for (let index = 0; index < 11; index += 1) {
-    const code = `many-${index}`;
-    await many.ledger.acquire(code, "main", [code]);
-    await many.ledger.defer(code, "covered", undefined, "main");
-    await many.ledger.confirmClosed(code);
-  }
-  await many.ledger.maybeAdvancePhase();
-  assert.equal(many.ledger.getState().phase, "second_pass");
-  assert.equal(budgetPolicyFor(many.ledger.getState()).label, "second_pass");
-
-  const late = await setupLedger(Array.from({ length: 10 }, (_, index) => `late-${index}`));
-  for (let index = 0; index < 10; index += 1) {
-    const code = `late-${index}`;
-    await late.ledger.acquire(code, "main", [code]);
-    await late.ledger.defer(code, "covered", undefined, "main");
-    await late.ledger.confirmClosed(code);
-  }
-  await late.ledger.maybeAdvancePhase();
-  assert.equal(budgetPolicyFor(late.ledger.getState()).label, "late_recovery");
+test("a challenge cannot be revisited until every first attempt has settled", async () => {
+  const { ledger } = await setupLedger(["low", "high"]);
+  Object.assign(ledger.getChallenge("low")!, { totalScore: 10 });
+  Object.assign(ledger.getChallenge("high")!, { totalScore: 100 });
+  await ledger.acquire("low", "main", ["a"]);
+  await ledger.defer("low", "covered", undefined, "main");
+  await ledger.confirmClosed("low");
+  await assert.rejects(() => ledger.acquire("low", "main", ["b"]), /cannot be reserved|unseen challenges remain/);
+  await ledger.acquire("high", "main", ["c"]);
+  await ledger.defer("high", "covered", undefined, "main");
+  await ledger.confirmClosed("high");
+  assert.equal(await ledger.maybeAdvancePhase(), "revisit");
 });
 
 test("platform sync cannot steal an in-flight reservation", async () => {
@@ -469,22 +601,22 @@ test("platform sync cannot steal an in-flight reservation", async () => {
   await ledger.confirmStarted("ch-1", ["a"], "subagent:res");
 });
 
-test("first-pass signal extensions are bounded and report only real deadline movement", async () => {
+test("the first-attempt deadline is fixed regardless of checkpoint evidence", async () => {
   let now = 10_000_000;
   const startedAt = now;
   const { ledger } = await setupLedger(["ch-1"], () => now);
   await ledger.acquire("ch-1", "main", ["a"]);
-  assert.equal(ledger.getChallenge("ch-1")?.hardDeadlineAt, startedAt + 12 * 60_000);
+  assert.equal(ledger.getChallenge("ch-1")?.hardDeadlineAt, startedAt + FIRST_ATTEMPT_LIMIT_MS);
 
   for (let index = 1; index <= 2; index += 1) {
     now += 60_000;
     const result = await ledger.checkpoint("ch-1", `signal ${index}`, undefined, `probe ${index}`, "main", {
       signalKind: "foothold", evidenceRef: `request:${index}`
     });
-    assert.equal(result.extended, true);
+    assert.equal(result.extended, false);
   }
   const deadlineAfterTwo = ledger.getChallenge("ch-1")!.hardDeadlineAt;
-  assert.equal(deadlineAfterTwo, startedAt + 18 * 60_000);
+  assert.equal(deadlineAfterTwo, startedAt + FIRST_ATTEMPT_LIMIT_MS);
   now += 60_000;
   const capped = await ledger.checkpoint("ch-1", "third distinct signal", undefined, "probe 3", "main", {
     signalKind: "exploit_primitive", evidenceRef: "request:3"
@@ -503,43 +635,60 @@ test("accepted flags cannot extend a first-pass worker beyond its 30-minute cap"
   await ledger.recordSubmission("ch-1", "flag{late}", true, 50, 1, 0, "main");
   assert.equal(ledger.getChallenge("ch-1")?.hardDeadlineAt, startedAt + 30 * 60_000);
   now += 60_000;
-  assert.equal(ledger.budgetFor("ch-1")?.hardExpired, true);
+  assert.equal(ledger.budgetFor("ch-1")?.expired, true);
 });
 
-test("endgame starts new approach epochs but requires a fresh worker after 30 minutes without a flag", async () => {
+test("attempt 2 and later have no runtime time limit", async () => {
   let now = 30_000_000;
   const { ledger } = await setupLedger(["ch-1"], () => now);
   await ledger.acquire("ch-1", "main", ["a"]);
   await ledger.defer("ch-1", "first pass", "try source audit", "main");
   await ledger.confirmClosed("ch-1");
   await ledger.maybeAdvancePhase();
-  assert.equal(ledger.getState().phase, "endgame");
+  assert.equal(ledger.getState().phase, "revisit");
   await ledger.acquire("ch-1", "main", ["b"]);
-  const attemptStart = now;
-
-  now += 12 * 60_000;
-  assert.equal(ledger.isBudgetExhausted("ch-1"), true);
-  const reset = await ledger.checkpoint("ch-1", "switching to source audit", undefined, "inspect source bundle", "main", {
-    signalKind: "note", currentApproach: "source audit"
-  });
-  assert.equal(reset.extended, true);
+  now += 24 * 60 * 60_000;
+  assert.equal(ledger.budgetFor("ch-1")?.firstAttempt, false);
   assert.equal(ledger.isBudgetExhausted("ch-1"), false);
-
-  now = attemptStart + 30 * 60_000;
-  assert.equal(ledger.budgetFor("ch-1")?.workerRotationDue, true);
 });
 
-test("endgame candidates prioritize one remaining flag, then other partial progress", async () => {
-  const { ledger } = await setupLedger(["one-left", "partial-many", "no-flags"]);
-  for (const code of ["one-left", "partial-many", "no-flags"]) {
+test("revisit candidates finish the current sweep before selecting a just-deferred challenge again", async () => {
+  const { ledger } = await setupLedger(["low", "mid", "high"]);
+  for (const code of ["low", "mid", "high"]) {
     await ledger.acquire(code, "main", [code]);
     await ledger.defer(code, "covered", undefined, "main");
     await ledger.confirmClosed(code);
   }
   await ledger.maybeAdvancePhase();
-  assert.equal(ledger.getState().phase, "endgame");
-  Object.assign(ledger.getChallenge("one-left")!, { flagCount: 3, correctFlagCount: 2, totalScore: 100 });
-  Object.assign(ledger.getChallenge("partial-many")!, { flagCount: 5, correctFlagCount: 2, totalScore: 500 });
-  Object.assign(ledger.getChallenge("no-flags")!, { flagCount: 3, correctFlagCount: 0, totalScore: 1_000 });
-  assert.deepEqual(ledger.candidates(3).map((challenge) => challenge.uniqueCode), ["one-left", "partial-many", "no-flags"]);
+  Object.assign(ledger.getChallenge("low")!, { totalScore: 10 });
+  Object.assign(ledger.getChallenge("mid")!, { totalScore: 50 });
+  Object.assign(ledger.getChallenge("high")!, { totalScore: 100 });
+  assert.deepEqual(ledger.candidates(3).map((challenge) => challenge.uniqueCode), ["low", "mid", "high"]);
+  await ledger.acquire("low", "main", ["low-2"]);
+  await ledger.defer("low", "still stuck", "try a third approach later", "main");
+  await ledger.confirmClosed("low");
+  assert.deepEqual(ledger.candidates(3).map((challenge) => challenge.uniqueCode), ["mid", "high", "low"]);
+});
+
+test("revisit acquisition enforces FIFO order", async () => {
+  const { ledger } = await setupLedger(["low", "high"]);
+  for (const code of ["low", "high"]) {
+    await ledger.acquire(code, "main", [code]);
+    await ledger.defer(code, "covered", undefined, "main");
+    await ledger.confirmClosed(code);
+  }
+  await assert.rejects(() => ledger.reserve("high", "main"), /Revisit queue is FIFO.*low before high/);
+  await ledger.reserve("low", "main");
+});
+
+test("revisit queue order wins over attempt count", async () => {
+  const { ledger } = await setupLedger(["older", "newer"]);
+  for (const code of ["older", "newer"]) {
+    await ledger.acquire(code, "main", [code]);
+    await ledger.defer(code, "covered", undefined, "main");
+    await ledger.confirmClosed(code);
+  }
+  Object.assign(ledger.getChallenge("older")!, { attemptCount: 3, revisitQueueOrder: 10 });
+  Object.assign(ledger.getChallenge("newer")!, { attemptCount: 2, revisitQueueOrder: 20 });
+  assert.deepEqual(ledger.candidates(2).map((challenge) => challenge.uniqueCode), ["older", "newer"]);
 });

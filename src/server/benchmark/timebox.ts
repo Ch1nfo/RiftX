@@ -25,14 +25,9 @@ export function installBenchmarkTimeboxGate(
     }
     const active = ledger.budgetForOwner(owner);
     if (active?.budget.expired) {
-      const reason = active.budget.workerRotationDue
-        ? "30 minutes without an accepted flag; hand off to a fresh worker"
-        : active.budget.hardExpired
-          ? "attempt lease expired"
-          : "no meaningful progress within the current phase budget";
       return {
-        content: [{ type: "text" as const, text: `TIMEBOX_EXPIRED for ${active.challenge.uniqueCode}: ${reason}. This solving tool was not executed. Use benchmark_control to submit, record evidence-backed progress, defer for a materially different approach, or abandon only if no viable hypothesis remains.` }],
-        details: { timeboxExpired: true, uniqueCode: active.challenge.uniqueCode, reason }
+        content: [{ type: "text" as const, text: `FIRST_ATTEMPT_COMPLETE for ${active.challenge.uniqueCode}: the fixed 30-minute first attempt has ended. This solving tool was not executed. Immediately write one concise benchmark_control checkpoint with findings, attempted routes, ruled-out assumptions, artifacts, and the exact next probe; then defer and move to the next eligible challenge.` }],
+        details: { timeboxExpired: true, uniqueCode: active.challenge.uniqueCode, reason: "fixed first-attempt limit" }
       };
     }
     return original(toolCallId, params, signal, ...rest);

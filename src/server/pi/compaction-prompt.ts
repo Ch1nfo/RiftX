@@ -6,16 +6,18 @@ Summarize execution state so the same Agent can continue after context compactio
 
 Preserve exact URLs, hosts, ports, container addresses, flag formats, target credentials, target session tokens, endpoint maps, request references, artifact paths, and the exact next probe. Distinguish confirmed facts, active hypotheses, and ruled-out paths. Track submitted progress by challenge ID and count only.
 
+The ledger uses coverage then revisit, not tactical rounds. Preserve each challenge's bounded blackboard so attempt 2+ can resume facts without repeating the failed approach. A first attempt has a fixed 30-minute cap; later attempts are not time-limited.
+
 Never copy a submitted flag value into the checkpoint. Never retain BENCHMARK_TOKEN, benchmark API headers, or benchmark platform credentials. Target credentials discovered while solving are different and should be preserved when needed for continuation.
 
 Required sections:
 ## Run state
 ## Current challenge
+## Challenge blackboard
 ## Confirmed facts
 ## Attempts and ruled-out paths
 ## Attempt and approach history
 ## Ruled-out assumptions
-## Required strategy reset
 ## Target credentials and session state
 ## Browser and network references
 ## Artifacts
@@ -28,11 +30,11 @@ Use (none) for an empty section. Return only the checkpoint.`;
 const REQUIRED_SECTIONS = [
   "## Run state",
   "## Current challenge",
+  "## Challenge blackboard",
   "## Confirmed facts",
   "## Attempts and ruled-out paths",
   "## Attempt and approach history",
   "## Ruled-out assumptions",
-  "## Required strategy reset",
   "## Target credentials and session state",
   "## Browser and network references",
   "## Artifacts",

@@ -292,19 +292,9 @@ npm start
 | `~/.riftx/subagents/<session-id>/` | 子 Agent 状态、日志、摘要与线程信息 |
 | `~/.riftx/evidence/<session-id>/` | 发现记录与保留截图 |
 | `~/.riftx/artifacts/<session-id>/` | 长工具输出保存的完整文本 |
-| `~/.riftx/skills/` | 用户安装的 Agent Skills |
+| `~/.riftx/skills/` | 用户安装的 Agent Skills（Benchmark Harness 会话不会加载） |
 
 不要提交 API Key、Authorization Header、Cookie、目标数据、证书、私钥、会话历史或测试产物。提交代码前始终检查 `git status`。
-
-## 推荐 Skills
-
-[`recommended-skills/`](recommended-skills/) 目录在 benchmark 分支随仓库附带 7 个 benchmark Agent Skills（Web、Pwn、Crypto、Reverse、Forensics、Misc、AI/ML——每个都是面向路由的 SKILL.md 加深度技术参考，为 TSecBench/CyBench 这类自主跑分场景精选；渗透测试技能集保留在 main 分支）。RiftX 会根据每道题的描述自动选择匹配技能（中英文均可）。安装后即获得开箱即用的解题能力：
-
-```bash
-cp -r recommended-skills/*/ ~/.riftx/skills/
-```
-
-当然，你也可以选用自己的 skill——把任意含 `SKILL.md` 的技能文件夹放入 `~/.riftx/skills/`，RiftX 会以相同方式加载。完整清单见 `recommended-skills/` 目录。
 
 ## 项目结构
 
@@ -312,7 +302,6 @@ cp -r recommended-skills/*/ ~/.riftx/skills/
 RiftX/
 ├── bin/                 # rx CLI 入口
 ├── docs/images/         # README 界面截图
-├── recommended-skills/  # 推荐 Agent Skills
 ├── public/              # Logo 与静态资源
 ├── src/
 │   ├── app/             # Next.js 页面与 API Route Handler

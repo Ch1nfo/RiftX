@@ -12,14 +12,16 @@ import { homedir } from "node:os";
 import { readJsonStore, writeJsonStoreAtomic } from "@/server/json-store";
 import { createSerializer } from "@/server/serializer";
 import type { Challenge } from "./controller";
-import type { BrowserHandoffState } from "@/browser";
 
 export const BENCHMARK_MAX_CONTAINERS = 3;
 export const BENCHMARK_MAX_SUBAGENTS = 2;
-export const HANDOFF_GRACE_MS = 2 * 60 * 1000;
+export const FIRST_ATTEMPT_WARNING_MS = 25 * 60 * 1000;
+export const FIRST_ATTEMPT_LIMIT_MS = 30 * 60 * 1000;
 
-export type ChallengeStatus = "pending" | "reserved" | "running" | "closing" | "deferred" | "handoff_waiting" | "solved" | "exhausted" | "orphaned";
-export type BenchmarkPhase = "first_pass" | "second_pass" | "endgame" | "completed";
+export type ChallengeStatus = "pending" | "reserved" | "running" | "closing" | "deferred" | "solved" | "exhausted" | "orphaned";
+/** Coverage is not a tactical round: it only prevents revisiting a challenge
+ * until every challenge has received one real attempt. */
+export type BenchmarkPhase = "coverage" | "revisit" | "completed";
 export type ChallengeOwner = "main" | `subagent:${string}` | null;
 export type ProgressSignalKind = "foothold" | "credential" | "privilege_change" | "exploit_primitive" | "stage_transition" | "decisive_rule_out" | "new_surface" | "note";
 
@@ -38,25 +40,23 @@ export type AttemptSummary = {
   nextDistinctApproach: string;
 };
 
-export type BudgetPolicy = {
-  label: "first_pass" | "second_pass" | "late_recovery" | "endgame";
-  noProgressMs: number;
-  initialLeaseMs: number;
-  signalExtensionMs: number;
-  maxSignalExtensions: number;
-  flagMomentumMs: number;
-  workerMaxMs: number | null;
+export type ChallengeBudget = {
+  firstAttempt: boolean;
+  elapsedMs: number;
+  warningDue: boolean;
+  expired: boolean;
 };
 
-export type ChallengeBudget = {
-  policy: BudgetPolicy;
-  elapsedMs: number;
-  sinceProgressMs: number;
-  hardRemainingMs: number | null;
-  noProgressExpired: boolean;
-  hardExpired: boolean;
-  workerRotationDue: boolean;
-  expired: boolean;
+export type BlackboardEntry = {
+  at: number;
+  worker: Exclude<ChallengeOwner, null>;
+  kind: ProgressSignalKind | "submission" | "attempt_end";
+  summary: string;
+  evidenceRef: string;
+  approach: string;
+  triedFamilies: string[];
+  ruledOutFamilies: string[];
+  nextProbe: string;
 };
 
 export type ChallengeState = {
@@ -90,7 +90,8 @@ export type ChallengeState = {
   lastMeaningfulProgressAt: number;
   lastAcceptedFlagAt: number | null;
   hardDeadlineAt: number | null;
-  progressExtensions: number;
+  firstAttemptWarningIssuedAt: number | null;
+  blackboard: BlackboardEntry[];
   approachHistory: AttemptSummary[];
   lastSignalKind: ProgressSignalKind | null;
   lastEvidenceRef: string;
@@ -103,14 +104,12 @@ export type ChallengeState = {
   deferredReason: string | null;
   pendingStatus: ChallengeStatus | undefined;
   reservationPreviousStatus: ChallengeStatus | undefined;
-  reservationPreviousHandoffExpiresAt: number | null;
   reservationStartedNewAttempt: boolean;
   closeFailureRecorded: boolean;
   acquiredAt: number | null;
   solvedAt: number | null;
-  handoffExpiresAt: number | null;
-  /** Local-only authenticated browser state; never included in continuity or tool output. */
-  browserHandoffState: BrowserHandoffState | null;
+  /** Monotonic FIFO position assigned whenever the challenge is deferred for revisit. */
+  revisitQueueOrder: number;
 };
 
 export type BenchmarkState = {
@@ -128,6 +127,8 @@ export type BenchmarkState = {
   sharedIntel: SharedIntel[];
   challenges: Record<string, ChallengeState>;
 };
+
+export type ChallengeSyncGuard = Record<string, string>;
 
 export type SharedIntel = {
   scope: "global" | "target";
@@ -162,39 +163,33 @@ function benchmarkDir(parentSessionId: string) {
   return join(homedir(), ".riftx", "benchmark", parentSessionId);
 }
 
-const MINUTE = 60_000;
-
 export function isPartialChallenge(challenge: Pick<ChallengeState, "correctFlagCount" | "flagCount" | "isCompleted">): boolean {
   return challenge.correctFlagCount > 0 && challenge.correctFlagCount < challenge.flagCount && !challenge.isCompleted;
 }
 
 export function hasReusableBenchmarkContainer(challenge: Pick<ChallengeState, "status" | "containerStatus" | "containerAddrs"> | undefined): boolean {
   return Boolean(challenge
-    && (challenge.status === "handoff_waiting" || challenge.status === "orphaned")
+    && challenge.status === "orphaned"
     && challenge.containerStatus === "available"
     && challenge.containerAddrs.length > 0);
 }
 
-function unfinishedCount(state: BenchmarkState): number {
-  return Object.values(state.challenges).filter((challenge) => !challenge.isCompleted
-    && challenge.status !== "solved" && challenge.status !== "exhausted").length;
+function isUnfinishedFirstAttempt(challenge: ChallengeState): boolean {
+  return challenge.currentAttemptPhase === "coverage"
+    && (challenge.status === "reserved" || challenge.status === "running" || challenge.status === "closing" || challenge.status === "orphaned");
 }
 
-export function budgetPolicyFor(state: BenchmarkState): BudgetPolicy {
-  if (state.phase === "endgame") {
-    return { label: "endgame", noProgressMs: 12 * MINUTE, initialLeaseMs: 15 * MINUTE, signalExtensionMs: 5 * MINUTE, maxSignalExtensions: Number.POSITIVE_INFINITY, flagMomentumMs: 10 * MINUTE, workerMaxMs: null };
-  }
-  if (state.phase === "second_pass" && unfinishedCount(state) <= 10) {
-    return { label: "late_recovery", noProgressMs: 12 * MINUTE, initialLeaseMs: 25 * MINUTE, signalExtensionMs: 5 * MINUTE, maxSignalExtensions: 2, flagMomentumMs: 10 * MINUTE, workerMaxMs: 45 * MINUTE };
-  }
-  if (state.phase === "second_pass") {
-    return { label: "second_pass", noProgressMs: 10 * MINUTE, initialLeaseMs: 16 * MINUTE, signalExtensionMs: 4 * MINUTE, maxSignalExtensions: 2, flagMomentumMs: 8 * MINUTE, workerMaxMs: 40 * MINUTE };
-  }
-  return { label: "first_pass", noProgressMs: 8 * MINUTE, initialLeaseMs: 12 * MINUTE, signalExtensionMs: 3 * MINUTE, maxSignalExtensions: 2, flagMomentumMs: 6 * MINUTE, workerMaxMs: 30 * MINUTE };
+function coverageIsComplete(state: BenchmarkState): boolean {
+  return Object.values(state.challenges).every((challenge) =>
+    challenge.isCompleted || (challenge.attemptCount > 0 && !isUnfinishedFirstAttempt(challenge))
+  );
 }
 
 function cleanText(value: string, maxLength: number): string {
-  return value.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, maxLength);
+  const cleaned = value.replace(/[\u0000-\u001f\u007f]/g, " ").trim();
+  const token = process.env.BENCHMARK_TOKEN ?? "";
+  const redacted = token ? cleaned.split(token).join("[REDACTED_BENCHMARK_TOKEN]") : cleaned;
+  return redacted.slice(0, maxLength);
 }
 
 function nullableFiniteNumber(value: unknown): number | null {
@@ -227,7 +222,29 @@ function finishAttempt(challenge: ChallengeState, now: number, stopReason: strin
   challenge.currentAttemptPhase = null;
   challenge.currentAttemptWorker = null;
   challenge.hardDeadlineAt = null;
-  challenge.progressExtensions = 0;
+}
+
+function syncGuardToken(challenge: ChallengeState): string {
+  return JSON.stringify([
+    challenge.status,
+    challenge.owner,
+    challenge.containerStatus,
+    challenge.pendingStatus ?? null,
+    challenge.attemptCount,
+    challenge.currentAttemptStartedAt
+  ]);
+}
+
+function enqueueForRevisit(state: BenchmarkState, challenge: ChallengeState, now: number): void {
+  const latest = Object.values(state.challenges).reduce((max, candidate) => Math.max(max, candidate.revisitQueueOrder || 0), 0);
+  challenge.revisitQueueOrder = Math.max(now, latest + 1);
+}
+
+function appendBlackboard(challenge: ChallengeState, entry: BlackboardEntry): void {
+  const previous = challenge.blackboard.at(-1);
+  const duplicate = previous && previous.kind === entry.kind
+    && previous.summary === entry.summary && previous.evidenceRef === entry.evidenceRef;
+  if (!duplicate) challenge.blackboard = [...challenge.blackboard, entry].slice(-30);
 }
 
 function statePath(parentSessionId: string) {
@@ -274,7 +291,8 @@ function newChallengeState(challenge: Challenge): ChallengeState {
     lastMeaningfulProgressAt: 0,
     lastAcceptedFlagAt: null,
     hardDeadlineAt: null,
-    progressExtensions: 0,
+    firstAttemptWarningIssuedAt: null,
+    blackboard: [],
     approachHistory: [],
     lastSignalKind: null,
     lastEvidenceRef: "",
@@ -287,13 +305,11 @@ function newChallengeState(challenge: Challenge): ChallengeState {
     deferredReason: null,
     pendingStatus: status === "closing" ? (challenge.is_completed ? "solved" : "deferred") : undefined,
     reservationPreviousStatus: undefined,
-    reservationPreviousHandoffExpiresAt: null,
     reservationStartedNewAttempt: false,
     closeFailureRecorded: false,
     acquiredAt: null,
     solvedAt: null,
-    handoffExpiresAt: null,
-    browserHandoffState: null
+    revisitQueueOrder: 0
   };
 }
 
@@ -313,7 +329,7 @@ function defaultMetrics(): BenchmarkMetrics {
 
 function defaultState(): BenchmarkState {
   return {
-    phase: "first_pass",
+    phase: "coverage",
     cumulativeScore: 0,
     scoreExact: true,
     totalChallenges: 0,
@@ -369,13 +385,13 @@ function recalculate(state: BenchmarkState): BenchmarkState {
   state.cumulativeScore = challenges.reduce((total, challenge) => total + (Number.isFinite(challenge.scoreObtained) ? challenge.scoreObtained : 0), 0);
   state.scoreExact = challenges.filter((challenge) => challenge.correctFlagCount > 0).every((challenge) => challenge.scoreKnown === true);
   const allTerminal = challenges.length > 0 && challenges.every((challenge) => challenge.status === "solved" || challenge.status === "exhausted");
-  if (allTerminal) state.phase = "completed";
+  state.phase = allTerminal ? "completed" : coverageIsComplete(state) ? "revisit" : "coverage";
   return state;
 }
 
 export class BenchmarkLedger {
   private readonly serialize = createSerializer();
-  private readonly serializeAction = createSerializer();
+  private readonly actionSerializers = new Map<string, ReturnType<typeof createSerializer>>();
   private state: BenchmarkState = defaultState();
   private metrics: BenchmarkMetrics = defaultMetrics();
   private readonly parentSessionId: string;
@@ -395,9 +411,13 @@ export class BenchmarkLedger {
     if (typeof this.state.scoreExact !== "boolean") this.state.scoreExact = false;
     if (typeof this.state.vpnChecked !== "boolean") this.state.vpnChecked = false;
     if (!Array.isArray(this.state.sharedIntel)) this.state.sharedIntel = [];
+    this.state.phase = this.state.phase === "completed" ? "completed" : "coverage";
     for (const challenge of Object.values(this.state.challenges)) {
+      const legacy = challenge as ChallengeState & {
+        handoffExpiresAt?: unknown;
+        reservationPreviousHandoffExpiresAt?: unknown;
+      };
       challenge.reservationPreviousStatus ??= undefined;
-      challenge.reservationPreviousHandoffExpiresAt = nullableFiniteNumber(challenge.reservationPreviousHandoffExpiresAt);
       challenge.reservationStartedNewAttempt = challenge.reservationStartedNewAttempt === true;
       challenge.closeFailureRecorded ??= false;
       challenge.level = Number.isFinite(Number(challenge.level)) ? Number(challenge.level) : 0;
@@ -408,7 +428,9 @@ export class BenchmarkLedger {
       challenge.scoreKnown = challenge.scoreKnown === true;
       challenge.attemptCount = Number.isFinite(Number(challenge.attemptCount)) ? Number(challenge.attemptCount) : 0;
       challenge.currentAttemptStartedAt = nullableFiniteNumber(challenge.currentAttemptStartedAt);
-      challenge.currentAttemptPhase ??= null;
+      challenge.currentAttemptPhase = challenge.currentAttemptStartedAt
+        ? (challenge.attemptCount <= 1 ? "coverage" : "revisit")
+        : null;
       challenge.currentAttemptWorker ??= null;
       challenge.flagsAtAttemptStart = Number.isFinite(Number(challenge.flagsAtAttemptStart)) ? Number(challenge.flagsAtAttemptStart) : challenge.correctFlagCount;
       challenge.currentApproach = typeof challenge.currentApproach === "string" ? challenge.currentApproach : "";
@@ -419,15 +441,34 @@ export class BenchmarkLedger {
       challenge.lastMeaningfulSignalContent = typeof challenge.lastMeaningfulSignalContent === "string"
         ? challenge.lastMeaningfulSignalContent
         : (challenge.lastSignalKind ? challenge.lastSignalContent : "");
-      challenge.hardDeadlineAt = nullableFiniteNumber(challenge.hardDeadlineAt);
-      challenge.progressExtensions = Number.isFinite(Number(challenge.progressExtensions)) ? Number(challenge.progressExtensions) : 0;
+      challenge.hardDeadlineAt = challenge.currentAttemptStartedAt && challenge.attemptCount === 1
+        ? challenge.currentAttemptStartedAt + FIRST_ATTEMPT_LIMIT_MS
+        : null;
+      challenge.firstAttemptWarningIssuedAt = nullableFiniteNumber(challenge.firstAttemptWarningIssuedAt);
+      challenge.blackboard = Array.isArray(challenge.blackboard) ? challenge.blackboard.slice(-30) : [];
+      challenge.blackboard = challenge.blackboard.map((entry) => ({
+        ...entry,
+        summary: cleanText(typeof entry.summary === "string" ? entry.summary : "", 2_000),
+        evidenceRef: cleanText(typeof entry.evidenceRef === "string" ? entry.evidenceRef : "", 500),
+        approach: cleanText(typeof entry.approach === "string" ? entry.approach : "", 300),
+        triedFamilies: Array.isArray(entry.triedFamilies) ? entry.triedFamilies.map((item) => cleanText(String(item), 100)).slice(-10) : [],
+        ruledOutFamilies: Array.isArray(entry.ruledOutFamilies) ? entry.ruledOutFamilies.map((item) => cleanText(String(item), 100)).slice(-10) : [],
+        nextProbe: cleanText(typeof entry.nextProbe === "string" ? entry.nextProbe : "", 1_000)
+      }));
       challenge.approachHistory = Array.isArray(challenge.approachHistory) ? challenge.approachHistory.slice(-6) : [];
       challenge.lastSignalKind ??= null;
       challenge.lastEvidenceRef = typeof challenge.lastEvidenceRef === "string" ? challenge.lastEvidenceRef : "";
       challenge.progressKeys = Array.isArray(challenge.progressKeys) ? challenge.progressKeys.slice(-30) : [];
       challenge.ruledOutFamilies = Array.isArray(challenge.ruledOutFamilies) ? challenge.ruledOutFamilies.slice(-20) : [];
-      challenge.handoffExpiresAt = nullableFiniteNumber(challenge.handoffExpiresAt);
-      challenge.browserHandoffState = challenge.browserHandoffState?.version === 1 ? challenge.browserHandoffState : null;
+      challenge.revisitQueueOrder = Number.isFinite(Number(challenge.revisitQueueOrder))
+        ? Number(challenge.revisitQueueOrder)
+        : (challenge.approachHistory.at(-1)?.endedAt ?? 0);
+      if ((challenge.status as string) === "handoff_waiting") {
+        challenge.status = challenge.containerStatus === "available" ? "orphaned" : "deferred";
+        challenge.owner = null;
+      }
+      delete legacy.handoffExpiresAt;
+      delete legacy.reservationPreviousHandoffExpiresAt;
     }
     // Restart recovery: running/claimed/reserved → orphaned (prioritize re-acquire);
     // closing → keep closing (the platform close attempt must be re-confirmed by sync).
@@ -439,6 +480,9 @@ export class BenchmarkLedger {
       // closing stays closing — syncFromPlatform will check the platform's
       // container_status and either advance to the pending terminal status
       // (platform stopped) or keep it closing (still available on platform).
+    }
+    if (coverageIsComplete(this.state)) {
+      this.state.phase = this.state.phase === "completed" ? "completed" : "revisit";
     }
     recalculate(this.state);
     await this.persist();
@@ -466,9 +510,20 @@ export class BenchmarkLedger {
     return this.state.challenges[uniqueCode];
   }
 
-  /** Serialize complete controller actions across the parent and all children. */
-  runAction<T>(action: () => Promise<T>): Promise<T> {
-    return this.serializeAction(action);
+  captureSyncGuard(): ChallengeSyncGuard {
+    return Object.fromEntries(Object.values(this.state.challenges).map((challenge) => [challenge.uniqueCode, syncGuardToken(challenge)]));
+  }
+
+  /** Serialize network mutations only for the same challenge. Different
+   * challenges may progress concurrently; the ledger itself remains protected
+   * by the short state serializer above. */
+  runChallengeAction<T>(uniqueCode: string, action: () => Promise<T>): Promise<T> {
+    let serializer = this.actionSerializers.get(uniqueCode);
+    if (!serializer) {
+      serializer = createSerializer();
+      this.actionSerializers.set(uniqueCode, serializer);
+    }
+    return serializer(action);
   }
 
   async assertOwned(uniqueCode: string, expectedOwner: Exclude<ChallengeOwner, null>, allowedStatuses: ChallengeStatus[] = ["running"]): Promise<ChallengeState> {
@@ -542,7 +597,7 @@ export class BenchmarkLedger {
   /** Full platform sync: platform values override local. The list endpoint provides no score —
    * per-challenge values arrive only from submit responses, so platform progress the ledger
    * cannot price marks the run total as a lower bound (scoreExact=false via recalculate). */
-  async syncFromPlatform(challenges: Challenge[], vpnOk: boolean, vpnClientIp: string, vpnChecked = true): Promise<BenchmarkState> {
+  async syncFromPlatform(challenges: Challenge[], vpnOk: boolean, vpnClientIp: string, vpnChecked = true, guard?: ChallengeSyncGuard): Promise<BenchmarkState> {
     return this.serialize(async () => {
       this.state.vpnOk = vpnOk;
       this.state.vpnChecked = vpnChecked;
@@ -554,18 +609,22 @@ export class BenchmarkLedger {
           this.state.challenges[platform.unique_code] = newChallengeState(platform);
           continue;
         }
+        const schedulingSnapshotIsCurrent = guard?.[platform.unique_code] === undefined
+          || guard[platform.unique_code] === syncGuardToken(existing);
         // A list sync can observe progress that happened after a timed-out
         // submit, a process crash, or another worker. The list endpoint has no
         // score, so the cached score no longer corresponds to this progress.
         // On a backwards count change even the cached value is not a safe lower
         // bound; reset it to zero until a priced submit response is available.
         const previousCorrectFlagCount = existing.correctFlagCount;
-        if (platform.correct_flag_count !== previousCorrectFlagCount) {
-          if (platform.correct_flag_count < existing.correctFlagCount) existing.scoreObtained = 0;
+        if (platform.correct_flag_count > previousCorrectFlagCount) {
           existing.scoreKnown = false;
         }
         // Platform is source of truth for these fields.
-        existing.correctFlagCount = platform.correct_flag_count;
+        // Counts are monotonic within a run. A concurrent list request can
+        // return an older snapshot after submit completes; never let that
+        // stale response erase newly accepted progress.
+        existing.correctFlagCount = Math.max(existing.correctFlagCount, platform.correct_flag_count);
         if (platform.correct_flag_count > previousCorrectFlagCount) {
           const now = this.now();
           existing.lastSignalAt = now;
@@ -575,57 +634,60 @@ export class BenchmarkLedger {
           existing.lastEvidenceRef = `platform:sync-flag-count:${platform.correct_flag_count}`;
           existing.lastSignalContent = `Platform sync confirmed flag progress ${platform.correct_flag_count}/${platform.flag_count}`;
           existing.lastMeaningfulSignalContent = existing.lastSignalContent;
-          if (existing.currentAttemptStartedAt && existing.owner) {
-            const policy = budgetPolicyFor(this.state);
-            const workerCap = policy.workerMaxMs === null ? Number.POSITIVE_INFINITY : existing.currentAttemptStartedAt + policy.workerMaxMs;
-            existing.hardDeadlineAt = Math.min(workerCap, Math.max(existing.hardDeadlineAt ?? now, now + policy.flagMomentumMs));
+          appendBlackboard(existing, {
+            at: now,
+            worker: existing.currentAttemptWorker ?? "main",
+            kind: "submission",
+            summary: existing.lastSignalContent,
+            evidenceRef: existing.lastEvidenceRef,
+            approach: existing.currentApproach,
+            triedFamilies: existing.triedFamilies.slice(-10),
+            ruledOutFamilies: existing.ruledOutFamilies.slice(-10),
+            nextProbe: existing.nextProbe
+          });
+        }
+        existing.isCompleted = existing.isCompleted || platform.is_completed;
+        if (schedulingSnapshotIsCurrent) {
+          existing.containerStatus = platform.container_status;
+          // Platform available → take its addresses; platform stopped → clear stale local addresses.
+          if (platform.container_status === "available" && platform.container_addr.length) {
+            existing.containerAddrs = platform.container_addr;
+          } else if (platform.container_status === "stopped" || platform.container_status === "stop_pending") {
+            existing.containerAddrs = [];
           }
-        }
-        existing.isCompleted = platform.is_completed;
-        existing.containerStatus = platform.container_status;
-        // Platform available → take its addresses; platform stopped → clear stale local addresses.
-        if (platform.container_status === "available" && platform.container_addr.length) {
-          existing.containerAddrs = platform.container_addr;
-        } else if (platform.container_status === "stopped" || platform.container_status === "stop_pending") {
-          existing.containerAddrs = [];
-        }
-        // Closing → advance to pending terminal when the platform confirms stopped.
-        if (existing.status === "closing" && platform.container_status === "stopped" && existing.pendingStatus) {
-          existing.status = existing.pendingStatus;
-          existing.pendingStatus = undefined;
-          existing.owner = null;
-          existing.closeFailureRecorded = false;
-        }
-        if (existing.status === "handoff_waiting" && platform.container_status === "stopped") {
-          existing.status = "deferred";
-          existing.owner = null;
-          existing.handoffExpiresAt = null;
-          existing.browserHandoffState = null;
+          // Closing → advance to pending terminal when the platform confirms stopped.
+          if (existing.status === "closing" && platform.container_status === "stopped" && existing.pendingStatus) {
+            existing.status = existing.pendingStatus;
+            existing.pendingStatus = undefined;
+            existing.owner = null;
+            existing.closeFailureRecorded = false;
+          }
         }
         existing.totalScore = platform.total_score;
         existing.flagCount = platform.flag_count;
-        if (platform.is_completed) {
+        if (existing.isCompleted) {
+          const platformContainerIsCurrent = schedulingSnapshotIsCurrent || platform.is_completed;
+          if (platformContainerIsCurrent) {
+            existing.containerStatus = platform.container_status;
+            existing.containerAddrs = platform.container_status === "available" ? platform.container_addr : [];
+          }
           if (existing.currentAttemptStartedAt) finishAttempt(existing, this.now(), "platform sync confirmed solved");
-          const needsClose = platform.container_status !== "stopped";
+          const needsClose = platformContainerIsCurrent ? platform.container_status !== "stopped" : hasActiveContainer(existing);
           existing.status = needsClose ? "closing" : "solved";
           existing.pendingStatus = needsClose ? "solved" : undefined;
           existing.owner = null;
           existing.reservationPreviousStatus = undefined;
           existing.reservationStartedNewAttempt = false;
           if (!existing.solvedAt) existing.solvedAt = this.now();
-        } else if (existing.status === "solved") {
-          // Platform says not completed — local stale state; revert to deferred.
-          existing.status = "deferred";
-          existing.solvedAt = null;
         }
-        if (!platform.is_completed && platform.container_status === "stopped"
+        if (schedulingSnapshotIsCurrent && !platform.is_completed && platform.container_status === "stopped"
           && (existing.status === "running" || existing.status === "orphaned")) {
           existing.status = "orphaned";
           existing.owner = null;
           existing.pendingStatus = undefined;
           existing.reservationPreviousStatus = undefined;
           existing.reservationStartedNewAttempt = false;
-        } else if (!platform.is_completed && platform.container_status === "available"
+        } else if (schedulingSnapshotIsCurrent && !platform.is_completed && platform.container_status === "available"
           && existing.owner === null && (existing.status === "pending" || existing.status === "deferred")) {
           // The platform has a live container with no live local worker. Treat it
           // as recoverable instead of starting a second container.
@@ -651,9 +713,41 @@ export class BenchmarkLedger {
         this.metrics.duplicateAcquires += 1;
         throw new Error(`Challenge ${uniqueCode} is owned by ${challenge.owner}`);
       }
-      const eligible = challenge.status === "pending" || challenge.status === "orphaned" || challenge.status === "handoff_waiting"
-        || ((this.state.phase === "second_pass" || this.state.phase === "endgame") && challenge.status === "deferred");
+      const eligible = challenge.status === "pending" || challenge.status === "orphaned"
+        || (this.state.phase === "revisit" && challenge.status === "deferred");
       if (!eligible) throw new Error(`Challenge ${uniqueCode} cannot be reserved while ${challenge.status}`);
+
+      const unseen = Object.values(this.state.challenges).filter((candidate) =>
+        !candidate.isCompleted && candidate.attemptCount === 0
+        && (candidate.status === "pending" || candidate.status === "orphaned")
+      );
+      const resumesLiveAttempt = challenge.status === "orphaned"
+        && challenge.currentAttemptStartedAt !== null
+        && hasReusableBenchmarkContainer(challenge);
+      // Resuming a live orphan is recovery of an in-flight attempt, not a new
+      // revisit: the attempt already owns its platform container slot, so it
+      // cannot consume fresh capacity. Allowing it regardless of coverage
+      // progress is also what frees a saturated container cap when stranded
+      // revisit orphans hold all three slots while an unseen challenge waits.
+      if (unseen.length > 0 && challenge.attemptCount > 0 && !resumesLiveAttempt) {
+        throw new Error(`Coverage is not complete — ${unseen.length} unseen challenges remain, so ${uniqueCode} cannot be revisited yet`);
+      }
+      if (this.state.phase === "revisit" && !resumesLiveAttempt) {
+        const next = this.candidates(1)[0];
+        if (next && next.uniqueCode !== uniqueCode) {
+          throw new Error(`Revisit queue is FIFO — choose ${next.uniqueCode} before ${uniqueCode}`);
+        }
+      }
+      if (challenge.attemptCount === 0 && unseen.length > 0) {
+        // `unseen` excludes challenges already reserved by another worker.
+        // This enforces one full ascending queue: once the current cheapest
+        // challenge is claimed, the next score becomes immediately eligible.
+        // It deliberately does not restrict coverage to one score tier.
+        const lowestScore = Math.min(...unseen.map((candidate) => candidate.totalScore));
+        if (challenge.totalScore !== lowestScore) {
+          throw new Error(`Coverage must proceed from low score to high score — choose a ${lowestScore}-point challenge before ${uniqueCode} (${challenge.totalScore} points)`);
+        }
+      }
       // One worker one challenge: this owner must not already hold another.
       const alreadyHolding = Object.values(this.state.challenges).find((candidate) =>
         candidate.owner === owner && candidate.uniqueCode !== uniqueCode &&
@@ -675,13 +769,8 @@ export class BenchmarkLedger {
         throw new Error(`Container limit (${BENCHMARK_MAX_CONTAINERS}) reached — defer or abandon one first`);
       }
       const wasOrphaned = challenge.status === "orphaned";
-      // A live orphan is the same in-flight attempt after a Runtime restart.
-      // A stopped orphan needs a new platform container and a fresh attempt.
-      const resumesLiveAttempt = wasOrphaned && hasReusableBenchmarkContainer(challenge)
-        && challenge.currentAttemptStartedAt !== null;
       const startsNewAttempt = !resumesLiveAttempt;
       challenge.reservationPreviousStatus = challenge.status;
-      challenge.reservationPreviousHandoffExpiresAt = challenge.handoffExpiresAt;
       challenge.reservationStartedNewAttempt = startsNewAttempt;
       challenge.status = "reserved";
       challenge.owner = owner;
@@ -690,41 +779,20 @@ export class BenchmarkLedger {
       const now = this.now();
       if (!wasOrphaned) challenge.acquiredAt = now;
       if (startsNewAttempt) {
-        challenge.lastSignalAt = now;
-        challenge.lastMeaningfulProgressAt = now;
-      }
-      challenge.handoffExpiresAt = null;
-      if (startsNewAttempt) {
         // A restart leaves a stopped orphan's attempt open (a live orphan
         // resumes it above). Starting fresh must still record what the
         // interrupted attempt did, or the recovery brief loses that route.
         if (challenge.currentAttemptStartedAt !== null) {
           finishAttempt(challenge, now, "attempt interrupted by restart before a fresh attempt");
         }
-        const policy = budgetPolicyFor(this.state);
-        challenge.attemptCount += 1;
-        challenge.currentAttemptStartedAt = now;
-        challenge.currentAttemptPhase = this.state.phase;
+        // The attempt clock starts only after the platform start succeeds.
+        // Slow or unstable control-plane calls must not steal solving time.
         challenge.currentAttemptWorker = owner;
-        challenge.flagsAtAttemptStart = challenge.correctFlagCount;
-        challenge.currentApproach = "";
-        challenge.hardDeadlineAt = now + policy.initialLeaseMs;
-        challenge.progressExtensions = 0;
-        // These are challenge-global recovery facts. Retaining them prevents a
-        // fresh worker from extending its clock with evidence already used by
-        // the previous attempt.
-        if (challenge.reservationPreviousStatus !== "handoff_waiting") challenge.browserHandoffState = null;
-        const metric = this.metrics.challenges[uniqueCode];
-        if (metric) metric.attempts += 1;
       } else {
         challenge.currentAttemptWorker = owner;
-        if (!challenge.hardDeadlineAt) {
-          const policy = budgetPolicyFor(this.state);
-          challenge.hardDeadlineAt = now + policy.initialLeaseMs;
-        }
       }
       if (!this.metrics.challenges[uniqueCode]) {
-        this.metrics.challenges[uniqueCode] = { acquiredAt: now, solvedAt: null, durationMs: null, attempts: startsNewAttempt ? 1 : 0, wrongFlags: 0, hintsUsed: 0, deferredCount: 0 };
+        this.metrics.challenges[uniqueCode] = { acquiredAt: now, solvedAt: null, durationMs: null, attempts: 0, wrongFlags: 0, hintsUsed: 0, deferredCount: 0 };
       }
       recalculate(this.state);
       await this.persist();
@@ -755,12 +823,27 @@ export class BenchmarkLedger {
       if (challenge.status !== "reserved") throw new Error(`Challenge ${uniqueCode} is ${challenge.status}, expected reserved`);
       requireOwner(challenge, expectedOwner);
       if (containerAddrs.length === 0) throw new Error(`Challenge ${uniqueCode} started without a container address`);
+      const startsNewAttempt = challenge.reservationStartedNewAttempt;
+      const now = this.now();
       challenge.status = "running";
       challenge.reservationPreviousStatus = undefined;
-      challenge.reservationPreviousHandoffExpiresAt = null;
       challenge.reservationStartedNewAttempt = false;
       challenge.containerAddrs = containerAddrs;
       challenge.containerStatus = "available";
+      if (startsNewAttempt || challenge.currentAttemptStartedAt === null) {
+        challenge.attemptCount += 1;
+        challenge.currentAttemptStartedAt = now;
+        challenge.currentAttemptPhase = challenge.attemptCount === 1 ? "coverage" : "revisit";
+        challenge.currentAttemptWorker = expectedOwner;
+        challenge.flagsAtAttemptStart = challenge.correctFlagCount;
+        challenge.currentApproach = "";
+        challenge.lastSignalAt = now;
+        challenge.lastMeaningfulProgressAt = now;
+        challenge.hardDeadlineAt = challenge.attemptCount === 1 ? now + FIRST_ATTEMPT_LIMIT_MS : null;
+        challenge.firstAttemptWarningIssuedAt = null;
+        const metric = this.metrics.challenges[uniqueCode];
+        if (metric) metric.attempts += 1;
+      }
       recalculate(this.state);
       await this.persist();
       return challenge;
@@ -768,84 +851,40 @@ export class BenchmarkLedger {
   }
 
   /** Rollback a failed start after a successful reserve. */
-  async releaseReservation(uniqueCode: string, expectedOwner: Exclude<ChallengeOwner, null>): Promise<ChallengeState> {
+  async releaseReservation(uniqueCode: string, expectedOwner: Exclude<ChallengeOwner, null>, options?: { countUnavailableAsAttempt?: boolean; reason?: string }): Promise<ChallengeState> {
     return this.serialize(async () => {
       const challenge = this.state.challenges[uniqueCode];
       if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
       if (challenge.status !== "reserved") throw new Error(`Challenge ${uniqueCode} is ${challenge.status}, expected reserved`);
       requireOwner(challenge, expectedOwner);
       const previousStatus = challenge.reservationPreviousStatus ?? "pending";
-      const previousHandoffExpiresAt = challenge.reservationPreviousHandoffExpiresAt;
       const startedNewAttempt = challenge.reservationStartedNewAttempt;
-      challenge.status = previousStatus;
+      challenge.status = options?.countUnavailableAsAttempt && challenge.attemptCount === 0 ? "deferred" : previousStatus;
       challenge.reservationPreviousStatus = undefined;
-      challenge.reservationPreviousHandoffExpiresAt = null;
       challenge.reservationStartedNewAttempt = false;
       challenge.owner = null;
-      challenge.handoffExpiresAt = previousStatus === "handoff_waiting" ? previousHandoffExpiresAt : null;
       if (startedNewAttempt) {
-        challenge.attemptCount = Math.max(0, challenge.attemptCount - 1);
-        const metric = this.metrics.challenges[uniqueCode];
-        if (metric) metric.attempts = Math.max(0, metric.attempts - 1);
-        challenge.currentAttemptStartedAt = null;
-        challenge.currentAttemptPhase = null;
         challenge.currentAttemptWorker = null;
-        challenge.hardDeadlineAt = null;
-        challenge.progressExtensions = 0;
       }
-      recalculate(this.state);
-      await this.persist();
-      return challenge;
-    });
-  }
-
-  async saveBrowserHandoffState(uniqueCode: string, state: BrowserHandoffState | undefined, expectedOwner: Exclude<ChallengeOwner, null>): Promise<void> {
-    return this.serialize(async () => {
-      const challenge = this.state.challenges[uniqueCode];
-      if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
-      requireOwner(challenge, expectedOwner);
-      const token = process.env.BENCHMARK_TOKEN ?? "";
-      challenge.browserHandoffState = state
-        ? JSON.parse(
-            JSON.stringify(state)
-              // The handoff preserves authentication, not answers: a flag-shaped
-              // value riding in a cookie or storage entry is redacted like the
-              // token. The class excludes the JSON string terminator so the
-              // match stays inside a single string value.
-              .replace(/flag\{[^}"\\]{1,256}\}/gi, "flag{REDACTED}")
-              .split(token).join("[REDACTED_BENCHMARK_TOKEN]")
-          ) as BrowserHandoffState
-        : null;
-      await this.persist();
-    });
-  }
-
-  /** Restore an existing warm handoff after dispatch failed after the live
-   * container had already been confirmed. This is a reservation rollback,
-   * not a completed attempt, so it must not add a fake approach-history row. */
-  async restoreWarmHandoffAfterAssignmentFailure(uniqueCode: string, expectedOwner: Exclude<ChallengeOwner, null>): Promise<ChallengeState> {
-    return this.serialize(async () => {
-      const challenge = this.state.challenges[uniqueCode];
-      if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
-      requireOwner(challenge, expectedOwner);
-      if (challenge.status !== "reserved" && challenge.status !== "running") {
-        throw new Error(`Challenge ${uniqueCode} is ${challenge.status}; cannot restore a failed warm-handoff assignment`);
+      if (options?.countUnavailableAsAttempt && challenge.attemptCount === 0) {
+        const now = this.now();
+        challenge.attemptCount = 1;
+        challenge.deferredReason = cleanText(options.reason ?? "platform resource unavailable", 1_000);
+        enqueueForRevisit(this.state, challenge, now);
+        appendBlackboard(challenge, {
+          at: now,
+          worker: expectedOwner,
+          kind: "attempt_end",
+          summary: challenge.deferredReason,
+          evidenceRef: "platform:resource-unavailable",
+          approach: "platform start",
+          triedFamilies: [],
+          ruledOutFamilies: [],
+          nextProbe: "Retry after every challenge has received its first attempt"
+        });
+        const metric = this.metrics.challenges[uniqueCode];
+        if (metric) metric.attempts += 1;
       }
-      challenge.status = "handoff_waiting";
-      challenge.owner = null;
-      challenge.pendingStatus = undefined;
-      challenge.attemptCount = Math.max(0, challenge.attemptCount - 1);
-      const metric = this.metrics.challenges[uniqueCode];
-      if (metric) metric.attempts = Math.max(0, metric.attempts - 1);
-      challenge.currentAttemptStartedAt = null;
-      challenge.currentAttemptPhase = null;
-      challenge.currentAttemptWorker = null;
-      challenge.hardDeadlineAt = null;
-      challenge.progressExtensions = 0;
-      challenge.reservationPreviousStatus = undefined;
-      challenge.reservationPreviousHandoffExpiresAt = null;
-      challenge.reservationStartedNewAttempt = false;
-      challenge.handoffExpiresAt = this.now() + HANDOFF_GRACE_MS;
       recalculate(this.state);
       await this.persist();
       return challenge;
@@ -888,7 +927,6 @@ export class BenchmarkLedger {
       }
       if (nextProbe) challenge.nextProbe = cleanText(nextProbe, 1_000);
       const approach = options?.currentApproach ? cleanText(options.currentApproach, 300) : "";
-      const approachChanged = Boolean(approach && approach !== challenge.currentApproach);
       if (approach) challenge.currentApproach = approach;
 
       const kind = options?.signalKind ?? "note";
@@ -897,33 +935,31 @@ export class BenchmarkLedger {
         || kind === "exploit_primitive" || kind === "stage_transition";
       const decisiveRuleOut = kind === "decisive_rule_out" && Boolean(evidenceRef)
         && Boolean(challenge.nextProbe) && challenge.nextProbe !== previousNextProbe;
-      const endgameApproachEpoch = this.state.phase === "endgame" && approachChanged;
-      const key = progressKey(kind, evidenceRef || (endgameApproachEpoch ? `approach:${approach}` : ""));
+      const key = progressKey(kind, evidenceRef);
       const newEvidence = !challenge.progressKeys.includes(key);
       const evidenceBacked = (strongKind && Boolean(evidenceRef)) || decisiveRuleOut;
-      const qualifiesForExtension = newEvidence && (evidenceBacked || endgameApproachEpoch);
-      let extended = false;
-      if (qualifiesForExtension) {
+      if (newEvidence && evidenceBacked) {
         const now = this.now();
-        const policy = budgetPolicyFor(this.state);
-        const previousDeadline = challenge.hardDeadlineAt;
         challenge.lastSignalAt = now;
         challenge.lastMeaningfulProgressAt = now;
         challenge.lastMeaningfulSignalContent = normalizedSignal;
         challenge.lastSignalKind = kind;
         challenge.lastEvidenceRef = evidenceRef;
         challenge.progressKeys = [...challenge.progressKeys, key].slice(-30);
-        if (endgameApproachEpoch) {
-          challenge.hardDeadlineAt = now + policy.initialLeaseMs;
-        } else if (challenge.progressExtensions < policy.maxSignalExtensions && challenge.currentAttemptStartedAt) {
-          challenge.progressExtensions += 1;
-          const workerCap = policy.workerMaxMs === null ? Number.POSITIVE_INFINITY : challenge.currentAttemptStartedAt + policy.workerMaxMs;
-          challenge.hardDeadlineAt = Math.min(workerCap, (challenge.hardDeadlineAt ?? now) + policy.signalExtensionMs);
-        }
-        extended = challenge.hardDeadlineAt !== previousDeadline;
       }
+      appendBlackboard(challenge, {
+        at: this.now(),
+        worker: expectedOwner,
+        kind,
+        summary: normalizedSignal,
+        evidenceRef,
+        approach: challenge.currentApproach,
+        triedFamilies: challenge.triedFamilies.slice(-10),
+        ruledOutFamilies: challenge.ruledOutFamilies.slice(-10),
+        nextProbe: challenge.nextProbe
+      });
       await this.persist();
-      return { updated: isNew, extended, challenge };
+      return { updated: isNew, extended: false, challenge };
     });
   }
 
@@ -952,7 +988,6 @@ export class BenchmarkLedger {
       }
       if (correct && correctFlagCount > previousCorrectFlagCount) {
         const now = this.now();
-        const policy = budgetPolicyFor(this.state);
         challenge.lastSignalAt = now;
         challenge.lastMeaningfulProgressAt = now;
         challenge.lastAcceptedFlagAt = now;
@@ -960,9 +995,17 @@ export class BenchmarkLedger {
         challenge.lastEvidenceRef = `platform:flag-count:${correctFlagCount}`;
         challenge.lastSignalContent = `Platform accepted a new flag; progress ${correctFlagCount}/${challenge.flagCount}`;
         challenge.lastMeaningfulSignalContent = challenge.lastSignalContent;
-        const attemptStart = challenge.currentAttemptStartedAt ?? now;
-        const workerCap = policy.workerMaxMs === null ? Number.POSITIVE_INFINITY : attemptStart + policy.workerMaxMs;
-        challenge.hardDeadlineAt = Math.min(workerCap, Math.max(challenge.hardDeadlineAt ?? now, now + policy.flagMomentumMs));
+        appendBlackboard(challenge, {
+          at: now,
+          worker: expectedOwner,
+          kind: "submission",
+          summary: challenge.lastSignalContent,
+          evidenceRef: challenge.lastEvidenceRef,
+          approach: challenge.currentApproach,
+          triedFamilies: challenge.triedFamilies.slice(-10),
+          ruledOutFamilies: challenge.ruledOutFamilies.slice(-10),
+          nextProbe: challenge.nextProbe
+        });
       }
       const metric = this.metrics.challenges[uniqueCode];
       if (metric) {
@@ -1011,25 +1054,33 @@ export class BenchmarkLedger {
   }
 
   /** Defer: save recovery state, set closing (close must be confirmed before terminal). */
-  async defer(uniqueCode: string, reason: string, nextProbe: string | undefined, expectedOwner: Exclude<ChallengeOwner, null>, options?: { preserveContainer?: boolean }): Promise<ChallengeState> {
+  async defer(uniqueCode: string, reason: string, nextProbe: string | undefined, expectedOwner: Exclude<ChallengeOwner, null>): Promise<ChallengeState> {
     return this.serialize(async () => {
       const challenge = this.state.challenges[uniqueCode];
       if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
       requireOwner(challenge, expectedOwner);
-      challenge.deferredReason = reason.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 1_000);
-      if (nextProbe) challenge.nextProbe = nextProbe.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 1_000);
+      challenge.deferredReason = cleanText(reason, 1_000);
+      if (nextProbe) challenge.nextProbe = cleanText(nextProbe, 1_000);
       const now = this.now();
+      appendBlackboard(challenge, {
+        at: now,
+        worker: expectedOwner,
+        kind: "attempt_end",
+        summary: challenge.deferredReason || "Deferred for a later attempt",
+        evidenceRef: challenge.lastEvidenceRef,
+        approach: challenge.currentApproach,
+        triedFamilies: challenge.triedFamilies.slice(-10),
+        ruledOutFamilies: challenge.ruledOutFamilies.slice(-10),
+        nextProbe: challenge.nextProbe
+      });
       finishAttempt(challenge, now, challenge.deferredReason || "deferred");
+      enqueueForRevisit(this.state, challenge, now);
       const metric = this.metrics.challenges[uniqueCode];
       if (metric) metric.deferredCount += 1;
       this.metrics.totalDefers += 1;
-      // Recovery/Endgame can transfer a valuable live target to a fresh
-      // worker without destroying login/shell state. It still occupies one
-      // of the platform's three container slots during the short grace.
-      challenge.status = options?.preserveContainer ? "handoff_waiting" : "closing";
+      challenge.status = "closing";
       challenge.owner = null;
-      challenge.pendingStatus = options?.preserveContainer ? undefined : "deferred";
-      challenge.handoffExpiresAt = options?.preserveContainer ? now + HANDOFF_GRACE_MS : null;
+      challenge.pendingStatus = "deferred";
       recalculate(this.state);
       await this.persist();
       return challenge;
@@ -1042,12 +1093,11 @@ export class BenchmarkLedger {
       const challenge = this.state.challenges[uniqueCode];
       if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
       requireOwner(challenge, expectedOwner);
-      challenge.deferredReason = reason.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 1_000);
+      challenge.deferredReason = cleanText(reason, 1_000);
       finishAttempt(challenge, this.now(), challenge.deferredReason || "exhausted");
       challenge.status = "closing";
       challenge.owner = null;
       challenge.pendingStatus = "exhausted";
-      challenge.handoffExpiresAt = null;
       recalculate(this.state);
       await this.persist();
       return challenge;
@@ -1067,9 +1117,7 @@ export class BenchmarkLedger {
       challenge.owner = null;
       challenge.containerAddrs = [];
       challenge.containerStatus = "stopped";
-      challenge.browserHandoffState = null;
       challenge.closeFailureRecorded = false;
-      challenge.handoffExpiresAt = null;
       recalculate(this.state);
       await this.persist();
       return challenge;
@@ -1099,34 +1147,12 @@ export class BenchmarkLedger {
     });
   }
 
-  /** Move an expired warm handoff into the ordinary two-phase close path. */
-  async expireHandoff(uniqueCode: string): Promise<ChallengeState> {
-    return this.serialize(async () => {
-      const challenge = this.state.challenges[uniqueCode];
-      if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
-      if (challenge.status !== "handoff_waiting") return challenge;
-      challenge.status = "closing";
-      challenge.pendingStatus = "deferred";
-      challenge.handoffExpiresAt = null;
-      recalculate(this.state);
-      await this.persist();
-      return challenge;
-    });
-  }
-
-  expiredHandoffs(): ChallengeState[] {
-    const now = this.now();
-    return Object.values(this.state.challenges).filter((challenge) =>
-      challenge.status === "handoff_waiting" && challenge.handoffExpiresAt !== null && challenge.handoffExpiresAt <= now
-    );
-  }
-
   /** Record hint usage and content. */
   async recordHint(uniqueCode: string, hint: string | null, expectedOwner: Exclude<ChallengeOwner, null>): Promise<ChallengeState> {
     return this.serialize(async () => {
       const challenge = this.state.challenges[uniqueCode];
       if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
-      if (this.state.phase !== "second_pass" && this.state.phase !== "endgame") throw new Error("Hints are available only in recovery/endgame");
+      if (challenge.attemptCount < 2) throw new Error("Hints are available only from the second attempt onward");
       if (challenge.status === "solved" || challenge.status === "exhausted" || challenge.status === "closing") {
         throw new Error(`Challenge ${uniqueCode} is ${challenge.status}; a hint would be wasted`);
       }
@@ -1148,19 +1174,30 @@ export class BenchmarkLedger {
 
   /** Release a challenge when a subagent exits abnormally without completing it.
    * Sets closing state — the caller must confirmClosed() after the platform confirms. */
-  async releaseOnSubagentExit(uniqueCode: string, reason: string, expectedOwner: `subagent:${string}`, pendingStatus: "deferred" | "exhausted" = "deferred", options?: { preserveContainer?: boolean }): Promise<ChallengeState> {
+  async releaseOnSubagentExit(uniqueCode: string, reason: string, expectedOwner: `subagent:${string}`, pendingStatus: "deferred" | "exhausted" = "deferred"): Promise<ChallengeState> {
     return this.serialize(async () => {
       const challenge = this.state.challenges[uniqueCode];
       if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
       if (challenge.status === "solved" || challenge.status === "exhausted") return challenge;
       requireOwner(challenge, expectedOwner);
       const now = this.now();
+      appendBlackboard(challenge, {
+        at: now,
+        worker: expectedOwner,
+        kind: "attempt_end",
+        summary: cleanText(reason, 1_000),
+        evidenceRef: challenge.lastEvidenceRef,
+        approach: challenge.currentApproach,
+        triedFamilies: challenge.triedFamilies.slice(-10),
+        ruledOutFamilies: challenge.ruledOutFamilies.slice(-10),
+        nextProbe: challenge.nextProbe
+      });
       finishAttempt(challenge, now, reason);
-      challenge.status = options?.preserveContainer ? "handoff_waiting" : "closing";
+      challenge.status = "closing";
       challenge.owner = null;
-      challenge.deferredReason = reason.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 1_000);
-      challenge.pendingStatus = options?.preserveContainer ? undefined : pendingStatus;
-      challenge.handoffExpiresAt = options?.preserveContainer ? now + HANDOFF_GRACE_MS : null;
+      challenge.deferredReason = cleanText(reason, 1_000);
+      challenge.pendingStatus = pendingStatus;
+      if (pendingStatus === "deferred") enqueueForRevisit(this.state, challenge, now);
       recalculate(this.state);
       await this.persist();
       return challenge;
@@ -1175,27 +1212,19 @@ export class BenchmarkLedger {
     ).length;
   }
 
-  /** Time since last signal on a challenge, in ms. */
-  signalElapsedMs(uniqueCode: string): number {
-    const challenge = this.state.challenges[uniqueCode];
-    if (!challenge || !challenge.lastSignalAt) return 0;
-    return Math.max(0, this.now() - (challenge.lastMeaningfulProgressAt || challenge.lastSignalAt));
-  }
-
   budgetFor(uniqueCode: string): ChallengeBudget | undefined {
     const challenge = this.state.challenges[uniqueCode];
     if (!challenge) return undefined;
     const now = this.now();
-    const policy = budgetPolicyFor(this.state);
     const startedAt = challenge.currentAttemptStartedAt ?? now;
-    const sinceProgressMs = Math.max(0, now - (challenge.lastMeaningfulProgressAt || startedAt));
     const elapsedMs = Math.max(0, now - startedAt);
-    const noProgressExpired = sinceProgressMs >= policy.noProgressMs;
-    const hardRemainingMs = challenge.hardDeadlineAt === null ? null : challenge.hardDeadlineAt - now;
-    const hardExpired = hardRemainingMs !== null && hardRemainingMs <= 0;
-    const endgameProgressAnchor = Math.max(startedAt, challenge.lastAcceptedFlagAt ?? 0);
-    const workerRotationDue = this.state.phase === "endgame" && now - endgameProgressAnchor >= 30 * MINUTE;
-    return { policy, elapsedMs, sinceProgressMs, hardRemainingMs, noProgressExpired, hardExpired, workerRotationDue, expired: noProgressExpired || hardExpired || workerRotationDue };
+    const firstAttempt = challenge.attemptCount === 1 && challenge.currentAttemptStartedAt !== null;
+    return {
+      firstAttempt,
+      elapsedMs,
+      warningDue: firstAttempt && elapsedMs >= FIRST_ATTEMPT_WARNING_MS && challenge.firstAttemptWarningIssuedAt === null,
+      expired: firstAttempt && now >= (challenge.hardDeadlineAt ?? startedAt + FIRST_ATTEMPT_LIMIT_MS)
+    };
   }
 
   budgetForOwner(owner: Exclude<ChallengeOwner, null>): { challenge: ChallengeState; budget: ChallengeBudget } | undefined {
@@ -1212,72 +1241,75 @@ export class BenchmarkLedger {
     return this.budgetFor(uniqueCode)?.expired ?? false;
   }
 
-  /** Candidate challenges for acquisition, ordered by priority. */
-  candidates(count = 10, offset = 0): ChallengeState[] {
-    const difficultyOrder: Record<string, number> = { easy: 0, medium: 1, hard: 2 };
-    return Object.values(this.state.challenges)
-      .filter((challenge) => challenge.status === "pending" || challenge.status === "orphaned" || challenge.status === "handoff_waiting"
-        || ((this.state.phase === "second_pass" || this.state.phase === "endgame") && challenge.status === "deferred"))
-      .sort((left, right) => {
-        const handoffDelta = Number(right.status === "handoff_waiting") - Number(left.status === "handoff_waiting");
-        if (handoffDelta !== 0) return handoffDelta;
-        if (this.state.phase === "endgame") {
-          const oneFlagDelta = Number(right.flagCount - right.correctFlagCount === 1) - Number(left.flagCount - left.correctFlagCount === 1);
-          if (oneFlagDelta !== 0) return oneFlagDelta;
-          const partialDelta = Number(isPartialChallenge(right)) - Number(isPartialChallenge(left));
-          if (partialDelta !== 0) return partialDelta;
-          const durable = (challenge: ChallengeState) => challenge.lastSignalKind === "foothold" || challenge.lastSignalKind === "credential"
-            || challenge.lastSignalKind === "privilege_change" || challenge.lastSignalKind === "stage_transition";
-          const durableDelta = Number(durable(right)) - Number(durable(left));
-          if (durableDelta !== 0) return durableDelta;
-          const scoreDelta = (right.totalScore - right.scoreObtained) - (left.totalScore - left.scoreObtained);
-          if (scoreDelta !== 0) return scoreDelta;
-          const remainingDelta = (left.flagCount - left.correctFlagCount) - (right.flagCount - right.correctFlagCount);
-          if (remainingDelta !== 0) return remainingDelta;
-        }
-        if (this.state.phase !== "first_pass") {
-          const partialDelta = Number(isPartialChallenge(right)) - Number(isPartialChallenge(left));
-          if (partialDelta !== 0) return partialDelta;
-          const remainingDelta = (left.flagCount - left.correctFlagCount) - (right.flagCount - right.correctFlagCount);
-          if (remainingDelta !== 0) return remainingDelta;
-          const scoreDelta = (right.totalScore - right.scoreObtained) - (left.totalScore - left.scoreObtained);
-          if (scoreDelta !== 0) return scoreDelta;
-          const progressDelta = right.lastMeaningfulProgressAt - left.lastMeaningfulProgressAt;
-          if (progressDelta !== 0) return progressDelta;
-          const attemptDelta = left.attemptCount - right.attemptCount;
-          if (attemptDelta !== 0) return attemptDelta;
-        }
-        // Orphaned first (recover existing state), then easy→hard, then high score.
-        const orphanDelta = Number(right.status === "orphaned") - Number(left.status === "orphaned");
-        if (orphanDelta !== 0) return orphanDelta;
-        const difficultyDelta = (difficultyOrder[left.difficulty] ?? 1) - (difficultyOrder[right.difficulty] ?? 1);
-        if (difficultyDelta !== 0) return difficultyDelta;
-        const scoreDelta = right.totalScore - left.totalScore;
-        if (scoreDelta !== 0) return scoreDelta;
-        const flagDelta = right.flagCount - left.flagCount;
-        return flagDelta !== 0 ? flagDelta : left.uniqueCode.localeCompare(right.uniqueCode);
-      })
-      .slice(offset, offset + count);
+  /** Consume the only proactive timer notice. Routine context remains silent. */
+  async consumeFirstAttemptWarning(owner: Exclude<ChallengeOwner, null>): Promise<ChallengeState | undefined> {
+    return this.serialize(async () => {
+      const active = Object.values(this.state.challenges).find((candidate) =>
+        candidate.owner === owner && candidate.status === "running"
+      );
+      if (!active || !this.budgetFor(active.uniqueCode)?.warningDue) return undefined;
+      active.firstAttemptWarningIssuedAt = this.now();
+      await this.persist();
+      return active;
+    });
   }
 
-  /** Transition to second_pass when no pending challenges remain. */
+  /** Candidate challenges for acquisition, ordered by priority. */
+  candidates(count = 10, offset = 0): ChallengeState[] {
+    const challenges = Object.values(this.state.challenges);
+    const liveOrphans = challenges.filter((challenge) => challenge.status === "orphaned" && hasReusableBenchmarkContainer(challenge));
+    const liveCoverageOrphans = liveOrphans.filter((challenge) => challenge.currentAttemptPhase === "coverage");
+    const liveRevisitOrphans = liveOrphans.filter((challenge) => challenge.currentAttemptPhase !== "coverage");
+    const stoppedCoverageOrphans = challenges.filter((challenge) => challenge.status === "orphaned"
+      && challenge.currentAttemptPhase === "coverage" && !hasReusableBenchmarkContainer(challenge));
+    const unseen = challenges.filter((challenge) => !challenge.isCompleted && challenge.attemptCount === 0
+      && (challenge.status === "pending" || challenge.status === "orphaned"));
+    // Tiered so coverage keeps priority. A stranded revisit orphan surfaces
+    // last during coverage: resuming it is permitted (it already owns its
+    // platform slot) and may be the only way to free a saturated container cap.
+    const pool: Array<{ challenge: ChallengeState; tier: number }> =
+      unseen.length > 0 || liveCoverageOrphans.length > 0
+        ? [
+            ...liveCoverageOrphans.map((challenge) => ({ challenge, tier: 0 })),
+            ...unseen.filter((challenge) => !liveCoverageOrphans.includes(challenge)).map((challenge) => ({ challenge, tier: 1 })),
+            ...liveRevisitOrphans.map((challenge) => ({ challenge, tier: 2 }))
+          ]
+        : stoppedCoverageOrphans.length > 0
+          ? [
+              ...stoppedCoverageOrphans.map((challenge) => ({ challenge, tier: 0 })),
+              ...liveRevisitOrphans.map((challenge) => ({ challenge, tier: 1 }))
+            ]
+        : liveOrphans.length > 0
+          ? liveOrphans.map((challenge) => ({ challenge, tier: 0 }))
+          : coverageIsComplete(this.state)
+            ? challenges.filter((challenge) => !challenge.isCompleted
+              && (challenge.status === "deferred" || challenge.status === "orphaned" || challenge.status === "pending"))
+              .map((challenge) => ({ challenge, tier: 0 }))
+            : [];
+    const unseenCount = unseen.length;
+    return pool
+      .sort((left, right) => {
+        if (left.tier !== right.tier) return left.tier - right.tier;
+        const a = left.challenge;
+        const b = right.challenge;
+        const orphanDelta = Number(b.status === "orphaned") - Number(a.status === "orphaned");
+        if (orphanDelta !== 0) return orphanDelta;
+        if (unseenCount === 0) {
+          const queueDelta = a.revisitQueueOrder - b.revisitQueueOrder;
+          if (queueDelta !== 0) return queueDelta;
+        }
+        const scoreDelta = a.totalScore - b.totalScore;
+        if (scoreDelta !== 0) return scoreDelta;
+        return a.uniqueCode.localeCompare(b.uniqueCode);
+      })
+      .slice(offset, offset + count)
+      .map((entry) => entry.challenge);
+  }
+
+  /** Derive coverage/revisit state; there is no tactical round scheduler. */
   async maybeAdvancePhase(): Promise<BenchmarkPhase> {
     return this.serialize(async () => {
-      if (this.state.phase === "first_pass") {
-        // Do not enter recovery merely because every pending challenge has
-        // been handed to a worker. The first pass ends only after every live,
-        // reserved, orphaned, and closing first-pass attempt has settled.
-        const hasFirstPassWork = Object.values(this.state.challenges).some((challenge) =>
-          challenge.status === "pending" || challenge.status === "orphaned"
-          || challenge.status === "reserved"
-          || challenge.status === "running" || challenge.status === "closing"
-        );
-        if (!hasFirstPassWork) this.state.phase = "second_pass";
-      }
-      if (this.state.phase === "second_pass") {
-        const remaining = unfinishedCount(this.state);
-        if (remaining > 0 && remaining <= 3) this.state.phase = "endgame";
-      }
+      if (this.state.phase !== "completed") this.state.phase = coverageIsComplete(this.state) ? "revisit" : "coverage";
       await this.persist();
       return this.state.phase;
     });

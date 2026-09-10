@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { buildBenchmarkContinuity } from "./continuity";
-import { BenchmarkLedger, type ChallengeState } from "./ledger";
+import { BenchmarkLedger } from "./ledger";
 import type { Challenge } from "./controller";
 
 const realHome = process.env.HOME;
@@ -49,37 +49,37 @@ test("includes run state, challenge queue, and my-challenge", async () => {
   await ledger.checkpoint("ch-1", "found login at /admin", ["web"], "try sqli on search", "main");
   const text = buildBenchmarkContinuity(ledger);
   assert.match(text, /<riftx-benchmark-continuity>/);
-  assert.match(text, /phase=first_pass/);
+  assert.match(text, /schedule=coverage/);
   assert.match(text, /solved=0\/3/);
   assert.match(text, /My challenge: ch-1/);
   assert.match(text, /addr: 10\.0\.0\.1:80/);
   assert.match(text, /found login at \/admin/);
-  assert.match(text, /tried: web/);
   assert.match(text, /next_probe: try sqli on search/);
   assert.match(text, /SubAgent challenges \(0\/2\)/);
-  assert.match(text, /Next candidates:/);
-  assert.match(text, /ch-2.*easy/);
+  assert.match(text, /Eligible candidates/);
+  assert.match(text, /ch-2.*100pts/);
   assert.match(text, /<\/riftx-benchmark-continuity>/);
 });
 
-test("phase timebox exhaustion emits an enforced stop directive", async () => {
-  const { ledger } = await setup();
+test("first-attempt exhaustion emits an enforced stop directive", async () => {
+  let now = 1_000_000;
+  const sessionId = `timeout-${Date.now()}`;
+  const ledger = await new BenchmarkLedger(sessionId, () => now).initialize();
+  await ledger.syncFromPlatform([platformChallenge("ch-1")], true, "ip");
   await ledger.acquire("ch-1", "main", ["a"]);
-  const challenge = ledger.getChallenge("ch-1") as ChallengeState;
-  challenge.lastSignalAt = Date.now() - 9 * 60 * 1000;
-  challenge.lastMeaningfulProgressAt = challenge.lastSignalAt;
+  now += 30 * 60 * 1000;
   const text = buildBenchmarkContinuity(ledger);
-  assert.match(text, /TIMEBOX_EXPIRED/);
+  assert.match(text, /FIRST_ATTEMPT_COMPLETE/);
   assert.match(text, /Solving tools are blocked/);
 });
 
-test("fresh signal shows elapsed time without warning", async () => {
+test("ordinary continuity does not expose a running countdown", async () => {
   const { ledger } = await setup();
   await ledger.acquire("ch-1", "main", ["a"]);
   await ledger.checkpoint("ch-1", "fresh signal", undefined, undefined, "main");
   const text = buildBenchmarkContinuity(ledger);
-  assert.doesNotMatch(text, /TIMEBOX_EXPIRED/);
-  assert.match(text, /last_progress: fresh signal \(0m ago/);
+  assert.doesNotMatch(text, /elapsed|remaining|minute/i);
+  assert.match(text, /fresh signal/);
 });
 
 test("recovery continuity tells the next attempt to change approach", async () => {
@@ -94,10 +94,9 @@ test("recovery continuity tells the next attempt to change approach", async () =
   await ledger.maybeAdvancePhase();
   await ledger.acquire("ch-1", "main", ["b"]);
   const text = buildBenchmarkContinuity(ledger);
-  assert.match(text, /ATTEMPT 2/);
-  assert.match(text, /PREVIOUS_APPROACHES: 1:generic SQLi automation/);
-  assert.match(text, /STRATEGY_RESET: This is a recovery attempt/);
-  assert.match(text, /RULED_OUT: SQLi/);
+  assert.match(text, /attempt 2/);
+  assert.match(text, /#1 generic SQLi automation/);
+  assert.match(text, /No runtime time limit/);
 });
 
 test("solved challenges are compact — no description or process detail", async () => {
@@ -108,5 +107,5 @@ test("solved challenges are compact — no description or process detail", async
   // ch-1 appears as solved in run state but not in candidates or my challenge
   assert.match(text, /solved=1\/3/);
   assert.doesNotMatch(text, /My challenge: ch-1/);
-  assert.doesNotMatch(text, /Next candidates:[\s\S]*ch-1/);
+  assert.doesNotMatch(text, /Eligible candidates[\s\S]*ch-1/);
 });

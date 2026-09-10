@@ -292,19 +292,9 @@ All RiftX runtime data is stored under `~/.riftx/` by default:
 | `~/.riftx/subagents/<session-id>/` | Subagent state, logs, summaries, and thread metadata |
 | `~/.riftx/evidence/<session-id>/` | Findings and retained screenshots |
 | `~/.riftx/artifacts/<session-id>/` | Full text captured from long tool outputs |
-| `~/.riftx/skills/` | User-installed Agent Skills |
+| `~/.riftx/skills/` | User-installed Agent Skills (ignored by Benchmark Harness sessions) |
 
 Do not commit API keys, authorization headers, cookies, target data, certificates, private keys, session history, or generated assessment artifacts. Always inspect `git status` before committing.
-
-## Recommended Skills
-
-The [`recommended-skills/`](recommended-skills/) folder ships 7 benchmark Agent Skills for the benchmark branch (web, pwn, crypto, reverse, forensics, misc, AI/ML — each a routing-oriented SKILL.md with deep technique references, curated for autonomous benchmark runs such as TSecBench/CyBench-style suites). RiftX auto-selects the matching skill from each challenge's description, Chinese or English. Install them into your skill list to boost solving capability out of the box:
-
-```bash
-cp -r recommended-skills/*/ ~/.riftx/skills/
-```
-
-You can of course use your own skills instead — drop any skill folder with a `SKILL.md` into `~/.riftx/skills/` and RiftX loads it the same way. See the `recommended-skills/` folder for the full list.
 
 ## Project Layout
 
@@ -312,7 +302,6 @@ You can of course use your own skills instead — drop any skill folder with a `
 RiftX/
 |-- bin/                 # rx CLI entry point
 |-- docs/images/         # README interface screenshots
-|-- recommended-skills/  # Recommended Agent Skills
 |-- public/              # Logos and static assets
 |-- src/
 |   |-- app/             # Next.js pages and API Route Handlers

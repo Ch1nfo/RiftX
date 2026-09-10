@@ -62,23 +62,6 @@ export type BrowserPageInfo = {
   active: boolean;
 };
 
-/** Bounded browser authentication state used only for benchmark warm handoff.
- * It is persisted locally and never injected into model context or tool output. */
-export type BrowserHandoffState = {
-  version: 1;
-  activeIdentity: string;
-  identities: Array<{
-    id: string;
-    userAgent?: string;
-    extraHeaders?: Record<string, string>;
-    lastUrl?: string;
-    storageState: {
-      cookies: Array<Record<string, unknown>>;
-      origins: Array<Record<string, unknown>>;
-    };
-  }>;
-};
-
 export type BrowserManagerOptions = {
   scope?: BrowserScope;
   evidenceRoot?: string;

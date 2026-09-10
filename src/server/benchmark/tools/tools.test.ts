@@ -79,6 +79,46 @@ test("sync pulls challenges (bare array) and updates ledger", async () => {
   assert.equal(ledger.getState().totalChallenges, 2);
 });
 
+test("sync does not report a false leak when defer finishes before reconciliation acquires the challenge lock", async () => {
+  const sessionId = `tools-sync-race-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const ledger = await new BenchmarkLedger(sessionId).initialize();
+  const platform = platformChallenge("ch-1", { container_status: "available", container_addr: ["a"] });
+  await ledger.syncFromPlatform([platform], true, "ip");
+  await ledger.acquire("ch-1", "main", ["a"]);
+
+  let releaseClose!: () => void;
+  const closeGate = new Promise<void>((resolve) => { releaseClose = resolve; });
+  let closeStarted!: () => void;
+  const firstCloseStarted = new Promise<void>((resolve) => { closeStarted = resolve; });
+  let closeCalls = 0;
+  const controller = {
+    checkVpn: async () => ({ status: "unchecked", client_ip: "", ok: false }),
+    listChallenges: async () => [platform],
+    closeChallenge: async () => {
+      closeCalls += 1;
+      if (closeCalls === 1) {
+        closeStarted();
+        await closeGate;
+      }
+      return { unique_code: "ch-1", closed: true };
+    }
+  } as unknown as BenchmarkController;
+  const tool = createBenchmarkControlTool(controller, ledger, fakeBrowser(), () => "main");
+
+  const deferResult = execute(tool, { action: "defer", uniqueCode: "ch-1", reason: "covered" });
+  await firstCloseStarted;
+  const syncResult = execute(tool, { action: "sync" });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  releaseClose();
+  await Promise.all([deferResult, syncResult]);
+
+  assert.equal(closeCalls, 1, "sync must re-check state instead of closing the same challenge twice");
+  assert.equal(ledger.getChallenge("ch-1")?.status, "deferred");
+  assert.equal(ledger.getChallenge("ch-1")?.containerStatus, "stopped");
+  assert.equal(ledger.getChallenge("ch-1")?.closeFailureRecorded, false);
+  assert.equal(ledger.getState().activeContainers, 0);
+});
+
 test("sync persists a failed VPN preflight instead of retaining stale success", async () => {
   let vpnAvailable = true;
   const browser = fakeBrowser();
@@ -185,6 +225,44 @@ test("submit partial flag on multi-flag challenge keeps running", async () => {
   assert.equal(ledger.getChallenge("ch-1")?.status, "running");
 });
 
+test("an ambiguous submit is reconciled and retried once instead of losing the flag", async () => {
+  let submitCalls = 0;
+  const browser = fakeBrowser();
+  const sessionId = `tools-submit-retry-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const controller = new BenchmarkController({
+    baseUrl: "https://bench.test",
+    token: "test",
+    fetchImpl: async (input, init) => {
+      const url = new URL(input);
+      const method = init?.method ?? "GET";
+      if (url.pathname === "/openapi/v1/challenges" && method === "GET") {
+        return new Response(JSON.stringify([platformChallenge("ch-1", { container_status: "available", container_addr: ["a"] })]), { status: 200 });
+      }
+      if (url.pathname === "/openapi/v1/challenges/submit") {
+        submitCalls += 1;
+        if (submitCalls === 1) {
+          const aborted = new Error("connection dropped");
+          aborted.name = "AbortError";
+          throw aborted;
+        }
+        return new Response(JSON.stringify({ correct: true, awarded: 100, cumulative_score: 100, correct_flag_count: 1, total_flag_count: 1, matched_flag_index: 0 }), { status: 200 });
+      }
+      if (url.pathname === "/openapi/v1/challenges/close") {
+        return new Response(JSON.stringify({ unique_code: "ch-1", closed: true }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ message: "unexpected" }), { status: 500 });
+    }
+  });
+  const ledger = await new BenchmarkLedger(sessionId).initialize();
+  await ledger.syncFromPlatform([platformChallenge("ch-1", { container_status: "available", container_addr: ["a"] })], true, "ip");
+  await ledger.acquire("ch-1", "main", ["a"]);
+  const tool = createBenchmarkControlTool(controller, ledger, browser, () => "main");
+  const result = await execute(tool, { action: "submit", uniqueCode: "ch-1", flag: "flag{network}" });
+  assert.equal(submitCalls, 2);
+  assert.match((result.content[0] as { text: string }).text, /CORRECT.*solved/);
+  assert.equal(ledger.getChallenge("ch-1")?.status, "solved");
+});
+
 test("duplicate submit is treated as success (idempotent)", async () => {
   const { tool } = await setupTool([
     ...VPN_ROUTES,
@@ -198,7 +276,7 @@ test("duplicate submit is treated as success (idempotent)", async () => {
   assert.match((result.content[0] as { text: string }).text, /already submitted.*no penalty/);
 });
 
-test("checkpoint with same signal does not reset budget", async () => {
+test("checkpoint updates the blackboard without extending the timer", async () => {
   const { tool } = await setupTool([
     ...VPN_ROUTES,
     { method: "GET", path: "/openapi/v1/challenges", body: [platformChallenge("ch-1")] },
@@ -207,11 +285,11 @@ test("checkpoint with same signal does not reset budget", async () => {
   await execute(tool, { action: "sync" });
   await execute(tool, { action: "acquire", uniqueCode: "ch-1" });
   const first = await execute(tool, { action: "checkpoint", uniqueCode: "ch-1", signal: "found login", signalKind: "new_surface" });
-  assert.match((first.content[0] as { text: string }).text, /NOT extended/);
+  assert.match((first.content[0] as { text: string }).text, /blackboard updated/);
   const strong = await execute(tool, { action: "checkpoint", uniqueCode: "ch-1", signal: "obtained admin access", signalKind: "privilege_change", evidenceRef: "request:req-1" });
-  assert.match((strong.content[0] as { text: string }).text, /clock extended/);
+  assert.match((strong.content[0] as { text: string }).text, /do not alter/);
   const repeat = await execute(tool, { action: "checkpoint", uniqueCode: "ch-1", signal: "admin access confirmed", signalKind: "privilege_change", evidenceRef: "request:req-1" });
-  assert.match((repeat.content[0] as { text: string }).text, /NOT extended/);
+  assert.match((repeat.content[0] as { text: string }).text, /blackboard updated/);
 });
 
 test("hint forbidden in pass 1", async () => {
@@ -223,7 +301,7 @@ test("hint forbidden in pass 1", async () => {
   await execute(tool, { action: "sync" });
   await execute(tool, { action: "acquire", uniqueCode: "ch-1" });
   const result = await execute(tool, { action: "hint", uniqueCode: "ch-1" });
-  assert.match((result.content[0] as { text: string }).text, /forbidden in pass 1/);
+  assert.match((result.content[0] as { text: string }).text, /unavailable on the first attempt/);
 });
 
 test("defer closes container and releases slot", async () => {
@@ -271,11 +349,10 @@ test("child session with assignedChallenge: only allowed actions, locked uniqueC
   const other = await tool.execute("c3", { action: "checkpoint", uniqueCode: "ch-2", signal: "x" }, undefined, undefined, ctx);
   assert.match((other.content[0] as { text: string }).text, /assigned to ch-1/);
   const own = await tool.execute("c4", { action: "checkpoint", signal: "found something", signalKind: "foothold", evidenceRef: "artifact:scan-1" }, undefined, undefined, ctx);
-  assert.match((own.content[0] as { text: string }).text, /clock extended/);
+  assert.match((own.content[0] as { text: string }).text, /blackboard updated/);
 });
 
 test("assign tool dispatches and passes uniqueCode to spawnSubagent", async () => {
-  const browser = fakeBrowser();
   const sessionId = `assign-${Date.now()}`;
   const controller = new BenchmarkController({
     baseUrl: "https://b.test", token: "t",
@@ -291,7 +368,7 @@ test("assign tool dispatches and passes uniqueCode to spawnSubagent", async () =
   await ledger.syncFromPlatform([platformChallenge("ch-1")], true, "ip");
   let dispatched = "";
   let passedUniqueCode = "";
-  const tool = createAssignBenchmarkChallengeTool(controller, ledger, browser, async (task, uniqueCode, _containerAddrs, reservationOwner) => {
+  const tool = createAssignBenchmarkChallengeTool(controller, ledger, async (task, uniqueCode, _containerAddrs, reservationOwner) => {
     dispatched = task;
     passedUniqueCode = uniqueCode;
     await ledger.bindOwner(uniqueCode, reservationOwner, "subagent:task-1");
@@ -308,7 +385,6 @@ test("assign tool dispatches and passes uniqueCode to spawnSubagent", async () =
 });
 
 test("assign tool reports a SubAgent cancelled during dispatch as not assigned", async () => {
-  const browser = fakeBrowser();
   const sessionId = `assign-cancel-${Date.now()}`;
   const controller = new BenchmarkController({
     baseUrl: "https://b.test", token: "t",
@@ -325,7 +401,7 @@ test("assign tool reports a SubAgent cancelled during dispatch as not assigned",
   });
   const ledger = await new BenchmarkLedger(sessionId).initialize();
   await ledger.syncFromPlatform([platformChallenge("ch-1")], true, "ip");
-  const tool = createAssignBenchmarkChallengeTool(controller, ledger, browser, async (_task, uniqueCode, _containerAddrs, reservationOwner) => {
+  const tool = createAssignBenchmarkChallengeTool(controller, ledger, async (_task, uniqueCode, _containerAddrs, reservationOwner) => {
     // Mirror the real bridge: binding completes, then the task turns out to
     // have been cancelled during the binding window and the challenge was
     // released with a confirmed container close.
@@ -339,85 +415,7 @@ test("assign tool reports a SubAgent cancelled during dispatch as not assigned",
   const result = await tool.execute("call", { uniqueCode: "ch-1" }, undefined, undefined, ctx);
   const text = (result.content[0] as { text: string }).text;
   assert.match(text, /cancelled during dispatch/);
-  assert.match(text, /re-assign/);
+  assert.match(text, /reassign/);
   assert.equal(ledger.getChallenge("ch-1")?.status, "deferred", "released challenge returns to the pool");
   assert.equal(ledger.getChallenge("ch-1")?.owner, null);
-});
-
-test("assign reuses a warm-handoff container and briefs a different recovery approach", async () => {
-  const browser = fakeBrowser();
-  const sessionId = `assign-handoff-${Date.now()}`;
-  let startCalls = 0;
-  const controller = new BenchmarkController({
-    baseUrl: "https://b.test", token: "t",
-    fetchImpl: async (input, init) => {
-      const url = new URL(input);
-      if (url.pathname === "/openapi/v1/challenges/start" && init?.method === "POST") startCalls += 1;
-      return new Response(JSON.stringify({ code: "unexpected" }), { status: 500, headers: { Connection: "close" } });
-    }
-  });
-  const ledger = await new BenchmarkLedger(sessionId).initialize();
-  await ledger.syncFromPlatform([platformChallenge("ch-1", { flag_count: 2 })], true, "ip");
-  await ledger.acquire("ch-1", "main", ["old"]);
-  await ledger.checkpoint("ch-1", "sqlmap ruled out generic injection", ["SQLi"], "audit access control", "main", {
-    signalKind: "decisive_rule_out", currentApproach: "generic SQLi", ruledOutFamilies: ["SQLi"]
-  });
-  await ledger.recordSubmission("ch-1", "flag{one}", true, 50, 1, 0, "main");
-  await ledger.defer("ch-1", "first pass complete", "audit access control", "main");
-  await ledger.confirmClosed("ch-1");
-  await ledger.maybeAdvancePhase();
-  await ledger.acquire("ch-1", "subagent:old", ["live:8080"]);
-  await ledger.defer("ch-1", "timebox", "try source audit", "subagent:old", { preserveContainer: true });
-
-  let brief = "";
-  const tool = createAssignBenchmarkChallengeTool(controller, ledger, browser, async (task, uniqueCode, _addrs, reservationOwner) => {
-    brief = task;
-    await ledger.bindOwner(uniqueCode, reservationOwner, "subagent:fresh");
-    return { taskId: "fresh" };
-  });
-  const result = await tool.execute("handoff", { uniqueCode: "ch-1" }, undefined, undefined, {} as Parameters<typeof tool.execute>[4]);
-  assert.match((result.content[0] as { text: string }).text, /warm handoff/);
-  assert.equal(startCalls, 0, "a live handoff must not start a replacement container");
-  assert.match(brief, /Mandatory strategy reset/);
-  assert.match(brief, /generic SQLi/);
-  assert.match(brief, /first three probes/);
-  assert.equal(ledger.getChallenge("ch-1")?.owner, "subagent:fresh");
-});
-
-test("failed warm-handoff dispatch restores the live handoff instead of closing it", async () => {
-  const browser = fakeBrowser();
-  const sessionId = `assign-handoff-fail-${Date.now()}`;
-  let startCalls = 0;
-  let closeCalls = 0;
-  const controller = new BenchmarkController({
-    baseUrl: "https://b.test", token: "t",
-    fetchImpl: async (input, init) => {
-      const url = new URL(input);
-      if (url.pathname.endsWith("/start") && init?.method === "POST") startCalls += 1;
-      if (url.pathname.endsWith("/close") && init?.method === "POST") closeCalls += 1;
-      return new Response(JSON.stringify({ code: "unexpected" }), { status: 500, headers: { Connection: "close" } });
-    }
-  });
-  const ledger = await new BenchmarkLedger(sessionId).initialize();
-  await ledger.syncFromPlatform([platformChallenge("ch-1", { flag_count: 2 })], true, "ip");
-  await ledger.acquire("ch-1", "main", ["old"]);
-  await ledger.recordSubmission("ch-1", "flag{one}", true, 50, 1, 0, "main");
-  await ledger.defer("ch-1", "covered", "try source audit", "main");
-  await ledger.confirmClosed("ch-1");
-  await ledger.maybeAdvancePhase();
-  await ledger.acquire("ch-1", "subagent:old", ["live:8080"]);
-  await ledger.defer("ch-1", "rotate", "try protocol abuse", "subagent:old", { preserveContainer: true });
-  const attemptsBefore = ledger.getChallenge("ch-1")!.attemptCount;
-
-  const tool = createAssignBenchmarkChallengeTool(controller, ledger, browser, async () => {
-    throw new Error("child runtime failed to initialize");
-  });
-  const result = await tool.execute("handoff-fail", { uniqueCode: "ch-1" }, undefined, undefined, {} as Parameters<typeof tool.execute>[4]);
-
-  assert.match((result.content[0] as { text: string }).text, /returned to warm-handoff state/);
-  assert.equal(startCalls, 0);
-  assert.equal(closeCalls, 0);
-  assert.equal(ledger.getChallenge("ch-1")?.status, "handoff_waiting");
-  assert.deepEqual(ledger.getChallenge("ch-1")?.containerAddrs, ["live:8080"]);
-  assert.equal(ledger.getChallenge("ch-1")?.attemptCount, attemptsBefore, "failed dispatch must not count as a real attempt");
 });

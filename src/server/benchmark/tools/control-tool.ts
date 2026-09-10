@@ -1,9 +1,8 @@
 import { Type } from "@sinclair/typebox";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { BenchmarkError, type BenchmarkController, type VpnCheckResult } from "../controller";
-import { budgetPolicyFor, hasReusableBenchmarkContainer, isPartialChallenge, type BenchmarkLedger, type ChallengeState, type ProgressSignalKind } from "../ledger";
+import { hasReusableBenchmarkContainer, type BenchmarkLedger, type ChallengeState, type ProgressSignalKind } from "../ledger";
 import type { BrowserManager } from "@/browser";
-import { reconcileExpiredHandoffs, scheduleHandoffCleanup } from "../handoff";
 
 function friendlyError(error: BenchmarkError): string {
   switch (error.kind) {
@@ -24,6 +23,11 @@ function isBenchmarkError(error: unknown): error is BenchmarkError {
   return error instanceof BenchmarkError;
 }
 
+function isAmbiguousMutationError(error: unknown): error is BenchmarkError {
+  return error instanceof BenchmarkError
+    && (error.kind === "timeout" || error.kind === "connection_error" || error.kind === "internal_error");
+}
+
 function scoreLabel(state: Readonly<ReturnType<BenchmarkLedger["getState"]>>): string {
   return state.scoreExact ? String(state.cumulativeScore) : `${state.cumulativeScore}+ (one or more challenge scores are unavailable from the list endpoint)`;
 }
@@ -33,38 +37,28 @@ function recoveryText(challenge: ChallengeState): string {
   const lines = [
     challenge.lastMeaningfulSignalContent
       ? `Previous meaningful signal: ${challenge.lastMeaningfulSignalContent}`
-      : challenge.lastSignalContent ? `Latest checkpoint (did not extend time): ${challenge.lastSignalContent}` : "",
+      : challenge.lastSignalContent ? `Latest checkpoint: ${challenge.lastSignalContent}` : "",
     challenge.triedFamilies.length ? `Already tried: ${challenge.triedFamilies.join(", ")}` : "",
     challenge.nextProbe ? `Saved next probe: ${challenge.nextProbe}` : "",
     challenge.deferredReason ? `Previous defer reason: ${challenge.deferredReason}` : "",
     challenge.hintContent ? `Hint already purchased: ${challenge.hintContent}` : "",
     attempts.length ? `Previous approaches: ${attempts.map((attempt) => `${attempt.attemptNumber}:${attempt.approach}`).join(" | ")}` : "",
     attempts.some((attempt) => attempt.ruledOutFamilies.length) ? `Ruled out: ${[...new Set(attempts.flatMap((attempt) => attempt.ruledOutFamilies))].join(", ")}` : "",
-    challenge.attemptCount > 1 ? "STRATEGY RESET: choose a materially different hypothesis; do not repeat prior tools with cosmetic changes." : ""
+    challenge.blackboard.length ? `Blackboard: ${challenge.blackboard.slice(-8).map((entry) => `[${entry.kind}] ${entry.summary}${entry.nextProbe ? ` -> ${entry.nextProbe}` : ""}`).join(" | ")}` : "",
+    challenge.attemptCount > 1 ? "This revisit is not time-limited. Choose a materially different hypothesis; if truly exhausted, checkpoint and defer it for the end." : ""
   ].filter(Boolean);
   return lines.length ? `\nRecovery notes (do not repeat these attempts):\n${lines.join("\n")}` : "";
 }
 
 function scheduleSnapshot(ledger: BenchmarkLedger, challenge: ChallengeState) {
   const budget = ledger.budgetFor(challenge.uniqueCode);
-  const previousApproaches = challenge.approachHistory.slice(-4).map((attempt) => attempt.approach);
   return {
     phase: ledger.getState().phase,
     attemptNumber: challenge.attemptCount,
     progress: `${challenge.correctFlagCount}/${challenge.flagCount}`,
-    elapsedMs: budget?.elapsedMs ?? 0,
-    timeSinceProgressMs: budget?.sinceProgressMs ?? 0,
-    softDeadlineAt: challenge.lastMeaningfulProgressAt && budget ? challenge.lastMeaningfulProgressAt + budget.policy.noProgressMs : null,
-    hardDeadlineAt: challenge.hardDeadlineAt,
-    signalExtensionsRemaining: Number.isFinite(budget?.policy.maxSignalExtensions)
-      ? Math.max(0, (budget?.policy.maxSignalExtensions ?? 0) - challenge.progressExtensions)
-      : null,
-    policy: budget?.policy.label ?? "none",
+    firstAttempt: budget?.firstAttempt ?? false,
     expired: budget?.expired ?? false,
-    recommendedAction: budget?.expired
-      ? (budget.workerRotationDue ? "warm handoff to a fresh worker" : "submit, checkpoint new evidence, or defer")
-      : "continue the current challenge",
-    previousApproaches
+    recommendedAction: budget?.expired ? "write a final checkpoint and defer immediately" : "continue the current challenge"
   };
 }
 
@@ -81,7 +75,7 @@ export function createBenchmarkControlTool(
   const tool: ToolDefinition = {
     name: "benchmark_control",
     label: "Benchmark control",
-    description: "Interface to the TSec benchmark platform and shared run ledger. Actions: sync, status, acquire, evidence-backed checkpoint, submit, hint (recovery/endgame only), defer/warm-handoff, abandon, publish_intel.",
+    description: "Interface to the TSec benchmark platform and challenge blackboard. Coverage is low-score-first with one silent 30-minute first attempt per challenge; later attempts are unlimited. Actions: sync, status, acquire, checkpoint, submit, hint (attempt 2+), defer, abandon, publish_intel.",
     promptSnippet: "benchmark_control(action, uniqueCode?, flag?, signal?, signalKind?, evidenceRef?, currentApproach?, ruledOutFamilies?, nextProbe?, reason?)",
     parameters: Type.Object({
       action: Type.Union([
@@ -91,7 +85,7 @@ export function createBenchmarkControlTool(
       ], { description: "The platform action to perform" }),
       uniqueCode: Type.Optional(Type.String({ maxLength: 200, description: "Challenge unique_code (required for acquire/checkpoint/submit/hint/defer/abandon)" })),
       flag: Type.Optional(Type.String({ maxLength: 4_096, description: "Flag string to submit (submit action only)" })),
-      signal: Type.Optional(Type.String({ maxLength: 2_000, description: "Checkpoint observation. Only evidence-backed progress resets the attempt clock." })),
+      signal: Type.Optional(Type.String({ maxLength: 2_000, description: "Concise challenge-blackboard observation. Checkpoints never extend the first-attempt timer." })),
       signalKind: Type.Optional(Type.Union([
         Type.Literal("foothold"), Type.Literal("credential"), Type.Literal("privilege_change"),
         Type.Literal("exploit_primitive"), Type.Literal("stage_transition"), Type.Literal("decisive_rule_out"),
@@ -109,8 +103,10 @@ export function createBenchmarkControlTool(
       cursor: Type.Optional(Type.Number({ description: "Pagination offset for status (0-based)" }))
     }),
     async execute(_toolCallId: string, params: { action: "sync" | "status" | "acquire" | "checkpoint" | "submit" | "hint" | "defer" | "abandon" | "publish_intel"; uniqueCode?: string; flag?: string; signal?: string; signalKind?: ProgressSignalKind; evidenceRef?: string; currentApproach?: string; triedFamilies?: string[]; ruledOutFamilies?: string[]; nextProbe?: string; reason?: string; scope?: "global" | "target"; target?: string; intel?: string; cursor?: number }) {
-      return ledger.runAction(async () => {
-      await reconcileExpiredHandoffs(controller, ledger);
+      const challengeScoped = new Set(["acquire", "checkpoint", "submit", "hint", "defer", "abandon"]);
+      const actionKey = challengeScoped.has(params.action) ? (params.uniqueCode ?? assignedChallenge) : undefined;
+      const run = <T>(operation: () => Promise<T>) => actionKey ? ledger.runChallengeAction(actionKey, operation) : operation();
+      return run(async () => {
       const action = params.action;
       let uniqueCode = params.uniqueCode;
       const flag = params.flag;
@@ -132,6 +128,7 @@ export function createBenchmarkControlTool(
       try {
         switch (action) {
           case "sync": {
+            const syncGuard = ledger.captureSyncGuard();
             let vpn: VpnCheckResult;
             try {
               vpn = await controller.checkVpn();
@@ -147,20 +144,26 @@ export function createBenchmarkControlTool(
             // The public API has no VPN-check route. Preserve an explicit
             // checked/unchecked distinction instead of claiming success.
             const vpnChecked = vpn.status !== "unchecked";
-            await ledger.syncFromPlatform(challenges, vpn.ok, vpn.client_ip, vpnChecked);
+            await ledger.syncFromPlatform(challenges, vpn.ok, vpn.client_ip, vpnChecked, syncGuard);
             // Reconcile containers that outlived a completed submit or a prior
             // close timeout. Platform completion alone must not leak one of the
             // three global slots.
             const closings = Object.values(ledger.getState().challenges)
               .filter((challenge) => challenge.status === "closing" && challenge.containerStatus !== "stopped");
-            for (const challenge of closings) {
+            await Promise.all(closings.map((challenge) => ledger.runChallengeAction(challenge.uniqueCode, async () => {
+              const current = ledger.getChallenge(challenge.uniqueCode);
+              if (!current || current.status !== "closing" || !current.pendingStatus || current.containerStatus === "stopped") return;
               try {
                 await controller.closeChallenge(challenge.uniqueCode);
-                await ledger.confirmClosed(challenge.uniqueCode);
+                const afterClose = ledger.getChallenge(challenge.uniqueCode);
+                if (afterClose?.status === "closing" && afterClose.pendingStatus) await ledger.confirmClosed(challenge.uniqueCode);
               } catch {
-                await ledger.markCloseFailed(challenge.uniqueCode);
+                const afterFailure = ledger.getChallenge(challenge.uniqueCode);
+                if (afterFailure?.status === "closing" && afterFailure.containerStatus !== "stopped") {
+                  await ledger.markCloseFailed(challenge.uniqueCode);
+                }
               }
-            }
+            })));
             await ledger.maybeAdvancePhase();
             const state = ledger.getState();
             if (!Object.values(state.challenges).some((challenge) => challenge.owner === owner)) onChallengeReleased?.();
@@ -186,7 +189,7 @@ export function createBenchmarkControlTool(
             const terminalPage = terminalUnsolved.slice(offset, offset + 10);
             const mine = Object.values(state.challenges).filter((challenge) => challenge.owner === owner);
             const lines = [
-              `Phase: ${state.phase} | Run elapsed: ${Math.floor(ledger.runElapsedMs() / 60_000)}m | Score: ${scoreLabel(state)} | Solved: ${state.solvedCount}/${state.totalChallenges} | Containers: ${state.activeContainers}/3`,
+              `Schedule: ${state.phase} | Run elapsed: ${Math.floor(ledger.runElapsedMs() / 60_000)}m | Score: ${scoreLabel(state)} | Solved: ${state.solvedCount}/${state.totalChallenges} | Containers: ${state.activeContainers}/3`,
               mine.length ? `My challenge: ${mine.map((challenge) => `${challenge.uniqueCode} (${challenge.status}, flags ${challenge.correctFlagCount}/${challenge.flagCount})`).join("; ")}` : "My challenge: (none — acquire one)",
               `SubAgent challenges: ${ledger.activeSubagentCount()}/2 active`,
               `Candidates ${offset}-${offset + queue.length}:`,
@@ -198,13 +201,8 @@ export function createBenchmarkControlTool(
                 ...terminalPage.map((challenge) => `  ${challenge.uniqueCode} | flags ${challenge.correctFlagCount}/${challenge.flagCount} | ${challenge.deferredReason || "no viable hypothesis recorded"}`)
               );
             }
-            if (mine[0]) {
-              const schedule = scheduleSnapshot(ledger, mine[0]);
-              lines.splice(2, 0, `Attempt: ${schedule.attemptNumber} | Policy: ${schedule.policy} | Progress: ${schedule.progress} | Elapsed: ${Math.floor(schedule.elapsedMs / 60_000)}m | Since progress: ${Math.floor(schedule.timeSinceProgressMs / 60_000)}m | Extensions left: ${schedule.signalExtensionsRemaining ?? "unbounded"}`);
-            }
             if (mine[0] && ledger.isBudgetExhausted(mine[0].uniqueCode)) {
-              const budget = ledger.budgetFor(mine[0].uniqueCode)!;
-              lines.push(`\n⚠ TIMEBOX_EXPIRED on ${mine[0].uniqueCode} (${budget.policy.label}; ${Math.floor(budget.sinceProgressMs / 60_000)}m without meaningful progress). Submit a confirmed flag, record evidence-backed progress, or defer for a different approach${budget.workerRotationDue ? " with a fresh worker" : ""}.`);
+              lines.push(`\nFIRST_ATTEMPT_COMPLETE on ${mine[0].uniqueCode}. Save a concise blackboard checkpoint and defer immediately; solving tools are now blocked.`);
             }
             const hasMore = queue.length === 10 || offset + terminalPage.length < terminalUnsolved.length;
             return { content: [{ type: "text" as const, text: lines.join("\n") }], details: { phase: state.phase, nextCursor: hasMore ? offset + 10 : null } };
@@ -213,12 +211,6 @@ export function createBenchmarkControlTool(
             if (!uniqueCode) throw new Error("uniqueCode is required for acquire");
             const reusable = ledger.getChallenge(uniqueCode);
             const reuseLiveContainer = hasReusableBenchmarkContainer(reusable);
-            if (reuseLiveContainer && reusable?.status === "handoff_waiting" && owner === "main") {
-              return {
-                content: [{ type: "text" as const, text: `${uniqueCode} is waiting for a warm handoff. Use assign_benchmark_challenge so a fresh worker receives the preserved container and authenticated browser state; main acquire is intentionally skipped.` }],
-                details: { uniqueCode, handoffRequiresSubagent: true }
-              };
-            }
             // Phase 1: reserve atomically (checks owner, container limit, one-worker-one-challenge).
             await ledger.reserve(uniqueCode, owner);
             let startResult;
@@ -230,7 +222,10 @@ export function createBenchmarkControlTool(
                 startResult = await controller.startChallenge(uniqueCode);
               } catch (error) {
                 // Rollback the reservation on failure.
-                await ledger.releaseReservation(uniqueCode, owner);
+                await ledger.releaseReservation(uniqueCode, owner, isBenchmarkError(error) && error.kind === "resource_unavailable"
+                  ? { countUnavailableAsAttempt: true, reason: error.message }
+                  : undefined);
+                await ledger.maybeAdvancePhase();
                 throw error;
               }
             }
@@ -244,7 +239,7 @@ export function createBenchmarkControlTool(
               browser.grantScope(normalized, true);
             }
             return {
-              content: [{ type: "text" as const, text: `Acquired ${challenge.uniqueCode} (${challenge.difficulty}, ${challenge.totalScore}pts, ${challenge.flagCount} flags; attempt ${challenge.attemptCount}).\nContainer: ${startResult.container_addr.join(", ")}${reuseLiveContainer ? " (warm handoff; existing state preserved)" : ""}\nDescription: ${challenge.description}${recoveryText(challenge)}${ledger.intelForChallenge(challenge, startResult.container_addr).length ? `\nRelevant shared intel:\n${ledger.intelForChallenge(challenge, startResult.container_addr).map((entry) => `- ${entry.target}: ${entry.intel}`).join("\n")}` : ""}\nAttempt policy: ${budgetPolicyFor(ledger.getState()).label}. Record evidence-backed progress with checkpoint.` }],
+              content: [{ type: "text" as const, text: `Acquired ${challenge.uniqueCode} (${challenge.difficulty}, ${challenge.totalScore}pts, ${challenge.flagCount} flags; attempt ${challenge.attemptCount}).\nContainer: ${startResult.container_addr.join(", ")}${reuseLiveContainer ? " (recovered live orphan)" : ""}\nDescription: ${challenge.description}${recoveryText(challenge)}${ledger.intelForChallenge(challenge, startResult.container_addr).length ? `\nRelevant shared intel:\n${ledger.intelForChallenge(challenge, startResult.container_addr).map((entry) => `- ${entry.target}: ${entry.intel}`).join("\n")}` : ""}\n${challenge.attemptCount === 1 ? "This first-attempt clock is silent: one warning at 25 minutes, hard stop at 30 minutes." : "This revisit has no runtime time limit. If truly exhausted, checkpoint and defer it for the end."}` }],
               details: { uniqueCode: challenge.uniqueCode, containerAddrs: startResult.container_addr, schedule: scheduleSnapshot(ledger, challenge) }
             };
           }
@@ -257,11 +252,8 @@ export function createBenchmarkControlTool(
               currentApproach: params.currentApproach,
               ruledOutFamilies: params.ruledOutFamilies
             });
-            const elapsedMin = Math.floor(ledger.signalElapsedMs(uniqueCode) / 60_000);
             return {
-              content: [{ type: "text" as const, text: result.extended
-                ? `Evidence-backed progress recorded. Attempt clock extended. Next probe: ${result.challenge.nextProbe || "(not set)"}`
-                : `Checkpoint saved but the attempt clock was NOT extended (${elapsedMin}m since meaningful progress). A changed description alone is not progress; provide a new evidenceRef with a qualifying signalKind, or switch/defer.` }],
+              content: [{ type: "text" as const, text: `Challenge blackboard updated. Next probe: ${result.challenge.nextProbe || "(not set)"}. Checkpoints do not alter the first-attempt limit.` }],
               details: { uniqueCode: uniqueCode, updated: result.updated, extended: result.extended, schedule: scheduleSnapshot(ledger, result.challenge) }
             };
           }
@@ -274,96 +266,85 @@ export function createBenchmarkControlTool(
                 details: { duplicateLocal: true }
               };
             }
-            let submitResult;
+            let submitResult: Awaited<ReturnType<BenchmarkController["submitFlag"]>>;
             let wasDuplicate = false;
-            let reconciledAfterTimeout = false;
+            let reconciledAfterAmbiguous = false;
+            let retriedAfterAmbiguous = false;
+            const snapshotAsSubmitResult = (match: Awaited<ReturnType<BenchmarkController["listChallenges"]>>[number]) => ({
+              correct: true,
+              awarded: 0,
+              cumulative_score: 0,
+              correct_flag_count: match.correct_flag_count,
+              total_flag_count: match.flag_count,
+              matched_flag_index: null,
+              unique_code: uniqueCode
+            });
+            const challengeSnapshot = async () => (await controller.listChallenges())
+              .find((challenge) => challenge.unique_code === uniqueCode);
             try {
               submitResult = await controller.submitFlag(uniqueCode, flag);
             } catch (error) {
-              if (isBenchmarkError(error) && error.kind === "timeout") {
-                // Never replay an ambiguous flag blindly: a wrong submission
-                // may be penalized twice. Compare authoritative progress with
-                // the snapshot taken while this owner held the action lock.
-                await ledger.recordSubmissionAttempt(uniqueCode, flag, owner);
-                let match;
+              if (isAmbiguousMutationError(error)) {
+                // A dropped response does not tell us whether the platform saw
+                // the flag. First reconcile. If progress is unchanged, retry
+                // this exact candidate once: a correct first request becomes a
+                // duplicate, while a request that never arrived gets a real
+                // answer. Only a second ambiguous result is quarantined.
+                let match: Awaited<ReturnType<BenchmarkController["listChallenges"]>>[number] | undefined;
                 try {
-                  match = (await controller.listChallenges()).find((challenge) => challenge.unique_code === uniqueCode);
+                  match = await challengeSnapshot();
                 } catch {
-                  return {
-                    content: [{ type: "text" as const, text: `Submission for ${uniqueCode} timed out and reconciliation also failed. The exact flag has been remembered; do NOT resubmit it. Sync when connectivity returns.` }],
-                    details: { outcomeUnknown: true }
-                  };
+                  // A failed readback still permits the single bounded retry.
                 }
-                if (!match || (match.correct_flag_count <= before.correctFlagCount && !match.is_completed)) {
-                  return {
-                    content: [{ type: "text" as const, text: `Submission for ${uniqueCode} timed out. Platform progress did not prove acceptance, so RiftX did not retry and risk a second penalty. Do NOT resubmit this exact flag; sync later and continue with a different hypothesis.` }],
-                    details: { outcomeUnknown: true }
-                  };
+                if (match && (match.correct_flag_count > before.correctFlagCount || match.is_completed)) {
+                  reconciledAfterAmbiguous = true;
+                  submitResult = snapshotAsSubmitResult(match);
+                } else {
+                  try {
+                    retriedAfterAmbiguous = true;
+                    submitResult = await controller.submitFlag(uniqueCode, flag);
+                  } catch (retryError) {
+                    if (isBenchmarkError(retryError) && retryError.kind === "duplicate_submit") {
+                      wasDuplicate = true;
+                      reconciledAfterAmbiguous = true;
+                      const duplicateMatch = await challengeSnapshot();
+                      if (!duplicateMatch) {
+                        return { content: [{ type: "text" as const, text: `The retry for ${uniqueCode} was reported as duplicate, but the challenge is absent from the platform list. Sync and verify state before continuing.` }], details: { error: "challenge_not_found_on_duplicate" } };
+                      }
+                      submitResult = snapshotAsSubmitResult(duplicateMatch);
+                    } else if (isAmbiguousMutationError(retryError)) {
+                      await ledger.recordSubmissionAttempt(uniqueCode, flag, owner);
+                      return {
+                        content: [{ type: "text" as const, text: `Submission for ${uniqueCode} remained ambiguous after one bounded retry. The exact candidate is quarantined to prevent an unbounded retry loop. Sync when connectivity returns; platform progress may still recover it.` }],
+                        details: { outcomeUnknown: true, retriedOnce: true }
+                      };
+                    } else {
+                      throw retryError;
+                    }
+                  }
                 }
-                reconciledAfterTimeout = true;
-                submitResult = {
-                  correct: true,
-                  awarded: 0,
-                  cumulative_score: 0,
-                  correct_flag_count: match.correct_flag_count,
-                  total_flag_count: match.flag_count,
-                  matched_flag_index: null,
-                  unique_code: uniqueCode
-                };
               } else if (isBenchmarkError(error) && error.kind === "duplicate_submit") {
                 // A duplicate means the flag was already accepted. Sync the
                 // platform for authoritative counts. Fail closed if the
                 // challenge is not found — a phantom duplicate is suspicious.
                 wasDuplicate = true;
-                const challenges = await controller.listChallenges();
-                const match = challenges.find((challenge) => challenge.unique_code === uniqueCode);
+                const match = await challengeSnapshot();
                 if (!match) {
                   return { content: [{ type: "text" as const, text: `Duplicate submit for ${uniqueCode}, but the challenge is not found on the platform. Sync and verify the challenge state before continuing.` }], details: { error: "challenge_not_found_on_duplicate" } };
                 }
-                submitResult = {
-                  correct: true, // duplicate → the flag was correct previously
-                  awarded: 0,
-                  cumulative_score: 0, // placeholder; duplicate responses do not expose the exact cumulative score
-                  correct_flag_count: match.correct_flag_count,
-                  total_flag_count: match.flag_count,
-                  matched_flag_index: null,
-                  unique_code: uniqueCode
-                };
-                // If the platform says the challenge is now fully completed,
-                // update the ledger immediately and attempt close.
-                if (match.is_completed) {
-                  await ledger.recordSubmission(uniqueCode, flag, true, undefined, match.correct_flag_count, null, owner);
-                  const solved = await ledger.markSolved(uniqueCode, undefined, owner);
-                  let closeNote = "Container was already stopped.";
-                  if (solved.status === "closing") {
-                    try {
-                      if (match.container_status !== "stopped") await controller.closeChallenge(uniqueCode);
-                      await ledger.confirmClosed(uniqueCode);
-                      closeNote = "Container closed.";
-                    } catch {
-                      await ledger.markCloseFailed(uniqueCode);
-                      closeNote = "Container close FAILED — it still occupies a platform slot; sync will reconcile.";
-                    }
-                  }
-                  await ledger.maybeAdvancePhase();
-                  onChallengeReleased?.();
-                  return {
-                    content: [{ type: "text" as const, text: `Flag already submitted (duplicate — challenge ${uniqueCode} is completed: ${match.correct_flag_count}/${match.flag_count}). Exact cumulative score is unavailable from the list endpoint. ${closeNote}` }],
-                    details: { correct: true, solved: true, duplicate: true, scoreExact: false }
-                  };
-                }
+                submitResult = snapshotAsSubmitResult(match);
               } else {
                 throw error;
               }
             }
             await ledger.recordSubmission(
               uniqueCode, flag, submitResult.correct,
-              wasDuplicate || reconciledAfterTimeout ? undefined : submitResult.cumulative_score, submitResult.correct_flag_count, submitResult.matched_flag_index, owner
+              wasDuplicate || reconciledAfterAmbiguous ? undefined : submitResult.cumulative_score, submitResult.correct_flag_count, submitResult.matched_flag_index, owner
             );
             if (submitResult.correct && submitResult.correct_flag_count >= submitResult.total_flag_count) {
               // Mark solved first (score is real), then attempt close; a close
               // failure doesn't un-solve the challenge but must be surfaced.
-              const solved = await ledger.markSolved(uniqueCode, wasDuplicate || reconciledAfterTimeout ? undefined : submitResult.cumulative_score, owner);
+              const solved = await ledger.markSolved(uniqueCode, wasDuplicate || reconciledAfterAmbiguous ? undefined : submitResult.cumulative_score, owner);
               let closeNote = "Container closed.";
               if (solved.status === "closing") {
                 try {
@@ -377,23 +358,22 @@ export function createBenchmarkControlTool(
               await ledger.maybeAdvancePhase();
               onChallengeReleased?.();
               return {
-                content: [{ type: "text" as const, text: reconciledAfterTimeout
+                content: [{ type: "text" as const, text: reconciledAfterAmbiguous
                   ? `✓ Platform reconciliation confirms ${uniqueCode} is fully solved. Exact awarded/challenge score is unavailable from the list endpoint. ${closeNote} Acquire the next challenge.`
                   : `✓ CORRECT! Challenge ${uniqueCode} fully solved (+${submitResult.awarded} pts). Challenge score: ${submitResult.cumulative_score}. Run total: ${scoreLabel(ledger.getState())}. ${closeNote} Acquire the next challenge.` }],
-                details: { correct: true, solved: true, awarded: submitResult.awarded }
+                details: { correct: true, solved: true, awarded: submitResult.awarded, retriedAfterAmbiguous }
               };
             }
             if (submitResult.correct) {
-              const prefix = reconciledAfterTimeout
-                ? "Platform reconciliation confirms the timed-out flag increased progress."
+              const prefix = reconciledAfterAmbiguous
+                ? "Platform reconciliation confirms the ambiguous submission increased progress."
                 : wasDuplicate ? "Flag already submitted (duplicate — no penalty, already correct)." : `✓ Flag ${submitResult.matched_flag_index !== null ? submitResult.matched_flag_index + 1 : "?"} correct (+${submitResult.awarded} pts).`;
-              const budget = ledger.budgetFor(uniqueCode);
-              const nextInstruction = budget?.expired
-                ? "The flag was recorded, but this worker has reached its hard limit. Checkpoint and defer for a fresh approach; recovery will preserve valuable state when eligible."
-                : `Challenge remains active and the container is preserved. Momentum window renewed for ${Math.floor((budget?.policy.flagMomentumMs ?? 0) / 60_000)} minutes; keep finding the remaining flags and do not acquire another challenge.`;
+              const nextInstruction = ledger.isBudgetExhausted(uniqueCode)
+                ? "The flag was recorded, but the first-attempt limit has ended. Save final blackboard notes and defer immediately."
+                : "Challenge remains active. Continue finding the remaining flags; a correct flag does not extend the first-attempt limit.";
               return {
                 content: [{ type: "text" as const, text: `${prefix} Progress: ${submitResult.correct_flag_count}/${submitResult.total_flag_count}. ${nextInstruction}` }],
-                details: { correct: true, partial: true, duplicate: wasDuplicate, schedule: scheduleSnapshot(ledger, ledger.getChallenge(uniqueCode)!) }
+                details: { correct: true, partial: true, duplicate: wasDuplicate, retriedAfterAmbiguous, schedule: scheduleSnapshot(ledger, ledger.getChallenge(uniqueCode)!) }
               };
             }
             return {
@@ -404,11 +384,11 @@ export function createBenchmarkControlTool(
           case "hint": {
             if (!uniqueCode) throw new Error("uniqueCode is required for hint");
             const state = ledger.getState();
-            if (state.phase !== "second_pass" && state.phase !== "endgame") {
-              return { content: [{ type: "text" as const, text: `Hints are forbidden in pass 1. Finish the first pass, then retry in pass 2.` }], details: { hintBlocked: true } };
-            }
             const challenge = state.challenges[uniqueCode];
             if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
+            if (challenge.attemptCount < 2) {
+              return { content: [{ type: "text" as const, text: `Hints are unavailable on the first attempt. Finish coverage before revisiting ${uniqueCode}.` }], details: { hintBlocked: true } };
+            }
             if (challenge.owner && challenge.owner !== owner) throw new Error(`Challenge ${uniqueCode} is owned by ${challenge.owner}, not by ${owner}`);
             if (challenge.hintUsed) {
               return {
@@ -425,26 +405,8 @@ export function createBenchmarkControlTool(
           }
           case "defer": {
             if (!uniqueCode) throw new Error("uniqueCode is required for defer");
-            const before = ledger.getChallenge(uniqueCode);
-            if (!before) throw new Error(`Challenge ${uniqueCode} not found`);
-            const durableSignal = before.lastSignalKind === "foothold" || before.lastSignalKind === "credential"
-              || before.lastSignalKind === "privilege_change" || before.lastSignalKind === "stage_transition";
-            const preserveContainer = ledger.getState().phase !== "first_pass" && (isPartialChallenge(before) || durableSignal);
-            if (preserveContainer) {
-              let browserState;
-              try { browserState = await browser.exportHandoffState(); } catch { browserState = undefined; }
-              await ledger.saveBrowserHandoffState(uniqueCode, browserState, owner);
-            }
-            const challenge = await ledger.defer(uniqueCode, params.reason ?? "attempt budget exhausted", params.nextProbe as string | undefined, owner, { preserveContainer });
+            const challenge = await ledger.defer(uniqueCode, params.reason ?? "attempt ended", params.nextProbe as string | undefined, owner);
             onChallengeReleased?.();
-            if (challenge.status === "handoff_waiting") {
-              scheduleHandoffCleanup(controller, ledger, uniqueCode);
-              await ledger.maybeAdvancePhase();
-              return {
-                content: [{ type: "text" as const, text: `Deferred ${uniqueCode} for a warm handoff. Its live container and multi-stage state are preserved for 2 minutes. Assign a fresh worker immediately; the recovery brief will require a materially different approach. If nobody takes it, RiftX closes the container automatically.` }],
-                details: { uniqueCode, status: "handoff_waiting", handoffExpiresAt: challenge.handoffExpiresAt }
-              };
-            }
             // Close must be confirmed by the platform — a failed close keeps the
             // container alive and the slot occupied; we surface that honestly.
             try {
@@ -453,20 +415,21 @@ export function createBenchmarkControlTool(
             } catch {
               await ledger.markCloseFailed(uniqueCode);
               return {
-                content: [{ type: "text" as const, text: `Deferred ${uniqueCode}, but the container close FAILED — it is still running on the platform and occupying a slot. The next sync will reconcile; if max-active blocks new acquires, retry defer or abandon on this challenge.` }],
+                content: [{ type: "text" as const, text: `Deferred ${uniqueCode}, but the container close FAILED — it is still running on the platform and occupying a slot. The main Agent must run benchmark_control(action="sync") to reconcile it; do not retry defer or abandon because ownership has already been released.` }],
                 details: { uniqueCode, status: "closing", closeFailed: true }
               };
             }
             await ledger.maybeAdvancePhase();
             return {
-              content: [{ type: "text" as const, text: `Deferred ${uniqueCode} (${challenge.deferredReason}). Container closed. Recovery state: next probe = ${challenge.nextProbe || "(not set)"}. Acquire the next challenge.` }],
+              content: [{ type: "text" as const, text: `Deferred ${uniqueCode} (${challenge.deferredReason}). Container closed; its challenge blackboard is retained. Next probe: ${challenge.nextProbe || "(not set)"}. Acquire the next eligible low-score challenge.` }],
               details: { uniqueCode: uniqueCode, status: "deferred" }
             };
           }
           case "abandon": {
             if (!uniqueCode) throw new Error("uniqueCode is required for abandon");
-            if (ledger.getState().phase !== "second_pass" && ledger.getState().phase !== "endgame") {
-              return { content: [{ type: "text" as const, text: `abandon is terminal and is allowed only in pass 2. Use defer during pass 1.` }], details: { abandonBlocked: true } };
+            const existing = ledger.getChallenge(uniqueCode);
+            if (!existing || existing.attemptCount < 2) {
+              return { content: [{ type: "text" as const, text: `abandon is terminal and is allowed only from attempt 2 onward. Use defer during coverage.` }], details: { abandonBlocked: true } };
             }
             const challenge = await ledger.abandon(uniqueCode, params.reason ?? "no viable path", owner);
             onChallengeReleased?.();

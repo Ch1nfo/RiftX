@@ -2,18 +2,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildChildPentestSystemPrompt, buildPentestSystemPrompt } from "./system-prompt";
 
-test("benchmark prompt commands platform tools, two-pass scheduling, and the scoring objective", () => {
+test("benchmark prompt commands low-score coverage, unlimited revisits, and the scoring objective", () => {
   const prompt = buildPentestSystemPrompt("default");
   assert.match(prompt, /TSec security benchmark/);
   assert.match(prompt, /benchmark_control/);
   assert.match(prompt, /assign_benchmark_challenge/);
   assert.match(prompt, /cumulative_score/);
   assert.match(prompt, /Submit EVERY flag immediately/);
-  assert.match(prompt, /Hint is\s+forbidden in pass 1/i);
-  assert.match(prompt, /TIMEBOX_EXPIRED/);
-  assert.match(prompt, /timed-out approach is a failed hypothesis/i);
-  assert.match(prompt, /not automatic abandon/);
-  assert.match(prompt, /warm handoff/);
+  assert.match(prompt, /Hints are available only from attempt 2 onward/i);
+  assert.match(prompt, /silently capped at 30/);
+  assert.match(prompt, /materially different hypothesis/i);
+  assert.match(prompt, /no runtime time limit/i);
+  assert.match(prompt, /Every defer closes the container/);
   assert.match(prompt, /Do not use bash\/curl against the benchmark API/);
   assert.match(prompt, /No reports and no record_finding/);
   assert.match(prompt, /browser.*proactively/s);
@@ -59,6 +59,6 @@ test("child prompt is benchmark-specific with structured return format", () => {
   assert.match(prompt, /MOMENT you find a flag/);
   assert.match(prompt, /Do NOT use sync\/status\/acquire\/hint/);
   assert.match(prompt, /Do NOT use assign_benchmark_challenge/);
-  assert.match(prompt, /Do not generate reports or evidence documentation/);
+  assert.match(prompt, /Do not load skills or generate reports/);
   assert.match(prompt, /Benchmark Scope and Approval Boundary/);
 });

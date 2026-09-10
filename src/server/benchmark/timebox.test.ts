@@ -36,12 +36,29 @@ test("expired attempts block solving tools but never block benchmark control", a
   installBenchmarkTimeboxGate(control, ledger, "main");
 
   await browser.execute("before", {});
-  now += 9 * 60 * 1000;
+  now += 30 * 60 * 1000;
   const blocked = await browser.execute("after", {}) as { details?: { timeboxExpired?: boolean } };
   await control.execute("control", {});
 
   assert.equal(blocked.details?.timeboxExpired, true);
   assert.equal(executions, 2, "the expired browser call must not reach its implementation, while control remains callable");
+});
+
+test("attempt 2 remains unblocked regardless of elapsed time", async () => {
+  let now = 2_000_000;
+  const ledger = await new BenchmarkLedger(`gate-revisit-${Date.now()}`, () => now).initialize();
+  await ledger.syncFromPlatform([challenge()], true, "ip");
+  await ledger.acquire("ch-1", "main", ["a"]);
+  await ledger.defer("ch-1", "covered", "different approach", "main");
+  await ledger.confirmClosed("ch-1");
+  await ledger.maybeAdvancePhase();
+  await ledger.acquire("ch-1", "main", ["b"]);
+  let executions = 0;
+  const browser = { name: "browser", execute: async () => { executions += 1; return { content: [] }; } };
+  installBenchmarkTimeboxGate(browser, ledger, "main");
+  now += 24 * 60 * 60_000;
+  await browser.execute();
+  assert.equal(executions, 1);
 });
 
 test("a child cannot keep solving after it released its assigned challenge", async () => {

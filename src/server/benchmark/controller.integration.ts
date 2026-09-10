@@ -45,17 +45,19 @@ test("bulk lifecycle: sequential acquire → submit → close with zero leaks", 
   assert.equal(ledger.getState().totalChallenges, 10);
 
   const flagsMap = (mock as unknown as { challenges: Map<string, { flags: string[] }> }).challenges;
-  for (const challenge of challenges.slice(0, 3)) {
-    const start = await controller.startChallenge(challenge.unique_code);
-    await ledger.acquire(challenge.unique_code, "main", start.container_addr);
-    const flags = flagsMap.get(challenge.unique_code)?.flags ?? [];
+  for (let index = 0; index < 3; index += 1) {
+    const challenge = ledger.candidates(1)[0];
+    assert.ok(challenge);
+    const start = await controller.startChallenge(challenge.uniqueCode);
+    await ledger.acquire(challenge.uniqueCode, "main", start.container_addr);
+    const flags = flagsMap.get(challenge.uniqueCode)?.flags ?? [];
     for (const flag of flags) {
-      const submit = await controller.submitFlag(challenge.unique_code, flag);
-      await ledger.recordSubmission(challenge.unique_code, flag, submit.correct, submit.cumulative_score, submit.correct_flag_count, submit.matched_flag_index, "main");
+      const submit = await controller.submitFlag(challenge.uniqueCode, flag);
+      await ledger.recordSubmission(challenge.uniqueCode, flag, submit.correct, submit.cumulative_score, submit.correct_flag_count, submit.matched_flag_index, "main");
     }
-    await ledger.markSolved(challenge.unique_code, undefined, "main");
-    await controller.closeChallenge(challenge.unique_code);
-    await ledger.confirmClosed(challenge.unique_code);
+    await ledger.markSolved(challenge.uniqueCode, undefined, "main");
+    await controller.closeChallenge(challenge.uniqueCode);
+    await ledger.confirmClosed(challenge.uniqueCode);
   }
 
   const state = ledger.getState();
@@ -76,24 +78,28 @@ test("container limit: 3 concurrent max, 4th rejected (distinct owners)", async 
   const challenges = await controller.listChallenges();
   await ledger.syncFromPlatform(challenges, true, "ip");
 
-  await controller.startChallenge("ch-001");
-  await ledger.acquire("ch-001", "main", ["a"]);
-  await controller.startChallenge("ch-002");
-  await ledger.acquire("ch-002", "subagent:t1", ["b"]);
-  await controller.startChallenge("ch-003");
-  await ledger.acquire("ch-003", "subagent:t2", ["c"]);
+  const activeCodes: string[] = [];
+  for (const owner of ["main", "subagent:t1", "subagent:t2"] as const) {
+    const code = ledger.candidates(1)[0]?.uniqueCode;
+    assert.ok(code);
+    await controller.startChallenge(code);
+    await ledger.acquire(code, owner, [code]);
+    activeCodes.push(code);
+  }
   assert.equal(mock.getActiveContainers(), 3);
 
-  await assert.rejects(() => ledger.reserve("ch-004", "subagent:t3"), /Container limit/);
+  const fourth = ledger.candidates(1)[0]?.uniqueCode;
+  assert.ok(fourth);
+  await assert.rejects(() => ledger.reserve(fourth, "subagent:t3"), /Container limit/);
   try {
-    await controller.startChallenge("ch-004");
+    await controller.startChallenge(fourth);
     assert.fail("should have thrown");
   } catch (error) {
     assert.equal((error as { kind?: string }).kind, "invalid_state_max_active");
   }
 
-  await controller.closeChallenge("ch-001");
-  const start4 = await controller.startChallenge("ch-004");
+  await controller.closeChallenge(activeCodes[0]);
+  const start4 = await controller.startChallenge(fourth);
   assert.ok(start4.container_addr.length > 0);
   mock.close();
 });
@@ -191,32 +197,35 @@ test("100-challenge coverage survives partial progress, three compactions, and R
   await ledger.syncFromPlatform(challenges, true, "ip");
   const flagsMap = (mock as unknown as { challenges: Map<string, { flags: string[] }> }).challenges;
 
+  let partialCode = "";
   for (let index = 0; index < challenges.length; index += 1) {
-    const challenge = challenges[index];
-    const start = await controller.startChallenge(challenge.unique_code);
-    await ledger.acquire(challenge.unique_code, "main", start.container_addr);
+    const challenge = ledger.candidates(1)[0];
+    assert.ok(challenge);
+    const start = await controller.startChallenge(challenge.uniqueCode);
+    await ledger.acquire(challenge.uniqueCode, "main", start.container_addr);
     if (index === 1) {
-      const flag = flagsMap.get(challenge.unique_code)?.flags[0];
+      partialCode = challenge.uniqueCode;
+      const flag = flagsMap.get(challenge.uniqueCode)?.flags[0];
       assert.ok(flag, "the multi-flag fixture must expose its first flag");
-      const submit = await controller.submitFlag(challenge.unique_code, flag);
-      await ledger.recordSubmission(challenge.unique_code, flag, submit.correct, submit.cumulative_score, submit.correct_flag_count, submit.matched_flag_index, "main");
-      assert.equal(ledger.getChallenge(challenge.unique_code)?.correctFlagCount, 1);
-      assert.equal(ledger.getChallenge(challenge.unique_code)?.isCompleted, false);
+      const submit = await controller.submitFlag(challenge.uniqueCode, flag);
+      await ledger.recordSubmission(challenge.uniqueCode, flag, submit.correct, submit.cumulative_score, submit.correct_flag_count, submit.matched_flag_index, "main");
+      assert.equal(ledger.getChallenge(challenge.uniqueCode)?.correctFlagCount, 1);
+      assert.equal(ledger.getChallenge(challenge.uniqueCode)?.isCompleted, false);
     }
-    await ledger.defer(challenge.unique_code, "first-pass coverage", "use a distinct recovery approach", "main");
-    await controller.closeChallenge(challenge.unique_code);
-    await ledger.confirmClosed(challenge.unique_code);
+    await ledger.defer(challenge.uniqueCode, "first-pass coverage", "use a distinct recovery approach", "main");
+    await controller.closeChallenge(challenge.uniqueCode);
+    await ledger.confirmClosed(challenge.uniqueCode);
     if (index === 24 || index === 49 || index === 74) await ledger.recordCompaction();
   }
   await ledger.maybeAdvancePhase();
-  assert.equal(ledger.getState().phase, "second_pass");
+  assert.equal(ledger.getState().phase, "revisit");
   assert.equal(mock.getActiveContainers(), 0);
 
   const restored = await new BenchmarkLedger(sessionId).initialize();
   assert.equal(restored.getState().totalChallenges, 100);
-  assert.equal(restored.getState().phase, "second_pass");
-  assert.equal(restored.getChallenge("ch-002")?.correctFlagCount, 1);
-  assert.equal(restored.getChallenge("ch-002")?.status, "deferred");
+  assert.equal(restored.getState().phase, "revisit");
+  assert.equal(restored.getChallenge(partialCode)?.correctFlagCount, 1);
+  assert.equal(restored.getChallenge(partialCode)?.status, "deferred");
   assert.equal(restored.getMetrics().compactionCount, 3);
   assert.equal(restored.getState().activeContainers, 0);
   mock.close();

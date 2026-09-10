@@ -732,29 +732,3 @@ test("a queued operation whose signal aborts before it starts is dropped", async
   await first;
   await assert.rejects(second, /abort/i);
 });
-
-test("benchmark warm handoff restores cookie and localStorage authentication state", async () => {
-  const server = createServer((_request, response) => {
-    response.writeHead(200, { "content-type": "text/html" });
-    response.end("<main>handoff target</main>");
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
-  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/`;
-  const first = new BrowserManager({ scope: { rules: ["127.0.0.1"] } });
-  const second = new BrowserManager({ scope: { rules: ["127.0.0.1"] } });
-  try {
-    first.useIdentity("admin");
-    await first.navigate(url, "admin");
-    await first.evaluate(`document.cookie = "session=warm-auth; path=/"; localStorage.setItem("access_token", "local-auth")`, "admin");
-    const handoff = await first.exportHandoffState();
-    assert.ok(handoff);
-
-    second.importHandoffState(handoff);
-    await second.navigate(url, "admin");
-    assert.match(await second.cookies("admin"), /warm-auth/);
-    assert.match(await second.storage("admin"), /local-auth/);
-  } finally {
-    await Promise.all([first.close(), second.close()]);
-    await closeServers(server);
-  }
-});

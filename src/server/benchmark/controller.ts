@@ -9,8 +9,6 @@
  * Token is read from environment and never persisted or logged.
  */
 
-import { createSerializer } from "@/server/serializer";
-
 export const BENCHMARK_QUERY_TIMEOUT_MS = 15_000;
 export const BENCHMARK_MUTATION_TIMEOUT_MS = 30_000;
 
@@ -132,7 +130,6 @@ export class BenchmarkController {
   private readonly token: string;
   private readonly vpnUrl: string;
   private readonly fetchImpl: FetchLike;
-  private readonly serializeMutation = createSerializer();
 
   constructor(options: { baseUrl?: string; token?: string; vpnUrl?: string; fetchImpl?: FetchLike } = {}) {
     this.baseUrl = (options.baseUrl ?? process.env.BENCHMARK_BASE_URL ?? "").replace(/\/$/, "");
@@ -266,7 +263,7 @@ export class BenchmarkController {
   }
 
   async startChallenge(uniqueCode: string): Promise<StartResult> {
-    return this.serializeMutation(() => this.startChallengeUnlocked(uniqueCode));
+    return this.startChallengeUnlocked(uniqueCode);
   }
 
   private async startChallengeUnlocked(uniqueCode: string): Promise<StartResult> {
@@ -284,7 +281,10 @@ export class BenchmarkController {
       }
       return result;
     } catch (error) {
-      if (error instanceof BenchmarkError && (error.kind === "timeout" || error.kind === "invalid_state" || error.kind === "invalid_state_max_active")) {
+      if (error instanceof BenchmarkError && (
+        error.kind === "timeout" || error.kind === "connection_error" || error.kind === "internal_error"
+        || error.kind === "invalid_state" || error.kind === "invalid_state_max_active"
+      )) {
         // Reconcile: check the challenge list for actual container state.
         try {
           const challenges = await this.listChallenges();
@@ -303,14 +303,14 @@ export class BenchmarkController {
   }
 
   async submitFlag(uniqueCode: string, flag: string): Promise<SubmitResult> {
-    return this.serializeMutation(() => this.submitFlagUnlocked(uniqueCode, flag));
+    return this.submitFlagUnlocked(uniqueCode, flag);
   }
 
   private async submitFlagUnlocked(uniqueCode: string, flag: string): Promise<SubmitResult> {
     // Real contract: POST /openapi/v1/challenges/submit with { unique_code, flag } body.
-    // Do not blindly replay on timeout: some platforms penalize every wrong
-    // submission and may not deduplicate an incorrect value. The caller owns
-    // the pre-submit progress and reconciles the ambiguous outcome safely.
+    // The caller owns bounded retry policy because a dropped response is
+    // ambiguous: it reconciles platform progress first and permits at most one
+    // retry instead of allowing fetch-level blind replay loops.
     const body = await this.request(`/openapi/v1/challenges/submit`, {
       method: "POST",
       body: JSON.stringify({ unique_code: uniqueCode, flag })
@@ -332,17 +332,15 @@ export class BenchmarkController {
   }
 
   async getHint(uniqueCode: string): Promise<HintResult> {
-    return this.serializeMutation(async () => {
-      const body = await this.request(`/openapi/v1/challenges/hint?unique_code=${encodeURIComponent(uniqueCode)}`, undefined, BENCHMARK_QUERY_TIMEOUT_MS);
-      return {
-        unique_code: String(body.unique_code ?? uniqueCode),
-        hint: typeof body.hint === "string" ? body.hint : null
-      };
-    });
+    const body = await this.request(`/openapi/v1/challenges/hint?unique_code=${encodeURIComponent(uniqueCode)}`, undefined, BENCHMARK_QUERY_TIMEOUT_MS);
+    return {
+      unique_code: String(body.unique_code ?? uniqueCode),
+      hint: typeof body.hint === "string" ? body.hint : null
+    };
   }
 
   async closeChallenge(uniqueCode: string): Promise<CloseResult> {
-    return this.serializeMutation(() => this.closeChallengeUnlocked(uniqueCode));
+    return this.closeChallengeUnlocked(uniqueCode);
   }
 
   private async closeChallengeUnlocked(uniqueCode: string): Promise<CloseResult> {
@@ -356,7 +354,9 @@ export class BenchmarkController {
       }
       return { unique_code: String(body.unique_code ?? uniqueCode), closed };
     } catch (error) {
-      if (error instanceof BenchmarkError && error.kind === "timeout") {
+      if (error instanceof BenchmarkError && (
+        error.kind === "timeout" || error.kind === "connection_error" || error.kind === "internal_error"
+      )) {
         // Reconcile: only "stopped" means the close completed; stop_pending
         // means the platform is still shutting down — NOT confirmed closed.
         const challenges = await this.listChallenges();

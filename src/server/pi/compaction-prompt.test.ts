@@ -16,9 +16,9 @@ test("prompt embeds every benchmark continuity section plus conversation and pre
     customInstructions: "focus on flag 3"
   });
   for (const section of [
-    "## Run state", "## Current challenge", "## Confirmed facts",
+    "## Run state", "## Current challenge", "## Challenge blackboard", "## Confirmed facts",
     "## Attempts and ruled-out paths", "## Attempt and approach history",
-    "## Ruled-out assumptions", "## Required strategy reset", "## Target credentials and session state",
+    "## Ruled-out assumptions", "## Target credentials and session state",
     "## Browser and network references", "## Artifacts", "## SubAgent ownership",
     "## Exact next probe", "## Score optimization notes"
   ]) {
@@ -32,9 +32,9 @@ test("prompt embeds every benchmark continuity section plus conversation and pre
 
 test("validates only summaries containing every required section with minimum length", () => {
   const valid = [
-    "## Run state\npass 1", "## Current challenge\nch-1", "## Confirmed facts\nnone",
+    "## Run state\ncoverage", "## Current challenge\nch-1", "## Challenge blackboard\nnone", "## Confirmed facts\nnone",
     "## Attempts and ruled-out paths\nnone", "## Attempt and approach history\nnone",
-    "## Ruled-out assumptions\nnone", "## Required strategy reset\nchoose a different family",
+    "## Ruled-out assumptions\nnone",
     "## Target credentials and session state\nnone",
     "## Browser and network references\nnone", "## Artifacts\nnone",
     "## SubAgent ownership\nnone", "## Exact next probe\ndo the thing",
