@@ -32,7 +32,7 @@ export function createAssignBenchmarkChallengeTool(
           } catch (error) {
             if (ledger.getChallenge(uniqueCode)?.owner === reservationId) {
               await ledger.releaseReservation(uniqueCode, reservationId, error instanceof BenchmarkError && error.kind === "resource_unavailable"
-                ? { countUnavailableAsAttempt: true, reason: error.message }
+                ? { resourceUnavailable: true, reason: error.message }
                 : undefined);
               await ledger.maybeAdvancePhase();
               rollback = "released";
@@ -118,12 +118,9 @@ function buildBrief(challenge: ChallengeState, containerAddrs: string[], phase: 
     `- Keep the blackboard useful with concise checkpoint facts, tried approaches, ruled-out assumptions, artifacts, and the exact next probe.`,
     `- Only report flags observed verbatim in tool output.`,
     ``, `## Return format`,
-    `STATUS: SOLVED | PARTIAL | DEFERRED | EXHAUSTED | ERROR`,
-    `SUBMIT_STATUS: accepted count only, never repeat accepted flag strings`,
-    `APPROACH_USED: primary reasoning or attack family`,
-    `FINDINGS: access, credentials, observations, artifact paths`,
-    `RULED_OUT: failed approaches and conclusions`,
-    `WHY_STOPPED: solved, first-attempt cap, tool failure, or exhausted hypotheses`,
-    `NEXT_DISTINCT_APPROACH: best different hypothesis for the next worker`
+    `FLAG: exact captured flag string(s), else NONE`,
+    `FINDINGS: creds, access gained, key observations, useful artifact paths`,
+    `RULED_OUT: approaches tried and why they failed`,
+    `NEXT: best remaining hypotheses for a fresh agent`
   ].join("\n");
 }

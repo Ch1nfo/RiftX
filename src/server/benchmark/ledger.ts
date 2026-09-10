@@ -373,7 +373,7 @@ function requireOwner(challenge: ChallengeState, expectedOwner: Exclude<Challeng
   throw new Error(`Challenge ${challenge.uniqueCode} is owned by ${challenge.owner ?? "nobody"}, not by ${expectedOwner}`);
 }
 
-function recalculate(state: BenchmarkState): BenchmarkState {
+function recalculate(state: BenchmarkState, metrics?: BenchmarkMetrics, now: () => number = Date.now): BenchmarkState {
   const challenges = Object.values(state.challenges);
   state.solvedCount = challenges.filter((challenge) => challenge.status === "solved" || (challenge.status === "closing" && challenge.pendingStatus === "solved")).length;
   state.exhaustedCount = challenges.filter((challenge) => challenge.status === "exhausted").length;
@@ -386,6 +386,10 @@ function recalculate(state: BenchmarkState): BenchmarkState {
   state.scoreExact = challenges.filter((challenge) => challenge.correctFlagCount > 0).every((challenge) => challenge.scoreKnown === true);
   const allTerminal = challenges.length > 0 && challenges.every((challenge) => challenge.status === "solved" || challenge.status === "exhausted");
   state.phase = allTerminal ? "completed" : coverageIsComplete(state) ? "revisit" : "coverage";
+  if (metrics) {
+    if (allTerminal) metrics.completedAt ??= now();
+    else metrics.completedAt = null;
+  }
   return state;
 }
 
@@ -484,7 +488,7 @@ export class BenchmarkLedger {
     if (coverageIsComplete(this.state)) {
       this.state.phase = this.state.phase === "completed" ? "completed" : "revisit";
     }
-    recalculate(this.state);
+    recalculate(this.state, this.metrics, this.now);
     await this.persist();
     return this;
   }
@@ -503,7 +507,7 @@ export class BenchmarkLedger {
   }
 
   runElapsedMs(): number {
-    return Math.max(0, this.now() - this.metrics.startedAt);
+    return Math.max(0, (this.metrics.completedAt ?? this.now()) - this.metrics.startedAt);
   }
 
   getChallenge(uniqueCode: string): ChallengeState | undefined {
@@ -554,7 +558,7 @@ export class BenchmarkLedger {
       // without its response this challenge's per-challenge score may have
       // moved, so its cached value is no longer authoritative.
       challenge.scoreKnown = false;
-      recalculate(this.state);
+      recalculate(this.state, this.metrics, this.now);
       await this.persist();
     });
   }
@@ -695,7 +699,7 @@ export class BenchmarkLedger {
         }
         // Local scheduling state survives when the challenge is not complete.
       }
-      recalculate(this.state);
+      recalculate(this.state, this.metrics, this.now);
       await this.persist();
       return this.state;
     });
@@ -714,6 +718,7 @@ export class BenchmarkLedger {
         throw new Error(`Challenge ${uniqueCode} is owned by ${challenge.owner}`);
       }
       const eligible = challenge.status === "pending" || challenge.status === "orphaned"
+        || (challenge.status === "deferred" && challenge.attemptCount === 0)
         || (this.state.phase === "revisit" && challenge.status === "deferred");
       if (!eligible) throw new Error(`Challenge ${uniqueCode} cannot be reserved while ${challenge.status}`);
 
@@ -794,7 +799,7 @@ export class BenchmarkLedger {
       if (!this.metrics.challenges[uniqueCode]) {
         this.metrics.challenges[uniqueCode] = { acquiredAt: now, solvedAt: null, durationMs: null, attempts: 0, wrongFlags: 0, hintsUsed: 0, deferredCount: 0 };
       }
-      recalculate(this.state);
+      recalculate(this.state, this.metrics, this.now);
       await this.persist();
       return challenge;
     });
@@ -844,14 +849,14 @@ export class BenchmarkLedger {
         const metric = this.metrics.challenges[uniqueCode];
         if (metric) metric.attempts += 1;
       }
-      recalculate(this.state);
+      recalculate(this.state, this.metrics, this.now);
       await this.persist();
       return challenge;
     });
   }
 
   /** Rollback a failed start after a successful reserve. */
-  async releaseReservation(uniqueCode: string, expectedOwner: Exclude<ChallengeOwner, null>, options?: { countUnavailableAsAttempt?: boolean; reason?: string }): Promise<ChallengeState> {
+  async releaseReservation(uniqueCode: string, expectedOwner: Exclude<ChallengeOwner, null>, options?: { resourceUnavailable?: boolean; reason?: string }): Promise<ChallengeState> {
     return this.serialize(async () => {
       const challenge = this.state.challenges[uniqueCode];
       if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
@@ -859,16 +864,15 @@ export class BenchmarkLedger {
       requireOwner(challenge, expectedOwner);
       const previousStatus = challenge.reservationPreviousStatus ?? "pending";
       const startedNewAttempt = challenge.reservationStartedNewAttempt;
-      challenge.status = options?.countUnavailableAsAttempt && challenge.attemptCount === 0 ? "deferred" : previousStatus;
+      challenge.status = options?.resourceUnavailable && challenge.attemptCount === 0 ? "deferred" : previousStatus;
       challenge.reservationPreviousStatus = undefined;
       challenge.reservationStartedNewAttempt = false;
       challenge.owner = null;
       if (startedNewAttempt) {
         challenge.currentAttemptWorker = null;
       }
-      if (options?.countUnavailableAsAttempt && challenge.attemptCount === 0) {
+      if (options?.resourceUnavailable && challenge.attemptCount === 0) {
         const now = this.now();
-        challenge.attemptCount = 1;
         challenge.deferredReason = cleanText(options.reason ?? "platform resource unavailable", 1_000);
         enqueueForRevisit(this.state, challenge, now);
         appendBlackboard(challenge, {
@@ -880,12 +884,10 @@ export class BenchmarkLedger {
           approach: "platform start",
           triedFamilies: [],
           ruledOutFamilies: [],
-          nextProbe: "Retry after every challenge has received its first attempt"
+          nextProbe: "Retry after every other challenge has received its first attempt"
         });
-        const metric = this.metrics.challenges[uniqueCode];
-        if (metric) metric.attempts += 1;
       }
-      recalculate(this.state);
+      recalculate(this.state, this.metrics, this.now);
       await this.persist();
       return challenge;
     });
@@ -1012,7 +1014,7 @@ export class BenchmarkLedger {
         if (!correct) metric.wrongFlags += 1;
         this.metrics.totalWrongSubmissions += correct ? 0 : 1;
       }
-      recalculate(this.state);
+      recalculate(this.state, this.metrics, this.now);
       await this.persist();
       return challenge;
     });
@@ -1047,7 +1049,7 @@ export class BenchmarkLedger {
         metric.solvedAt = now;
         metric.durationMs = now - challenge.acquiredAt;
       }
-      recalculate(this.state);
+      recalculate(this.state, this.metrics, this.now);
       await this.persist();
       return challenge;
     });
@@ -1081,7 +1083,7 @@ export class BenchmarkLedger {
       challenge.status = "closing";
       challenge.owner = null;
       challenge.pendingStatus = "deferred";
-      recalculate(this.state);
+      recalculate(this.state, this.metrics, this.now);
       await this.persist();
       return challenge;
     });
@@ -1098,7 +1100,7 @@ export class BenchmarkLedger {
       challenge.status = "closing";
       challenge.owner = null;
       challenge.pendingStatus = "exhausted";
-      recalculate(this.state);
+      recalculate(this.state, this.metrics, this.now);
       await this.persist();
       return challenge;
     });
@@ -1118,7 +1120,7 @@ export class BenchmarkLedger {
       challenge.containerAddrs = [];
       challenge.containerStatus = "stopped";
       challenge.closeFailureRecorded = false;
-      recalculate(this.state);
+      recalculate(this.state, this.metrics, this.now);
       await this.persist();
       return challenge;
     });
@@ -1141,7 +1143,7 @@ export class BenchmarkLedger {
         challenge.status = "closing";
         challenge.pendingStatus = "solved";
       }
-      recalculate(this.state);
+      recalculate(this.state, this.metrics, this.now);
       await this.persist();
       return challenge;
     });
@@ -1198,7 +1200,55 @@ export class BenchmarkLedger {
       challenge.deferredReason = cleanText(reason, 1_000);
       challenge.pendingStatus = pendingStatus;
       if (pendingStatus === "deferred") enqueueForRevisit(this.state, challenge, now);
-      recalculate(this.state);
+      recalculate(this.state, this.metrics, this.now);
+      await this.persist();
+      return challenge;
+    });
+  }
+
+  /** Release any locally active challenge while archiving its parent session.
+   * Unlike worker-facing defer, cleanup may adopt an orphan left by a restart. */
+  async releaseForSessionCleanup(uniqueCode: string, reason: string, closeRequired: boolean): Promise<ChallengeState> {
+    return this.serialize(async () => {
+      const challenge = this.state.challenges[uniqueCode];
+      if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
+      const now = this.now();
+      const cleanupWorker = challenge.currentAttemptWorker ?? challenge.owner ?? "main";
+      if (challenge.currentAttemptStartedAt !== null) finishAttempt(challenge, now, reason);
+      challenge.owner = null;
+      challenge.reservationPreviousStatus = undefined;
+      challenge.reservationStartedNewAttempt = false;
+      challenge.closeFailureRecorded = false;
+
+      let terminal: "solved" | "exhausted" | "deferred";
+      if (challenge.isCompleted || challenge.status === "solved" || challenge.pendingStatus === "solved") {
+        terminal = "solved";
+      } else if (challenge.status === "exhausted" || challenge.pendingStatus === "exhausted") {
+        terminal = "exhausted";
+      } else {
+        terminal = "deferred";
+        challenge.deferredReason = cleanText(reason, 1_000);
+        enqueueForRevisit(this.state, challenge, now);
+        appendBlackboard(challenge, {
+          at: now,
+          worker: cleanupWorker,
+          kind: "attempt_end",
+          summary: challenge.deferredReason,
+          evidenceRef: challenge.lastEvidenceRef,
+          approach: challenge.currentApproach,
+          triedFamilies: challenge.triedFamilies.slice(-10),
+          ruledOutFamilies: challenge.ruledOutFamilies.slice(-10),
+          nextProbe: challenge.nextProbe
+        });
+      }
+
+      challenge.status = closeRequired ? "closing" : terminal;
+      challenge.pendingStatus = closeRequired ? terminal : undefined;
+      if (!closeRequired) {
+        challenge.containerAddrs = [];
+        challenge.containerStatus = "stopped";
+      }
+      recalculate(this.state, this.metrics, this.now);
       await this.persist();
       return challenge;
     });
@@ -1264,6 +1314,8 @@ export class BenchmarkLedger {
       && challenge.currentAttemptPhase === "coverage" && !hasReusableBenchmarkContainer(challenge));
     const unseen = challenges.filter((challenge) => !challenge.isCompleted && challenge.attemptCount === 0
       && (challenge.status === "pending" || challenge.status === "orphaned"));
+    const unavailableCoverage = challenges.filter((challenge) => !challenge.isCompleted
+      && challenge.attemptCount === 0 && challenge.status === "deferred");
     // Tiered so coverage keeps priority. A stranded revisit orphan surfaces
     // last during coverage: resuming it is permitted (it already owns its
     // platform slot) and may be the only way to free a saturated container cap.
@@ -1279,6 +1331,8 @@ export class BenchmarkLedger {
               ...stoppedCoverageOrphans.map((challenge) => ({ challenge, tier: 0 })),
               ...liveRevisitOrphans.map((challenge) => ({ challenge, tier: 1 }))
             ]
+        : unavailableCoverage.length > 0
+          ? unavailableCoverage.map((challenge) => ({ challenge, tier: 0 }))
         : liveOrphans.length > 0
           ? liveOrphans.map((challenge) => ({ challenge, tier: 0 }))
           : coverageIsComplete(this.state)

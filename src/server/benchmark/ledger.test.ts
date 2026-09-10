@@ -485,6 +485,34 @@ test("coverage opens the next-lowest challenge as soon as a worker reserves the 
   assert.deepEqual(ledger.candidates(10), []);
 });
 
+test("resource unavailability does not consume attempt 1 or block later coverage", async () => {
+  let now = 40_000_000;
+  const { ledger } = await setupLedger(["low", "mid", "high"], () => now);
+  Object.assign(ledger.getChallenge("low")!, { totalScore: 50 });
+  Object.assign(ledger.getChallenge("mid")!, { totalScore: 100 });
+  Object.assign(ledger.getChallenge("high")!, { totalScore: 300 });
+
+  await ledger.reserve("low", "main");
+  await ledger.releaseReservation("low", "main", { resourceUnavailable: true, reason: "capacity exhausted" });
+  assert.equal(ledger.getChallenge("low")?.attemptCount, 0);
+  assert.equal(ledger.getMetrics().challenges.low?.attempts, 0);
+  assert.deepEqual(ledger.candidates(10).map((challenge) => challenge.uniqueCode), ["mid", "high"]);
+
+  for (const code of ["mid", "high"]) {
+    await ledger.acquire(code, "main", [code]);
+    await ledger.defer(code, "coverage complete", undefined, "main");
+    await ledger.confirmClosed(code);
+  }
+
+  assert.equal(ledger.getState().phase, "coverage");
+  assert.deepEqual(ledger.candidates(10).map((challenge) => challenge.uniqueCode), ["low"]);
+  now += 1_000;
+  await ledger.acquire("low", "main", ["low"]);
+  assert.equal(ledger.getChallenge("low")?.attemptCount, 1);
+  assert.equal(ledger.getChallenge("low")?.hardDeadlineAt, now + FIRST_ATTEMPT_LIMIT_MS);
+  assert.equal(ledger.getMetrics().challenges.low?.attempts, 1);
+});
+
 test("subagent exit releases challenge back to deferred", async () => {
   const { ledger } = await setupLedger(["ch-1"]);
   await ledger.acquire("ch-1", "subagent:t1", ["a"]);
@@ -524,6 +552,45 @@ test("all terminal → completed", async () => {
   await ledger.abandon("ch-2", "dead end", "main");
   await ledger.confirmClosed("ch-2");
   assert.equal(ledger.getState().phase, "completed");
+});
+
+test("automatic completion freezes run elapsed time", async () => {
+  let now = 50_000_000;
+  const { ledger } = await setupLedger(["ch-1"], () => now);
+  now += 5_000;
+  await ledger.acquire("ch-1", "main", ["a"]);
+  await ledger.markSolved("ch-1", 100, "main");
+  now += 2_000;
+  await ledger.confirmClosed("ch-1");
+  const elapsedAtCompletion = ledger.runElapsedMs();
+  const completedAt = ledger.getMetrics().completedAt;
+
+  now += 60_000;
+  assert.equal(ledger.getState().phase, "completed");
+  assert.equal(ledger.getMetrics().completedAt, completedAt);
+  assert.equal(ledger.runElapsedMs(), elapsedAtCompletion);
+});
+
+test("session cleanup adopts and releases a live orphan", async () => {
+  const { ledger, sessionId } = await setupLedger(["ch-1"]);
+  await ledger.acquire("ch-1", "subagent:t1", ["a"]);
+  await ledger.checkpoint("ch-1", "found admin route", ["auth"], "inspect admin API", "subagent:t1", {
+    currentApproach: "auth bypass"
+  });
+  const restarted = await new BenchmarkLedger(sessionId).initialize();
+  assert.equal(restarted.getChallenge("ch-1")?.status, "orphaned");
+
+  await restarted.releaseForSessionCleanup("ch-1", "session archived", true);
+  const closing = restarted.getChallenge("ch-1")!;
+  assert.equal(closing.status, "closing");
+  assert.equal(closing.pendingStatus, "deferred");
+  assert.equal(closing.owner, null);
+  assert.equal(closing.approachHistory.at(-1)?.worker, "subagent:t1");
+  assert.match(closing.blackboard.at(-1)?.summary ?? "", /session archived/);
+
+  await restarted.confirmClosed("ch-1");
+  assert.equal(restarted.getChallenge("ch-1")?.status, "deferred");
+  assert.equal(restarted.getState().activeContainers, 0);
 });
 
 test("closing challenge cannot be re-reserved and stale close cannot corrupt a later owner", async () => {

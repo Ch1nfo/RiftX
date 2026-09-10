@@ -379,7 +379,7 @@ test("assign tool dispatches and passes uniqueCode to spawnSubagent", async () =
   assert.match((result.content[0] as { text: string }).text, /Assigned ch-1/);
   assert.match(dispatched, /Solve this TSec benchmark challenge/);
   assert.match(dispatched, /10\.0\.0\.1:80/);
-  assert.match(dispatched, /SUBMIT_STATUS/);
+  assert.match(dispatched, /FLAG: exact captured flag string/);
   assert.equal(passedUniqueCode, "ch-1", "uniqueCode must be passed to spawnSubagent for child binding");
   assert.equal(ledger.getChallenge("ch-1")?.status, "running");
 });

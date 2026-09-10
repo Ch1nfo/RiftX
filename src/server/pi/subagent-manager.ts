@@ -19,7 +19,7 @@ export type SubagentRunnerContext = {
 };
 
 type SubagentRunner = (context: SubagentRunnerContext) => Promise<SubagentResult>;
-type SubagentCompletionHandler = (task: SubagentTask, result: SubagentResult) => void;
+type SubagentCompletionHandler = (task: SubagentTask, result: SubagentResult) => void | Promise<void>;
 type SubagentNameGenerator = (task: string) => Promise<string>;
 
 type QueueItem = {
@@ -82,6 +82,7 @@ export class SubagentManager {
   private readonly runtimes = new Map<string, Runtime>();
   private readonly queue: QueueItem[] = [];
   private readonly taskPromises = new Map<string, Promise<SubagentResult>>();
+  private readonly completionPromises = new Set<Promise<void>>();
   private active = 0;
   private maxConcurrent: number;
   private approvalMode: ApprovalMode = "request";
@@ -206,6 +207,21 @@ export class SubagentManager {
 
   setCompletionHandler(handler: SubagentCompletionHandler | undefined) {
     this.completionHandler = handler;
+  }
+
+  private notifyCompletion(task: SubagentTask, result: SubagentResult) {
+    const handler = this.completionHandler;
+    if (!handler) return;
+    const completion = Promise.resolve().then(() => handler(task, result))
+      .catch((error) => console.error(`RiftX subagent completion handler failed for ${task.id}:`, error))
+      .finally(() => this.completionPromises.delete(completion));
+    this.completionPromises.add(completion);
+  }
+
+  private async waitForCompletions() {
+    while (this.completionPromises.size) {
+      await Promise.allSettled([...this.completionPromises]);
+    }
   }
 
   /** Persist the parent-transcript delivery mark so restarts retry undelivered results. */
@@ -350,7 +366,7 @@ export class SubagentManager {
       task.finishedAt = now();
       task.error = "Cancelled before the SubAgent started.";
       this.emitTask("subagent_cancelled", task);
-      this.completionHandler?.(task, { summary: task.error ?? "Subagent task cancelled." });
+      this.notifyCompletion(task, { summary: task.error ?? "Subagent task cancelled." });
       queueItem?.reject?.(new Error(task.error));
       this.taskPromises.delete(task.id);
       this.schedulePersist();
@@ -367,7 +383,7 @@ export class SubagentManager {
     runtime.gate.rejectAll();
     runtime.controller.abort();
     this.emitTask("subagent_cancelled", task);
-    this.completionHandler?.(task, { summary: task.error });
+    this.notifyCompletion(task, { summary: task.error });
     this.schedulePersist();
     return true;
   }
@@ -378,6 +394,7 @@ export class SubagentManager {
       if (task.status === "queued" || task.status === "running") this.cancel(task.id);
     }
     await Promise.allSettled(pending);
+    await this.waitForCompletions();
   }
 
   decideApproval(approvalId: string, approved: boolean, scope: "once" | "task" = "once") {
@@ -436,14 +453,14 @@ export class SubagentManager {
       } else if (!result.summary?.trim()) {
         markEmpty(task);
         this.emitTask("subagent_empty", task);
-        this.completionHandler?.(task, result);
+        this.notifyCompletion(task, result);
         item.resolve?.(result);
       } else {
         task.status = "completed";
         task.finishedAt = now();
         task.summary = result.summary;
         this.emitTask("subagent_done", task);
-        this.completionHandler?.(task, result);
+        this.notifyCompletion(task, result);
         item.resolve?.(result);
       }
     } catch (error) {
@@ -454,7 +471,7 @@ export class SubagentManager {
         task.error = message;
         task.logs.push({ id: randomUUID(), type: "error", content: message, status: "error", createdAt: now() });
         this.emitTask(task.status === "cancelled" ? "subagent_cancelled" : "subagent_failed", task);
-        this.completionHandler?.(task, { summary: message });
+        this.notifyCompletion(task, { summary: message });
       }
       item.reject?.(error);
     } finally {

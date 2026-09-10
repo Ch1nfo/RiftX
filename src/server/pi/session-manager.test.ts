@@ -49,7 +49,7 @@ test("join preserves an undelivered terminal child when no tasks remain active",
 test("benchmark child injection carries challenge identity and refills slots instead of finalizing", async () => {
   const task = makeTask("completed");
   task.benchmarkChallenge = "ch-042";
-  task.summary = "STATUS: PARTIAL\nSUBMIT_STATUS: 1 submitted\nNEXT_DISTINCT_APPROACH: source audit";
+  task.summary = "FLAG: NONE\nFINDINGS: admin session\nRULED_OUT: sqli\nNEXT: source audit";
   const prompts: string[] = [];
   const record = makeRecord(task, () => false, async () => undefined, prompts);
 
@@ -238,7 +238,7 @@ test("streaming sessions deliver partial results while idle sessions batch activ
 test("an idle benchmark parent receives the first completed child while its sibling still runs", async () => {
   const task = makeTask("completed");
   task.benchmarkChallenge = "ch-fast";
-  task.summary = "STATUS: SOLVED\nSUBMIT_STATUS: 1";
+  task.summary = "FLAG: flag{done}\nFINDINGS: none\nRULED_OUT: none\nNEXT: none";
   const prompts: string[] = [];
   const record = {
     subagents: { hasActiveTasks: () => true, markDelivered: () => undefined },

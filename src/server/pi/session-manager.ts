@@ -57,7 +57,7 @@ import type { FindingSourceInfo } from "./tools/finding-tool";
 import { listRunningSessionIds, listSessions, getSessionSnapshot, getSessionMessages as getMessages, summaryName, usageFromRecord, listWorkspaceSessionInfos, findTranscriptImage } from "./session-snapshot";
 import { createToolOutputStore, listToolArtifacts, toolArtifactDir } from "@/server/tool-output";
 import { beginPromptRequest, promptRequestStates as requestStatesFor, settlePromptRequest } from "./prompt-requests";
-import { BenchmarkController } from "@/server/benchmark/controller";
+import { BenchmarkController, BenchmarkError } from "@/server/benchmark/controller";
 import { BenchmarkLedger, BENCHMARK_MAX_SUBAGENTS } from "@/server/benchmark/ledger";
 import { createBenchmarkControlTool } from "@/server/benchmark/tools/control-tool";
 import { createAssignBenchmarkChallengeTool } from "@/server/benchmark/tools/assign-tool";
@@ -69,6 +69,93 @@ type BenchmarkRuntime = { controller: BenchmarkController; ledger: BenchmarkLedg
 function benchmarkRuntimeCache() {
   const registry = globalThis as typeof globalThis & { __riftxBenchmark?: Map<string, BenchmarkRuntime> };
   return registry.__riftxBenchmark ?? (registry.__riftxBenchmark = new Map<string, BenchmarkRuntime>());
+}
+
+function benchmarkPlatformIsGone(error: unknown) {
+  return error instanceof BenchmarkError
+    && (error.kind === "not_found" || error.kind === "challenge_not_found" || error.kind === "invalid_state_task_ended");
+}
+
+function benchmarkContainerIsLive(status: string) {
+  return status === "available" || status === "pending" || status === "stop_pending";
+}
+
+async function benchmarkRuntimeForCleanup(id: string): Promise<BenchmarkRuntime | undefined> {
+  const cached = benchmarkRuntimeCache().get(id);
+  if (cached) return cached;
+  if (!await BenchmarkLedger.exists(id)) return undefined;
+  if (!process.env.BENCHMARK_BASE_URL || !process.env.BENCHMARK_TOKEN) {
+    throw new RiftxError("This session still has benchmark state. Set BENCHMARK_BASE_URL and BENCHMARK_TOKEN so RiftX can close its containers.", "BENCHMARK_CONFIG_REQUIRED", 409);
+  }
+  const runtime = { controller: new BenchmarkController(), ledger: await new BenchmarkLedger(id).initialize() };
+  benchmarkRuntimeCache().set(id, runtime);
+  return runtime;
+}
+
+async function archiveBenchmarkRuntime(runtime: BenchmarkRuntime) {
+  let liveCodes = new Set<string>();
+  try {
+    const platform = await runtime.controller.listChallenges();
+    const current = runtime.ledger.getState();
+    await runtime.ledger.syncFromPlatform(platform, current.vpnOk, current.vpnClientIp, current.vpnChecked);
+    liveCodes = new Set(platform.filter((challenge) => benchmarkContainerIsLive(challenge.container_status)).map((challenge) => challenge.unique_code));
+  } catch (error) {
+    if (!benchmarkPlatformIsGone(error)) throw error;
+  }
+
+  const cleanupCodes = Object.values(runtime.ledger.getState().challenges)
+    .filter((challenge) => liveCodes.has(challenge.uniqueCode)
+      || challenge.owner !== null
+      || challenge.currentAttemptStartedAt !== null
+      || challenge.status === "reserved"
+      || challenge.status === "running"
+      || challenge.status === "closing"
+      || challenge.status === "orphaned")
+    .map((challenge) => challenge.uniqueCode);
+  const results = await Promise.allSettled(cleanupCodes.map((uniqueCode) => runtime.ledger.runChallengeAction(uniqueCode, async () => {
+    const closeRequired = liveCodes.has(uniqueCode);
+    await runtime.ledger.releaseForSessionCleanup(uniqueCode, "session archived", closeRequired);
+    if (closeRequired) {
+      try {
+        await runtime.controller.closeChallenge(uniqueCode);
+      } catch (error) {
+        if (!benchmarkPlatformIsGone(error)) {
+          await runtime.ledger.markCloseFailed(uniqueCode).catch(() => undefined);
+          throw error;
+        }
+      }
+      const challenge = runtime.ledger.getChallenge(uniqueCode);
+      if (challenge?.status === "closing" && challenge.pendingStatus) await runtime.ledger.confirmClosed(uniqueCode);
+    }
+  })));
+  const failed = results.filter((result) => result.status === "rejected");
+  if (failed.length) {
+    throw new RiftxError(`Could not close ${failed.length} benchmark container(s); retry archive after connectivity recovers`, "BENCHMARK_CONTAINER_CLOSE_FAILED", 409);
+  }
+}
+
+async function deleteBenchmarkRuntime(runtime: BenchmarkRuntime) {
+  let platform;
+  try {
+    platform = await runtime.controller.listChallenges();
+    const current = runtime.ledger.getState();
+    await runtime.ledger.syncFromPlatform(platform, current.vpnOk, current.vpnClientIp, current.vpnChecked);
+  } catch (error) {
+    if (benchmarkPlatformIsGone(error)) return;
+    throw error;
+  }
+  const liveCodes = platform.filter((challenge) => benchmarkContainerIsLive(challenge.container_status)).map((challenge) => challenge.unique_code);
+  const results = await Promise.allSettled(liveCodes.map((uniqueCode) => runtime.ledger.runChallengeAction(uniqueCode, async () => {
+    try {
+      await runtime.controller.closeChallenge(uniqueCode);
+    } catch (error) {
+      if (!benchmarkPlatformIsGone(error)) throw error;
+    }
+  })));
+  const failed = results.filter((result) => result.status === "rejected");
+  if (failed.length) {
+    throw new RiftxError(`Could not close ${failed.length} benchmark container(s); retry deletion after connectivity recovers`, "BENCHMARK_CONTAINER_CLOSE_FAILED", 409);
+  }
 }
 
 // Facade re-exports: the API routes import everything from this module.
@@ -653,7 +740,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
       // Otherwise the parent immediately tries to refill the returned worker
       // slot while the ledger still counts it as occupied, causing a needless
       // failed assignment on every child that exits without explicit defer.
-      void benchmarkCleanup.catch(() => undefined).then(() => deliverSubagentCompletion(record, task, childResult.summary))
+      return benchmarkCleanup.catch(() => undefined).then(() => deliverSubagentCompletion(record, task, childResult.summary))
         .then(() => {
           // When this was the last active subagent, deliver any previously
           // stranded results alongside this one — otherwise a result that
@@ -1197,6 +1284,13 @@ export async function archiveSession(id: string) {
   const sessionsList = await listSessions();
   const summary = sessionsList.find((session) => session.id === id);
   if (!summary) throw new RiftxError("session not found", "SESSION_NOT_FOUND", 404);
+  const benchmarkRuntime = await benchmarkRuntimeForCleanup(id);
+  const record = sessions.get(id);
+  if (record) {
+    await shutdownSessionRecord(record);
+    sessions.delete(id);
+  }
+  if (benchmarkRuntime) await archiveBenchmarkRuntime(benchmarkRuntime);
   if (!config.archivedSessionIds.includes(id)) {
     const metadata: ArchivedSession = {
       id: summary.id,
@@ -1209,29 +1303,6 @@ export async function archiveSession(id: string) {
       archivedSessionIds: [...current.archivedSessionIds, id],
       archivedSessions: [...current.archivedSessions.filter((item) => item.id !== id), metadata]
     });
-  }
-  const record = sessions.get(id);
-  if (record) {
-    await shutdownSessionRecord(record);
-    sessions.delete(id);
-  }
-  const benchmarkRuntime = benchmarkRuntimeCache().get(id);
-  if (benchmarkRuntime) {
-    const mainChallenges = Object.values(benchmarkRuntime.ledger.getState().challenges)
-      .filter((challenge) => challenge.owner === "main" && (challenge.status === "running" || challenge.status === "reserved"));
-    for (const challenge of mainChallenges) {
-      await benchmarkRuntime.ledger.runChallengeAction(challenge.uniqueCode, async () => {
-        let closing = false;
-        try {
-          await benchmarkRuntime.ledger.defer(challenge.uniqueCode, "session archived", challenge.nextProbe || undefined, "main");
-          closing = true;
-          await benchmarkRuntime.controller.closeChallenge(challenge.uniqueCode);
-          await benchmarkRuntime.ledger.confirmClosed(challenge.uniqueCode);
-        } catch {
-          if (closing) await benchmarkRuntime.ledger.markCloseFailed(challenge.uniqueCode).catch(() => undefined);
-        }
-      });
-    }
   }
   return listSessions();
 }
@@ -1270,32 +1341,14 @@ export async function restoreArchivedSession(id: string) {
 export async function deleteArchivedSession(id: string) {
   const config = await readConfig();
   if (!config.archivedSessionIds.includes(id)) throw new RiftxError("session is not archived", "SESSION_NOT_ARCHIVED", 400);
-  const hasBenchmarkLedger = await BenchmarkLedger.exists(id);
-  let benchmarkRuntime = benchmarkRuntimeCache().get(id);
-  if (!benchmarkRuntime && hasBenchmarkLedger) {
-    if (!process.env.BENCHMARK_BASE_URL || !process.env.BENCHMARK_TOKEN) {
-      throw new RiftxError("This session still has benchmark state. Set BENCHMARK_BASE_URL and BENCHMARK_TOKEN so RiftX can close its containers before deletion.", "BENCHMARK_CONFIG_REQUIRED", 409);
-    }
-    benchmarkRuntime = {
-      controller: new BenchmarkController(),
-      ledger: await new BenchmarkLedger(id).initialize()
-    };
-  }
-  if (benchmarkRuntime) {
-    const liveChallenges = Object.values(benchmarkRuntime.ledger.getState().challenges)
-      .filter((challenge) => challenge.containerStatus === "available" || challenge.containerStatus === "pending" || challenge.containerStatus === "stop_pending" || challenge.status === "closing");
-    const closeResults = await Promise.allSettled(liveChallenges.map((challenge) => benchmarkRuntime.controller.closeChallenge(challenge.uniqueCode)));
-    const failed = closeResults.filter((result) => result.status === "rejected");
-    if (failed.length) {
-      throw new RiftxError(`Could not close ${failed.length} benchmark container(s); sync and retry deletion`, "BENCHMARK_CONTAINER_CLOSE_FAILED", 409);
-    }
-  }
+  const benchmarkRuntime = await benchmarkRuntimeForCleanup(id);
   const session = (await listSessions()).find((item) => item.id === id);
   const record = sessions.get(id);
   if (record) {
     await shutdownSessionRecord(record);
     sessions.delete(id);
   }
+  if (benchmarkRuntime) await deleteBenchmarkRuntime(benchmarkRuntime);
   if (session?.path) {
     try {
       await unlink(session.path);

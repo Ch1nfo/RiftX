@@ -86,6 +86,36 @@ test("abortAll cancels every running subagent and waits for shutdown", async () 
   }
 });
 
+test("abortAll waits for asynchronous completion cleanup", async () => {
+  const root = await mkdtemp(join(tmpdir(), "riftx-subagents-"));
+  const manager = new SubagentManager("parent", root, () => undefined, 1, "request");
+  let completionStarted = false;
+  let releaseCompletion!: () => void;
+  manager.setCompletionHandler(async () => {
+    completionStarted = true;
+    await new Promise<void>((resolve) => { releaseCompletion = resolve; });
+  });
+  await manager.initialize(async ({ signal }) => new Promise((_resolve, reject) => {
+    signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+  }));
+  try {
+    const task = manager.submitTask("one").promise;
+    const settledTask = Promise.allSettled([task]);
+    await waitFor(() => manager.runningCount === 1);
+    let abortFinished = false;
+    const aborting = manager.abortAll().then(() => { abortFinished = true; });
+    await waitFor(() => completionStarted);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(abortFinished, false);
+    releaseCompletion();
+    await aborting;
+    await settledTask;
+    assert.equal(abortFinished, true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("queues every submitted task immediately and lets maxConcurrent control execution", async () => {
   const root = await mkdtemp(join(tmpdir(), "riftx-subagents-"));
   const manager = new SubagentManager("parent", root, () => undefined, 2, "request");

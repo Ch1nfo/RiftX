@@ -223,7 +223,7 @@ export function createBenchmarkControlTool(
               } catch (error) {
                 // Rollback the reservation on failure.
                 await ledger.releaseReservation(uniqueCode, owner, isBenchmarkError(error) && error.kind === "resource_unavailable"
-                  ? { countUnavailableAsAttempt: true, reason: error.message }
+                  ? { resourceUnavailable: true, reason: error.message }
                   : undefined);
                 await ledger.maybeAdvancePhase();
                 throw error;

@@ -2,26 +2,34 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildChildPentestSystemPrompt, buildPentestSystemPrompt } from "./system-prompt";
 
-test("benchmark prompt commands low-score coverage, unlimited revisits, and the scoring objective", () => {
+test("commander prompt is verbatim: role, principles, workflow, endgame report", () => {
   const prompt = buildPentestSystemPrompt("default");
-  assert.match(prompt, /TSec security benchmark/);
+  assert.match(prompt, /# ROLE\nYou are an elite CTF player and field commander/);
+  assert.match(prompt, /Score = flags captured\. You are never idle/);
+  assert.match(prompt, /1\. Optimize points-per-minute, not elegance/);
+  assert.match(prompt, /never babysit or poll them/);
+  assert.match(prompt, /Only report flags observed verbatim in tool output/);
+  assert.match(prompt, /Never attack the scoring\/harness\n   infrastructure/);
+  assert.match(prompt, /# SUB-AGENT RETURN FORMAT\n- FLAG: exact string if captured, else NONE\./);
+  assert.match(prompt, /# PLAYBOOK BY CATEGORY/);
+  assert.match(prompt, /# TENACITY/);
+  assert.match(prompt, /Final report: every solved challenge with its method, plus each captured flag/);
+  assert.match(prompt, /never re-derive or guess a flag string/);
+  assert.match(prompt, /Submit each flag the moment it is confirmed/);
+});
+
+test("harness mechanics appendix names the runtime-enforced rules", () => {
+  const prompt = buildPentestSystemPrompt("default");
+  assert.match(prompt, /## Harness mechanics/);
   assert.match(prompt, /benchmark_control/);
   assert.match(prompt, /assign_benchmark_challenge/);
-  assert.match(prompt, /cumulative_score/);
-  assert.match(prompt, /Submit EVERY flag immediately/);
-  assert.match(prompt, /Hints are available only from attempt 2 onward/i);
-  assert.match(prompt, /silently capped at 30/);
-  assert.match(prompt, /materially different hypothesis/i);
-  assert.match(prompt, /no runtime time limit/i);
-  assert.match(prompt, /Every defer closes the container/);
-  assert.match(prompt, /Do not use bash\/curl against the benchmark API/);
-  assert.match(prompt, /No reports and no record_finding/);
-  assert.match(prompt, /browser.*proactively/s);
-  assert.match(prompt, /crawl.*once you know the entry point/);
-  assert.match(prompt, /max active.*close one existing container/);
-  assert.match(prompt, /ResourceUnavailable.*skip to the next challenge/);
-  assert.match(prompt, /assign_benchmark_challenge to dispatch SubAgents/);
-  assert.match(prompt, /benchmark continuity block is refreshed before every model sample/);
+  assert.match(prompt, /at most 2 sub-agents and 3 live containers/i);
+  assert.match(prompt, /low score to high/i);
+  assert.match(prompt, /silently capped at 30\n  minutes with ONE notice at 25/i);
+  assert.match(prompt, /Attempt 2\+ has no\n  runtime limit/);
+  assert.match(prompt, /never\n  bash\/curl the benchmark API/);
+  assert.match(prompt, /"Parked" = defer/);
+  assert.match(prompt, /benchmark_control\(action="status"\) IS the live board/);
 });
 
 test("benchmark scope boundary permits challenge exploitation but protects platform infrastructure", () => {
@@ -32,33 +40,28 @@ test("benchmark scope boundary permits challenge exploitation but protects platf
   assert.match(prompt, /Do not use denial of service/);
 });
 
-test("completion boundary is benchmark-specific (no reports)", () => {
-  const prompt = buildPentestSystemPrompt("default");
-  assert.match(prompt, /cumulative_score, completed challenge count/);
-  assert.match(prompt, /Do not generate a penetration-testing report/);
-});
-
-test("custom prompt is appended as operator constraints, benchmark protocol always present", () => {
+test("custom prompt is appended as operator constraints, commander protocol never replaced", () => {
   const prompt = buildPentestSystemPrompt("default", "My custom benchmark instructions.");
   assert.match(prompt, /My custom benchmark instructions/);
   assert.match(prompt, /Benchmark Scope and Approval Boundary/);
   assert.match(prompt, /Skill policy/);
-  assert.match(prompt, /TSec security benchmark/); // benchmark protocol is never replaced
+  assert.match(prompt, /# ROLE/); // commander protocol is never replaced
   assert.match(prompt, /Operator Constraints/);
 });
 
-test("child prompt is benchmark-specific with structured return format", () => {
+test("child prompt carries the commander return format, playbook, and tool restrictions", () => {
   const prompt = buildChildPentestSystemPrompt();
-  assert.match(prompt, /Benchmark SubAgent solving ONE challenge/);
+  assert.match(prompt, /CTF sub-agent solving ONE challenge/);
   assert.match(prompt, /flag_count may be >1/);
-  assert.match(prompt, /SUBMIT_STATUS/);
-  assert.match(prompt, /APPROACH_USED/);
-  assert.match(prompt, /RULED_OUT/);
-  assert.match(prompt, /NEXT_DISTINCT_APPROACH/);
-  assert.match(prompt, /benchmark_control IS available.*ONLY for: checkpoint, submit, defer/);
-  assert.match(prompt, /MOMENT you find a flag/);
-  assert.match(prompt, /Do NOT use sync\/status\/acquire\/hint/);
-  assert.match(prompt, /Do NOT use assign_benchmark_challenge/);
-  assert.match(prompt, /Do not load skills or generate reports/);
+  assert.match(prompt, /Return format \(mandatory\):\nFLAG: exact captured flag string/);
+  assert.match(prompt, /FINDINGS: creds, access gained/);
+  assert.match(prompt, /RULED_OUT: approaches tried and why they failed/);
+  assert.match(prompt, /NEXT: best remaining hypotheses for a fresh agent/);
+  assert.match(prompt, /benchmark_control\(action="submit",\n  flag="\.\.\."\) — that is the submission method/);
+  assert.match(prompt, /ONLY for: checkpoint, submit, defer, abandon,\n  publish_intel/);
+  assert.match(prompt, /Do NOT use sync\/status\/acquire\/\n  hint/);
+  assert.match(prompt, /Do NOT use assign_benchmark_challenge \(commander-only\)/);
+  assert.match(prompt, /# PLAYBOOK BY CATEGORY/);
+  assert.match(prompt, /steghide \(bruteforce passphrase with rockyou/);
   assert.match(prompt, /Benchmark Scope and Approval Boundary/);
 });
