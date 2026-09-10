@@ -134,6 +134,79 @@ test("auth uses BENCHMARK_TOKEN header, NOT Bearer (real contract)", async () =>
   assert.equal(capturedHeaders.Authorization, undefined, "must NOT use Authorization Bearer");
 });
 
+test("VPN preflight defaults to the operational probe URL", async () => {
+  let probed = "";
+  const controller = new BenchmarkController({
+    baseUrl: "https://bench.test",
+    token: "t",
+    fetchImpl: async (input) => {
+      probed = input;
+      return new Response(JSON.stringify({ status: "ok", client_ip: "10.0.0.9" }), { status: 200, headers: { Connection: "close" } });
+    }
+  });
+  const result = await controller.checkVpn();
+  assert.equal(probed, "http://10.0.100.58");
+  assert.equal(result.ok, true);
+});
+
+test("a dropped start response polls a pending container through to available", async () => {
+  // The platform start is asynchronous: after a failed response the container
+  // can still transition pending -> available. Pending must be polled, not
+  // treated as a failure that leaks the platform slot.
+  let status = "stopped";
+  let listCalls = 0;
+  const controller = new BenchmarkController({
+    baseUrl: "https://bench.test",
+    token: "t",
+    vpnUrl: "",
+    fetchImpl: async (input) => {
+      const url = new URL(input);
+      if (url.pathname === "/openapi/v1/challenges/start") {
+        status = "pending";
+        return new Response(JSON.stringify({ error: "internal_error" }), { status: 500, headers: { Connection: "close" } });
+      }
+      if (url.pathname === "/openapi/v1/challenges") {
+        listCalls += 1;
+        if (listCalls === 1) {
+          return new Response(JSON.stringify([{ unique_code: "ch-1", container_status: status, container_addr: [] }]), { status: 200, headers: { Connection: "close" } });
+        }
+        status = "available";
+        return new Response(JSON.stringify([{ unique_code: "ch-1", container_status: "available", container_addr: ["10.0.0.9:8080"] }]), { status: 200, headers: { Connection: "close" } });
+      }
+      return new Response("{}", { status: 404, headers: { Connection: "close" } });
+    }
+  });
+  const result = await controller.startChallenge("ch-1");
+  assert.deepEqual(result.container_addr, ["10.0.0.9:8080"]);
+  assert.ok(listCalls >= 2, "pending was polled instead of failing immediately");
+});
+
+test("close polls stop_pending through to stopped instead of failing", async () => {
+  let listCalls = 0;
+  const controller = new BenchmarkController({
+    baseUrl: "https://bench.test",
+    token: "t",
+    vpnUrl: "",
+    fetchImpl: async (input) => {
+      const url = new URL(input);
+      if (url.pathname === "/openapi/v1/challenges/close") {
+        return new Response(JSON.stringify({ error: "internal_error" }), { status: 500, headers: { Connection: "close" } });
+      }
+      if (url.pathname === "/openapi/v1/challenges") {
+        listCalls += 1;
+        if (listCalls === 1) {
+          return new Response(JSON.stringify([{ unique_code: "ch-1", container_status: "stop_pending", container_addr: [] }]), { status: 200, headers: { Connection: "close" } });
+        }
+        return new Response(JSON.stringify([{ unique_code: "ch-1", container_status: "stopped", container_addr: [] }]), { status: 200, headers: { Connection: "close" } });
+      }
+      return new Response("{}", { status: 404, headers: { Connection: "close" } });
+    }
+  });
+  const result = await controller.closeChallenge("ch-1");
+  assert.equal(result.closed, true);
+  assert.ok(listCalls >= 2, "stop_pending was polled through to stopped");
+});
+
 test("classifies duplicate_submit from 409 + code=duplicate", async () => {
   const { controller } = makeController([
     { method: "POST", path: "/openapi/v1/challenges/submit", respond: () => ({ status: 409, body: { code: "duplicate", message: "already submitted" } }) }

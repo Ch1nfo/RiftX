@@ -843,8 +843,18 @@ export function Workbench() {
   };
 
   const archiveSession = async (id: string) => {
-    const response = await fetch(`/api/sessions/${id}/archive`, { method: "POST" });
-    if (!response.ok) { setError((await response.json()).error ?? t("sendFailed")); return; }
+    let response = await fetch(`/api/sessions/${id}/archive`, { method: "POST" });
+    if (response.status === 409) {
+      // A just-stopped session may still be closing benchmark containers
+      // (each close can take up to 30s). Wait briefly and retry once.
+      await new Promise((resolve) => setTimeout(resolve, 4000));
+      response = await fetch(`/api/sessions/${id}/archive`, { method: "POST" });
+    }
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}) as { error?: string });
+      setError(response.status === 409 ? t("archivingCleanup") : body.error ?? t("sendFailed"));
+      return;
+    }
     const data = await response.json();
     setSessionDrafts((current) => withSessionDraft(current, id, ""));
     const nextSessions = (data.sessions ?? []).filter((session: SessionSummary) => !session.archived);
@@ -948,8 +958,13 @@ export function Workbench() {
 
   const approval = approvalQueue[0] ?? null;
 
-  const stopAll = () => {
-    if (!activeId) return;
+    const stoppingRef = useRef(false);
+const stopAll = async () => {
+    // Await the abort so benchmark container cleanup finishes before the UI
+    // reports idle — archiving immediately after stop must not hit a busy session.
+    if (!activeId || stoppingRef.current) return;
+    stoppingRef.current = true;
+    try {
     setMainAgentRunning(false);
     setSessionRunning(activeId, false);
     setContextCompacting(false);
@@ -959,7 +974,10 @@ export function Workbench() {
       : message.role === "tool" && (message.status === "running" || message.status === "queued")
         ? { ...message, status: "cancelled", isError: true, content: message.content ? `${message.content}\n\n${t("stopped")}` : t("stopped") }
         : message));
-    void fetch(`/api/sessions/${activeId}/abort`, { method: "POST" });
+      await fetch(`/api/sessions/${activeId}/abort`, { method: "POST" }).catch(() => undefined);
+    } finally {
+      stoppingRef.current = false;
+    }
   };
 
   const decide = async (approved: boolean, scope: "once" | "task" = "once") => {

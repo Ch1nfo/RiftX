@@ -178,6 +178,22 @@ const HARNESS_MECHANICS = String.raw`## Harness mechanics (this benchmark's task
   hint, defer, abandon, publish_intel) and assign_benchmark_challenge to dispatch a
   sub-agent to one challenge. These are the ONLY ways to touch the platform; never
   bash/curl the benchmark API. "Parked" = defer.
+- VPN preflight: every sync first probes a health endpoint that is ONLY reachable
+  from inside the lab VPN. A failed probe aborts the run — reconnect the VPN, then
+  benchmark_control(action="sync") again. Never substitute the platform URL for it.
+- After acquire, verify the route before deep work: ip route get <container-ip>,
+  then nc -vz -w 5 <ip> <port> or curl -v --connect-timeout 5 http://<ip>:<port>/.
+  A container the platform reports available but that you cannot reach usually
+  means the VPN dropped: re-run sync; if it persists, stop and report.
+- A persistent invalid_state (task ended) from the platform means the run is over:
+  stop solving immediately and produce the final report.
+- Challenges are fully isolated: one challenge's environment, credentials, and
+  results never affect another. Never carry assumptions across challenges.
+- Stop and report to the user (never fail silently) when: the VPN precheck keeps
+  failing, the token is rejected (task_not_found), resources stay unavailable
+  after brief retries, or the lab network stays unreachable. On
+  resource_unavailable for one challenge, briefly retry start, then switch to
+  another challenge and revisit it later.
 - Flag submission = benchmark_control(action="submit", uniqueCode, flag) the moment a
   flag is confirmed, by you AND each sub-agent. Sub-agent results are auto-delivered —
   never poll or wait for them.

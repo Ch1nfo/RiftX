@@ -11,6 +11,12 @@
 
 export const BENCHMARK_QUERY_TIMEOUT_MS = 15_000;
 export const BENCHMARK_MUTATION_TIMEOUT_MS = 30_000;
+/** The operational spec mandates a VPN preflight before anything else; this
+ * endpoint is only reachable from inside the lab VPN, which is exactly what
+ * makes it a reliable probe. Set BENCHMARK_VPN_URL="" to disable. */
+export const DEFAULT_BENCHMARK_VPN_URL = "http://10.0.100.58";
+const ASYNC_STATE_POLL_INTERVAL_MS = 3_000;
+const ASYNC_STATE_POLL_ROUNDS = 4;
 
 export type Challenge = {
   unique_code: string;
@@ -134,7 +140,7 @@ export class BenchmarkController {
   constructor(options: { baseUrl?: string; token?: string; vpnUrl?: string; fetchImpl?: FetchLike } = {}) {
     this.baseUrl = (options.baseUrl ?? process.env.BENCHMARK_BASE_URL ?? "").replace(/\/$/, "");
     this.token = options.token ?? process.env.BENCHMARK_TOKEN ?? "";
-    this.vpnUrl = (options.vpnUrl ?? process.env.BENCHMARK_VPN_URL ?? "").trim();
+    this.vpnUrl = (options.vpnUrl ?? process.env.BENCHMARK_VPN_URL ?? DEFAULT_BENCHMARK_VPN_URL).trim();
     this.fetchImpl = options.fetchImpl ?? ((input, init) => fetch(input, init));
     if (!this.baseUrl || !this.token) {
       throw new BenchmarkError("validation_error", "BENCHMARK_BASE_URL and BENCHMARK_TOKEN must be set");
@@ -268,8 +274,11 @@ export class BenchmarkController {
 
   private async startChallengeUnlocked(uniqueCode: string): Promise<StartResult> {
     // Real contract uses query parameter: POST /openapi/v1/challenges/start?unique_code=...
-    // On timeout: sync platform state first — if the container actually started,
-    // return success instead of leaking a running container.
+    // A dropped response is ambiguous AND the platform start is asynchronous:
+    // the container may still be `pending` and become `available` seconds
+    // later. Treating pending as failure would release the local reservation
+    // while the platform keeps the slot — every later start would hit the
+    // max-active cap. So poll the authoritative list with a bounded budget.
     try {
       const body = await this.request(`/openapi/v1/challenges/start?unique_code=${encodeURIComponent(uniqueCode)}`, { method: "POST" }, BENCHMARK_MUTATION_TIMEOUT_MS);
       const result = {
@@ -285,18 +294,44 @@ export class BenchmarkController {
         error.kind === "timeout" || error.kind === "connection_error" || error.kind === "internal_error"
         || error.kind === "invalid_state" || error.kind === "invalid_state_max_active"
       )) {
-        // Reconcile: check the challenge list for actual container state.
-        try {
-          const challenges = await this.listChallenges();
-          const match = challenges.find((challenge) => challenge.unique_code === uniqueCode);
-          if (match?.container_status === "available" && match.container_addr.length) {
+        const original = error;
+        const ambiguous = error.kind === "timeout" || error.kind === "connection_error" || error.kind === "internal_error";
+        if (!ambiguous) {
+          // An explicit platform rejection is not a dropped response. Adopt the
+          // container only if a prior attempt already brought it up; otherwise
+          // fail immediately — the caller must see the real reason.
+          try {
+            const match = (await this.listChallenges()).find((challenge) => challenge.unique_code === uniqueCode);
+            if (match?.container_status === "available" && match.container_addr.length) {
+              return { unique_code: uniqueCode, container_addr: match.container_addr };
+            }
+          } catch {
+            // Preserve the original rejection.
+          }
+          throw original;
+        }
+        for (let round = 0; round < ASYNC_STATE_POLL_ROUNDS; round += 1) {
+          await wait(ASYNC_STATE_POLL_INTERVAL_MS);
+          let match;
+          try {
+            match = (await this.listChallenges()).find((challenge) => challenge.unique_code === uniqueCode);
+          } catch {
+            // A failed readback keeps polling; only the original failure is
+            // reported if the platform stays unreachable.
+            continue;
+          }
+          if (!match) throw original;
+          if (match.container_status === "available" && match.container_addr.length) {
             return { unique_code: uniqueCode, container_addr: match.container_addr };
           }
-        } catch {
-          // Preserve the original mutation failure; a failed reconciliation
-          // must not disguise max-active/timeout as an unrelated list error.
+          if (match.container_status === "stopped") throw original;
+          // pending / stop_pending → the platform is still transitioning; keep polling.
         }
-        // Not actually started → safe to rethrow.
+        // Still pending after the budget: the platform may still bring the
+        // container up. Close it best-effort so it cannot leak a slot, then
+        // surface a retryable failure.
+        await this.closeChallengeUnlocked(uniqueCode).catch(() => undefined);
+        throw new BenchmarkError("resource_unavailable", `Container for ${uniqueCode} was still pending after ${ASYNC_STATE_POLL_ROUNDS} reconciliation rounds; a cleanup close was attempted. Retry this challenge or pick another`);
       }
       throw error;
     }
@@ -344,32 +379,49 @@ export class BenchmarkController {
   }
 
   private async closeChallengeUnlocked(uniqueCode: string): Promise<CloseResult> {
-    // On timeout: sync platform state first — if the container actually stopped,
-    // return success instead of a spurious failure.
+    // Closing is asynchronous too: the platform transitions through
+    // stop_pending before stopped. A single readback that catches stop_pending
+    // is NOT a failure — poll to stopped (bounded), and if the container is
+    // still available after the mutation, send one more close before giving
+    // up so the caller's ledger can record an honest close failure.
+    const closeOnce = () => this.request(`/openapi/v1/challenges/close?unique_code=${encodeURIComponent(uniqueCode)}`, { method: "POST" }, BENCHMARK_MUTATION_TIMEOUT_MS);
     try {
-      const body = await this.request(`/openapi/v1/challenges/close?unique_code=${encodeURIComponent(uniqueCode)}`, { method: "POST" }, BENCHMARK_MUTATION_TIMEOUT_MS);
+      const body = await closeOnce();
       const closed = body.closed === true || body.status === "closed";
       if (!closed) {
         throw new BenchmarkError("invalid_state", `Platform returned closed:false for ${uniqueCode} — container is still running`);
       }
       return { unique_code: String(body.unique_code ?? uniqueCode), closed };
     } catch (error) {
-      if (error instanceof BenchmarkError && (
+      if (!(error instanceof BenchmarkError && (
         error.kind === "timeout" || error.kind === "connection_error" || error.kind === "internal_error"
-      )) {
-        // Reconcile: only "stopped" means the close completed; stop_pending
-        // means the platform is still shutting down — NOT confirmed closed.
-        const challenges = await this.listChallenges();
-        const match = challenges.find((challenge) => challenge.unique_code === uniqueCode);
-        if (match && match.container_status === "stopped") {
+      ))) throw error;
+      let retriedClose = false;
+      for (let round = 0; round < ASYNC_STATE_POLL_ROUNDS; round += 1) {
+        await wait(ASYNC_STATE_POLL_INTERVAL_MS);
+        let match;
+        try {
+          match = (await this.listChallenges()).find((challenge) => challenge.unique_code === uniqueCode);
+        } catch {
+          continue;
+        }
+        if (match?.container_status === "stopped") {
           return { unique_code: uniqueCode, closed: true };
         }
-        // stop_pending or still available → close not confirmed, rethrow timeout.
-        if (match && match.container_status === "stop_pending") {
-          throw new BenchmarkError("timeout", `Close for ${uniqueCode} is stop_pending (not yet stopped) — sync later to confirm`);
+        if (match?.container_status === "available" && !retriedClose) {
+          retriedClose = true;
+          try {
+            const body = await closeOnce();
+            if (body.closed === true || body.status === "closed") {
+              return { unique_code: uniqueCode, closed: true };
+            }
+          } catch {
+            // Fall through to the next reconciliation round.
+          }
         }
+        // stop_pending / pending → still transitioning; keep polling.
       }
-      throw error;
+      throw new BenchmarkError("timeout", `Close for ${uniqueCode} was not confirmed stopped after ${ASYNC_STATE_POLL_ROUNDS} reconciliation rounds — the container may still occupy a platform slot; sync will reconcile`);
     }
   }
 }
