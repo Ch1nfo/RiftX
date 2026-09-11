@@ -1,3 +1,5 @@
+import { selectBlackboard, blackboardLabel, childHandoffSections } from "./blackboard";
+import { buildBenchmarkContinuity } from "./continuity";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -770,4 +772,68 @@ test("revisit queue order wins over attempt count", async () => {
   Object.assign(ledger.getChallenge("older")!, { attemptCount: 3, revisitQueueOrder: 10 });
   Object.assign(ledger.getChallenge("newer")!, { attemptCount: 2, revisitQueueOrder: 20 });
   assert.deepEqual(ledger.candidates(2).map((challenge) => challenge.uniqueCode), ["older", "newer"]);
+});
+
+
+test("durable facts survive activity and reload, and explicit corrections remove old evidence", async () => {
+  const { ledger, sessionId } = await setupLedger(["ch-1"]);
+  await ledger.acquire("ch-1", "main", ["a"]);
+  await ledger.checkpoint("ch-1", "fixture credential works", undefined, undefined, "main", { signalKind: "credential", evidenceRef: "artifact:credential" });
+  for (let i = 0; i < 40; i++) await ledger.checkpoint("ch-1", `routine observation ${i}`, undefined, undefined, "main");
+  assert.ok(selectBlackboard(ledger.getChallenge("ch-1")!, 6).some((entry) => entry.summary === "fixture credential works"));
+  assert.match(buildBenchmarkContinuity(ledger), /fixture credential works/);
+  const reloaded = await new BenchmarkLedger(sessionId).initialize();
+  assert.ok(selectBlackboard(reloaded.getChallenge("ch-1")!, 6).some((entry) => entry.evidenceRef === "artifact:credential"));
+  await ledger.checkpoint("ch-1", "credential now rejected", undefined, undefined, "main", { supersedesEvidenceRef: "artifact:credential", evidenceRef: "artifact:rejection" });
+  assert.ok(!ledger.getChallenge("ch-1")!.blackboard.some((entry) => entry.summary === "fixture credential works"));
+  assert.doesNotMatch(buildBenchmarkContinuity(ledger), /fixture credential works/);
+});
+
+test("child final facts survive explicit defer and reach the next worker without inherited plans", async () => {
+  const { ledger } = await setupLedger(["ch-1"]);
+  await ledger.acquire("ch-1", "subagent:old", ["a"]);
+  await ledger.defer("ch-1", "attempt ended", undefined, "subagent:old");
+  await ledger.confirmClosed("ch-1");
+  const summary = "FLAG: NONE\nFINDINGS: fixture endpoint observed at artifact:42\nRULED_OUT: first attempt failed, evidence inconclusive\nNEXT: FOLLOW_OLD_PLAN\nUNCERTAINTIES: parser behavior remains unclear";
+  await ledger.recordChildHandoff("ch-1", "subagent:old", summary);
+  await ledger.recordChildHandoff("ch-1", "subagent:old", summary);
+  await ledger.maybeAdvancePhase();
+  await ledger.acquire("ch-1", "subagent:new", ["b"]);
+  const board = ledger.getChallenge("ch-1")!.blackboard.filter((entry) => entry.kind === "handoff");
+  assert.equal(board.length, 3, "duplicate completion cannot append the report twice");
+  assert.match(blackboardLabel(board[0]), /not independently verified/);
+  const context = buildBenchmarkContinuity(ledger, "subagent:new");
+  assert.match(context, /fixture endpoint observed/);
+  assert.match(context, /parser behavior remains unclear/);
+  assert.doesNotMatch(context, /FOLLOW_OLD_PLAN/);
+  assert.deepEqual(ledger.getChallenge("ch-1")!.ruledOutFamilies, [], "reported failures are not automatically verified exclusions");
+  await ledger.recordChildHandoff("ch-1", "subagent:unrelated", "FINDINGS: wrong challenge");
+  assert.doesNotMatch(JSON.stringify(ledger.getChallenge("ch-1")!.blackboard), /wrong challenge/);
+});
+
+test("password enumeration consumption persists across workers and target restarts", async () => {
+  const { ledger, sessionId } = await setupLedger(["ch-1"]);
+  await ledger.acquire("ch-1", "main", ["a"]);
+  await ledger.recordPasswordEnumerationTime("ch-1", 45_000);
+  await ledger.defer("ch-1", "covered", undefined, "main");
+  await ledger.confirmClosed("ch-1");
+  await ledger.maybeAdvancePhase();
+  await ledger.acquire("ch-1", "subagent:next", ["b"]);
+  assert.equal(ledger.getChallenge("ch-1")!.passwordEnumerationMs, 45_000);
+  const reloaded = await new BenchmarkLedger(sessionId).initialize();
+  assert.equal(reloaded.getChallenge("ch-1")!.passwordEnumerationMs, 45_000);
+});
+
+
+test("handoff parser accepts markdown sections and drops bulleted next-step instructions", () => {
+  assert.deepEqual(childHandoffSections("## FINDINGS\n- observed fixture\n- **NEXT:** SHOULD_NOT_INHERIT\nmore plan\n## UNCERTAINTIES\n- unresolved fixture"), ["FINDINGS: observed fixture", "UNCERTAINTIES: unresolved fixture"]);
+});
+
+test("correcting an exclusion preserves independently supported exclusions", async () => {
+  const { ledger } = await setupLedger(["ch-1"]);
+  await ledger.acquire("ch-1", "main", ["a"]);
+  await ledger.checkpoint("ch-1", "A ruled out", undefined, undefined, "main", { signalKind: "decisive_rule_out", evidenceRef: "a", ruledOutFamilies: ["A"] });
+  await ledger.checkpoint("ch-1", "B ruled out", undefined, undefined, "main", { signalKind: "decisive_rule_out", evidenceRef: "b", ruledOutFamilies: ["B"] });
+  await ledger.checkpoint("ch-1", "B was not ruled out", undefined, undefined, "main", { supersedesEvidenceRef: "b" });
+  assert.deepEqual(ledger.getChallenge("ch-1")!.ruledOutFamilies, ["A"]);
 });

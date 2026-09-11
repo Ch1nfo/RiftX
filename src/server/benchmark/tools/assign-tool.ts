@@ -1,3 +1,4 @@
+import { selectBlackboard, blackboardLabel } from "../blackboard";
 import { Type } from "@sinclair/typebox";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { BenchmarkError, type BenchmarkController } from "../controller";
@@ -96,7 +97,7 @@ export function createAssignBenchmarkChallengeTool(
 function buildBrief(challenge: ChallengeState, containerAddrs: string[], phase: BenchmarkPhase, sharedIntel: string[]): string {
   const previousApproaches = challenge.approachHistory.map((attempt) => `- Attempt ${attempt.attemptNumber}: tried=${attempt.triedFamilies.join(", ") || "(not recorded)"}; stopped because ${attempt.stopReason || "stuck"}`);
   const clipped = (value: string, limit: number) => value.length <= limit ? value : `${value.slice(0, limit - 14)}...[truncated]`;
-  const blackboard = challenge.blackboard.slice(-10).map((entry) => `- ${entry.kind}: ${clipped(entry.summary, 800)}${entry.evidenceRef ? ` [${clipped(entry.evidenceRef, 200)}]` : ""}`);
+  const blackboard = selectBlackboard(challenge, 10).map((entry) => `- ${blackboardLabel(entry)}: ${clipped(entry.summary, 800)}${entry.evidenceRef ? ` [${clipped(entry.evidenceRef, 200)}]` : ""}`);
   return [
     `Solve this TSec benchmark challenge and find ALL remaining flag(s).`, ``,
     `## Challenge: ${challenge.uniqueCode}`,

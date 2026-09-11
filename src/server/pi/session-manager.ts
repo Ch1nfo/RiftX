@@ -62,8 +62,9 @@ import { BenchmarkLedger, BENCHMARK_MAX_SUBAGENTS } from "@/server/benchmark/led
 import { createBenchmarkControlTool } from "@/server/benchmark/tools/control-tool";
 import { createAssignBenchmarkChallengeTool } from "@/server/benchmark/tools/assign-tool";
 import { buildBenchmarkContinuity } from "@/server/benchmark/continuity";
+import { installPasswordEnumerationBudget, installBenchmarkRepeatNotice } from "@/server/benchmark/effort";
 import { installBenchmarkTimeboxGate } from "@/server/benchmark/timebox";
-import { benchmarkWorkspaceRoot, BenchmarkWorkspace, createWorkspaceLocalTools } from "@/server/benchmark/workspace";
+import { benchmarkWorkspaceRoot, BenchmarkWorkspace, createWorkspaceLocalTools, benchmarkMutationLock } from "@/server/benchmark/workspace";
 import { createChallengeSkillSelection } from "@/server/benchmark/challenge-skills";
 
 type BenchmarkRuntime = { controller: BenchmarkController; ledger: BenchmarkLedger };
@@ -267,7 +268,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   const providerRegistrations: ProviderRegistrations = new Map();
   const model = registerTrackedProfile(providerRegistrations, authStorage, modelRegistry, profile, true);
 
-  const bashConcurrency = bashConcurrencyOverride ?? new BashConcurrency(config.maxConcurrentSubagents + 1);
+  const bashConcurrency = bashConcurrencyOverride ?? new BashConcurrency((process.env.BENCHMARK_BASE_URL && process.env.BENCHMARK_TOKEN ? BENCHMARK_MAX_SUBAGENTS : config.maxConcurrentSubagents) + 1);
   // Browser state changes have their own lock. Bash still shares the file
   // mutation lock with write/edit, but a long read-heavy Bash scan must not
   // block navigation or interaction in the Browser runtime.
@@ -623,13 +624,15 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
       // before any execution starts, so a shared holder (bash) would never
       // release while an exclusive waiter (write) is stuck in pre-processing.
       // The execute wrapper acquires and releases around the real execute.
+      const fileLock = () => benchmarkLedger && workspace ? benchmarkMutationLock(benchmarkLedger, workspace.cwd) : mutationLock;
+      if (benchmarkLedger) installPasswordEnumerationBudget(tool, benchmarkLedger, benchmarkOwner);
       if (tool.name === "bash" && typeof tool.execute === "function") {
         const original = tool.execute.bind(tool);
         tool.execute = async (toolCallId: string, params: unknown, signal?: AbortSignal, ...rest: unknown[]) => {
           const bashRelease = await bashConcurrency.acquire(signal);
           let mutationRelease: (() => void) | undefined;
           try {
-            mutationRelease = mutationLock ? await mutationLock.acquireShared(signal) : undefined;
+            mutationRelease = await fileLock().acquireShared(signal);
           } catch (error) {
             bashRelease();
             throw error;
@@ -645,7 +648,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
       if ((tool.name === "write" || tool.name === "edit") && typeof tool.execute === "function") {
         const original = tool.execute.bind(tool);
         tool.execute = async (toolCallId: string, params: unknown, signal?: AbortSignal, ...rest: unknown[]) => {
-          const release = mutationLock ? await mutationLock.acquire(signal) : undefined;
+          const release = await fileLock().acquire(signal);
           try {
             return await original(toolCallId, params, signal, ...rest);
           } finally {
@@ -658,6 +661,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
       if (benchmarkLedger) installBenchmarkTimeboxGate(tool, benchmarkLedger, benchmarkOwner, child ? runtimeDeps?.benchmark?.assignedChallenge : undefined);
       // A challenge transition waits for this worker's running tools; queued
       // calls from the previous challenge cannot execute in the new directory.
+      if (benchmarkLedger) installBenchmarkRepeatNotice(tool, benchmarkLedger, benchmarkOwner);
       workspace?.install(tool);
     }
   }
@@ -720,7 +724,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
       // Checks the persisted delivery mark so post-restart legacy tasks
       // aren't re-injected.
       const stranded = undeliveredTerminalTasks(record, subagents.list());
-      if (hasActive) {
+      if (hasActive && !benchmarkLedger) {
         // Still waiting for the active batch. Stranded results from earlier
         // failed deliveries stay pending — the completion handler delivers
         // them alongside the final active result when the batch completes.
@@ -753,7 +757,12 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
       // status), release its challenge from the ledger and close the
       // container — the child prompt tells it to defer/abandon, but crash,
       // cancel, or forgetting means the slot would leak otherwise.
-      let benchmarkCleanup: Promise<void> = Promise.resolve();
+      let benchmarkCleanup: Promise<void> = benchmarkLedger && task.benchmarkChallenge
+        ? benchmarkLedger.recordChildHandoff(task.benchmarkChallenge, `subagent:${task.id}`, childResult.summary)
+        : Promise.resolve();
+      benchmarkCleanup = benchmarkCleanup.catch((error) => {
+        console.warn("Could not persist benchmark child handoff:", error);
+      });
       if (benchmarkController && benchmarkLedger) {
         const taskId = task.id;
         const ownerTag: `subagent:${string}` = `subagent:${taskId}`;
@@ -761,7 +770,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
           (challenge) => challenge.owner === ownerTag && (challenge.status === "running" || challenge.status === "reserved")
         );
         if (owned) {
-          benchmarkCleanup = benchmarkLedger.runChallengeAction(owned.uniqueCode, async () => {
+          benchmarkCleanup = benchmarkCleanup.then(() => benchmarkLedger.runChallengeAction(owned.uniqueCode, async () => {
             let released = false;
             try {
               await benchmarkLedger.releaseOnSubagentExit(owned.uniqueCode, `subagent exited with status=${task.status}`, ownerTag, "deferred");
@@ -773,7 +782,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
               // this stale completion no longer controls the challenge.
               if (released) await benchmarkLedger.markCloseFailed(owned.uniqueCode).catch(() => undefined);
             }
-          });
+          }));
         }
       }
       // Deliver only after the ledger owner and platform slot are reconciled.
@@ -1134,7 +1143,7 @@ async function promptSession(id: string, text: string, mode: "prompt" | "steer" 
   // when the model is NOT still streaming (it calls session.prompt, which the
   // SDK rejects with "already processing" during an active run) — defer to
   // the agent_end handler for streaming sessions.
-  if (record.subagents) {
+  if (record.subagents && !getBenchmarkRuntime(id)) {
     record.waitingForSubagents = false;
     if (!record.session.isStreaming) {
       await waitForSubagentsBeforeConclusion(record, knownTaskIds, activeBefore, promptAbortEpoch);

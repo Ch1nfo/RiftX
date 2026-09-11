@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import { readJsonStore, writeJsonStoreAtomic } from "@/server/json-store";
 import { createSerializer } from "@/server/serializer";
 import type { Challenge } from "./controller";
+import { childHandoffSections, retainBlackboard } from "./blackboard";
 
 export const BENCHMARK_MAX_CONTAINERS = 3;
 export const BENCHMARK_MAX_SUBAGENTS = 2;
@@ -50,7 +51,7 @@ export type ChallengeBudget = {
 export type BlackboardEntry = {
   at: number;
   worker: Exclude<ChallengeOwner, null>;
-  kind: ProgressSignalKind | "submission" | "attempt_end";
+  kind: ProgressSignalKind | "submission" | "attempt_end" | "handoff";
   summary: string;
   evidenceRef: string;
   approach: string;
@@ -92,6 +93,8 @@ export type ChallengeState = {
   hardDeadlineAt: number | null;
   firstAttemptWarningIssuedAt: number | null;
   blackboard: BlackboardEntry[];
+  /** Cumulative online password enumeration time across all workers/attempts. */
+  passwordEnumerationMs: number;
   approachHistory: AttemptSummary[];
   lastSignalKind: ProgressSignalKind | null;
   lastEvidenceRef: string;
@@ -244,7 +247,7 @@ function appendBlackboard(challenge: ChallengeState, entry: BlackboardEntry): vo
   const previous = challenge.blackboard.at(-1);
   const duplicate = previous && previous.kind === entry.kind
     && previous.summary === entry.summary && previous.evidenceRef === entry.evidenceRef;
-  if (!duplicate) challenge.blackboard = [...challenge.blackboard, entry].slice(-30);
+  if (!duplicate) challenge.blackboard = retainBlackboard([...challenge.blackboard, entry]);
 }
 
 function statePath(parentSessionId: string) {
@@ -293,6 +296,7 @@ function newChallengeState(challenge: Challenge): ChallengeState {
     hardDeadlineAt: null,
     firstAttemptWarningIssuedAt: null,
     blackboard: [],
+    passwordEnumerationMs: 0,
     approachHistory: [],
     lastSignalKind: null,
     lastEvidenceRef: "",
@@ -449,7 +453,8 @@ export class BenchmarkLedger {
         ? challenge.currentAttemptStartedAt + FIRST_ATTEMPT_LIMIT_MS
         : null;
       challenge.firstAttemptWarningIssuedAt = nullableFiniteNumber(challenge.firstAttemptWarningIssuedAt);
-      challenge.blackboard = Array.isArray(challenge.blackboard) ? challenge.blackboard.slice(-30) : [];
+      challenge.passwordEnumerationMs = Math.max(0, Number(challenge.passwordEnumerationMs) || 0);
+      challenge.blackboard = Array.isArray(challenge.blackboard) ? retainBlackboard(challenge.blackboard) : [];
       challenge.blackboard = challenge.blackboard.map((entry) => ({
         ...entry,
         summary: cleanText(typeof entry.summary === "string" ? entry.summary : "", 2_000),
@@ -908,7 +913,7 @@ export class BenchmarkLedger {
     triedFamilies: string[] | undefined,
     nextProbe: string | undefined,
     expectedOwner: Exclude<ChallengeOwner, null>,
-    options?: { signalKind?: ProgressSignalKind; evidenceRef?: string; currentApproach?: string; ruledOutFamilies?: string[] }
+    options?: { signalKind?: ProgressSignalKind; evidenceRef?: string; currentApproach?: string; ruledOutFamilies?: string[]; supersedesEvidenceRef?: string }
   ): Promise<{ updated: boolean; extended: boolean; challenge: ChallengeState }> {
     return this.serialize(async () => {
       const challenge = this.state.challenges[uniqueCode];
@@ -921,6 +926,20 @@ export class BenchmarkLedger {
       if (triedFamilies?.length) {
         const normalized = triedFamilies.map((item) => cleanText(item, 100)).filter(Boolean);
         challenge.triedFamilies = [...new Set([...challenge.triedFamilies, ...normalized])].slice(-20);
+      }
+      if (options?.supersedesEvidenceRef) {
+        const superseded = cleanText(options.supersedesEvidenceRef, 500);
+        const removedExclusions = challenge.blackboard.filter((entry) => entry.evidenceRef === superseded && entry.kind === "decisive_rule_out")
+          .flatMap((entry) => entry.ruledOutFamilies);
+        const remainingExclusions = challenge.blackboard.filter((entry) => entry.evidenceRef !== superseded && entry.kind === "decisive_rule_out")
+          .flatMap((entry) => entry.ruledOutFamilies);
+        challenge.ruledOutFamilies = challenge.ruledOutFamilies.filter((family) => !removedExclusions.includes(family) || remainingExclusions.includes(family));
+        challenge.progressKeys = challenge.progressKeys.filter((key) => !key.endsWith(`\u0000${superseded.toLowerCase()}`));
+        challenge.blackboard = challenge.blackboard.filter((entry) => entry.evidenceRef !== superseded);
+        if (challenge.lastEvidenceRef === superseded) {
+          challenge.lastEvidenceRef = "";
+          challenge.lastMeaningfulSignalContent = "";
+        }
       }
       if (options?.ruledOutFamilies?.length) {
         const normalized = options.ruledOutFamilies.map((item) => cleanText(item, 100)).filter(Boolean);
@@ -956,11 +975,36 @@ export class BenchmarkLedger {
         evidenceRef,
         approach: challenge.currentApproach,
         triedFamilies: challenge.triedFamilies.slice(-10),
-        ruledOutFamilies: challenge.ruledOutFamilies.slice(-10),
+        ruledOutFamilies: (options?.ruledOutFamilies ?? []).map((family) => cleanText(family, 100)).filter(Boolean).slice(-10),
         nextProbe: challenge.nextProbe
       });
       await this.persist();
       return { updated: isNew, extended: false, challenge };
+    });
+  }
+
+  /** Save final reports even after explicit defer; do not alter ownership or progress. */
+  async recordChildHandoff(uniqueCode: string, worker: `subagent:${string}`, summary: string): Promise<void> {
+    const sections = childHandoffSections(summary);
+    if (!sections.length) return;
+    await this.serialize(async () => {
+      const challenge = this.state.challenges[uniqueCode];
+      if (!challenge || (challenge.owner !== worker && challenge.currentAttemptWorker !== worker
+        && !challenge.approachHistory.some((attempt) => attempt.worker === worker))) return;
+      for (const section of sections) appendBlackboard(challenge, {
+        at: this.now(), worker, kind: "handoff", summary: cleanText(section, 2_000),
+        evidenceRef: `${worker}:final-report`, approach: "", triedFamilies: [], ruledOutFamilies: [], nextProbe: ""
+      });
+      await this.persist();
+    });
+  }
+
+  async recordPasswordEnumerationTime(uniqueCode: string, elapsedMs: number): Promise<void> {
+    await this.serialize(async () => {
+      const challenge = this.state.challenges[uniqueCode];
+      if (!challenge || !Number.isFinite(elapsedMs)) return;
+      challenge.passwordEnumerationMs += Math.max(0, elapsedMs);
+      await this.persist();
     });
   }
 

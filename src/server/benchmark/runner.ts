@@ -1,6 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { BenchmarkController, BenchmarkError } from "./controller";
 import { benchmarkProfile, positiveInteger } from "./environment";
+import { benchmarkMainBusy, benchmarkMainHasWork, queueBenchmarkContinuation } from "./scheduling";
 
 const INITIAL_PROMPT = `Start this benchmark now. First call benchmark_control(action="sync") to verify connectivity and read the challenge queue. Solve the platform-provided challenges and submit observed flags through benchmark_control. Use up to two challenge SubAgents and work on your own challenge concurrently. Continue until the authoritative board is terminal or the platform ends the task. Public research is disabled. No human is available; do not wait for instructions. Follow the benchmark scope and tool rules.`;
 const CONTINUE_PROMPT = `The benchmark is still unfinished. Reconcile benchmark_control(action="sync"), inspect the authoritative status, refill available SubAgent slots, and continue solving. A completed assistant turn does not end the benchmark. If all remaining approaches are exhausted, explicitly abandon the corresponding challenges through benchmark_control so the board records the terminal outcome.`;
@@ -64,7 +65,7 @@ export async function runBenchmark(): Promise<number> {
     log("preflight_ok", { challenges: initialChallenges.length, vpn: initialVpn.status });
     const { updateConfig } = await import("@/server/config-store");
     const { createSession, startPromptSession, getBenchmarkRuntime, closeBenchmarkSession } = await import("@/server/pi/session-manager");
-    const { sessions, isSessionRecordRunning } = await import("@/server/pi/session-registry");
+    const { sessions } = await import("@/server/pi/session-registry");
     cleanup = closeBenchmarkSession;
     await updateConfig({ approvalMode: "full", cwd: process.cwd(), mcpServers: [], systemPromptEnabled: false });
     sessionId = (await createSession()).id;
@@ -101,7 +102,7 @@ export async function runBenchmark(): Promise<number> {
         const state = runtime.ledger.getState();
         log("progress", { phase: state.phase, solved: state.solvedCount, exhausted: state.exhaustedCount, score: state.cumulativeScore });
       }
-      if (isSessionRecordRunning(record) || record.subagentDeliveryInProgress || record.deliveringSubagentResults.size) {
+      if (benchmarkMainBusy(record)) {
         await delay(1_000);
         continue;
       }
@@ -115,12 +116,17 @@ export async function runBenchmark(): Promise<number> {
         log("completed", { solved: state.solvedCount, exhausted: state.exhaustedCount, score: state.cumulativeScore });
         break;
       }
+      if (!firstPrompt && !benchmarkMainHasWork(runtime.ledger)) {
+        await delay(1_000);
+        continue;
+      }
       if (!firstPrompt) {
         emptyTurns = toolsCompleted === lastTools ? emptyTurns + 1 : 0;
         if (emptyTurns >= 3) throw new Error("Agent stopped three times without using tools while challenges remain unfinished");
       }
       lastTools = toolsCompleted;
-      await startPromptSession(sessionId, firstPrompt ? INITIAL_PROMPT : CONTINUE_PROMPT);
+      if (firstPrompt) await startPromptSession(sessionId, INITIAL_PROMPT);
+      else queueBenchmarkContinuation(record, runtime.ledger, CONTINUE_PROMPT);
       firstPrompt = false;
       await delay(1_000); // Let prompt completion and child deliveries settle before inspecting idle state.
     }

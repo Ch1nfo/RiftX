@@ -1,6 +1,8 @@
+import { selectBlackboard, blackboardLabel } from "./blackboard";
 /** Compact, replaceable benchmark context derived from the authoritative ledger. */
 
 import type { BenchmarkLedger, ChallengeState } from "./ledger";
+import { PASSWORD_ENUMERATION_BUDGET_MS } from "./effort";
 
 export const MAX_BENCHMARK_CONTINUITY_CHARS = 8_000;
 export const BENCHMARK_HANDOFF_GUIDANCE = "Reassess the recorded evidence independently and choose a materially different hypothesis. Previous attempts may have followed a mistaken premise; do not inherit their plan. An unsuccessful attempt alone does not rule out an entire approach.";
@@ -40,12 +42,13 @@ export function buildBenchmarkContinuity(
       `  description: ${compact(mine.description, 2_400) || "(none)"}`,
       `  hint: ${mine.hintUsed ? mine.hintContent || "requested; no content returned" : "not used"}`
     );
+    if (mine.passwordEnumerationMs > 0) lines.push(`## Online password guessing: ${Math.ceil(mine.passwordEnumerationMs / 1000)}/${PASSWORD_ENUMERATION_BUDGET_MS / 1000} seconds consumed across all workers and attempts.`);
     if (mine.triedFamilies.length) lines.push(`## Previously tried: ${mine.triedFamilies.join(", ")}`);
     if (mine.ruledOutFamilies.length) lines.push(`## Recorded exclusions (check their evidence): ${mine.ruledOutFamilies.join(", ")}`);
-    const board = mine.blackboard.slice(-6);
+    const board = selectBlackboard(mine, 6);
     if (board.length) {
       lines.push("## Challenge blackboard:", ...board.map((entry) =>
-        `  - ${entry.kind}: ${compact(entry.summary, 600)}${entry.evidenceRef ? ` [${compact(entry.evidenceRef, 200)}]` : ""}`
+        `  - ${blackboardLabel(entry)}: ${compact(entry.summary, 600)}${entry.evidenceRef ? ` [${compact(entry.evidenceRef, 200)}]` : ""}`
       ));
     }
     const history = mine.approachHistory.slice(-4);

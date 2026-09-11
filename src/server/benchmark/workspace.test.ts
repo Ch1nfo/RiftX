@@ -7,7 +7,7 @@ import { createServer } from "node:http";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { BrowserManager } from "@/browser/runtime/browser-manager";
 import { activeSkillNamesFromBranch } from "@/server/pi/skill-router";
-import { BenchmarkWorkspace, benchmarkWorkspaceRoot, challengeDirectory, createWorkspaceLocalTools } from "./workspace";
+import { BenchmarkWorkspace, benchmarkWorkspaceRoot, challengeDirectory, createWorkspaceLocalTools, benchmarkMutationLock } from "./workspace";
 import { createChallengeSkillSelection } from "./challenge-skills";
 
 test("relative file tools, shell cwd and temporary files follow the challenge and survive revisits", async (t) => {
@@ -108,4 +108,22 @@ test("switching browser challenges removes cookies, storage, identity headers, t
   await browser.navigate(origin);
   assert.deepEqual(JSON.parse(await browser.evaluate('[document.cookie, localStorage.getItem("fixture"), sessionStorage.getItem("fixture")]')), ["", null, null]);
   assert.equal(lastHeader, undefined);
+});
+
+
+test("a long command and queued write in one challenge do not block another challenge", async () => {
+  const run = {};
+  const a = benchmarkMutationLock(run, "a");
+  const b = benchmarkMutationLock(run, "b");
+  assert.equal(benchmarkMutationLock(run, "a"), a);
+  assert.notEqual(benchmarkMutationLock({}, "a"), a);
+  const releaseA = await a.acquireShared();
+  let wroteA = false;
+  const pendingA = a.acquire().then((release) => { wroteA = true; release(); });
+  const releaseB = await b.acquire();
+  assert.equal(wroteA, false);
+  releaseB();
+  releaseA();
+  await pendingA;
+  assert.equal(wroteA, true);
 });

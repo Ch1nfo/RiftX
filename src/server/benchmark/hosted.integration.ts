@@ -11,9 +11,10 @@ import { benchmarkWorkspaceRoot, challengeDirectory } from "./workspace";
 
 // This fixture drives the real SDK and runner; it never contacts a real model or target.
 // Set RIFTX_TEST_IMAGE to run the same checks through the image's default entrypoint.
-for (const mode of ["complete", "signal", "delegate", "abstain"]) test(`headless ${mode}: lifecycle and active skill delivery`, { timeout: 120_000 }, async () => {
+for (const mode of ["complete", "signal", "delegate", "abstain", "parallel"]) test(`headless ${mode}: lifecycle and active skill delivery`, { timeout: 120_000 }, async () => {
   const stopEarly = mode === "signal";
-  const delegate = mode === "delegate";
+  const delegate = mode === "delegate" || mode === "parallel";
+  const parallel = mode === "parallel";
   const directory = await mkdtemp(join(tmpdir(), "riftx-hosted-test-"));
   // Synthetic fixtures only. The bind mount masks all operator-provided skills
   // when testing an image, so tests never inspect recommended-skills contents.
@@ -24,7 +25,7 @@ for (const mode of ["complete", "signal", "delegate", "abstain"]) test(`headless
   const description = "Synthetic widget inspection.";
   await writeFile(join(fixtureDirectory, "SKILL.md"), `---\nname: benchmark-fixture\ndescription: ${description}\n---\n${skillMarker}\n`);
   const platform = new MockBenchmarkApi();
-  platform.seedChallenges(mode === "abstain" ? 2 : 1);
+  platform.seedChallenges(mode === "abstain" || parallel ? 2 : 1);
   const fixtures = (platform as unknown as { challenges: Map<string, { description: string }> }).challenges;
   fixtures.get("ch-001")!.description = "Inspect a synthetic widget.";
   if (mode === "abstain") fixtures.get("ch-002")!.description = "Analyze the provided ELF binary.";
@@ -33,7 +34,11 @@ for (const mode of ["complete", "signal", "delegate", "abstain"]) test(`headless
   let mainRequests = 0;
   let childRequests = 0;
   const bodies: Array<{ messages: unknown[]; tools: Array<{ function: { name: string } }>; max_tokens?: number; max_completion_tokens?: number }> = [];
-  const steps = stopEarly ? ["sync", "acquire", "hang"] : delegate ? ["idle", "sync", "assign", "idle"]
+  let releaseChild!: () => void;
+  const mainResumed = new Promise<void>((resolve) => { releaseChild = resolve; });
+  let resumedBeforeChild = false;
+  let childReleasedBeforeMain = false;
+  const steps = parallel ? ["idle", "sync", "assign", "idle", "acquire2", "bash2", "submit2a", "submit2b", "idle"] : stopEarly ? ["sync", "acquire", "hang"] : delegate ? ["idle", "sync", "assign", "idle"]
     : ["idle", "sync", "acquire", "bash", "submit", ...(mode === "abstain" ? ["acquire2", "bash2", "submit2a", "submit2b"] : []), "idle"];
   const llm = createServer(async (req, res) => {
     let raw = "";
@@ -44,6 +49,14 @@ for (const mode of ["complete", "signal", "delegate", "abstain"]) test(`headless
     const index = requests++;
     const isChild = isAgent && !body.tools.some((tool) => tool.function.name === "assign_benchmark_challenge");
     const step = !isAgent ? "idle" : isChild ? ["bash", "submit", "idle"][childRequests++] ?? "idle" : steps[mainRequests++] ?? "idle";
+    if (parallel && step === "acquire2") { resumedBeforeChild = true; releaseChild(); }
+    if (parallel && isChild && step === "bash") {
+      // The old runner waited for this child before resuming the main worker.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([mainResumed, new Promise<void>((resolve) => { timer = setTimeout(resolve, 10_000); })]);
+      clearTimeout(timer);
+      childReleasedBeforeMain = !resumedBeforeChild;
+    }
     if (step === "hang") return;
     res.writeHead(200, { "Content-Type": "text/event-stream" });
     const code = step.includes("2") ? "ch-002" : "ch-001";
@@ -51,7 +64,7 @@ for (const mode of ["complete", "signal", "delegate", "abstain"]) test(`headless
     const tool = action === "bash" ? { name: "bash", arguments: JSON.stringify({ command: `test ! -e same-name.txt && printf '${code}' > same-name.txt && printf runner-permission-ok` }) }
       : step === "assign" ? { name: "assign_benchmark_challenge", arguments: JSON.stringify({ uniqueCode: "ch-001" }) }
       : { name: "benchmark_control", arguments: JSON.stringify({ action, ...(action === "acquire" || action === "submit" ? { uniqueCode: code } : {}), ...(action === "submit" ? { flag: `flag{mock_${code}_${step === "submit2b" ? 1 : 0}}` } : {}) }) };
-    const delta = step === "idle" ? { role: "assistant", content: "This assistant turn is finished." }
+    const delta = step === "idle" ? { role: "assistant", content: isChild ? "FINDINGS: synthetic child final observation\nUNCERTAINTIES: synthetic evidence limit" : "This assistant turn is finished." }
       : { role: "assistant", tool_calls: [{ index: 0, id: `call_${index}`, type: "function", function: tool }] };
     const chunk = (delta: unknown, finish: string | null) => ({ id: `reply_${index}`, object: "chat.completion.chunk", created: 1, model: "fixture", choices: [{ index: 0, delta, finish_reason: finish }] });
     res.write(`data: ${JSON.stringify(chunk(delta, null))}\n\n`);
@@ -99,11 +112,19 @@ for (const mode of ["complete", "signal", "delegate", "abstain"]) test(`headless
     assert.equal(platform.getActiveContainers(), 0, output);
     if (stopEarly) assert.deepEqual(platform.getCloseCalls(), ["ch-001"]);
     else {
-      assert.equal(platform.getSolvedCount(), mode === "abstain" ? 2 : 1, output);
-      assert.equal(platform.getSubmittedFlags().length, mode === "abstain" ? 3 : 1);
+      assert.equal(platform.getSolvedCount(), mode === "abstain" || parallel ? 2 : 1, output);
+      assert.equal(platform.getSubmittedFlags().length, mode === "abstain" || parallel ? 3 : 1);
       assert.ok(requests >= 6, "must continue after the initial idle turn");
-      if (delegate) assert.ok(childRequests >= 2, "delegated agent used its own skill-bearing requests");
-      else assert.match(output, /"tool":"bash"/);
+      if (delegate) {
+        assert.ok(childRequests >= 2, "delegated agent used its own skill-bearing requests");
+        if (!image) {
+          const session = output.split("\n").filter((line) => line.startsWith("{")).map((line) => JSON.parse(line)).find((event) => event.event === "session_started");
+          const saved = await readFile(join(directory, ".riftx", "benchmark", session.sessionId, "state.json"), "utf8");
+          assert.match(saved, /synthetic child final observation/);
+        }
+      }
+      if (parallel) assert.ok(resumedBeforeChild && !childReleasedBeforeMain, "main must resume its own work while the child is still active");
+      if (!delegate) assert.match(output, /"tool":"bash"/);
     }
     assert.ok(bodies.every((body) => (body.max_tokens ?? body.max_completion_tokens) === 40000));
     for (const body of bodies) {

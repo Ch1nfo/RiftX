@@ -1,3 +1,4 @@
+import { selectBlackboard, blackboardLabel } from "../blackboard";
 import { Type } from "@sinclair/typebox";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { BenchmarkError, type BenchmarkController, type VpnCheckResult } from "../controller";
@@ -44,7 +45,7 @@ function recoveryText(challenge: ChallengeState): string {
     challenge.hintContent ? `Hint already purchased: ${challenge.hintContent}` : "",
     attempts.length ? `Previous attempts: ${attempts.map((attempt) => `${attempt.attemptNumber}: tried=${attempt.triedFamilies.join(", ") || "(not recorded)"}; stopped because ${attempt.stopReason}`).join(" | ")}` : "",
     challenge.ruledOutFamilies.length ? `Recorded exclusions (check their evidence): ${challenge.ruledOutFamilies.join(", ")}` : "",
-    challenge.blackboard.length ? `Blackboard: ${challenge.blackboard.slice(-8).map((entry) => `[${entry.kind}] ${entry.summary}${entry.evidenceRef ? ` [${entry.evidenceRef}]` : ""}`).join(" | ")}` : "",
+    challenge.blackboard.length ? `Blackboard: ${selectBlackboard(challenge, 8).map((entry) => `[${blackboardLabel(entry)}] ${entry.summary}${entry.evidenceRef ? ` [${entry.evidenceRef}]` : ""}`).join(" | ")}` : "",
     challenge.attemptCount > 1 ? `This revisit is not time-limited. ${BENCHMARK_HANDOFF_GUIDANCE} If truly exhausted, checkpoint and defer it for the end.` : ""
   ].filter(Boolean);
   return lines.length ? `\nRecovery notes (do not repeat these attempts):\n${lines.join("\n")}` : "";
@@ -92,6 +93,7 @@ export function createBenchmarkControlTool(
         Type.Literal("new_surface"), Type.Literal("note")
       ])),
       evidenceRef: Type.Optional(Type.String({ maxLength: 500, description: "Stable request/artifact/URL/tool evidence reference required for strong non-flag progress" })),
+      supersedesEvidenceRef: Type.Optional(Type.String({ maxLength: 500, description: "Evidence reference of a previous blackboard observation invalidated or replaced by this checkpoint; explain the correction in signal" })),
       triedFamilies: Type.Optional(Type.Array(Type.String({ maxLength: 100 }), { maxItems: 20, description: "Attack families tried on this challenge" })),
       ruledOutFamilies: Type.Optional(Type.Array(Type.String({ maxLength: 100 }), { maxItems: 20, description: "Attack families ruled out by decisive evidence" })),
       reason: Type.Optional(Type.String({ maxLength: 1_000, description: "Reason for defer or abandon" })),
@@ -100,7 +102,7 @@ export function createBenchmarkControlTool(
       intel: Type.Optional(Type.String({ maxLength: 800, description: "Bounded cross-challenge fact such as credentials, foothold, endpoint, or flag-format quirk" })),
       cursor: Type.Optional(Type.Number({ description: "Pagination offset for status (0-based)" }))
     }),
-    async execute(_toolCallId: string, params: { action: "sync" | "status" | "acquire" | "checkpoint" | "submit" | "hint" | "defer" | "abandon" | "publish_intel"; uniqueCode?: string; flag?: string; signal?: string; signalKind?: ProgressSignalKind; evidenceRef?: string; triedFamilies?: string[]; ruledOutFamilies?: string[]; reason?: string; scope?: "global" | "target"; target?: string; intel?: string; cursor?: number }) {
+    async execute(_toolCallId: string, params: { action: "sync" | "status" | "acquire" | "checkpoint" | "submit" | "hint" | "defer" | "abandon" | "publish_intel"; uniqueCode?: string; flag?: string; signal?: string; signalKind?: ProgressSignalKind; evidenceRef?: string; supersedesEvidenceRef?: string; triedFamilies?: string[]; ruledOutFamilies?: string[]; reason?: string; scope?: "global" | "target"; target?: string; intel?: string; cursor?: number }) {
       const challengeScoped = new Set(["acquire", "checkpoint", "submit", "hint", "defer", "abandon"]);
       const actionKey = challengeScoped.has(params.action) ? (params.uniqueCode ?? assignedChallenge) : undefined;
       const run = <T>(operation: () => Promise<T>) => actionKey ? ledger.runChallengeAction(actionKey, operation) : operation();
@@ -247,6 +249,7 @@ export function createBenchmarkControlTool(
             const result = await ledger.checkpoint(uniqueCode, signal, params.triedFamilies, undefined, owner, {
               signalKind: params.signalKind,
               evidenceRef: params.evidenceRef,
+              supersedesEvidenceRef: params.supersedesEvidenceRef,
               ruledOutFamilies: params.ruledOutFamilies
             });
             return {

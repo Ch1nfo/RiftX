@@ -62,6 +62,7 @@ export type SessionRecord = {
   waitingForSubagents?: boolean;
   compacting?: boolean;
   promptChain?: Promise<void>;
+  pendingSessionActions?: number;
   subagentDeliveryInProgress?: boolean;
   deliveredSubagentResults: Set<string>;
   deliveringSubagentResults: Set<string>;
@@ -90,7 +91,7 @@ export type RuntimeDeps = {
 };
 
 /** Bump to force process-global session objects to rebuild from disk. */
-export const RUNTIME_VERSION = 45;
+export const RUNTIME_VERSION = 46;
 
 declare global {
   var __riftxSessions: Map<string, SessionRecord> | undefined;
