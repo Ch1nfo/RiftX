@@ -579,6 +579,7 @@ a { color: inherit; text-decoration: none; }
 
 /* Conversation images and the full-screen viewer. */
 .message-images { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.message-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .message-image { border: 1px solid var(--line); border-radius: 8px; padding: 0; background: var(--panel-2); cursor: zoom-in; overflow: hidden; }
 .message-image img { display: block; width: 180px; height: 130px; object-fit: cover; }
 .tool-screenshot { display: block; width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 0; margin: 8px 0; background: var(--panel-2); cursor: zoom-in; overflow: hidden; }

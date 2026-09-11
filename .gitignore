@@ -3,8 +3,14 @@ node_modules/
 .next/
 .next-stale-design-options/
 out/
+/dist/
 coverage/
 *.tsbuildinfo
+
+# Docker packaging files from other branches
+/.dockerignore
+/Dockerfile
+/docker/
 
 # Local runtime state (RiftX and Pi)
 .riftx/

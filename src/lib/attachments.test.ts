@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { attachmentExtension, composeAttachmentText, mergeRecoveredAttachments, promptAttachmentsError, promptImagesError, sessionAttachments, withSessionAttachments, type PromptAttachment } from "./attachments";
+import { attachmentDisplay, attachmentExtension, composeAttachmentText, mergeRecoveredAttachments, promptAttachmentsError, promptImagesError, sessionAttachments, withSessionAttachments, type PromptAttachment } from "./attachments";
 
 const PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
@@ -66,6 +66,23 @@ test("content containing its own fence grows the delimiter instead of breaking o
   // The block uses a 4-backtick fence; the inner 3-backtick run cannot close it.
   assert.ok(composed.includes("````md\nbefore\n```\ninner\n```\nafter\n````"), composed);
   assert.equal(composed.split("````").length, 3);
+});
+
+test("attachment display hides complete file bodies while preserving prompt text and filenames", () => {
+  const text = "Read these files.\n\n```md\n# Keep this user-written code\n```";
+  const files = [
+    { name: "笔记 (draft).md", content: "# Private body\n\n```js\nconst x = 1;\n```\n\n--- attachment: nested.txt (1 chars) ---\n```txt\nx\n```" },
+    { name: "empty.txt", content: "" },
+    { name: "data.json", content: "{\"ok\": true}\n" }
+  ];
+  const content = text + composeAttachmentText(files);
+  assert.deepEqual(attachmentDisplay(content), { text, names: files.map((file) => file.name) });
+  assert.ok(content.includes(files[0].content), "the original model/transcript content is unchanged");
+  assert.deepEqual(attachmentDisplay(composeAttachmentText(files)), { text: "", names: files.map((file) => file.name) });
+  // An ordinary code block, incomplete attachment, or inline example is kept.
+  for (const ordinary of [text, `${text}\n\n--- attachment: incomplete.md (1 chars) ---\n\`\`\`md\nx`, `${content}\n\nExplain the example above.`]) {
+    assert.deepEqual(attachmentDisplay(ordinary), { text: ordinary, names: [] });
+  }
 });
 
 test("composer attachment state is isolated per session", () => {

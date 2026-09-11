@@ -82,7 +82,7 @@ export function promptAttachmentsError(attachments: unknown): string | null {
   return null;
 }
 
-/** Fenced blocks appended to the prompt text so the model, transcript, and UI all see the same thing. */
+/** Fenced blocks appended to the model prompt and persisted transcript. */
 export function composeAttachmentText(attachments: readonly PromptAttachment[]): string {
   if (!attachments.length) return "";
   const blocks = attachments.map((attachment) => {
@@ -103,6 +103,23 @@ export function composeAttachmentText(attachments: readonly PromptAttachment[]):
     ].join("\n");
   });
   return `\n\n${blocks.join("\n\n")}`;
+}
+
+/** Project the appended attachment blocks into filenames for display only.
+ * Keep the original content intact for model context and snapshot matching. */
+export function attachmentDisplay(content: string): { text: string; names: string[] } {
+  const blocks = [...content.matchAll(/\n\n--- attachment: ([^\n]+) \(\d+ chars(?:, truncated)?\) ---\n(`{3,})[a-z0-9]*\n[\s\S]*?\n\2(?=\n\n|$)/g)];
+  const names: string[] = [];
+  let end = content.length;
+  // Only hide a contiguous suffix produced by composeAttachmentText; ordinary
+  // prose and code before it must remain visible, including attachment examples.
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index]!;
+    if (block.index! + block[0].length !== end) break;
+    names.unshift(block[1]!);
+    end = block.index!;
+  }
+  return { text: content.slice(0, end), names };
 }
 
 /** Per-session composer attachment state, mirroring the session-draft pattern. */

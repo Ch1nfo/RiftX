@@ -12,7 +12,7 @@ import { parseRiftxEvent, type ApprovalMode, type ApprovalRequest, type ContextU
 import { cloneSubagentTask, mergeSubagentTaskPatch, mergeSubagentTasks } from "@/lib/subagent-merge";
 import { withSessionProfile } from "@/lib/session-profile-sync";
 import { screenshotUrl } from "@/lib/screenshot-url";
-import { ATTACHMENT_EXTENSIONS, MAX_ATTACHMENT_CHARS, MAX_IMAGE_BYTES, composeAttachmentText, mergeRecoveredAttachments, promptAttachmentsError, promptImagesError, sessionAttachments, withSessionAttachments, type PromptAttachment, type SessionAttachments } from "@/lib/attachments";
+import { ATTACHMENT_EXTENSIONS, MAX_ATTACHMENT_CHARS, MAX_IMAGE_BYTES, attachmentDisplay, composeAttachmentText, mergeRecoveredAttachments, promptAttachmentsError, promptImagesError, sessionAttachments, withSessionAttachments, type PromptAttachment, type SessionAttachments } from "@/lib/attachments";
 import { sessionDraft, withSessionDraft, type SessionDrafts } from "@/lib/session-drafts";
 import { promptRequestDisposition, type PromptRequestState } from "@/lib/prompt-request-state";
 import { orderSessionsByActivity, withRunningSessionIds, withSessionActivity } from "@/lib/session-activity";
@@ -68,13 +68,15 @@ const ToolCard = memo(function ToolCard({ message, labels, sessionId, onImageCli
 });
 
 const MessageItem = memo(function MessageItem({ message, labels, sessionId, onImageClick }: { message: Message; labels: MessageLabels; sessionId: string; onImageClick: (src: string, alt: string) => void }) {
+  const display = useMemo(() => message.role === "user" ? attachmentDisplay(message.content) : { text: message.content, names: [] }, [message.role, message.content]);
   return <article className={`message ${message.role}${message.status === "error" ? " error" : ""}`}>
     {message.role === "user" ? <div className="avatar user-avatar">{labels.you}</div> : message.role === "assistant" ? <div className="avatar assistant-avatar"><RiftxLogo decorative /></div> : null}
     <div className="message-body">{message.role === "thinking" ? <details className="thinking-block" open={message.status === "streaming"}><summary><span className="thinking-title"><Brain size={14} weight="bold" />{labels.thinking}</span><span className="thinking-state">{message.status === "streaming" ? labels.thinkingNow : labels.thinkingDone}</span></summary><div className="thinking-copy">{message.content}</div></details> : message.role === "tool" ? <ToolCard message={message} labels={labels} sessionId={sessionId} onImageClick={onImageClick} /> : <>
       {message.images?.length ? <div className="message-images">{message.images.map((image, index) => <button type="button" key={index} className="message-image" onClick={() => onImageClick(image.src, "attached image")}>{/* data-URI or local-route image; next/image cannot optimize either */}
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={image.src} alt={`attached image ${index + 1}`} loading="lazy" /></button>)}</div> : null}
-      <div className="markdown"><ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>{message.content}</ReactMarkdown></div>
+      {display.names.length ? <div className="message-attachments">{display.names.map((name, index) => <span className="composer-attachment" key={index}><Paperclip size={14} aria-hidden="true" /><span className="composer-attachment-name" title={name}>{name}</span></span>)}</div> : null}
+      {display.text ? <div className="markdown"><ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS}>{display.text}</ReactMarkdown></div> : null}
     </>}</div>
   </article>;
 });
