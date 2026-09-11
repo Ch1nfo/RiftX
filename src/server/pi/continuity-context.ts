@@ -14,13 +14,15 @@ export type ContinuityContext = {
 
 const TYPES = new Set([TASK_CONTRACT_TYPE, SKILL_CONTEXT_TYPE, INVESTIGATION_CAPSULE_TYPE, PROGRESS_CHECKPOINT_TYPE]);
 
+export function isContinuityMessage(message: unknown) {
+  if (!message || typeof message !== "object") return false;
+  const candidate = message as { role?: unknown; customType?: unknown };
+  return candidate.role === "custom" && typeof candidate.customType === "string" && TYPES.has(candidate.customType);
+}
+
 /** Replace every continuity block as one ordered, duplicate-free tail packet. */
 export function upsertContinuityContext(messages: unknown[], context: ContinuityContext) {
-  const retained = messages.filter((message) => {
-    if (!message || typeof message !== "object") return true;
-    const candidate = message as { role?: unknown; customType?: unknown };
-    return candidate.role !== "custom" || typeof candidate.customType !== "string" || !TYPES.has(candidate.customType);
-  });
+  const retained = messages.filter((message) => !isContinuityMessage(message));
   const timestamp = Date.now();
   const blocks = [
     [TASK_CONTRACT_TYPE, context.taskContract],
