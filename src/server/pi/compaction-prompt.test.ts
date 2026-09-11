@@ -13,7 +13,8 @@ test("prompt embeds every benchmark continuity section plus conversation and pre
     conversation: "user did stuff",
     turnPrefix: "current turn",
     previousSummary: "old checkpoint",
-    customInstructions: "focus on flag 3"
+    customInstructions: "focus on flag 3",
+    summaryTokens: 12800
   });
   for (const section of [
     "## Run state", "## Current challenge", "## Challenge blackboard", "## Confirmed facts",
@@ -28,6 +29,7 @@ test("prompt embeds every benchmark continuity section plus conversation and pre
   assert.match(prompt, /<previous-checkpoint>\nold checkpoint/);
   assert.match(prompt, /<current-turn-prefix>\ncurrent turn/);
   assert.match(prompt, /<additional-focus>\nfocus on flag 3/);
+  assert.match(prompt, /under 12800 tokens/);
 });
 
 test("validates only summaries containing every required section with minimum length", () => {

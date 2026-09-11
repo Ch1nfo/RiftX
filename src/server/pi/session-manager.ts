@@ -491,7 +491,8 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   const compactionExtension = createPentestCompactionExtension({
     getSession: () => evidenceSession,
     modelRegistry,
-    getActiveSkills: () => [...activeSkillNames]
+    getActiveSkills: () => [...activeSkillNames],
+    getContinuityContext: () => getContinuityContext(true)
   });
   const resourceLoader = new DefaultResourceLoader({
     cwd,
@@ -560,8 +561,9 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     }));
     return parts.filter(Boolean).join("\n\n");
   };
-  const getContinuityContext = async (): Promise<ContinuityContext> => {
-    if (benchmarkLedger && workspace) {
+  const getContinuityContext = async (preview = false): Promise<ContinuityContext> => {
+    // Budget inspection must not change workspaces or consume one-shot warnings.
+    if (!preview && benchmarkLedger && workspace) {
       const active = benchmarkLedger.budgetForOwner(benchmarkOwner)?.challenge;
       if (await workspace.reconcile(active?.uniqueCode)) await selectChallengeSkills!(active?.description);
     }
@@ -570,7 +572,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     // scanning findings/artifacts on every provider request.
     if (benchmarkLedger) {
       const worker = child ? `subagent:${findingSource.subagentId ?? "child"}` as const : "main" as const;
-      const warning = await benchmarkLedger.consumeFirstAttemptWarning(worker);
+      const warning = preview ? undefined : await benchmarkLedger.consumeFirstAttemptWarning(worker);
       return {
         taskContract: "",
         skillContext,
