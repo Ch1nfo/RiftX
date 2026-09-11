@@ -1,4 +1,5 @@
 import type { ModelProfile } from "@/lib/types";
+import { sdkThinkingLevel } from "./model-registration";
 import { RiftxError } from "@/server/errors";
 
 /**
@@ -45,7 +46,7 @@ export type ProfileSwitchRecord = {
   session: {
     isStreaming: boolean;
     setModel(model: unknown): Promise<unknown>;
-    setThinkingLevel(level: ModelProfile["thinkingLevel"]): void;
+    setThinkingLevel(level: ReturnType<typeof sdkThinkingLevel>): void;
   };
   settingsManager: { setTransport(transport: ModelProfile["transport"]): void };
 };
@@ -89,7 +90,7 @@ export async function switchSessionProfile(record: ProfileSwitchRecord, profile:
   try {
     if (!deps.hasConfiguredAuth(prepared.model)) throw new RiftxError(`No API key for ${profile.provider}/${profile.model}`, "MODEL_AUTH_MISSING", 400);
     await record.session.setModel(prepared.model);
-    record.session.setThinkingLevel(profile.thinkingLevel);
+    record.session.setThinkingLevel(sdkThinkingLevel(profile.thinkingLevel));
     record.settingsManager.setTransport(profile.transport);
     deps.applyTransport(record.session, profile.transport);
     record.profile = profile;
@@ -104,7 +105,7 @@ export async function switchSessionProfile(record: ProfileSwitchRecord, profile:
     // switch to the same profile.
     try { await prepared.rollback?.(); } catch { /* rollback is best-effort */ }
     await record.session.setModel(previousModel).catch(() => undefined);
-    record.session.setThinkingLevel(previousProfile.thinkingLevel);
+    record.session.setThinkingLevel(sdkThinkingLevel(previousProfile.thinkingLevel));
     record.settingsManager.setTransport(previousProfile.transport);
     deps.applyTransport(record.session, previousProfile.transport);
     record.profile = previousProfile;

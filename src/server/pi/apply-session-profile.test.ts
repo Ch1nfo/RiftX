@@ -161,3 +161,14 @@ test("a concurrent second switch is rejected while the first is in flight", asyn
   assert.equal(await switchUnderLock(baseProfile({ id: "c", model: "m-c" })), true);
   assert.equal(record.profile.id, "c");
 });
+
+test("switching max and ultra uses the SDK slot while retaining the selected profile", async () => {
+  const record = makeRecord("extended", [], baseProfile());
+  const levels: string[] = [];
+  record.session.setThinkingLevel = (level) => { levels.push(level); };
+  for (const thinkingLevel of ["max", "ultra", "high"] as const) {
+    await switchSessionProfile(record, baseProfile({ thinkingLevel }), deps);
+    assert.equal(record.profile.thinkingLevel, thinkingLevel);
+  }
+  assert.deepEqual(levels, ["xhigh", "xhigh", "high"]);
+});

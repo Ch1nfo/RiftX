@@ -1,4 +1,4 @@
-import { API_TYPES, TRANSPORTS, type ModelProfile } from "@/lib/types";
+import { API_TYPES, THINKING_LEVELS, TRANSPORTS, type ModelProfile } from "@/lib/types";
 
 const GATEWAY_SUFFIX = ".tsecbench.gw";
 const HOSTS = new Set([
@@ -50,7 +50,7 @@ export function benchmarkProfile(env: Record<string, string | undefined> = proce
   const api = env.RIFTX_LLM_API ?? "openai-completions";
   if (!(API_TYPES as readonly string[]).includes(api)) throw new Error("Unsupported RIFTX_LLM_API");
   const thinking = env.RIFTX_LLM_THINKING ?? "off";
-  if (!["off", "minimal", "low", "medium", "high", "xhigh"].includes(thinking)) throw new Error("Invalid RIFTX_LLM_THINKING");
+  if (!(THINKING_LEVELS as readonly string[]).includes(thinking)) throw new Error("Invalid RIFTX_LLM_THINKING");
   if (env.RIFTX_HOSTED !== undefined && !["0", "1"].includes(env.RIFTX_HOSTED)) throw new Error("RIFTX_HOSTED must be 0 or 1");
   if (env.RIFTX_LLM_IMAGES !== undefined && !["0", "1"].includes(env.RIFTX_LLM_IMAGES)) throw new Error("RIFTX_LLM_IMAGES must be 0 or 1");
   const transport = env.RIFTX_LLM_TRANSPORT ?? "sse";

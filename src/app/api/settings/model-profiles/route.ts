@@ -1,5 +1,5 @@
 import { readConfig, updateConfig } from "@/server/config-store";
-import { SUBAGENT_AGGRESSIVENESS, clampConcurrency, type McpServerConfig, type ModelProfile, type SubagentAggressiveness } from "@/lib/types";
+import { SUBAGENT_AGGRESSIVENESS, THINKING_LEVELS, clampConcurrency, type McpServerConfig, type ModelProfile, type SubagentAggressiveness } from "@/lib/types";
 import { setActiveProfile, setMaxConcurrentSubagents } from "@/server/pi/session-manager";
 import { parseScopeRule } from "@/lib/scope-rules";
 import { errorResponse } from "@/server/errors";
@@ -21,7 +21,6 @@ export async function GET() {
 
 const API_TYPES_LIST = ["openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai"] as const;
 const TRANSPORTS_LIST = ["auto", "sse", "websocket"] as const;
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 
 /** Validate profile input at the API boundary: bad values must not reach config storage. */
 function profileValidationError(profile: Partial<ModelProfile>): string | null {

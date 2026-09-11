@@ -9,7 +9,8 @@ export const TRANSPORTS = ["auto", "sse", "websocket"] as const;
 
 type ApiType = (typeof API_TYPES)[number];
 export type Transport = (typeof TRANSPORTS)[number];
-type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
+type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 export const APPROVAL_MODES = ["request", "auto", "full"] as const;
 export type ApprovalMode = (typeof APPROVAL_MODES)[number];
 export const SUBAGENT_AGGRESSIVENESS = ["low", "default", "high"] as const;

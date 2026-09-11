@@ -23,6 +23,10 @@ test("model parameters validate and child overrides inherit all unspecified fiel
   assert.equal(child.apiKey, parent.apiKey);
   assert.equal(child.baseUrl, parent.baseUrl);
   assert.equal(child.thinkingLevel, "high");
+  for (const thinking of ["max", "ultra"]) {
+    assert.equal(benchmarkProfile({ ...env, RIFTX_LLM_THINKING: thinking }).thinkingLevel, thinking);
+    assert.equal(benchmarkProfile({ ...env, RIFTX_CHILD_LLM_THINKING: thinking }, true).thinkingLevel, thinking);
+  }
   for (const patch of [{ RIFTX_LLM_API_KEY: "" }, { RIFTX_LLM_MAX_TOKENS: "200000" }, { RIFTX_LLM_CONTEXT_WINDOW: "NaN" }, { RIFTX_LLM_IMAGES: "yes" }, { RIFTX_LLM_THINKING: "invalid" }, { RIFTX_HOSTED: "true" }]) {
     assert.throws(() => benchmarkProfile({ ...env, ...patch }));
   }

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { Archive, ArrowCounterClockwise, ArrowLeft, Check, FloppyDisk, Plus, Trash, Warning } from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
-import { API_TYPES, SUBAGENT_AGGRESSIVENESS, TRANSPORTS, clampConcurrency, type AppConfig, type ModelProfile, type SessionSummary, type SubagentAggressiveness } from "@/lib/types";
+import { API_TYPES, SUBAGENT_AGGRESSIVENESS, THINKING_LEVELS, TRANSPORTS, clampConcurrency, type AppConfig, type ModelProfile, type SessionSummary, type SubagentAggressiveness } from "@/lib/types";
 import { Field, LanguageToggle, RiftxLogo, SelectField, ThemeToggle } from "./ui";
 import { useLanguage } from "@/lib/i18n";
 import { parseMcpServersDraft } from "@/lib/mcp-paste";
@@ -206,7 +206,7 @@ export function SettingsPage() {
             <Field label="Base URL"><input value={profile.baseUrl} onChange={(event) => updateProfile({ baseUrl: event.target.value })} /></Field>
             <Field label={t("apiProtocol")}><SelectField value={profile.api} onValueChange={(value) => updateProfile({ api: value as ModelProfile["api"] })} options={API_TYPES.map((value) => ({ value, label: labels[value] }))} /></Field>
             <Field label={t("transportLabel")}><SelectField value={profile.transport} onValueChange={(value) => updateProfile({ transport: value as ModelProfile["transport"] })} options={TRANSPORTS.map((value) => ({ value, label: value.toUpperCase() }))} /></Field>
-            <Field label="Thinking level"><SelectField value={profile.thinkingLevel} onValueChange={(value) => updateProfile({ thinkingLevel: value as ModelProfile["thinkingLevel"] })} options={["off", "minimal", "low", "medium", "high", "xhigh"].map((value) => ({ value, label: value }))} /></Field>
+            <Field label="Thinking level"><SelectField value={profile.thinkingLevel} onValueChange={(value) => updateProfile({ thinkingLevel: value as ModelProfile["thinkingLevel"] })} options={THINKING_LEVELS.map((value) => ({ value, label: value }))} /></Field>
             <Field label="Context window"><input type="number" min={1024} step={1024} value={profile.contextWindow} onChange={(event) => updateProfile({ contextWindow: Number(event.target.value) })} /></Field>
             <Field label="Max output tokens"><input type="number" min={256} step={256} value={profile.maxTokens} onChange={(event) => updateProfile({ maxTokens: Number(event.target.value) })} /></Field>
             <div className="form-grid-full"><label className="toggle-row no-divider"><span><strong>{t("supportsImages")}</strong><small>{t("supportsImagesHint")}</small></span><input type="checkbox" checked={profile.supportsImages === true} onChange={(event) => updateProfile({ supportsImages: event.target.checked })} /></label></div>
