@@ -24,9 +24,12 @@ export function buildPentestCompactionPrompt(input: {
   turnPrefix?: string;
   previousSummary?: string;
   customInstructions?: string;
+  summaryTokens?: number;
 }) {
   return [
     "Create a replacement context checkpoint using every required section below. Use `(none)` for an empty section.",
+    input.summaryTokens ? `Keep the complete checkpoint under ${input.summaryTokens} tokens. Use terse facts and artifact references instead of copying logs or file contents; include every required section.` : "",
+    "Prioritize the user's unresolved requirements, confirmed findings, decisive failed approaches, active ownership, and the exact next action. Deduplicate repeated facts and superseded plans. Preserve evidence paths so omitted detail can be retrieved; do not invent missing facts.",
     "",
     ...REQUIRED_SECTIONS,
     input.previousSummary ? `\n<previous-checkpoint>\n${input.previousSummary}\n</previous-checkpoint>` : "",
@@ -41,4 +44,3 @@ export function buildPentestCompactionPrompt(input: {
 export function isValidPentestCompactionSummary(summary: string) {
   return summary.trim().length >= 80 && REQUIRED_SECTIONS.every((section) => summary.includes(section));
 }
-

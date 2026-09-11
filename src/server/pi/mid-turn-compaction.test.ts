@@ -3,13 +3,14 @@ import test from "node:test";
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
 import { estimateMessagesContextUsage, installMidTurnCompaction, keepRecentTokensForContext, shouldCompactBeforeSampling } from "./mid-turn-compaction";
 
-test("keeps exactly twenty percent of the current model context", () => {
-  assert.equal(keepRecentTokensForContext(64_000), 12_800);
-  assert.equal(keepRecentTokensForContext(128_000), 25_600);
-  assert.equal(keepRecentTokensForContext(1_000_000), 200_000);
+test("caps recent history at ten percent of the current model context", () => {
+  assert.equal(keepRecentTokensForContext(64_000), 6_400);
+  assert.equal(keepRecentTokensForContext(128_000), 12_800);
+  assert.equal(keepRecentTokensForContext(256_000), 25_600);
+  assert.equal(keepRecentTokensForContext(1_000_000), 100_000);
 });
 
-test("installs the twenty-percent policy where Pi computes its cut point", () => {
+test("installs the ten-percent policy where Pi computes its cut point", () => {
   const settingsManager = { getCompactionSettings: () => ({ enabled: true, reserveTokens: 16_384, keepRecentTokens: 20_000 }) };
   const session = {
     agent: { state: { messages: [] }, transformContext: undefined },
@@ -18,7 +19,7 @@ test("installs the twenty-percent policy where Pi computes its cut point", () =>
     getContextUsage: () => undefined
   } as unknown as AgentSession;
   installMidTurnCompaction(session);
-  assert.equal(settingsManager.getCompactionSettings().keepRecentTokens, 25_600);
+  assert.equal(settingsManager.getCompactionSettings().keepRecentTokens, 12_800);
 });
 
 test("mid-turn compaction leaves room for the next model response", () => {
@@ -66,6 +67,7 @@ test("a compaction without a result keeps the active run alive", async () => {
 });
 
 test("does not wait for the event queue below the compaction threshold", async () => {
+  let continuityRefreshes = 0;
   let resolveQueue!: () => void;
   const eventQueue = new Promise<void>((resolve) => { resolveQueue = resolve; });
   const state = { messages: [{ role: "toolResult", content: "current" }] };
@@ -78,13 +80,17 @@ test("does not wait for the event queue below the compaction threshold", async (
     _agentEventQueue: eventQueue
   } as unknown as AgentSession;
 
-  installMidTurnCompaction(session);
+  installMidTurnCompaction(session, async () => {
+    continuityRefreshes += 1;
+    return {};
+  });
   const transformed = await Promise.race([
     session.agent.transformContext!(state.messages as never),
     new Promise<never>((_, reject) => setTimeout(() => reject(new Error("waited for event queue")), 100))
   ]);
   resolveQueue();
   assert.equal(transformed, state.messages);
+  assert.equal(continuityRefreshes, 0, "main refreshes continuity after compaction, not on ordinary sampling turns");
 });
 
 test("mid-turn compaction replaces the active loop context in place", async () => {

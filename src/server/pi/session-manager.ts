@@ -236,7 +236,8 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   const compactionExtension = createPentestCompactionExtension({
     getSession: () => evidenceSession,
     modelRegistry,
-    getActiveSkills: () => [...activeSkillNames]
+    getActiveSkills: () => [...activeSkillNames],
+    getContinuityContext: () => getContinuityContext()
   });
   const resourceLoader = new DefaultResourceLoader({
     cwd,

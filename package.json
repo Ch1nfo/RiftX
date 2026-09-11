@@ -28,7 +28,7 @@
     "start": "next start -H 127.0.0.1",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src tests bin",
-    "test": "tsx --test 'src/**/*.test.ts'",
+    "test": "tsx --conditions=import --test 'src/**/*.test.ts'",
     "postinstall": "playwright install chromium",
     "prepare": "npm run build",
     "test:e2e": "playwright test"

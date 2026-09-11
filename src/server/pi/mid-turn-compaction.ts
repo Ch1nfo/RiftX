@@ -3,18 +3,13 @@ import type { ContextUsage } from "@/lib/types";
 
 import { replaceAgentMessages, runAutoCompaction, waitForAgentEvents } from "./pi-internals";
 import { refreshContinuityContext, upsertContinuityContext, type ContinuityContext } from "./continuity-context";
+import { keepRecentTokensForContext } from "./compaction-budget";
 
-export const COMPACTION_KEEP_RECENT_RATIO = 0.2;
-
-export function keepRecentTokensForContext(contextWindow: number) {
-  return Number.isFinite(contextWindow) && contextWindow > 0
-    ? Math.max(1, Math.floor(contextWindow * COMPACTION_KEEP_RECENT_RATIO))
-    : 0;
-}
+export { COMPACTION_KEEP_RECENT_RATIO, keepRecentTokensForContext } from "./compaction-budget";
 
 const budgetInstalled = new WeakSet<object>();
 
-/** Pi computes its cut point from SettingsManager, so apply the 20% policy at that source. */
+/** Pi computes its cut point from SettingsManager, so apply the 10% ceiling at that source. */
 function installCompactionBudget(session: AgentSession) {
   const manager = session.settingsManager;
   if (budgetInstalled.has(manager)) return;

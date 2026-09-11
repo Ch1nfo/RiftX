@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildPentestCompactionPrompt, isValidPentestCompactionSummary } from "./compaction-prompt";
+import { buildPentestCompactionPrompt, isValidPentestCompactionSummary, PENTEST_COMPACTION_SYSTEM_PROMPT } from "./compaction-prompt";
 
 const headings = [
   "Goal and constraints", "Attack surface and identities", "Confirmed findings", "Active hypotheses",
@@ -13,12 +13,16 @@ test("penetration compaction prompt preserves iterative and split-turn inputs", 
     conversation: "[Tool result]: 403 for user B",
     turnPrefix: "[User]: continue the IDOR check",
     previousSummary: "request:req-4 returned 200 for user A",
-    customInstructions: "Preserve exact request refs"
+    customInstructions: "Preserve exact request refs",
+    summaryTokens: 12800
   });
   for (const heading of headings) assert.match(prompt, new RegExp(`## ${heading}`));
   assert.match(prompt, /<previous-checkpoint>/);
   assert.match(prompt, /<current-turn-prefix>/);
   assert.match(prompt, /request:req-4/);
+  assert.match(prompt, /under 12800 tokens/);
+  assert.match(PENTEST_COMPACTION_SYSTEM_PROMPT, /authorized security assessment/);
+  assert.doesNotMatch(PENTEST_COMPACTION_SYSTEM_PROMPT + prompt, /TSec|benchmark|Challenge blackboard|Score optimization/);
 });
 
 test("rejects malformed recursive summaries so Pi can use its fallback", () => {
