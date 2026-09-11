@@ -36,6 +36,7 @@ export type ModelProfile = {
 };
 
 export type ContextUsage = {
+  source?: "estimated" | "provider";
   tokens: number;
   contextWindow: number;
   percent: number | null;

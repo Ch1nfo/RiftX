@@ -1,3 +1,6 @@
+import { buildSessionContext, type SessionEntry } from "@mariozechner/pi-coding-agent";
+import { isContinuityMessage } from "./continuity-context";
+import { usageEstimate } from "./context-usage";
 import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -47,10 +50,10 @@ export function usageFromRecord(record: SessionRecord): ContextUsage {
   const usage = record.session.getContextUsage();
   if (!usage) return emptyContextUsage(record.profile.contextWindow);
   if (usage.percent === null) return estimateCompactedUsage(record.session, record.profile.contextWindow);
-  return normalizeContextUsage(usage, record.profile.contextWindow);
+  return normalizeContextUsage({ ...usage, source: "provider" }, record.profile.contextWindow);
 }
 
-async function sessionSnapshotFromFile(path: string, profiles: ModelProfile[]): Promise<SessionSnapshot | null> {
+export async function sessionSnapshotFromFile(path: string, profiles: ModelProfile[]): Promise<SessionSnapshot | null> {
   const profileKey = profiles.map((profile) => `${profile.id}:${profile.provider}:${profile.model}:${profile.contextWindow}`).join("|");
   try {
     const fileInfo = await stat(path);
@@ -64,7 +67,9 @@ async function sessionSnapshotFromFile(path: string, profiles: ModelProfile[]): 
     let provider = "";
     let model = "";
     let usage: ContextUsage | undefined;
-    let postCompactionMessages: unknown[] | undefined;
+    const entries: SessionEntry[] = [];
+    let compacted = false;
+    let budget: { fixedTokens?: number; tokenRatio?: number } | undefined;
     let hasPostCompactionUsage = false;
     for (const line of lines) {
       let entry: Record<string, unknown>;
@@ -73,28 +78,26 @@ async function sessionSnapshotFromFile(path: string, profiles: ModelProfile[]): 
       } catch {
         continue;
       }
+      entries.push(entry as unknown as SessionEntry);
       if (!sessionId && entry.type === "session" && typeof entry.id === "string") sessionId = entry.id;
       if (entry.type === "model_change") {
         if (typeof entry.provider === "string") provider = entry.provider;
         if (typeof entry.modelId === "string") model = entry.modelId;
       }
       if (entry.type === "compaction") {
-        postCompactionMessages = [{ role: "compactionSummary", summary: String(entry.summary ?? "") }];
+        compacted = true;
+        budget = (entry.details as { riftx?: { budget?: typeof budget } } | undefined)?.riftx?.budget;
         hasPostCompactionUsage = false;
-      }
-      if (entry.type === "branch_summary" && postCompactionMessages) {
-        postCompactionMessages.push({ role: "branchSummary", summary: String(entry.summary ?? "") });
       }
       if (entry.type === "message") {
         const message = entry.message as Record<string, unknown> | undefined;
-        if (postCompactionMessages && message) postCompactionMessages.push(message);
         if (message?.usage) {
           if (typeof message.provider === "string") provider = message.provider;
           if (typeof message.model === "string") model = message.model;
           const matchedProfile = profiles.find((profile) => profile.provider === provider && profile.model === model);
           const contextWindow = matchedProfile?.contextWindow ?? 0;
-          usage = normalizeContextUsage(message.usage, contextWindow);
-          if (postCompactionMessages && message.role === "assistant" && message.stopReason !== "aborted" && message.stopReason !== "error") {
+          usage = normalizeContextUsage({ ...message.usage as object, source: "provider" }, contextWindow);
+          if (compacted && message.role === "assistant" && message.stopReason !== "aborted" && message.stopReason !== "error") {
             hasPostCompactionUsage = true;
           }
         }
@@ -102,8 +105,13 @@ async function sessionSnapshotFromFile(path: string, profiles: ModelProfile[]): 
     }
     const matchedProfile = profiles.find((profile) => profile.provider === provider && profile.model === model);
     const contextWindow = matchedProfile?.contextWindow ?? usage?.contextWindow ?? 0;
-    if (postCompactionMessages && !hasPostCompactionUsage) {
-      usage = estimateMessagesContextUsage(postCompactionMessages, contextWindow);
+    if (compacted && !hasPostCompactionUsage) {
+      // Reconstruct the kept prefix as well as messages after the compaction
+      // entry. Counting only the new summary loses the entire retained tail.
+      const messages = buildSessionContext(entries).messages.filter((message) => !budget || !isContinuityMessage(message));
+      const ratio = Number.isFinite(budget?.tokenRatio) ? Math.max(1, budget!.tokenRatio!) : 1;
+      const fixed = Number.isFinite(budget?.fixedTokens) ? Math.max(0, budget!.fixedTokens!) : 0;
+      usage = usageEstimate(Math.ceil(estimateMessagesContextUsage(messages, 0).tokens * ratio + fixed), contextWindow);
     }
     const snapshot = {
       id: sessionId,

@@ -43,6 +43,7 @@ export function normalizeContextUsage(value: unknown, fallbackWindow = 0): Conte
     : calculatedPercent ?? (explicitPercent === undefined ? null : Math.min(100, Math.max(0, explicitPercent)));
   return {
     tokens: Math.max(0, tokens),
+    ...(raw.source === "estimated" || raw.source === "provider" ? { source: raw.source } : {}),
     contextWindow,
     percent,
     input: input ?? null,

@@ -114,7 +114,7 @@ function UsageTooltip({ usage, t }: { usage: ContextUsage; t: Translate }) {
     remaining: Number(usage.remaining) || 0
   };
   const formatPart = (value: number | null) => value === null ? "—" : value.toLocaleString();
-  return <div className="usage-tooltip"><strong>{usage.percent === null ? t("contextUnknown") : `${Math.round(Number(usage.percent) || 0)}%`} {t("context")}</strong><span>{safe.tokens.toLocaleString()} / {safe.contextWindow.toLocaleString()} {t("tokens")}</span><span>{t("input")} {formatPart(safe.input)} · {t("output")} {formatPart(safe.output)}</span><span>{t("cacheRead")} {formatPart(safe.cacheRead)} · {t("cacheWrite")} {formatPart(safe.cacheWrite)}</span><span>{t("remaining")} {safe.remaining.toLocaleString()} {t("tokens")}</span></div>;
+  return <div className="usage-tooltip"><strong>{usage.percent === null ? t("contextUnknown") : `${Math.round(Number(usage.percent) || 0)}%`} {t("context")}</strong><span>{usage.source === "estimated" ? t("contextEstimated") : usage.source === "provider" ? t("contextProvider") : ""}</span><span>{safe.tokens.toLocaleString()} / {safe.contextWindow.toLocaleString()} {t("tokens")}</span><span>{t("input")} {formatPart(safe.input)} · {t("output")} {formatPart(safe.output)}</span><span>{t("cacheRead")} {formatPart(safe.cacheRead)} · {t("cacheWrite")} {formatPart(safe.cacheWrite)}</span><span>{t("remaining")} {safe.remaining.toLocaleString()} {t("tokens")}</span></div>;
 }
 
 function EmptyState({ bootstrapping, activeId, t, onSuggestion }: { bootstrapping: boolean; activeId: string; t: Translate; onSuggestion: (text: string) => void }) {
@@ -268,7 +268,7 @@ function Composer({ value, onChange, onSubmit, onStop, busy, running, activeId, 
         <span className="composer-hint"><span className="keycap">Shift</span> + <span className="keycap">Enter</span> {t("shiftEnter")}</span>
       </div>
       <div className="composer-actions">
-        <ContextRing percent={bootstrapping ? null : usage.percent} label={bootstrapping ? "—" : usage.percent === null ? "—" : `${Math.round(usage.percent)}`} detail={<UsageTooltip usage={usage} t={t} />} />
+        <ContextRing percent={bootstrapping ? null : usage.percent} label={bootstrapping ? "—" : usage.percent === null ? "—" : `${usage.source === "estimated" ? "≈" : ""}${Math.round(usage.percent)}`} detail={<UsageTooltip usage={usage} t={t} />} />
         {bootstrapping ? <span className="model-label">{t("loadingModel")}</span>
           : modelProfiles.length > 1
             ? <ModelMenu value={activeProfileId} onValueChange={onModelChange} options={modelProfiles.map((profile) => ({ value: profile.id, label: `${profile.provider}/${profile.model}` }))} disabled={mainAgentRunning || modelSwitching} />

@@ -29,6 +29,7 @@ import { SubagentManager, type SubagentRunnerContext } from "./subagent-manager"
 import { generateSessionTitle } from "./session-title";
 import { generateSubagentSummary } from "./subagent-summary";
 import { getEvidenceStore, removeEvidence } from "./evidence-store";
+import { installContextUsageTracking } from "./context-usage";
 import { estimateCompactedUsage, installMidTurnCompaction } from "./mid-turn-compaction";
 import { waitForSubagentsBeforeConclusion } from "./session-join";
 import { setAgentTransport } from "./pi-internals";
@@ -608,6 +609,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   // Install after compaction so the final context sent to the provider drops
   // stale report-skill messages unless the current user request asks for one.
   installReportSkillContextScope(result.session);
+  installContextUsageTracking(result.session);
   // The runtime prepares parallel calls before executing them. The SDK runs
   // an ENTIRE batch sequentially if any single tool is marked sequential
   // (agent-loop.js:235: hasSequentialToolCall → executeToolCallsSequential),
