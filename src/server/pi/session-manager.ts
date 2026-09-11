@@ -45,7 +45,7 @@ import { buildMcpTools } from "@/server/mcp/tools";
 import { BashConcurrency } from "./bash-concurrency";
 import { abortSessionRecord, shutdownSessionRecord } from "./session-shutdown";
 import { switchSessionProfile, withProfileSwitchLock } from "./apply-session-profile";
-import { registerTrackedProfile, registerProfileModel, restoreProviderRegistration, memoizedTitleRuntime, type ProviderRegistrations } from "./model-registration";
+import { registerTrackedProfile, registerProfileModel, sdkThinkingLevel, restoreProviderRegistration, memoizedTitleRuntime, type ProviderRegistrations } from "./model-registration";
 import { extractLastAssistantResult, buildSummaryTranscript } from "./subagent-result";
 import { buildInvestigationCapsule } from "./investigation-capsule";
 import { refreshContinuityContext, type ContinuityContext } from "./continuity-context";
@@ -267,7 +267,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     authStorage,
     modelRegistry,
     model,
-    thinkingLevel: profile.thinkingLevel,
+    thinkingLevel: sdkThinkingLevel(profile.thinkingLevel),
     // Hard whitelist (see src/server/session-tools.ts): the SDK silently
     // drops any tool — built-in or custom — whose name is absent here.
     tools: [...sessionToolNames(Boolean(subagents)), ...mcpTools.map((tool) => tool.name)],

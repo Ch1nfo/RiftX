@@ -1,6 +1,11 @@
 import type { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
 import type { ModelProfile } from "@/lib/types";
 
+/** Pi's internal levels stop at xhigh; the model map preserves the requested API effort. */
+export function sdkThinkingLevel(level: ModelProfile["thinkingLevel"]) {
+  return level === "max" || level === "ultra" ? "xhigh" : level;
+}
+
 /**
  * Session-scoped model registration helpers. Kept SDK-import-free at runtime
  * (type-only imports) so the registration and rollback contracts are
@@ -34,6 +39,7 @@ export function registerProfileModel(authStorage: AuthStorage, modelRegistry: Mo
         id: profile.model,
         name: profile.name,
         reasoning: profile.thinkingLevel !== "off",
+        thinkingLevelMap: { xhigh: profile.thinkingLevel === "max" || profile.thinkingLevel === "ultra" ? profile.thinkingLevel : "xhigh" },
         input: profile.supportsImages ? ["text", "image"] : ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: profile.contextWindow,
