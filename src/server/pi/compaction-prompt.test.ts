@@ -13,8 +13,7 @@ test("prompt embeds every benchmark continuity section plus conversation and pre
     conversation: "user did stuff",
     turnPrefix: "current turn",
     previousSummary: "old checkpoint",
-    customInstructions: "focus on flag 3",
-    summaryTokens: 12800
+    customInstructions: "focus on flag 3"
   });
   for (const section of [
     "## Run state", "## Current challenge", "## Challenge blackboard", "## Confirmed facts",
@@ -29,7 +28,7 @@ test("prompt embeds every benchmark continuity section plus conversation and pre
   assert.match(prompt, /<previous-checkpoint>\nold checkpoint/);
   assert.match(prompt, /<current-turn-prefix>\ncurrent turn/);
   assert.match(prompt, /<additional-focus>\nfocus on flag 3/);
-  assert.match(prompt, /under 12800 tokens/);
+  assert.doesNotMatch(prompt, /protected-facts|current-runtime-state|Repair the previous checkpoint|under \d+ tokens/);
 });
 
 test("validates only summaries containing every required section with minimum length", () => {
@@ -45,4 +44,7 @@ test("validates only summaries containing every required section with minimum le
   assert.equal(isValidPentestCompactionSummary(valid), true);
   assert.equal(isValidPentestCompactionSummary(valid.replace("## Artifacts", "## Missing")), false);
   assert.equal(isValidPentestCompactionSummary("too short"), false);
+  const headings = [...PENTEST_COMPACTION_SYSTEM_PROMPT.matchAll(/^## .+$/gm)].map(([heading]) => heading).join("\n");
+  assert.equal(isValidPentestCompactionSummary(headings), true, "section bodies are not subject to strict validation");
+  assert.equal(isValidPentestCompactionSummary(valid + "\n## Artifacts\nadditional reference"), true);
 });
