@@ -3,11 +3,46 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { activeSkillNamesFromBranch, loadSkillContext, prepareSkillPrompt, rankSkills, type SkillDescriptor } from "./skill-router";
+import { activeSkillNamesFromBranch, loadSkillContext, prepareSkillPrompt, rankSkills, updateActiveSkills, type SkillDescriptor } from "./skill-router";
 
 function skill(name: string, description: string): SkillDescriptor {
   return { name, description, filePath: `/skills/${name}/SKILL.md` };
 }
+
+test("abstains on generic overlap or incompatible domains even when a skill ranks first", () => {
+  const web = skill("web-passwords", "Recover passwords from files in web CTF challenges. Analyze code and find flags.");
+  const reverse = skill("reverse-engineering", "Reverse engineering ELF binaries and inspecting password checks.");
+  assert.deepEqual(rankSkills("Solve a CTF challenge, analyze code files and find flags", [web]), []);
+  const task = "Reverse engineer this ELF file and recover the password; download at https://example.test/artifact";
+  assert.deepEqual(rankSkills(task, [web], 1), []);
+  assert.deepEqual(rankSkills("逆向分析 ELF 文件，找到密码", [web], 1), []);
+  assert.equal(rankSkills(task, [web, reverse], 1)[0]?.name, "reverse-engineering");
+  // Mixed tasks may legitimately need a skill from either matching domain.
+  const sql = skill("exploit-sqli", "SQL injection testing in Web applications.");
+  assert.equal(rankSkills("Reverse the binary and examine embedded SQL injection", [sql], 1)[0]?.name, "exploit-sqli");
+  assert.deepEqual(rankSkills("Inspect GraphQL schema", [sql], 1), []);
+});
+
+test("explicit no-match clears old active skills while a bare continuation preserves them", async () => {
+  const active = new Set(["web-passwords"]);
+  const loaded = new Set(["web-passwords"]);
+  const skills = [skill("web-passwords", "Recover passwords in Web applications.")];
+  updateActiveSkills(active, await prepareSkillPrompt("继续", skills, loaded));
+  assert.deepEqual([...active], ["web-passwords"]);
+  const rejected = await prepareSkillPrompt("Reverse this ELF and recover the password", skills, loaded);
+  assert.equal(rejected.skillContext, "");
+  assert.deepEqual(rejected.matched, []);
+  assert.deepEqual(rejected.loaded, []);
+  updateActiveSkills(active, rejected);
+  assert.equal(active.size, 0);
+  assert.deepEqual([...loaded], ["web-passwords"], "abstention does not mutate the loaded-file cache");
+});
+
+test("a matching but unreadable skill is not marked active", async () => {
+  const selected = await prepareSkillPrompt("SQL injection", [{ ...skill("exploit-sqli", "SQL injection checks"), filePath: "/does-not-exist/skill-fixture/SKILL.md" }], new Set());
+  assert.deepEqual(selected.matched, []);
+  assert.equal(selected.skillContext, "");
+});
 
 test("ranks a domain skill from English and Chinese task wording", () => {
   const skills = [
@@ -92,6 +127,10 @@ test("automatically injects a matching skill once per session", async () => {
 });
 
 test("restores active skills from the newest compaction metadata or historic skill context", () => {
+  assert.deepEqual(activeSkillNamesFromBranch([
+    { type: "custom_message", customType: "riftx_skill_context", content: '<skill name="web-passwords">synthetic</skill>' },
+    { type: "custom_message", customType: "riftx_skill_context", content: "" }
+  ]), [], "persisted abstention must not revive a previous skill on restart");
   assert.deepEqual(activeSkillNamesFromBranch([
     { type: "custom_message", customType: "riftx_skill_context", content: '<skill name="old-skill">x</skill>' },
     { type: "compaction", details: { riftx: { activeSkills: ["exploit-authz", "api-testing"] } } }

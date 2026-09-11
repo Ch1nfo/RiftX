@@ -5,6 +5,7 @@ import { APPROVAL_MODES, DEFAULT_PROFILE, SUBAGENT_AGGRESSIVENESS, clampConcurre
 import { readJsonStore, writeJsonStoreAtomic } from "@/server/json-store";
 import { createSerializer } from "@/server/serializer";
 import { normalizeMcpServers } from "@/server/mcp/config";
+import { benchmarkDefaultApproval, benchmarkProfile, ENV_PROFILE_ID } from "@/server/benchmark/environment";
 
 const ROOT = join(homedir(), ".riftx");
 const CONFIG_PATH = join(ROOT, "config.json");
@@ -25,7 +26,7 @@ const defaultConfig = (): AppConfig => ({
   childProfileId: null,
   childInherit: true,
   cwd: getLaunchDirectory(),
-  approvalMode: "request",
+  approvalMode: benchmarkDefaultApproval(),
   archivedSessionIds: [],
   archivedSessions: [],
   sessionTitles: {},
@@ -73,7 +74,7 @@ export async function readConfig(repair = true): Promise<AppConfig> {
   // .corrupt-*) as no data; other I/O errors surface.
   const parsed = (await readJsonStore<Partial<AppConfig>>(CONFIG_PATH)) ?? {};
   const profiles = Array.isArray(parsed.profiles) && parsed.profiles.length ? parsed.profiles : [DEFAULT_PROFILE];
-  const approvalMode = APPROVAL_MODES.includes(parsed.approvalMode as AppConfig["approvalMode"]) ? parsed.approvalMode as AppConfig["approvalMode"] : "request";
+  const approvalMode = APPROVAL_MODES.includes(parsed.approvalMode as AppConfig["approvalMode"]) ? parsed.approvalMode as AppConfig["approvalMode"] : benchmarkDefaultApproval();
   const config: AppConfig = {
     ...defaultConfig(),
     ...parsed,
@@ -99,12 +100,20 @@ export async function readConfig(repair = true): Promise<AppConfig> {
   if (repair && parsed && (!Array.isArray(parsed.profiles) || !parsed.profiles.length)) {
     await enqueueConfigWrite(() => writeConfig(config));
   }
+  if (process.env.RIFTX_LLM_BASE_URL || process.env.RIFTX_LLM_MODEL || process.env.RIFTX_LLM_API_KEY) {
+    const profile = benchmarkProfile();
+    const child = Object.keys(process.env).some((key) => key.startsWith("RIFTX_CHILD_LLM_")) ? benchmarkProfile(process.env, true) : undefined;
+    return { ...config, profiles: child ? [profile, child] : [profile], activeProfileId: profile.id, childInherit: !child, childProfileId: child?.id ?? null };
+  }
   return config;
 }
 
 async function writeConfig(config: AppConfig) {
   await ensureAppDirs();
-  await writeJsonStoreAtomic(CONFIG_PATH, config);
+  // Environment credentials stay in memory, including when another setting is saved.
+  await writeJsonStoreAtomic(CONFIG_PATH, {
+    ...config, profiles: config.profiles.map((profile) => profile.id.startsWith(ENV_PROFILE_ID) ? { ...profile, apiKey: undefined } : profile)
+  });
 }
 
 type ConfigPatch = Partial<AppConfig> | ((current: AppConfig) => Partial<AppConfig> | Promise<Partial<AppConfig>>);

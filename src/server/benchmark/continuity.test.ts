@@ -46,7 +46,7 @@ test("empty ledger produces empty continuity", async () => {
 test("includes run state, challenge queue, and my-challenge", async () => {
   const { ledger } = await setup();
   await ledger.acquire("ch-1", "main", ["10.0.0.1:80"]);
-  await ledger.checkpoint("ch-1", "found login at /admin", ["web"], "try sqli on search", "main");
+  await ledger.checkpoint("ch-1", "found login at /admin", ["web"], "LEGACY_NEXT_PROBE", "main", { currentApproach: "LEGACY_CURRENT_ROUTE", evidenceRef: "artifact:observation" });
   const text = buildBenchmarkContinuity(ledger);
   assert.match(text, /<riftx-benchmark-continuity>/);
   assert.match(text, /schedule=coverage/);
@@ -54,7 +54,8 @@ test("includes run state, challenge queue, and my-challenge", async () => {
   assert.match(text, /My challenge: ch-1/);
   assert.match(text, /addr: 10\.0\.0\.1:80/);
   assert.match(text, /found login at \/admin/);
-  assert.match(text, /next_probe: try sqli on search/);
+  assert.doesNotMatch(text, /LEGACY_NEXT_PROBE|LEGACY_CURRENT_ROUTE|next_probe|current_approach/);
+  assert.match(text, /artifact:observation/);
   assert.match(text, /SubAgent challenges \(0\/2\)/);
   assert.match(text, /Eligible candidates/);
   assert.match(text, /ch-2.*100pts/);
@@ -95,7 +96,10 @@ test("recovery continuity tells the next attempt to change approach", async () =
   await ledger.acquire("ch-1", "main", ["b"]);
   const text = buildBenchmarkContinuity(ledger);
   assert.match(text, /attempt 2/);
-  assert.match(text, /#1 generic SQLi automation/);
+  assert.match(text, /#1 tried=SQLi/);
+  assert.doesNotMatch(text, /audit authorization|generic SQLi automation/);
+  assert.match(text, /Reassess the recorded evidence independently/);
+  assert.match(text, /unsuccessful attempt alone does not rule out/);
   assert.match(text, /No runtime time limit/);
 });
 

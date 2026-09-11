@@ -3,6 +3,7 @@
 import type { BenchmarkLedger, ChallengeState } from "./ledger";
 
 export const MAX_BENCHMARK_CONTINUITY_CHARS = 8_000;
+export const BENCHMARK_HANDOFF_GUIDANCE = "Reassess the recorded evidence independently and choose a materially different hypothesis. Previous attempts may have followed a mistaken premise; do not inherit their plan. An unsuccessful attempt alone does not rule out an entire approach.";
 
 function compact(value: string, limit: number): string {
   return value.length <= limit ? value : `${value.slice(0, Math.max(0, limit - 14))}...[truncated]`;
@@ -15,7 +16,8 @@ function challengeLine(challenge: ChallengeState): string {
 export function buildBenchmarkContinuity(
   ledger: BenchmarkLedger,
   worker: "main" | `subagent:${string}` = "main",
-  firstAttemptWarning?: ChallengeState
+  firstAttemptWarning?: ChallengeState,
+  workingDirectory?: string
 ): string {
   const state = ledger.getState();
   if (state.totalChallenges === 0) return "";
@@ -29,30 +31,31 @@ export function buildBenchmarkContinuity(
       ? `## Run: schedule=${state.phase} | score=${state.scoreExact ? state.cumulativeScore : `${state.cumulativeScore}+`} | solved=${state.solvedCount}/${state.totalChallenges} | unseen=${unseen} | first_attempts_active=${firstAttemptsActive} | containers=${state.activeContainers}/3`
       : `## Run: schedule=${state.phase} | solved=${state.solvedCount}/${state.totalChallenges}`
   ];
+  if (workingDirectory) lines.push(`## Working directory: ${workingDirectory} (relative local tool paths and shell commands resolve here)`);
 
   if (mine) {
     lines.push(
       `## My challenge: ${mine.uniqueCode} | ${mine.totalScore}pts | attempt ${mine.attemptCount} | flags ${mine.correctFlagCount}/${mine.flagCount}`,
       `  addr: ${mine.containerAddrs.join(", ") || "(none)"}`,
       `  description: ${compact(mine.description, 2_400) || "(none)"}`,
-      `  current_approach: ${mine.currentApproach || "(not recorded)"}`,
-      `  next_probe: ${mine.nextProbe || "(not set)"}`,
       `  hint: ${mine.hintUsed ? mine.hintContent || "requested; no content returned" : "not used"}`
     );
+    if (mine.triedFamilies.length) lines.push(`## Previously tried: ${mine.triedFamilies.join(", ")}`);
+    if (mine.ruledOutFamilies.length) lines.push(`## Recorded exclusions (check their evidence): ${mine.ruledOutFamilies.join(", ")}`);
     const board = mine.blackboard.slice(-6);
     if (board.length) {
       lines.push("## Challenge blackboard:", ...board.map((entry) =>
-        `  - ${entry.kind}: ${compact(entry.summary, 600)}${entry.evidenceRef ? ` [${compact(entry.evidenceRef, 200)}]` : ""}${entry.nextProbe ? `; next=${compact(entry.nextProbe, 300)}` : ""}`
+        `  - ${entry.kind}: ${compact(entry.summary, 600)}${entry.evidenceRef ? ` [${compact(entry.evidenceRef, 200)}]` : ""}`
       ));
     }
     const history = mine.approachHistory.slice(-4);
     if (history.length) {
       lines.push("## Previous attempts:", ...history.map((attempt) =>
-        `  - #${attempt.attemptNumber} ${attempt.approach}: ${attempt.stopReason}; next=${attempt.nextDistinctApproach || "(none)"}`
+        `  - #${attempt.attemptNumber} tried=${attempt.triedFamilies.join(", ") || "(not recorded)"}; stopped because ${attempt.stopReason}`
       ));
     }
     if (mine.attemptCount > 1) {
-      lines.push("## Revisit policy: No runtime time limit. Start from a materially different hypothesis. If truly unsolvable, checkpoint what was learned and defer it for the end; do not loop on the same approach.");
+      lines.push(`## Revisit policy: No runtime time limit. ${BENCHMARK_HANDOFF_GUIDANCE} If truly unsolvable, checkpoint what was learned and defer it for the end.`);
     }
     if (firstAttemptWarning?.uniqueCode === mine.uniqueCode) {
       lines.push("## FIRST-ATTEMPT NOTICE: 25 minutes have elapsed. Five minutes remain. Consolidate evidence and pursue only the most decisive remaining probe; at 30 minutes, checkpoint and defer immediately.");

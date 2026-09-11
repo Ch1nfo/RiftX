@@ -10,6 +10,7 @@ import {
   createAgentSession,
   type AgentSession,
   type AgentSessionEvent,
+  type BashToolOptions,
   type ToolDefinition
 } from "@mariozechner/pi-coding-agent";
 import type { Api, Model } from "@mariozechner/pi-ai";
@@ -31,11 +32,10 @@ import { getEvidenceStore, removeEvidence } from "./evidence-store";
 import { estimateCompactedUsage, installMidTurnCompaction } from "./mid-turn-compaction";
 import { waitForSubagentsBeforeConclusion } from "./session-join";
 import { setAgentTransport } from "./pi-internals";
-import { activeSkillNamesFromBranch, loadSkillContext, prepareSkillPrompt, type SkillDescriptor } from "./skill-router";
+import { activeSkillNamesFromBranch, loadSkillContext, prepareSkillPrompt, updateActiveSkills, type SkillDescriptor } from "./skill-router";
 import { installReportSkillContextScope, PENTEST_REPORT_SKILL_NAME } from "./report-skill";
 import { createTimedBashTool } from "./bash-timeout";
 import { createTimedLocalTools } from "./local-tool-timeout";
-import { createWebTools } from "@/server/web/tools";
 import { createCrawlTool } from "@/browser/tools/crawl";
 import { sessionToolNames } from "@/server/session-tools";
 import { composeAttachmentText, type PromptAttachment, type PromptImage } from "@/lib/attachments";
@@ -63,12 +63,30 @@ import { createBenchmarkControlTool } from "@/server/benchmark/tools/control-too
 import { createAssignBenchmarkChallengeTool } from "@/server/benchmark/tools/assign-tool";
 import { buildBenchmarkContinuity } from "@/server/benchmark/continuity";
 import { installBenchmarkTimeboxGate } from "@/server/benchmark/timebox";
+import { benchmarkWorkspaceRoot, BenchmarkWorkspace, createWorkspaceLocalTools } from "@/server/benchmark/workspace";
+import { createChallengeSkillSelection } from "@/server/benchmark/challenge-skills";
 
 type BenchmarkRuntime = { controller: BenchmarkController; ledger: BenchmarkLedger };
 
 function benchmarkRuntimeCache() {
   const registry = globalThis as typeof globalThis & { __riftxBenchmark?: Map<string, BenchmarkRuntime> };
   return registry.__riftxBenchmark ?? (registry.__riftxBenchmark = new Map<string, BenchmarkRuntime>());
+}
+
+/** The headless runner observes the same authoritative ledger as the tools. */
+export function getBenchmarkRuntime(id: string) {
+  return benchmarkRuntimeCache().get(id);
+}
+
+export async function closeBenchmarkSession(id: string) {
+  const record = sessions.get(id);
+  if (record) {
+    await shutdownSessionRecord(record);
+    sessions.delete(id);
+  }
+  const runtime = benchmarkRuntimeCache().get(id);
+  if (runtime) await archiveBenchmarkRuntime(runtime);
+  benchmarkRuntimeCache().delete(id);
 }
 
 function benchmarkPlatformIsGone(error: unknown) {
@@ -298,6 +316,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   // instance would overwrite it). Children receive the shared runtime via
   // RuntimeDeps; restart recovery also finds it through this global cache.
   const benchmarkEnv = process.env.BENCHMARK_BASE_URL && process.env.BENCHMARK_TOKEN;
+  const workspaceRoot = benchmarkWorkspaceRoot(cwd, process.env.BENCHMARK_BASE_URL ?? "");
   const cachedBenchmark = benchmarkEnv ? benchmarkRuntimeCache().get(evidenceSessionId) : undefined;
   const benchmarkController = benchmarkEnv
     ? runtimeDeps?.benchmark?.controller ?? cachedBenchmark?.controller ?? new BenchmarkController()
@@ -307,7 +326,6 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     : undefined;
   if (benchmarkController && benchmarkLedger && evidenceSessionId) {
     benchmarkRuntimeCache().set(evidenceSessionId, { controller: benchmarkController, ledger: benchmarkLedger });
-    activeSkillNames.clear();
   }
   const browser = new BrowserManager({ evidenceRoot: paths.evidence, evidenceSessionId, scope: { rules: config.browserScope }, ignoreTlsErrors: config.browserIgnoreTlsErrors });
   // Child sessions: grant browser scope for the assigned challenge's container
@@ -362,33 +380,44 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   let evidenceSession: AgentSession | undefined;
   let skills: SkillDescriptor[] = [];
   const benchmarkOwner: "main" | `subagent:${string}` = child ? `subagent:${findingSource.subagentId ?? "child"}` : "main";
+  const initialChallenge = benchmarkLedger?.budgetForOwner(benchmarkOwner)?.challenge;
+  const workspace = benchmarkLedger ? new BenchmarkWorkspace(workspaceRoot, initialChallenge?.uniqueCode, () => browser.run(() => browser.close())) : undefined;
+  let selectChallengeSkills: ((description?: string) => Promise<void>) | undefined;
   const benchmarkTools: ToolDefinition[] = benchmarkController && benchmarkLedger
     ? [createBenchmarkControlTool(
         benchmarkController,
         benchmarkLedger,
         browser,
         () => benchmarkOwner,
-        child ? runtimeDeps?.benchmark?.assignedChallenge : undefined
+        child ? runtimeDeps?.benchmark?.assignedChallenge : undefined,
+        async (challenge) => {
+          await workspace!.activate(challenge.uniqueCode);
+          await selectChallengeSkills!(challenge.description);
+        },
+        async () => {
+          await selectChallengeSkills!();
+          await workspace!.activate();
+        }
       )]
     : [];
-  const customTools = [...createTimedLocalTools(cwd), createTimedBashTool(cwd, {
-        commandPrefix: settingsManager.getShellCommandPrefix(),
-        shellPath: settingsManager.getShellPath(),
-        ...(benchmarkController ? {
-          spawnHook: (context) => {
-            const env = { ...context.env };
-            delete env.BENCHMARK_TOKEN;
-            delete env.BENCHMARK_BASE_URL;
-            delete env.BENCHMARK_VPN_URL;
-            return { ...context, env };
-          }
-        } : {})
-      }) as unknown as ToolDefinition, ...benchmarkTools, createCrawlTool(browser, outputStore), ...createWebTools({
-        // Read per call: saving a key in settings applies to already-running
-        // sessions on their next search, with no re-open needed.
-        getTavilyApiKey: async () => (await readConfig()).webSearch?.tavilyApiKey,
-        outputStore
-      }), ...(subagents && benchmarkController && benchmarkLedger ? [createAssignBenchmarkChallengeTool(benchmarkController, benchmarkLedger, async (task, uniqueCode, containerAddrs, reservationOwner) => {
+  const bashOptions: BashToolOptions = {
+    commandPrefix: settingsManager.getShellCommandPrefix(),
+    shellPath: settingsManager.getShellPath(),
+    ...(benchmarkController ? {
+      spawnHook: (context) => {
+        const env = { ...context.env };
+        delete env.BENCHMARK_TOKEN;
+        delete env.BENCHMARK_BASE_URL;
+        delete env.BENCHMARK_VPN_URL;
+        delete env.RIFTX_LLM_API_KEY;
+        delete env.RIFTX_CHILD_LLM_API_KEY;
+        return { ...context, env };
+      }
+    } : {})
+  };
+  const localTools = workspace ? createWorkspaceLocalTools(() => workspace.cwd, bashOptions)
+    : [...createTimedLocalTools(cwd), createTimedBashTool(cwd, bashOptions) as ToolDefinition];
+  const customTools = [...localTools, ...benchmarkTools, createCrawlTool(browser, outputStore), ...(subagents && benchmarkController && benchmarkLedger ? [createAssignBenchmarkChallengeTool(benchmarkController, benchmarkLedger, async (task, uniqueCode, containerAddrs, reservationOwner) => {
         // Bridge to the existing subagent spawn mechanism. The benchmark
         // metadata (uniqueCode, containerAddrs) is stored on the SubagentTask
         // itself so retry/restart can recover the binding regardless of the
@@ -469,13 +498,12 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     additionalSkillPaths: [paths.skills],
     extensionFactories: [permission, browserExtension, compactionExtension],
     noExtensions: true,
+    // Disable default SDK search paths; additionalSkillPaths above remains enabled.
     noSkills: true,
     // `pentest-report` is a reserved opt-in skill. Force the policy even for
     // an older user-installed copy whose frontmatter predates the flag.
     skillsOverride: ({ skills, diagnostics }) => ({
-      // Benchmark sessions intentionally use no skills: the model receives
-      // the challenge and its blackboard without broad routing material.
-      skills: benchmarkController ? [] : skills.map((skill) => skill.name === PENTEST_REPORT_SKILL_NAME
+      skills: skills.map((skill) => skill.name === PENTEST_REPORT_SKILL_NAME
         ? { ...skill, disableModelInvocation: true }
         : skill),
       diagnostics
@@ -502,10 +530,20 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     settingsManager
   });
   evidenceSession = result.session;
+  if (benchmarkController) {
+    const stream = result.session.agent.streamFn;
+    // The SDK otherwise caps its default request budget at 32k, even for larger profiles.
+    result.session.agent.streamFn = (model, context, options) => stream(model, context, { ...options, maxTokens: model.maxTokens });
+  }
   skills = resourceLoader.getSkills().skills as SkillDescriptor[];
+  if (benchmarkLedger) {
+    selectChallengeSkills = createChallengeSkillSelection(skills, activeSkillNames, (content) => {
+      sessionManager.appendCustomMessageEntry("riftx_skill_context", content, false);
+    });
+    await selectChallengeSkills(initialChallenge?.description);
+  }
   const skillContextCache = new Map<string, string>();
   const activeSkillContext = async () => {
-    if (benchmarkLedger) return "";
     const parts = await Promise.all([...activeSkillNames].map(async (name) => {
       const cached = skillContextCache.get(name);
       if (cached !== undefined) return cached;
@@ -523,16 +561,15 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   };
   const getContinuityContext = async (): Promise<ContinuityContext> => {
     const skillContext = await activeSkillContext();
-    // Benchmark sampling consumes only the controller ledger. Benchmark
-    // sessions intentionally load no skills and do not scan findings/artifacts
-    // on every provider request.
+    // Benchmark continuity uses the ledger and cached active skills, without
+    // scanning findings/artifacts on every provider request.
     if (benchmarkLedger) {
       const worker = child ? `subagent:${findingSource.subagentId ?? "child"}` as const : "main" as const;
       const warning = await benchmarkLedger.consumeFirstAttemptWarning(worker);
       return {
         taskContract: "",
         skillContext,
-        investigationCapsule: buildBenchmarkContinuity(benchmarkLedger, worker, warning),
+        investigationCapsule: buildBenchmarkContinuity(benchmarkLedger, worker, warning, workspace?.cwd),
         progressCheckpoint: ""
       };
     }
@@ -616,9 +653,12 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
           }
         };
       }
-      // Keep the timebox as the outermost wrapper. An expired worker must not
-      // wait behind BashConcurrency or MutationLock before being told to yield.
+      // Check the timebox before file/concurrency locks, but after any pending
+      // workspace transition so it uses the current challenge's budget.
       if (benchmarkLedger) installBenchmarkTimeboxGate(tool, benchmarkLedger, benchmarkOwner, child ? runtimeDeps?.benchmark?.assignedChallenge : undefined);
+      // A challenge transition waits for this worker's running tools; queued
+      // calls from the previous challenge cannot execute in the new directory.
+      workspace?.install(tool);
     }
   }
   record = {
@@ -858,12 +898,15 @@ async function runChildSession(profile: ModelProfile, cwd: string, mutationLock:
     return () => child.emitter.off("event", listener);
   })();
   try {
-    // Match and inline the relevant skill for the delegated task, mirroring the
-    // main session's prompt preparation, so children inherit domain guidance.
-    const prepared = runtimeDeps.benchmark
-      ? { prompt: context.task.task }
-      : await prepareSkillPrompt(context.task.task, child.skills, child.loadedSkills);
-    await child.session.prompt(prepared.prompt);
+    // Match the delegated task and retain its active skill through compaction.
+    if (!runtimeDeps.benchmark) {
+      const prepared = await prepareSkillPrompt(context.task.task, child.skills, child.loadedSkills);
+      updateActiveSkills(child.activeSkillNames, prepared);
+      if (prepared.skillContext || (prepared.resetActiveSkills && !prepared.matched.length)) {
+        await child.session.sendCustomMessage({ customType: "riftx_skill_context", content: prepared.skillContext, display: false });
+      }
+    }
+    await child.session.prompt(context.task.task);
     const result = extractLastAssistantResult(child.session.sessionManager.getBranch());
     if (result.error) throw new Error(result.error);
 
@@ -1010,8 +1053,10 @@ async function promptSession(id: string, text: string, mode: "prompt" | "steer" 
   const dispatch = await preparePromptDispatch(
     mode,
     () => record.session.isStreaming,
-    () => prepareSkillPrompt(text, record.skills, record.loadedSkills),
-    () => ({ prompt: text, skillContext: "", loaded: [] as string[], matched: [] as string[] })
+    () => getBenchmarkRuntime(id)
+      ? Promise.resolve({ prompt: text, skillContext: "", loaded: [] as string[], matched: [] as string[], resetActiveSkills: false })
+      : prepareSkillPrompt(text, record.skills, record.loadedSkills),
+    () => ({ prompt: text, skillContext: "", loaded: [] as string[], matched: [] as string[], resetActiveSkills: false })
   );
   const resolvedMode = dispatch.mode;
   const ready = dispatch.prepared;
@@ -1033,15 +1078,8 @@ async function promptSession(id: string, text: string, mode: "prompt" | "steer" 
   const acceptDispatch = () => {
     if (dispatchAccepted) return;
     dispatchAccepted = true;
-    // A matched skill remains part of the task's operational contract after
-    // its original custom message is compacted away. Only change the active
-    // set when this dispatch actually selected a skill: generic continuation
-    // prompts such as "继续" must not accidentally forget it.
-    const persistentMatches = ready.matched.filter((name) => name !== PENTEST_REPORT_SKILL_NAME);
-    if (persistentMatches.length > 0) {
-      record.activeSkillNames.clear();
-      persistentMatches.forEach((name) => record.activeSkillNames.add(name));
-    }
+    // Explicit abstention clears stale guidance; bare continuations preserve it.
+    updateActiveSkills(record.activeSkillNames, ready);
     settlePromptRequest(record, extras.requestId, "accepted");
     // Reports the composed text THIS dispatch actually accepted — the single
     // mode resolution above is the only authority on what that text is.
@@ -1055,7 +1093,7 @@ async function promptSession(id: string, text: string, mode: "prompt" | "steer" 
       }
       else if (resolvedMode === "followUp") {
         record.gate.beginTask();
-        if (ready.skillContext) {
+        if (ready.skillContext || (ready.resetActiveSkills && !ready.matched.length)) {
           await record.session.sendCustomMessage({ customType: "riftx_skill_context", content: ready.skillContext, display: false }, { deliverAs: "followUp" });
           skillInjected = true;
         }
@@ -1064,7 +1102,7 @@ async function promptSession(id: string, text: string, mode: "prompt" | "steer" 
       }
       else {
         record.gate.beginTask();
-        if (ready.skillContext) {
+        if (ready.skillContext || (ready.resetActiveSkills && !ready.matched.length)) {
           await record.session.sendCustomMessage({ customType: "riftx_skill_context", content: ready.skillContext, display: false });
           skillInjected = true;
         }

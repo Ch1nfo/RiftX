@@ -16,6 +16,6 @@ export function sessionToolNames(_subagents: boolean): string[] {
   // is the only dispatch path and it enforces reservation, limits, and scope.
   return [
     "read", "grep", "find", "ls", "bash", "write", "edit", "browser",
-    ...BENCHMARK_TOOL_NAMES, "crawl", ...WEB_TOOL_NAMES
+    ...BENCHMARK_TOOL_NAMES, "crawl"
   ];
 }

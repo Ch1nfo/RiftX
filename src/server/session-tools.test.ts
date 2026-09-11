@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { BENCHMARK_TOOL_NAMES, WEB_TOOL_NAMES, sessionToolNames } from "./session-tools";
 
-test("every web tool name is on the session tool whitelist", () => {
+test("benchmark branch disables public research while retaining target crawling", () => {
   for (const variant of [sessionToolNames(true), sessionToolNames(false)]) {
     assert.equal(variant.includes("crawl"), true, "both variants must whitelist crawl");
     for (const name of WEB_TOOL_NAMES) {
-      assert.equal(variant.includes(name), true, `${name} must be whitelisted`);
+      assert.equal(variant.includes(name), false, `${name} must be disabled`);
     }
   }
 });

@@ -13,8 +13,26 @@ type SkillMatch = SkillDescriptor & { score: number; matchedTerms: string[] };
 
 const STOP_WORDS = new Set([
   "a", "an", "and", "are", "as", "at", "check", "for", "from", "in", "is", "of", "on", "or", "test", "testing", "the", "to", "use", "with",
-  "一个", "一下", "进行", "检查", "测试", "使用", "需要", "漏洞", "安全", "应用", "网站", "网页", "系统"
+  "一个", "一下", "进行", "检查", "测试", "使用", "需要", "漏洞", "安全", "应用", "网站", "网页", "系统",
+  "benchmark", "ctf", "challenge", "flag", "task", "solve", "solving", "find", "all", "tool", "file", "code", "analysis", "analyze",
+  "题目", "解题", "找到", "分析", "文件", "工具", "代码"
 ]);
+
+// Coarse metadata-only compatibility guard, not a semantic relevance guarantee.
+// A shared word such as "password" must not send a Web-only skill to an ELF task.
+const DOMAIN_TERMS = [
+  ["web", "html", "browser", "sqli", "sql injection", "sql注入", "sql 注入", "xss", "ssrf", "idor", "graphql", "csrf", "web应用", "网站", "网页"],
+  ["reverse", "reversing", "re", "binary", "elf", "disassembly", "decompile", "decompilation", "ghidra", "ida", "pwn", "逆向", "反编译", "二进制"],
+  ["crypto", "cryptography", "rsa", "aes", "密码学"],
+  ["forensics", "steganography", "stego", "pcap", "取证", "隐写"]
+];
+
+function domains(text: string) {
+  const normalized = text.toLowerCase();
+  const words = new Set(normalized.match(/[a-z0-9]+/g) ?? []);
+  return DOMAIN_TERMS.flatMap((markers, index) => markers.some((marker) => /[^a-z]/.test(marker)
+    ? normalized.includes(marker) : words.has(marker)) ? [index] : []);
+}
 
 const TERM_ALIASES: Record<string, string[]> = {
   "sql": ["sqli"],
@@ -80,7 +98,8 @@ function terms(text: string) {
   const cjk = normalized.match(/[\u3400-\u9fff]/g) ?? [];
   const bigrams = cjk.slice(0, -1).map((char, index) => `${char}${cjk[index + 1]}`);
   const expanded = [...words, ...singulars, ...cjk, ...bigrams].flatMap(expandAliases);
-  return [...new Set(expanded.filter((term) => term.length > 1 && !STOP_WORDS.has(term)))];
+  return [...new Set(expanded.filter((term) => term.length > 1 && !STOP_WORDS.has(term)
+    && !(term.endsWith("s") && STOP_WORDS.has(term.slice(0, -1)))))];
 }
 
 function searchableText(skill: SkillDescriptor) {
@@ -90,11 +109,17 @@ function searchableText(skill: SkillDescriptor) {
 export function rankSkills(task: string, skills: readonly SkillDescriptor[], limit = 3): SkillMatch[] {
   const queryTerms = terms(task);
   if (queryTerms.length === 0) return [];
+  const taskDomains = domains(task);
   // Short single-concept queries ("竞态", "IDOR") can only match 1-2 terms;
   // the full cutoff of 4 would leave them without any auto-loaded skill.
   const cutoff = queryTerms.length > 3 ? 4 : 2;
   return skills
     .filter((skill) => !skill.disableModelInvocation)
+    .filter((skill) => {
+      const skillDomains = domains(searchableText(skill));
+      return taskDomains.length === 0 || skillDomains.length === 0
+        || taskDomains.some((domain) => skillDomains.includes(domain));
+    })
     .map((skill) => {
       const nameTerms = terms(skill.name.replace(/[-_]/g, " "));
       const searchableTerms = new Set(terms(searchableText(skill)));
@@ -144,7 +169,11 @@ export function activeSkillNamesFromBranch(entries: readonly unknown[]) {
 }
 
 export async function prepareSkillPrompt(task: string, skills: readonly SkillDescriptor[], loadedSkills: Set<string>) {
-  if (!task.trim() || task.trimStart().startsWith("/skill:")) return { prompt: task, skillContext: "", loaded: [] as string[], matched: [] as string[] };
+  // A new selection may explicitly be empty. Only a bare continuation preserves
+  // the prior selection; abstention must not keep injecting an unrelated skill.
+  if (!task.trim() || task.trimStart().startsWith("/skill:") || /^(?:继续|接着|继续吧|继续执行|continue|go on|keep going|proceed)[.!！。\s]*$/i.test(task.trim())) {
+    return { prompt: task, skillContext: "", loaded: [] as string[], matched: [] as string[], resetActiveSkills: false };
+  }
   // The report skill is opt-in. It stays hidden from the general model/router
   // catalog and is selected only for an explicit report request.
   const explicitReportSkill = isExplicitReportRequest(task)
@@ -153,7 +182,7 @@ export async function prepareSkillPrompt(task: string, skills: readonly SkillDes
   const matches: readonly SkillDescriptor[] = explicitReportSkill ? [explicitReportSkill] : rankSkills(task, skills, 1);
   const matched = matches.map((skill) => skill.name);
   const selected = matches.filter((skill) => !loadedSkills.has(skill.name));
-  if (selected.length === 0) return { prompt: task, skillContext: "", loaded: [] as string[], matched };
+  if (selected.length === 0) return { prompt: task, skillContext: "", loaded: [] as string[], matched, resetActiveSkills: true };
   const loaded = await Promise.all(selected.map(async (skill) => {
     try {
       return { skill, context: await loadSkillContext(skill) };
@@ -162,7 +191,7 @@ export async function prepareSkillPrompt(task: string, skills: readonly SkillDes
     }
   }));
   const successful = loaded.filter((item): item is { skill: SkillMatch; context: string } => Boolean(item));
-  if (successful.length === 0) return { prompt: task, skillContext: "", loaded: [] as string[], matched };
+  if (successful.length === 0) return { prompt: task, skillContext: "", loaded: [] as string[], matched: [], resetActiveSkills: true };
   // Report guidance is scoped to a single explicit request, so allow it to be
   // injected again for a later explicit report rather than treating it as a
   // permanent session capability.
@@ -174,6 +203,13 @@ export async function prepareSkillPrompt(task: string, skills: readonly SkillDes
     prompt: `${skillContext}\n\nUser task:\n${task}`,
     skillContext,
     loaded: successful.map(({ skill }) => skill.name),
-    matched
+    matched: successful.map(({ skill }) => skill.name),
+    resetActiveSkills: true
   };
+}
+
+export function updateActiveSkills(active: Set<string>, selection: { matched: string[]; resetActiveSkills: boolean }) {
+  if (!selection.resetActiveSkills) return;
+  active.clear();
+  selection.matched.filter((name) => name !== PENTEST_REPORT_SKILL_NAME).forEach((name) => active.add(name));
 }

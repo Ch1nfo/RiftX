@@ -6,6 +6,15 @@ out/
 coverage/
 *.tsbuildinfo
 
+# Local Docker build and deployment files
+/Dockerfile*
+/.dockerignore
+/docker/
+/docker-compose*.yml
+/docker-compose*.yaml
+/compose*.yml
+/compose*.yaml
+
 # Local runtime state (RiftX and Pi)
 .riftx/
 *.jsonl
@@ -51,3 +60,4 @@ logs/
 .idea/
 .vscode/
 test-results/
+dist/

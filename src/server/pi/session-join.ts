@@ -62,7 +62,7 @@ export function formatSubagentTerminalMessage(task: SubagentTask, summary?: stri
   const cleanSummary = summary?.trim();
   const benchmarkIdentity = task.benchmarkChallenge ? `\nChallenge: ${task.benchmarkChallenge}` : "";
   const reuseInstruction = task.benchmarkChallenge
-    ? "Use the ledger outcome to refill the slot; if this challenge needs recovery, assign a fresh worker with the recorded distinct approach."
+    ? "Use the ledger outcome to refill the slot; if this challenge needs recovery, give a fresh worker the observed facts and evidence. Let it reassess independently and choose a materially different hypothesis instead of inheriting the previous worker's plan."
     : "Use this result in the current assessment. Do not repeat the same delegated task.";
   if (task.status === "completed" && cleanSummary) {
     return `${SUBAGENT_RESULT_PREFIX}\nSubagent: ${task.name}${benchmarkIdentity}\nStatus: completed\n${task.benchmarkChallenge ? "Structured benchmark result" : "Summary"}:\n${cleanSummary}\n\n${reuseInstruction} ${untrustedNote}`;

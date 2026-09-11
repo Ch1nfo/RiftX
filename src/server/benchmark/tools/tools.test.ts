@@ -292,6 +292,43 @@ test("checkpoint updates the blackboard without extending the timer", async () =
   assert.match((repeat.content[0] as { text: string }).text, /blackboard updated/);
 });
 
+test("main and child handoffs omit old plans and request independent reassessment", async () => {
+  const ledger = await new BenchmarkLedger(`handoff-${Date.now()}`).initialize();
+  await ledger.syncFromPlatform([platformChallenge("ch-1")], true, "ip");
+  await ledger.acquire("ch-1", "main", ["old"]);
+  await ledger.checkpoint("ch-1", "OBSERVED_FACT", ["TESTED_DIRECTION"], "OLD_NEXT_PROBE", "main", {
+    currentApproach: "OLD_CURRENT_ROUTE", evidenceRef: "artifact:FACT_EVIDENCE", ruledOutFamilies: ["SUPPORTED_EXCLUSION"]
+  });
+  await ledger.defer("ch-1", "previous attempt unsuccessful", "OLD_NEXT_PROBE", "main");
+  await ledger.confirmClosed("ch-1");
+  const controller = {
+    startChallenge: async () => ({ unique_code: "ch-1", container_addr: ["new"] }),
+    closeChallenge: async () => ({ unique_code: "ch-1", closed: true })
+  } as unknown as BenchmarkController;
+  const tool = createBenchmarkControlTool(controller, ledger, fakeBrowser(), () => "main");
+  assert.doesNotMatch(JSON.stringify(tool.parameters), /"nextProbe"|"currentApproach"/);
+  const acquired = await execute(tool, { action: "acquire", uniqueCode: "ch-1" });
+  const text = (acquired.content[0] as { text: string }).text;
+  assert.match(text, /OBSERVED_FACT|FACT_EVIDENCE/);
+  assert.match(text, /TESTED_DIRECTION/);
+  assert.match(text, /SUPPORTED_EXCLUSION/);
+  assert.match(text, /Reassess the recorded evidence independently/);
+  assert.doesNotMatch(text, /OLD_NEXT_PROBE|OLD_CURRENT_ROUTE/);
+  const recorded = await execute(tool, { action: "checkpoint", uniqueCode: "ch-1", signal: "new observation", nextProbe: "UNWANTED_NEXT", currentApproach: "UNWANTED_ROUTE" });
+  assert.doesNotMatch(JSON.stringify(recorded), /OLD_NEXT_PROBE|UNWANTED_NEXT|UNWANTED_ROUTE/);
+  assert.notEqual(ledger.getChallenge("ch-1")!.currentApproach, "UNWANTED_ROUTE");
+  assert.notEqual(ledger.getChallenge("ch-1")!.nextProbe, "UNWANTED_NEXT");
+  const deferred = await execute(tool, { action: "defer", uniqueCode: "ch-1", reason: "observation recorded", nextProbe: "UNWANTED_NEXT" });
+  assert.doesNotMatch(JSON.stringify(deferred), /OLD_NEXT_PROBE|UNWANTED_NEXT/);
+  let brief = "";
+  const assign = createAssignBenchmarkChallengeTool(controller, ledger, async (task) => { brief = task; return { taskId: "fresh" }; });
+  await execute(assign, { uniqueCode: "ch-1" });
+  assert.match(brief, /OBSERVED_FACT/);
+  assert.match(brief, /FACT_EVIDENCE/);
+  assert.match(brief, /Reassess the recorded evidence independently/);
+  assert.doesNotMatch(brief, /OLD_NEXT_PROBE|OLD_CURRENT_ROUTE|UNWANTED_NEXT|UNWANTED_ROUTE|NEXT:/);
+});
+
 test("hint forbidden in pass 1", async () => {
   const { tool } = await setupTool([
     ...VPN_ROUTES,

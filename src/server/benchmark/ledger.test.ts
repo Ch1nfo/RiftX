@@ -172,6 +172,18 @@ test("evidence-backed progress updates the blackboard but never extends attempt 
   assert.equal(ledger.getChallenge("ch-1")?.lastMeaningfulSignalContent, "obtained admin session", "a note must not overwrite the evidence recovery brief");
 });
 
+test("an evidence-backed exclusion needs no proposed next step and never extends the timebox", async () => {
+  const { ledger } = await setupLedger(["ch-1"]);
+  await ledger.acquire("ch-1", "main", ["a"]);
+  const deadline = ledger.getChallenge("ch-1")!.hardDeadlineAt;
+  await ledger.checkpoint("ch-1", "Fixture evidence rules out one tested assumption", ["fixture"], undefined, "main", {
+    signalKind: "decisive_rule_out", evidenceRef: "artifact:fixture", ruledOutFamilies: ["fixture assumption"]
+  });
+  assert.equal(ledger.getChallenge("ch-1")!.lastMeaningfulSignalContent, "Fixture evidence rules out one tested assumption");
+  assert.equal(ledger.getChallenge("ch-1")!.hardDeadlineAt, deadline);
+  assert.equal(ledger.getChallenge("ch-1")!.nextProbe, "");
+});
+
 test("a fresh recovery attempt cannot reuse evidence from the previous attempt to extend", async () => {
   let now = 2_500_000;
   const { ledger } = await setupLedger(["ch-1"], () => now);

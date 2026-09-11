@@ -1,6 +1,7 @@
 {
   "name": "riftx",
   "version": "0.1.0",
+  "type": "module",
   "description": "Local Web UI for the RiftX authorized security testing agent",
   "license": "MIT",
   "repository": {
@@ -31,7 +32,9 @@
     "postinstall": "playwright install chromium",
     "prepare": "npm run build",
     "test:e2e": "playwright test",
-    "test:benchmark": "node --test --test-timeout=60000 --import tsx src/server/benchmark/controller.integration.ts"
+    "test:benchmark": "node --test --test-timeout=60000 --import tsx src/server/benchmark/controller.integration.ts",
+    "benchmark": "node --import tsx src/server/benchmark/entry.ts",
+    "test:hosted": "node --test --import tsx src/server/benchmark/hosted.integration.ts"
   },
   "dependencies": {
     "@mariozechner/pi-ai": "^0.73.1",

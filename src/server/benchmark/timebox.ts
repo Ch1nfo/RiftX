@@ -26,7 +26,7 @@ export function installBenchmarkTimeboxGate(
     const active = ledger.budgetForOwner(owner);
     if (active?.budget.expired) {
       return {
-        content: [{ type: "text" as const, text: `FIRST_ATTEMPT_COMPLETE for ${active.challenge.uniqueCode}: the fixed 30-minute first attempt has ended. This solving tool was not executed. Immediately write one concise benchmark_control checkpoint with findings, attempted routes, ruled-out assumptions, artifacts, and the exact next probe; then defer and move to the next eligible challenge.` }],
+        content: [{ type: "text" as const, text: `FIRST_ATTEMPT_COMPLETE for ${active.challenge.uniqueCode}: the fixed 30-minute first attempt has ended. This solving tool was not executed. Immediately write one concise benchmark_control checkpoint with observed findings, evidence, tested routes, supported exclusions, artifacts and unresolved questions. Let the next worker reassess independently and choose a different hypothesis; then defer and move to the next eligible challenge.` }],
         details: { timeboxExpired: true, uniqueCode: active.challenge.uniqueCode, reason: "fixed first-attempt limit" }
       };
     }

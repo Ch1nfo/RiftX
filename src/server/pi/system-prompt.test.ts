@@ -2,6 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildChildPentestSystemPrompt, buildPentestSystemPrompt } from "./system-prompt";
 
+test("main and child benchmark prompts allow relevant skills", () => {
+  for (const prompt of [buildPentestSystemPrompt("default"), buildChildPentestSystemPrompt()]) {
+    assert.match(prompt, /Use relevant available Agent Skills/);
+    assert.match(prompt, /if none clearly fits, proceed without loading one/);
+    assert.doesNotMatch(prompt, /Do not load skills|do not load Agent Skills/);
+  }
+});
+
 test("commander prompt is verbatim: role, principles, workflow, endgame report", () => {
   const prompt = buildPentestSystemPrompt("default");
   assert.match(prompt, /# ROLE\nYou are an elite CTF player and field commander/);
@@ -15,6 +23,9 @@ test("commander prompt is verbatim: role, principles, workflow, endgame report",
   assert.match(prompt, /# TENACITY/);
   assert.match(prompt, /Final report: every solved challenge with its method, plus each captured flag/);
   assert.match(prompt, /never re-derive or guess a flag string/);
+  assert.match(prompt, /Credential guessing is evidence-gated/);
+  assert.match(prompt, /shared across you, every sub-agent, and every tool switch/);
+  assert.match(prompt, /"Try another wordlist" or "run it a\n  bit longer" is not new evidence/);
   assert.match(prompt, /Submit each flag the moment it is confirmed/);
 });
 
@@ -63,5 +74,7 @@ test("child prompt carries the commander return format, playbook, and tool restr
   assert.match(prompt, /Do NOT use assign_benchmark_challenge \(commander-only\)/);
   assert.match(prompt, /# PLAYBOOK BY CATEGORY/);
   assert.match(prompt, /steghide \(bruteforce passphrase with rockyou/);
+  assert.match(prompt, /Credential testing is evidence-gated/);
+  assert.match(prompt, /if the blackboard shows it was already spent, do not restart it/);
   assert.match(prompt, /Benchmark Scope and Approval Boundary/);
 });

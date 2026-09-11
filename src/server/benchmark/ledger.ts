@@ -918,7 +918,6 @@ export class BenchmarkLedger {
       if (!normalizedSignal) throw new Error("signal must not be empty");
       const isNew = normalizedSignal !== challenge.lastSignalContent;
       if (isNew) challenge.lastSignalContent = normalizedSignal;
-      const previousNextProbe = challenge.nextProbe;
       if (triedFamilies?.length) {
         const normalized = triedFamilies.map((item) => cleanText(item, 100)).filter(Boolean);
         challenge.triedFamilies = [...new Set([...challenge.triedFamilies, ...normalized])].slice(-20);
@@ -936,7 +935,7 @@ export class BenchmarkLedger {
       const strongKind = kind === "foothold" || kind === "credential" || kind === "privilege_change"
         || kind === "exploit_primitive" || kind === "stage_transition";
       const decisiveRuleOut = kind === "decisive_rule_out" && Boolean(evidenceRef)
-        && Boolean(challenge.nextProbe) && challenge.nextProbe !== previousNextProbe;
+        && Boolean(options?.ruledOutFamilies?.some((family) => family.trim()));
       const key = progressKey(kind, evidenceRef);
       const newEvidence = !challenge.progressKeys.includes(key);
       const evidenceBacked = (strongKind && Boolean(evidenceRef)) || decisiveRuleOut;
