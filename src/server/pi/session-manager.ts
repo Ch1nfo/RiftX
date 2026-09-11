@@ -561,6 +561,10 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     return parts.filter(Boolean).join("\n\n");
   };
   const getContinuityContext = async (): Promise<ContinuityContext> => {
+    if (benchmarkLedger && workspace) {
+      const active = benchmarkLedger.budgetForOwner(benchmarkOwner)?.challenge;
+      if (await workspace.reconcile(active?.uniqueCode)) await selectChallengeSkills!(active?.description);
+    }
     const skillContext = await activeSkillContext();
     // Benchmark continuity uses the ledger and cached active skills, without
     // scanning findings/artifacts on every provider request.

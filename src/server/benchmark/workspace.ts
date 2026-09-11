@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { BashToolOptions, ToolDefinition } from "@mariozechner/pi-coding-agent";
@@ -33,13 +34,24 @@ export class BenchmarkWorkspace {
   private readonly lock = new MutationLock();
   private epoch = 0;
   private ready = true;
+  private readonly submission = new AsyncLocalStorage<{ activation?: { code?: string } }>();
   constructor(readonly root: string, private current: string | undefined, private readonly resetBrowser: () => Promise<void>) {}
 
   get cwd() {
     return this.current ? join(challengeDirectory(this.root, this.current), "work") : join(this.root, "coordinator");
   }
 
+  /** Background submission confirmation may release ownership between turns. */
+  async reconcile(uniqueCode?: string): Promise<boolean> {
+    if (this.ready && this.current === uniqueCode) return false;
+    const release = await this.lock.acquire();
+    try { await this.activate(uniqueCode); return true; }
+    finally { release(); }
+  }
+
   async activate(uniqueCode?: string) {
+    const submission = this.submission.getStore();
+    if (submission) { submission.activation = { code: uniqueCode }; return; }
     if (this.ready && this.current === uniqueCode) return;
     // Invalidate queued calls before any asynchronous teardown can fail.
     this.epoch++;
@@ -57,14 +69,25 @@ export class BenchmarkWorkspace {
     tool.execute = async (id, params, signal, ...rest) => {
       const epoch = this.epoch;
       const action = (params as { action?: string } | undefined)?.action;
-      const transition = tool.name === "benchmark_control" && ["sync", "acquire", "submit", "defer", "abandon"].includes(action ?? "");
+      const submitting = tool.name === "benchmark_control" && action === "submit";
+      const transition = tool.name === "benchmark_control" && ["sync", "acquire", "defer", "abandon"].includes(action ?? "");
       const release = await (transition ? this.lock.acquire(signal) : this.lock.acquireShared(signal));
+      const submission: { activation?: { code?: string } } = {};
       try {
         if (!transition && (!this.ready || epoch !== this.epoch)) {
           return { content: [{ type: "text", text: "Challenge changed while this tool was queued. The tool was not executed. Reissue it for the current challenge." }], details: { challengeChanged: true } };
         }
-        return await execute(id, params, signal, ...rest);
-      } finally { release(); }
+        return await (submitting ? this.submission.run(submission, () => execute(id, params, signal, ...rest)) : execute(id, params, signal, ...rest));
+      } finally {
+        release();
+        if (submission.activation) {
+          // Platform receipt is already recorded. Directory/browser teardown
+          // waits until all old calls finish, without holding the ledger lock.
+          const finish = await this.lock.acquire();
+          try { if (epoch === this.epoch) await this.activate(submission.activation.code); }
+          finally { finish(); }
+        }
+      }
     };
   }
 }

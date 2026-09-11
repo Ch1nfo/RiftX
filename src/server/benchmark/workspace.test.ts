@@ -127,3 +127,32 @@ test("a long command and queued write in one challenge do not block another chal
   await pendingA;
   assert.equal(wroteA, true);
 });
+
+
+test("submission reaches the platform before a long tool ends, but workspace teardown waits", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "riftx-submit-barrier-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let reset = false;
+  const workspace = new BenchmarkWorkspace(root, "A", async () => { reset = true; });
+  const oldCwd = workspace.cwd;
+  let finish!: () => void;
+  let started!: () => void;
+  const ready = new Promise<void>((resolve) => { started = resolve; });
+  const running = new Promise<void>((resolve) => { finish = resolve; });
+  const bash = { name: "bash", execute: async (_id: string, _params: unknown) => { started(); await running; } };
+  let received!: () => void;
+  const receipt = new Promise<void>((resolve) => { received = resolve; });
+  const control = { name: "benchmark_control", execute: async (_id: string, _params: unknown) => { received(); await workspace.activate(); } };
+  workspace.install(bash);
+  workspace.install(control);
+  const command = bash.execute("bash", {});
+  await ready;
+  const submission = control.execute("submit", { action: "submit" });
+  await receipt;
+  assert.equal(reset, false);
+  assert.equal(workspace.cwd, oldCwd);
+  finish();
+  await Promise.all([command, submission]);
+  assert.equal(reset, true);
+  assert.notEqual(workspace.cwd, oldCwd);
+});

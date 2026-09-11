@@ -1,4 +1,5 @@
-import type { BenchmarkLedger, ChallengeOwner } from "./ledger";
+import { FIRST_ATTEMPT_LIMIT_MS, type BenchmarkLedger, type ChallengeOwner } from "./ledger";
+import { resolveBashTimeout } from "@/server/pi/bash-timeout-policy";
 
 type ExecutableTool = {
   name: string;
@@ -30,6 +31,17 @@ export function installBenchmarkTimeboxGate(
         details: { timeboxExpired: true, uniqueCode: active.challenge.uniqueCode, reason: "fixed first-attempt limit" }
       };
     }
-    return original(toolCallId, params, signal, ...rest);
+    if (tool.name !== "bash" || !active?.budget.firstAttempt) return original(toolCallId, params, signal, ...rest);
+    const remaining = Math.max(1, Math.floor(FIRST_ATTEMPT_LIMIT_MS - active.budget.elapsedMs));
+    const deadline = new AbortController();
+    const timer = setTimeout(() => deadline.abort(new Error("Benchmark first attempt ended")), remaining);
+    const input = params as { timeout?: number };
+    try {
+      return await original(toolCallId, { ...input, timeout: Math.min(resolveBashTimeout(input.timeout), remaining / 1000) },
+        signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal, ...rest);
+    } catch (error) {
+      if (!deadline.signal.aborted || signal?.aborted) throw error;
+      return { content: [{ type: "text", text: `FIRST_ATTEMPT_COMPLETE: the command was interrupted at the existing first-attempt deadline. Save observed findings and defer.\n${error instanceof Error ? error.message : String(error)}` }], details: { timeboxExpired: true }, isError: true };
+    } finally { clearTimeout(timer); }
   };
 }

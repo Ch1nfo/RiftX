@@ -1,3 +1,4 @@
+import { enqueuePendingSubmission, pendingSubmission, retryPendingSubmissions, hasPendingSubmissions } from "../pending-submissions";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -5,7 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createBenchmarkControlTool } from "./control-tool";
 import { createAssignBenchmarkChallengeTool } from "./assign-tool";
-import { BenchmarkController, type Challenge } from "../controller";
+import { BenchmarkController, BenchmarkError, type Challenge } from "../controller";
 import { BenchmarkLedger } from "../ledger";
 import type { BrowserManager } from "@/browser";
 
@@ -455,4 +456,64 @@ test("assign tool reports a SubAgent cancelled during dispatch as not assigned",
   assert.match(text, /reassign/);
   assert.equal(ledger.getChallenge("ch-1")?.status, "deferred", "released challenge returns to the pool");
   assert.equal(ledger.getChallenge("ch-1")?.owner, null);
+});
+
+
+test("unknown submit is queued, survives release, and becomes accepted after connectivity recovers", async () => {
+  const ledger = await new BenchmarkLedger(`pending-${Date.now()}`).initialize();
+  await ledger.syncFromPlatform([platformChallenge("ch-1")], true, "ip");
+  await ledger.acquire("ch-1", "main", ["a"]);
+  let submits = 0;
+  const controller = {
+    listChallenges: async () => [platformChallenge("ch-1")],
+    submitFlag: async () => {
+      if (++submits <= 2) throw new BenchmarkError("connection_error", "fixture disconnected");
+      return { unique_code: "ch-1", correct: true, awarded: 100, cumulative_score: 100, correct_flag_count: 1, total_flag_count: 1, matched_flag_index: 0 };
+    },
+    closeChallenge: async () => ({})
+  } as unknown as BenchmarkController;
+  const tool = createBenchmarkControlTool(controller, ledger, fakeBrowser(), () => "main");
+  const first = await execute(tool, { action: "submit", uniqueCode: "ch-1", flag: "fixture-answer" });
+  assert.match(JSON.stringify(first), /outcomeUnknown/);
+  assert.equal(submits, 2);
+  assert.equal(ledger.hasTriedFlag("ch-1", "fixture-answer"), false);
+  await execute(tool, { action: "submit", uniqueCode: "ch-1", flag: "fixture-answer" });
+  assert.equal(submits, 2, "manual duplicates must not bypass backoff");
+  await ledger.defer("ch-1", "covered", undefined, "main");
+  await ledger.confirmClosed("ch-1");
+  await retryPendingSubmissions(controller, ledger, Date.now() + 31_000);
+  assert.equal(submits, 3);
+  assert.equal(ledger.getChallenge("ch-1")!.isCompleted, true);
+  assert.equal(ledger.hasTriedFlag("ch-1", "fixture-answer"), true);
+  assert.equal(hasPendingSubmissions(ledger), false);
+  assert.ok(!ledger.getChallenge("ch-1")!.blackboard.some((entry) => entry.evidenceRef.startsWith("platform:pending:")));
+});
+
+test("pending confirmation is bounded without converting unknown outcomes into incorrect flags", async () => {
+  const ledger = await new BenchmarkLedger(`pending-bounded-${Date.now()}`).initialize();
+  await ledger.syncFromPlatform([platformChallenge("ch-1")], true, "ip");
+  let checks = 0;
+  const controller = { listChallenges: async () => { checks++; throw new BenchmarkError("connection_error", "fixture offline"); } } as unknown as BenchmarkController;
+  enqueuePendingSubmission(ledger, "ch-1", "unknown-answer", "main", 0);
+  for (const now of [30_000, 90_000, 210_000, 400_000]) await retryPendingSubmissions(controller, ledger, now);
+  assert.equal(checks, 3);
+  assert.equal(pendingSubmission(ledger, "ch-1", "unknown-answer")!.exhausted, true);
+  assert.equal(ledger.hasTriedFlag("ch-1", "unknown-answer"), false);
+  assert.equal(ledger.getMetrics().totalWrongSubmissions, 0);
+});
+
+test("a different accepted flag cannot falsely confirm a pending candidate", async () => {
+  const ledger = await new BenchmarkLedger(`pending-multiple-${Date.now()}`).initialize();
+  await ledger.syncFromPlatform([platformChallenge("ch-1", { flag_count: 2 })], true, "ip");
+  await ledger.acquire("ch-1", "main", ["a"]);
+  enqueuePendingSubmission(ledger, "ch-1", "pending-answer", "main", 0);
+  let submits = 0;
+  const controller = {
+    listChallenges: async () => [platformChallenge("ch-1", { flag_count: 2, correct_flag_count: 1, container_status: "available", container_addr: ["a"] })],
+    submitFlag: async () => { submits++; return { unique_code: "ch-1", correct: false, awarded: 0, cumulative_score: 100, correct_flag_count: 1, total_flag_count: 2, matched_flag_index: null }; }
+  } as unknown as BenchmarkController;
+  await retryPendingSubmissions(controller, ledger, 30_000);
+  assert.equal(submits, 1, "an increased count cannot identify this candidate");
+  assert.equal(ledger.getMetrics().totalWrongSubmissions, 1);
+  assert.equal(pendingSubmission(ledger, "ch-1", "pending-answer"), undefined);
 });

@@ -35,17 +35,24 @@ export function blackboardLabel(entry: BlackboardEntry): string {
 
 /** Parse the existing return format without generating or inheriting a plan. */
 export function childHandoffSections(summary: string): string[] {
-  const allowed = new Set(["FINDINGS", "EVIDENCE", "ARTIFACTS", "TRIED", "RULED_OUT", "UNCERTAINTIES"]);
+  const aliases: Record<string, string> = {
+    findings: "FINDINGS", observations: "FINDINGS", "发现": "FINDINGS", "观察": "FINDINGS", "关键发现": "FINDINGS",
+    evidence: "EVIDENCE", "证据": "EVIDENCE", artifacts: "ARTIFACTS", "产物": "ARTIFACTS", "文件": "ARTIFACTS",
+    tried: "TRIED", "已尝试": "TRIED", ruled_out: "RULED_OUT", "ruled out": "RULED_OUT", "已排除": "RULED_OUT",
+    uncertainties: "UNCERTAINTIES", "不确定性": "UNCERTAINTIES", "未解决问题": "UNCERTAINTIES", "疑问": "UNCERTAINTIES"
+  };
   const sections = new Map<string, string[]>();
   let section = "";
   for (const raw of summary.split("\n")) {
     const line = raw.trim().replace(/^(?:#{1,6}\s*|[-*]\s+|\d+[.)]\s+)/, "").replace(/\*\*/g, "");
-    const heading = /^([A-Z][A-Z_ ]{1,35}):\s*(.*)$/.exec(line)
-      ?? (allowed.has(line) ? [line, line, ""] : null);
-    if (heading) {
-      section = allowed.has(heading[1]) ? heading[1] : "";
-      if (section) sections.set(section, [...(sections.get(section) ?? []), heading[2]]);
-    } else if (/^(?:next\b|plan\b|current (?:route|approach)\b|下一步|当前路线|后续建议)/i.test(line)) {
+    const heading = /^([^:：]{1,40})[:：]\s*(.*)$/.exec(line);
+    const name = aliases[(heading?.[1] ?? line).trim().toLowerCase()];
+    if (name) {
+      section = name;
+      sections.set(section, [...(sections.get(section) ?? []), heading?.[2] ?? ""]);
+    } else if (/^#{1,6}\s/.test(raw.trim()) || (heading && /^[A-Z][A-Z_ ]+$/.test(heading[1]))) {
+      section = "";
+    } else if (/^(?:next\b|plan\b|strategy\b|current (?:route|approach)\b|下一步|当前路线|当前思路|后续建议|计划)/i.test(line)) {
       section = "";
     } else if (section && line) sections.get(section)!.push(line);
   }

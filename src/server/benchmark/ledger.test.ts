@@ -2,7 +2,7 @@ import { selectBlackboard, blackboardLabel, childHandoffSections } from "./black
 import { buildBenchmarkContinuity } from "./continuity";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { BenchmarkLedger, BENCHMARK_MAX_CONTAINERS, FIRST_ATTEMPT_LIMIT_MS, FIRST_ATTEMPT_WARNING_MS, type ChallengeState } from "./ledger";
@@ -836,4 +836,18 @@ test("correcting an exclusion preserves independently supported exclusions", asy
   await ledger.checkpoint("ch-1", "B ruled out", undefined, undefined, "main", { signalKind: "decisive_rule_out", evidenceRef: "b", ruledOutFamilies: ["B"] });
   await ledger.checkpoint("ch-1", "B was not ruled out", undefined, undefined, "main", { supersedesEvidenceRef: "b" });
   assert.deepEqual(ledger.getChallenge("ch-1")!.ruledOutFamilies, ["A"]);
+});
+
+
+test("handoff parsing accepts case variants and Chinese while raw-only reports remain recoverable", async () => {
+  assert.deepEqual(childHandoffSections("Findings: fixture\n下一步：不要继承\nUncertainties: unknown"), ["FINDINGS: fixture", "UNCERTAINTIES: unknown"]);
+  assert.deepEqual(childHandoffSections("## 发现\n合成观察\n证据：fixture.txt"), ["FINDINGS: 合成观察", "EVIDENCE: fixture.txt"]);
+  const { ledger } = await setupLedger(["ch-1"]);
+  await ledger.acquire("ch-1", "subagent:raw", ["a"]);
+  const raw = "A free-form synthetic observation. Next: do not inject this plan.";
+  await ledger.recordChildHandoff("ch-1", "subagent:raw", raw);
+  const entry = ledger.getChallenge("ch-1")!.blackboard.at(-1)!;
+  assert.match(entry.summary, /extraction.*failed/);
+  assert.doesNotMatch(entry.summary, /do not inject this plan/);
+  assert.equal(await readFile(entry.evidenceRef, "utf8"), raw);
 });

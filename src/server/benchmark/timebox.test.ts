@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { Challenge } from "./controller";
-import { BenchmarkLedger } from "./ledger";
+import { BenchmarkLedger, FIRST_ATTEMPT_LIMIT_MS } from "./ledger";
 import { installBenchmarkTimeboxGate } from "./timebox";
 
 const realHome = process.env.HOME;
@@ -73,4 +73,33 @@ test("a child cannot keep solving after it released its assigned challenge", asy
   const blocked = await bash.execute() as { details?: { challengeReleased?: boolean } };
   assert.equal(blocked.details?.challengeReleased, true);
   assert.equal(executions, 0);
+});
+
+
+test("bash is interrupted at the remaining first-attempt deadline", async () => {
+  let now = 1_000_000;
+  const ledger = await new BenchmarkLedger(`deadline-${Date.now()}`, () => now).initialize();
+  await ledger.syncFromPlatform([challenge()], true, "ip");
+  await ledger.acquire("ch-1", "main", ["a"]);
+  now += FIRST_ATTEMPT_LIMIT_MS - 40;
+  let aborted = false;
+  const bash = { name: "bash", execute: async (_id: string, params: unknown, signal?: AbortSignal): Promise<unknown> => {
+    assert.equal((params as { timeout: number }).timeout, 0.04);
+    return new Promise((_resolve, reject) => signal!.addEventListener("abort", () => { aborted = true; reject(signal!.reason); }, { once: true }));
+  } };
+  installBenchmarkTimeboxGate(bash, ledger, "main");
+  const result = await bash.execute("fixture", { timeout: 1800 });
+  assert.equal(aborted, true);
+  assert.match(JSON.stringify(result), /FIRST_ATTEMPT_COMPLETE/);
+});
+
+test("deadline wrapper preserves explicit cancellation", async () => {
+  const ledger = await new BenchmarkLedger(`cancel-${Date.now()}`).initialize();
+  await ledger.syncFromPlatform([challenge()], true, "ip");
+  await ledger.acquire("ch-1", "main", ["a"]);
+  const cancel = new AbortController();
+  cancel.abort(new Error("fixture cancellation"));
+  const bash = { name: "bash", execute: async (_id: string, _params: unknown, signal?: AbortSignal): Promise<unknown> => { signal!.throwIfAborted(); return undefined; } };
+  installBenchmarkTimeboxGate(bash, ledger, "main");
+  await assert.rejects(bash.execute("fixture", {}, cancel.signal), /fixture cancellation/);
 });

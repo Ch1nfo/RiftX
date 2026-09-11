@@ -1,3 +1,4 @@
+import { enqueuePendingSubmission, pendingSubmission } from "../pending-submissions";
 import { selectBlackboard, blackboardLabel } from "../blackboard";
 import { Type } from "@sinclair/typebox";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
@@ -266,6 +267,10 @@ export function createBenchmarkControlTool(
                 details: { duplicateLocal: true }
               };
             }
+            const pending = pendingSubmission(ledger, uniqueCode, flag);
+            if (pending) return { content: [{ type: "text" as const, text: pending.exhausted
+              ? "This candidate still has an unknown outcome after bounded recovery. It is not classified as incorrect; automatic retries have stopped."
+              : "This candidate is already queued for confirmation. The runtime will reconcile and retry after backoff; continue other useful work." }], details: { outcomeUnknown: true, queued: !pending.exhausted } };
             let submitResult: Awaited<ReturnType<BenchmarkController["submitFlag"]>>;
             let wasDuplicate = false;
             let reconciledAfterAmbiguous = false;
@@ -289,7 +294,7 @@ export function createBenchmarkControlTool(
                 // the flag. First reconcile. If progress is unchanged, retry
                 // this exact candidate once: a correct first request becomes a
                 // duplicate, while a request that never arrived gets a real
-                // answer. Only a second ambiguous result is quarantined.
+                // answer. A second ambiguous result enters the pending confirmation queue.
                 let match: Awaited<ReturnType<BenchmarkController["listChallenges"]>>[number] | undefined;
                 try {
                   match = await challengeSnapshot();
@@ -313,10 +318,11 @@ export function createBenchmarkControlTool(
                       }
                       submitResult = snapshotAsSubmitResult(duplicateMatch);
                     } else if (isAmbiguousMutationError(retryError)) {
+                      enqueuePendingSubmission(ledger, uniqueCode, flag, owner);
                       await ledger.recordSubmissionAttempt(uniqueCode, flag, owner);
                       return {
-                        content: [{ type: "text" as const, text: `Submission for ${uniqueCode} remained ambiguous after one bounded retry. The exact candidate is quarantined to prevent an unbounded retry loop. Sync when connectivity returns; platform progress may still recover it.` }],
-                        details: { outcomeUnknown: true, retriedOnce: true }
+                        content: [{ type: "text" as const, text: `Submission for ${uniqueCode} remained ambiguous after one bounded retry. The exact candidate is queued for bounded confirmation and retry after backoff. Continue other useful work; do not resubmit it manually.` }],
+                        details: { outcomeUnknown: true, retriedOnce: true, queued: true }
                       };
                     } else {
                       throw retryError;

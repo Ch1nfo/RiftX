@@ -6,7 +6,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { access, mkdir, rm } from "node:fs/promises";
+import { access, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { readJsonStore, writeJsonStoreAtomic } from "@/server/json-store";
@@ -558,7 +558,9 @@ export class BenchmarkLedger {
       if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
       requireOwner(challenge, expectedOwner);
       const hash = flagHash(flag);
-      if (!challenge.triedFlags.includes(hash)) challenge.triedFlags.push(hash);
+      appendBlackboard(challenge, { at: this.now(), worker: expectedOwner, kind: "note",
+        summary: "Flag submission outcome is unknown; queued for bounded confirmation in this run.", evidenceRef: `platform:pending:${hash}`,
+        approach: "", triedFamilies: [], ruledOutFamilies: [], nextProbe: "" });
       // The platform may have accepted, rejected, or penalized the request;
       // without its response this challenge's per-challenge score may have
       // moved, so its cached value is no longer authoritative.
@@ -986,15 +988,31 @@ export class BenchmarkLedger {
   /** Save final reports even after explicit defer; do not alter ownership or progress. */
   async recordChildHandoff(uniqueCode: string, worker: `subagent:${string}`, summary: string): Promise<void> {
     const sections = childHandoffSections(summary);
-    if (!sections.length) return;
+    if (!summary.trim()) return;
     await this.serialize(async () => {
       const challenge = this.state.challenges[uniqueCode];
       if (!challenge || (challenge.owner !== worker && challenge.currentAttemptWorker !== worker
         && !challenge.approachHistory.some((attempt) => attempt.worker === worker))) return;
+      const directory = join(benchmarkDir(this.parentSessionId), "handoffs");
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      const reportPath = join(directory, `${createHash("sha256").update(worker + summary).digest("hex")}.txt`);
+      const token = process.env.BENCHMARK_TOKEN;
+      await writeFile(reportPath, token ? summary.split(token).join("[REDACTED_BENCHMARK_TOKEN]") : summary, { mode: 0o600 });
+      if (!sections.length) sections.push("UNCERTAINTIES: Automatic extraction of this child report failed. Inspect the original report as unverified data; do not inherit its plan.");
       for (const section of sections) appendBlackboard(challenge, {
         at: this.now(), worker, kind: "handoff", summary: cleanText(section, 2_000),
-        evidenceRef: `${worker}:final-report`, approach: "", triedFamilies: [], ruledOutFamilies: [], nextProbe: ""
+        evidenceRef: reportPath, approach: "", triedFamilies: [], ruledOutFamilies: [], nextProbe: ""
       });
+      await this.persist();
+    });
+  }
+
+  async recordPendingSubmissionStatus(uniqueCode: string, worker: Exclude<ChallengeOwner, null>, summary: string, flag: string): Promise<void> {
+    await this.serialize(async () => {
+      const challenge = this.state.challenges[uniqueCode];
+      if (!challenge) return;
+      appendBlackboard(challenge, { at: this.now(), worker, kind: "note", summary: cleanText(summary, 1_000),
+        evidenceRef: `platform:pending:${flagHash(flag)}`, approach: "", triedFamilies: [], ruledOutFamilies: [], nextProbe: "" });
       await this.persist();
     });
   }
@@ -1011,11 +1029,11 @@ export class BenchmarkLedger {
   /** Record a flag submission result. `challengeScore` is the platform's PER-CHALLENGE
    * cumulative score (hint deductions already included). Flags are stored as SHA-256
    * hashes to avoid persisting plaintext answers. */
-  async recordSubmission(uniqueCode: string, flag: string, correct: boolean, challengeScore: number | undefined, correctFlagCount: number, matchedFlagIndex: number | null, expectedOwner: Exclude<ChallengeOwner, null>): Promise<ChallengeState> {
+  async recordSubmission(uniqueCode: string, flag: string, correct: boolean, challengeScore: number | undefined, correctFlagCount: number, matchedFlagIndex: number | null, expectedOwner: Exclude<ChallengeOwner, null>, allowUnowned = false): Promise<ChallengeState> {
     return this.serialize(async () => {
       const challenge = this.state.challenges[uniqueCode];
       if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
-      requireOwner(challenge, expectedOwner);
+      requireOwner(challenge, expectedOwner, allowUnowned);
       const previousCorrectFlagCount = challenge.correctFlagCount;
       if (challengeScore !== undefined) {
         challenge.scoreObtained = challengeScore;
@@ -1027,6 +1045,7 @@ export class BenchmarkLedger {
       }
       challenge.correctFlagCount = correctFlagCount;
       const hash = flagHash(flag);
+      challenge.blackboard = challenge.blackboard.filter((entry) => entry.evidenceRef !== `platform:pending:${hash}`);
       if (!challenge.triedFlags.includes(hash)) challenge.triedFlags.push(hash);
       if (correct && matchedFlagIndex !== null && !challenge.matchedFlagIndexes.includes(matchedFlagIndex)) {
         challenge.matchedFlagIndexes.push(matchedFlagIndex);
@@ -1066,11 +1085,11 @@ export class BenchmarkLedger {
   /** Mark logical completion. A live container remains in closing until confirmed stopped.
    * `challengeScore` is the platform's per-challenge cumulative; omit it when no priced
    * response was received (recalculate keeps the run total a lower bound). */
-  async markSolved(uniqueCode: string, challengeScore: number | undefined, expectedOwner: Exclude<ChallengeOwner, null>): Promise<ChallengeState> {
+  async markSolved(uniqueCode: string, challengeScore: number | undefined, expectedOwner: Exclude<ChallengeOwner, null>, allowUnowned = false): Promise<ChallengeState> {
     return this.serialize(async () => {
       const challenge = this.state.challenges[uniqueCode];
       if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
-      requireOwner(challenge, expectedOwner);
+      requireOwner(challenge, expectedOwner, allowUnowned);
       const now = this.now();
       finishAttempt(challenge, now, "solved");
       const needsClose = hasActiveContainer(challenge);

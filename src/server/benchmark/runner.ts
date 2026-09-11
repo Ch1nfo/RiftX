@@ -1,5 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { BenchmarkController, BenchmarkError } from "./controller";
+import { hasPendingSubmissions, retryPendingSubmissions } from "./pending-submissions";
+import { ModelRecovery } from "./recovery";
 import { benchmarkProfile, positiveInteger } from "./environment";
 import { benchmarkMainBusy, benchmarkMainHasWork, queueBenchmarkContinuation } from "./scheduling";
 
@@ -41,6 +43,7 @@ export async function runBenchmark(): Promise<number> {
   let sessionId: string | undefined;
   let cleanup: ((id: string) => Promise<void>) | undefined;
   let exitCode = 0;
+  let submissionDrain: Promise<void> | undefined;
   try {
     let initialChallenges: Awaited<ReturnType<BenchmarkController["listChallenges"]>> | undefined;
     let initialVpn: Awaited<ReturnType<BenchmarkController["checkVpn"]>> | undefined;
@@ -73,9 +76,14 @@ export async function runBenchmark(): Promise<number> {
     const runtime = getBenchmarkRuntime(sessionId)!;
     await runtime.ledger.syncFromPlatform(initialChallenges, initialVpn.ok, initialVpn.client_ip, initialVpn.status !== "unchecked");
     let toolsCompleted = 0;
+    const recovery = new ModelRecovery();
+    let inspectedAssistant: unknown;
     let failure: string | undefined;
-    record.emitter.on("event", (event: { type: string; toolName?: string; error?: string }) => {
-      if (event.type === "tool_end") toolsCompleted++;
+    record.emitter.on("event", (event: { type: string; toolName?: string; error?: string; isError?: boolean }) => {
+      if (event.type === "tool_end") {
+        toolsCompleted++;
+        if (!event.isError) { failure = undefined; recovery.succeeded(); }
+      }
       if (event.type === "error") failure = event.error ?? "Agent failed";
       if (["tool_start", "tool_end", "done", "error"].includes(event.type)) {
         log(event.type, { tool: event.toolName, ...(event.error ? { error: redactRuntimeSecrets(event.error) } : {}) });
@@ -102,31 +110,52 @@ export async function runBenchmark(): Promise<number> {
         const state = runtime.ledger.getState();
         log("progress", { phase: state.phase, solved: state.solvedCount, exhausted: state.exhaustedCount, score: state.cumulativeScore });
       }
+      if (!submissionDrain) {
+        submissionDrain = retryPendingSubmissions(controller, runtime.ledger)
+          .catch((error) => log("pending_submission_error", { error: redactRuntimeSecrets(error instanceof Error ? error.message : String(error)) }))
+          .finally(() => { submissionDrain = undefined; });
+      }
       if (benchmarkMainBusy(record)) {
         await delay(1_000);
         continue;
       }
-      if (failure) throw new Error(failure);
       const lastAssistant = [...record.session.messages].reverse().find((message) => message.role === "assistant");
-      if (lastAssistant?.role === "assistant" && ["error", "aborted"].includes(lastAssistant.stopReason)) {
-        throw new Error(lastAssistant.errorMessage || `Model stopped: ${lastAssistant.stopReason}`);
+      if (failure || (lastAssistant !== inspectedAssistant && lastAssistant?.role === "assistant" && ["error", "aborted"].includes(lastAssistant.stopReason))) {
+        recovery.failed(failure || (lastAssistant?.role === "assistant" ? lastAssistant.errorMessage || `Model stopped: ${lastAssistant.stopReason}` : "Agent failed"));
+        failure = undefined;
       }
+      inspectedAssistant = lastAssistant;
       const state = runtime.ledger.getState();
-      if (state.phase === "completed") {
+      if (state.phase === "completed" && !hasPendingSubmissions(runtime.ledger)) {
         log("completed", { solved: state.solvedCount, exhausted: state.exhaustedCount, score: state.cumulativeScore });
         break;
       }
+      const decision = recovery.decision(Boolean(record.subagents?.hasActiveTasks()) || hasPendingSubmissions(runtime.ledger));
+      if (decision.action === "fail") throw new Error(decision.error);
+      if (decision.action === "wait") { await delay(1_000); continue; }
       if (!firstPrompt && !benchmarkMainHasWork(runtime.ledger)) {
         await delay(1_000);
         continue;
       }
-      if (!firstPrompt) {
+      if (!firstPrompt && decision.action !== "retry") {
         emptyTurns = toolsCompleted === lastTools ? emptyTurns + 1 : 0;
-        if (emptyTurns >= 3) throw new Error("Agent stopped three times without using tools while challenges remain unfinished");
+        if (emptyTurns >= 3) {
+          recovery.failed("Agent stopped three times without using tools while challenges remain unfinished");
+          emptyTurns = 0;
+          continue;
+        }
       }
       lastTools = toolsCompleted;
-      if (firstPrompt) await startPromptSession(sessionId, INITIAL_PROMPT);
-      else queueBenchmarkContinuation(record, runtime.ledger, CONTINUE_PROMPT);
+      if (decision.action === "retry") {
+        if (queueBenchmarkContinuation(record, runtime.ledger, CONTINUE_PROMPT)) {
+          recovery.dispatched();
+          emptyTurns = 0;
+          log("model_recovery", { attempt: decision.attempt + 1 });
+        }
+      } else if (firstPrompt) {
+        try { await startPromptSession(sessionId, INITIAL_PROMPT); }
+        catch (error) { recovery.failed(error instanceof Error ? error.message : String(error)); }
+      } else queueBenchmarkContinuation(record, runtime.ledger, CONTINUE_PROMPT);
       firstPrompt = false;
       await delay(1_000); // Let prompt completion and child deliveries settle before inspecting idle state.
     }
@@ -139,6 +168,7 @@ export async function runBenchmark(): Promise<number> {
       // Bound cleanup independently of the platform's API retry/poll budgets.
       const shutdownDeadline = setTimeout(() => { log("shutdown_timeout"); process.exit(stopCode ?? 1); }, 90_000);
       try {
+        await submissionDrain;
         await cleanup(sessionId);
         log("cleanup_complete");
       } catch (error) {

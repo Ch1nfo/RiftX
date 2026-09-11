@@ -11,7 +11,7 @@ import { benchmarkWorkspaceRoot, challengeDirectory } from "./workspace";
 
 // This fixture drives the real SDK and runner; it never contacts a real model or target.
 // Set RIFTX_TEST_IMAGE to run the same checks through the image's default entrypoint.
-for (const mode of ["complete", "signal", "delegate", "abstain", "parallel"]) test(`headless ${mode}: lifecycle and active skill delivery`, { timeout: 120_000 }, async () => {
+for (const mode of ["complete", "signal", "delegate", "abstain", "parallel", "recover"]) test(`headless ${mode}: lifecycle and active skill delivery`, { timeout: 120_000 }, async () => {
   const stopEarly = mode === "signal";
   const delegate = mode === "delegate" || mode === "parallel";
   const parallel = mode === "parallel";
@@ -39,7 +39,7 @@ for (const mode of ["complete", "signal", "delegate", "abstain", "parallel"]) te
   let resumedBeforeChild = false;
   let childReleasedBeforeMain = false;
   const steps = parallel ? ["idle", "sync", "assign", "idle", "acquire2", "bash2", "submit2a", "submit2b", "idle"] : stopEarly ? ["sync", "acquire", "hang"] : delegate ? ["idle", "sync", "assign", "idle"]
-    : ["idle", "sync", "acquire", "bash", "submit", ...(mode === "abstain" ? ["acquire2", "bash2", "submit2a", "submit2b"] : []), "idle"];
+    : ["idle", "sync", "acquire", "bash", ...(mode === "recover" ? ["model-error"] : []), "submit", ...(mode === "abstain" ? ["acquire2", "bash2", "submit2a", "submit2b"] : []), "idle"];
   const llm = createServer(async (req, res) => {
     let raw = "";
     for await (const chunk of req) raw += chunk;
@@ -58,6 +58,11 @@ for (const mode of ["complete", "signal", "delegate", "abstain", "parallel"]) te
       childReleasedBeforeMain = !resumedBeforeChild;
     }
     if (step === "hang") return;
+    if (step === "model-error") {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "ECONNRESET synthetic provider failure", type: "fixture" } }));
+      return;
+    }
     res.writeHead(200, { "Content-Type": "text/event-stream" });
     const code = step.includes("2") ? "ch-002" : "ch-001";
     const action = step.replace(/2[ab]?$/, "");
@@ -109,6 +114,7 @@ for (const mode of ["complete", "signal", "delegate", "abstain", "parallel"]) te
     assert.equal(code, stopEarly ? 143 : 0, output);
     assert.match(output, /"approvalMode":"full"/);
     assert.match(output, /"event":"cleanup_complete"/);
+    if (mode === "recover") assert.match(output, /"event":"model_recovery"/);
     assert.equal(platform.getActiveContainers(), 0, output);
     if (stopEarly) assert.deepEqual(platform.getCloseCalls(), ["ch-001"]);
     else {
