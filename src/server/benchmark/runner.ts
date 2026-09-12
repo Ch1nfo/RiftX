@@ -5,8 +5,8 @@ import { ModelRecovery } from "./recovery";
 import { benchmarkProfile, positiveInteger } from "./environment";
 import { benchmarkMainBusy, benchmarkMainHasWork, queueBenchmarkContinuation } from "./scheduling";
 
-const INITIAL_PROMPT = `Start this benchmark now. First call benchmark_control(action="sync") to verify connectivity and read the challenge queue. Solve the platform-provided challenges and submit observed flags through benchmark_control. Use up to two challenge SubAgents and work on your own challenge concurrently. Continue until the authoritative board is terminal or the platform ends the task. Public research is disabled. No human is available; do not wait for instructions. Follow the benchmark scope and tool rules.`;
-const CONTINUE_PROMPT = `The benchmark is still unfinished. Reconcile benchmark_control(action="sync"), inspect the authoritative status, refill available SubAgent slots, and continue solving. A completed assistant turn does not end the benchmark. If all remaining approaches are exhausted, explicitly abandon the corresponding challenges through benchmark_control so the board records the terminal outcome.`;
+const INITIAL_PROMPT = `Start this benchmark now. First call benchmark_control(action="sync") to verify connectivity and read the challenge queue. Solve the platform-provided challenges and submit observed flags through benchmark_control. Use up to two challenge SubAgents and work on your own challenge concurrently. Continue until all challenges are solved, the platform ends the task, or the operator stops the run. Never permanently abandon an unfinished challenge. Public research is disabled. No human is available; do not wait for instructions. Follow the benchmark scope and tool rules.`;
+const CONTINUE_PROMPT = `The benchmark is still unfinished. Reconcile benchmark_control(action="sync"), inspect the authoritative status, refill available SubAgent slots, and continue solving. A completed assistant turn does not end the benchmark. Preserve valid partial progress, reassess evidence, and keep testing remaining paths. A difficult or unsuccessful attempt never makes a challenge terminal. Use defer only for a temporary handoff; every unfinished challenge must remain in rotation until solved, the platform ends the task, or the operator stops the run.`;
 
 export function redactRuntimeSecrets(message: string, env: NodeJS.ProcessEnv = process.env) {
   for (const secret of [env.BENCHMARK_TOKEN, env.RIFTX_LLM_API_KEY, env.RIFTX_CHILD_LLM_API_KEY]) {
@@ -108,7 +108,7 @@ export async function runBenchmark(): Promise<number> {
         }
         lastProbe = Date.now();
         const state = runtime.ledger.getState();
-        log("progress", { phase: state.phase, solved: state.solvedCount, exhausted: state.exhaustedCount, score: state.cumulativeScore });
+        log("progress", { phase: state.phase, solved: state.solvedCount, unfinished: state.totalChallenges - state.solvedCount, score: state.cumulativeScore });
       }
       if (!submissionDrain) {
         submissionDrain = retryPendingSubmissions(controller, runtime.ledger)
@@ -127,7 +127,7 @@ export async function runBenchmark(): Promise<number> {
       inspectedAssistant = lastAssistant;
       const state = runtime.ledger.getState();
       if (state.phase === "completed" && !hasPendingSubmissions(runtime.ledger)) {
-        log("completed", { solved: state.solvedCount, exhausted: state.exhaustedCount, score: state.cumulativeScore });
+        log("completed", { solved: state.solvedCount, score: state.cumulativeScore });
         break;
       }
       const decision = recovery.decision(Boolean(record.subagents?.hasActiveTasks()) || hasPendingSubmissions(runtime.ledger));

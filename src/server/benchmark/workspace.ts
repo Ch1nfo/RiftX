@@ -70,7 +70,7 @@ export class BenchmarkWorkspace {
       const epoch = this.epoch;
       const action = (params as { action?: string } | undefined)?.action;
       const submitting = tool.name === "benchmark_control" && action === "submit";
-      const transition = tool.name === "benchmark_control" && ["sync", "acquire", "defer", "abandon"].includes(action ?? "");
+      const transition = tool.name === "benchmark_control" && ["sync", "acquire", "defer", "reset_environment"].includes(action ?? "");
       const release = await (transition ? this.lock.acquire(signal) : this.lock.acquireShared(signal));
       const submission: { activation?: { code?: string } } = {};
       try {

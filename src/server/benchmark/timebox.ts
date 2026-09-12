@@ -1,5 +1,6 @@
 import { FIRST_ATTEMPT_LIMIT_MS, type BenchmarkLedger, type ChallengeOwner } from "./ledger";
 import { resolveBashTimeout } from "@/server/pi/bash-timeout-policy";
+import { BrowserExecutionBlockedError, withBrowserExecutionGuard } from "@/browser/runtime/execution-guard";
 
 type ExecutableTool = {
   name: string;
@@ -14,7 +15,7 @@ export function installBenchmarkTimeboxGate(
 ): void {
   if (tool.name === "benchmark_control" || tool.name === "assign_benchmark_challenge" || typeof tool.execute !== "function") return;
   const original = tool.execute.bind(tool);
-  tool.execute = async (toolCallId: string, params: unknown, signal?: AbortSignal, ...rest: unknown[]) => {
+  const blockedResult = () => {
     if (assignedChallenge) {
       const assigned = ledger.getChallenge(assignedChallenge);
       if (!assigned || assigned.owner !== owner || (assigned.status !== "running" && assigned.status !== "reserved")) {
@@ -31,6 +32,31 @@ export function installBenchmarkTimeboxGate(
         details: { timeboxExpired: true, uniqueCode: active.challenge.uniqueCode, reason: "fixed first-attempt limit" }
       };
     }
+    return undefined;
+  };
+  tool.execute = async (toolCallId: string, params: unknown, signal?: AbortSignal, ...rest: unknown[]) => {
+    const blocked = blockedResult();
+    if (blocked) return blocked;
+    if (tool.name === "browser" || tool.name === "crawl") {
+      let denied: ReturnType<typeof blockedResult>;
+      return withBrowserExecutionGuard(() => {
+        denied = blockedResult();
+        if (denied) throw new BrowserExecutionBlockedError(denied.content[0].text);
+      }, async () => {
+        try {
+          const result = await original(toolCallId, params, signal, ...rest);
+          if (!denied) return result;
+          // Crawl keeps pages it finished before the next queued page was
+          // denied. Preserve that partial report alongside the budget notice.
+          const partial = result as { content: unknown[]; details?: Record<string, unknown> };
+          return { ...partial, content: [...partial.content, ...denied.content], details: { ...partial.details, ...denied.details } };
+        } catch (error) {
+          if (denied && error instanceof BrowserExecutionBlockedError) return denied;
+          throw error;
+        }
+      });
+    }
+    const active = ledger.budgetForOwner(owner);
     if (tool.name !== "bash" || !active?.budget.firstAttempt) return original(toolCallId, params, signal, ...rest);
     const remaining = Math.max(1, Math.floor(FIRST_ATTEMPT_LIMIT_MS - active.budget.elapsedMs));
     const deadline = new AbortController();

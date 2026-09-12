@@ -29,34 +29,41 @@ export function buildBenchmarkContinuity(
   const mine = challenges.find((challenge) => challenge.owner === worker && (challenge.status === "running" || challenge.status === "reserved"));
   const unseen = challenges.filter((challenge) => !challenge.isCompleted && challenge.attemptCount === 0).length;
   const firstAttemptsActive = challenges.filter((challenge) => challenge.currentAttemptPhase === "coverage" && (challenge.status === "running" || challenge.status === "reserved" || challenge.status === "closing" || challenge.status === "orphaned")).length;
+  // Keep live control state and evidence ahead of descriptive detail so the
+  // bounded packet cannot lose a timebox or worker slot to a long hint.
+  const evidenceLines: string[] = [];
+  const detailLines: string[] = [];
   const lines = [
     "<riftx-benchmark-continuity>",
     worker === "main"
       ? `## Run: schedule=${state.phase} | score=${state.scoreExact ? state.cumulativeScore : `${state.cumulativeScore}+`} | solved=${state.solvedCount}/${state.totalChallenges} | unseen=${unseen} | first_attempts_active=${firstAttemptsActive} | containers=${state.activeContainers}/3`
       : `## Run: schedule=${state.phase} | solved=${state.solvedCount}/${state.totalChallenges}`
   ];
+  lines.push("## Persistence: Unfinished challenges are never permanently abandoned. Preserve partial progress and continue solving until all flags are accepted, the platform ends the task, or the operator stops the run. Defer only requeues a challenge for continued work.");
   if (ledger.isEndgame()) lines.push(`## Final challenges: ${BENCHMARK_ENDGAME_GUIDANCE}`);
   if (workingDirectory) lines.push(`## Working directory: ${workingDirectory} (relative local tool paths and shell commands resolve here)`);
 
   if (mine) {
     lines.push(
       `## My challenge: ${mine.uniqueCode} | ${mine.totalScore}pts | attempt ${mine.attemptCount} | flags ${mine.correctFlagCount}/${mine.flagCount}`,
-      `  addr: ${mine.containerAddrs.join(", ") || "(none)"}`,
+      `  addr: ${mine.containerAddrs.join(", ") || "(none)"}`
+    );
+    detailLines.push(
       `  description: ${compact(mine.description, 2_400) || "(none)"}`,
-      `  hint: ${mine.hintUsed ? mine.hintContent || "requested; no content returned" : "not used"}`
+      `  hint: ${mine.hintUsed ? compact(mine.hintContent || "", 1_200) || "requested; no content returned" : "not used"}`
     );
     if (mine.passwordEnumerationMs > 0) lines.push(`## Online password guessing: ${Math.ceil(mine.passwordEnumerationMs / 1000)}/${PASSWORD_ENUMERATION_BUDGET_MS / 1000} seconds consumed across all workers and attempts.`);
-    if (mine.triedFamilies.length) lines.push(`## Previously tried: ${mine.triedFamilies.join(", ")}`);
-    if (mine.ruledOutFamilies.length) lines.push(`## Recorded exclusions (check their evidence): ${mine.ruledOutFamilies.join(", ")}`);
+    if (mine.triedFamilies.length) detailLines.push(`## Previously tried: ${mine.triedFamilies.join(", ")}`);
+    if (mine.ruledOutFamilies.length) detailLines.push(`## Recorded exclusions (check their evidence): ${mine.ruledOutFamilies.join(", ")}`);
     const board = selectBlackboard(mine, 6);
     if (board.length) {
-      lines.push("## Challenge blackboard:", ...board.map((entry) =>
+      evidenceLines.push("## Challenge blackboard:", ...board.map((entry) =>
         `  - ${blackboardLabel(entry)}: ${compact(entry.summary, 600)}${entry.evidenceRef ? ` [${compact(entry.evidenceRef, 200)}]` : ""}`
       ));
     }
     const history = mine.approachHistory.slice(-4);
     if (history.length) {
-      lines.push("## Previous attempts:", ...history.map((attempt) =>
+      detailLines.push("## Previous attempts:", ...history.map((attempt) =>
         `  - #${attempt.attemptNumber} tried=${attempt.triedFamilies.join(", ") || "(not recorded)"}; stopped because ${attempt.stopReason}`
       ));
     }
@@ -70,7 +77,7 @@ export function buildBenchmarkContinuity(
       lines.push("## FIRST_ATTEMPT_COMPLETE: Solving tools are blocked. Write the final blackboard checkpoint and defer now.");
     }
     const intel = ledger.intelForChallenge(mine).slice(-4);
-    if (intel.length) lines.push("## Relevant shared intel:", ...intel.map((entry) => `  - [${entry.target}] ${entry.intel}`));
+    if (intel.length) detailLines.push("## Relevant shared intel:", ...intel.map((entry) => `  - [${entry.target}] ${entry.intel}`));
   } else {
     lines.push('## My challenge: (none — acquire one from the eligible candidates)');
   }
@@ -85,7 +92,7 @@ export function buildBenchmarkContinuity(
   // Use a stable timestamp instead of an ever-changing "N minutes ago" value.
   // This packet is sampled frequently; stable text preserves provider prompt
   // cache prefixes and avoids turning silent timing into attention noise.
-  lines.push(`## Platform sync: ${state.lastSyncAt ? new Date(state.lastSyncAt).toISOString() : "never"} | VPN: ${state.vpnChecked ? (state.vpnOk ? "ok" : "FAIL") : "not prechecked"}`, "</riftx-benchmark-continuity>");
+  lines.push(`## Platform sync: ${state.lastSyncAt ? new Date(state.lastSyncAt).toISOString() : "never"} | VPN: ${state.vpnChecked ? (state.vpnOk ? "ok" : "FAIL") : "not prechecked"}`, ...evidenceLines, ...detailLines, "</riftx-benchmark-continuity>");
 
   const configuredToken = process.env.BENCHMARK_TOKEN ?? "";
   const joined = configuredToken ? lines.join("\n").split(configuredToken).join("[REDACTED_BENCHMARK_TOKEN]") : lines.join("\n");

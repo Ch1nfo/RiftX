@@ -2,7 +2,7 @@ import { selectBlackboard, blackboardLabel, childHandoffSections } from "./black
 import { buildBenchmarkContinuity } from "./continuity";
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { BenchmarkLedger, BENCHMARK_MAX_CONTAINERS, FIRST_ATTEMPT_LIMIT_MS, FIRST_ATTEMPT_WARNING_MS, type ChallengeState } from "./ledger";
@@ -322,13 +322,62 @@ test("defer closes container and saves recovery state", async () => {
   assert.equal(ledger.getMetrics().totalDefers, 1);
 });
 
-test("abandon is terminal", async () => {
-  const { ledger } = await setupLedger();
-  await ledger.acquire("ch-1", "main", ["a"]);
-  await ledger.abandon("ch-1", "no path forward", "main");
-  await ledger.confirmClosed("ch-1");
-  assert.equal(ledger.getChallenge("ch-1")?.status, "exhausted");
-  assert.equal(ledger.getState().exhaustedCount, 1);
+test("repeated unsuccessful attempts and worker exits keep partial challenges eligible", async () => {
+  const { ledger } = await setupLedger(["ch-1"]);
+  await ledger.syncFromPlatform([platformChallenge("ch-1", { flag_count: 3, correct_flag_count: 1 })], true, "ip");
+  for (let attempt = 1; attempt <= 12; attempt++) {
+    const owner = attempt % 2 ? "main" : `subagent:worker-${attempt}` as const;
+    await ledger.acquire("ch-1", owner, ["a"]);
+    if (owner === "main") await ledger.defer("ch-1", "no new path found", undefined, owner);
+    else await ledger.releaseOnSubagentExit("ch-1", "worker returned without solving", owner);
+    if (ledger.getChallenge("ch-1")?.status === "closing") await ledger.confirmClosed("ch-1");
+    assert.equal(ledger.getState().phase, "revisit");
+    assert.equal(ledger.getMetrics().completedAt, null);
+    assert.deepEqual(ledger.candidates().map((challenge) => challenge.uniqueCode), ["ch-1"]);
+    assert.equal(ledger.getChallenge("ch-1")?.correctFlagCount, 1);
+  }
+});
+
+test("restart recovers legacy abandoned challenges and pending closes without losing progress", async () => {
+  for (const [status, containerStatus] of [
+    ["exhausted", "stopped"], ["exhausted", "available"],
+    ["exhausted", "stop_pending"], ["closing", "available"]
+  ]) {
+    const { ledger, sessionId } = await setupLedger(["solved", "partial"]);
+    await ledger.acquire("solved", "main", ["a"]);
+    await ledger.markSolved("solved", 100, "main");
+    await ledger.confirmClosed("solved");
+    await ledger.acquire("partial", "main", ["b"]);
+    await ledger.checkpoint("partial", "Working access in evidence.json", undefined, undefined, "main");
+    await ledger.defer("partial", "old attempt", undefined, "main");
+    await ledger.confirmClosed("partial");
+    const path = join(tempDir, ".riftx", "benchmark", sessionId, "state.json");
+    const saved = JSON.parse(await readFile(path, "utf8"));
+    saved.phase = "completed";
+    saved.exhaustedCount = 1;
+    Object.assign(saved.challenges.partial, {
+      status, pendingStatus: status === "closing" ? "exhausted" : undefined,
+      containerStatus, containerAddrs: containerStatus === "stopped" ? [] : ["b"],
+      attemptCount: 2, correctFlagCount: 1, flagCount: 3
+    });
+    await writeFile(path, JSON.stringify(saved));
+    const restored = await new BenchmarkLedger(sessionId).initialize();
+    assert.equal(restored.getState().phase, "revisit");
+    assert.equal(restored.getMetrics().completedAt, null);
+    assert.equal(restored.getChallenge("solved")?.status, "solved");
+    assert.equal(restored.getChallenge("partial")?.correctFlagCount, 1);
+    assert.deepEqual(restored.getChallenge("partial")?.blackboard, ledger.getChallenge("partial")?.blackboard);
+    if (restored.getChallenge("partial")?.status === "closing") {
+      assert.equal(restored.getChallenge("partial")?.pendingStatus, "deferred");
+      await restored.confirmClosed("partial");
+    }
+    assert.deepEqual(restored.candidates().map((challenge) => challenge.uniqueCode), ["partial"]);
+    if (containerStatus === "available" && status === "exhausted") {
+      assert.equal(restored.getChallenge("partial")?.status, "orphaned");
+      assert.deepEqual(restored.getChallenge("partial")?.containerAddrs, ["b"]);
+    }
+    assert.ok(!("exhaustedCount" in JSON.parse(await readFile(path, "utf8"))));
+  }
 });
 
 test("restart recovery marks running as orphaned, keeps deferred", async () => {
@@ -357,7 +406,7 @@ test("platform-stopped orphans release their container slots; live orphans still
     platformChallenge("ch-1"), platformChallenge("ch-2"), platformChallenge("ch-3"), platformChallenge("ch-4")
   ], true, "ip");
   assert.equal(restarted.getState().activeContainers, 0, "stopped orphans must free their slots");
-  // The freed capacity must be usable — defer/abandon cannot clear an unowned
+  // The freed capacity must be usable — defer cannot clear an unowned
   // orphan, so a false count here would deadlock every future acquire.
   await restarted.reserve("ch-4", "main");
   assert.equal(restarted.getChallenge("ch-4")?.status, "reserved");
@@ -518,8 +567,8 @@ test("resource unavailability does not consume attempt 1 or block later coverage
     await ledger.confirmClosed(code);
   }
 
-  assert.equal(ledger.getState().phase, "coverage");
-  assert.deepEqual(ledger.candidates(10).map((challenge) => challenge.uniqueCode), ["low"]);
+  assert.equal(ledger.getState().phase, "revisit");
+  assert.deepEqual(ledger.candidates(10).map((challenge) => challenge.uniqueCode), ["low", "mid", "high"]);
   now += 1_000;
   await ledger.acquire("low", "main", ["low"]);
   assert.equal(ledger.getChallenge("low")?.attemptCount, 1);
@@ -557,13 +606,17 @@ test("recordHint tracks usage", async () => {
   assert.equal(ledger.getMetrics().totalHintsUsed, 1);
 });
 
-test("all terminal → completed", async () => {
+test("only solving every challenge completes the run", async () => {
   const { ledger } = await setupLedger(["ch-1", "ch-2"]);
   await ledger.acquire("ch-1", "main", ["a"]);
   await ledger.markSolved("ch-1", 100, "main");
   await ledger.confirmClosed("ch-1");
   await ledger.acquire("ch-2", "main", ["b"]);
-  await ledger.abandon("ch-2", "dead end", "main");
+  await ledger.defer("ch-2", "dead end", undefined, "main");
+  await ledger.confirmClosed("ch-2");
+  assert.equal(ledger.getState().phase, "revisit");
+  await ledger.acquire("ch-2", "main", ["b"]);
+  await ledger.markSolved("ch-2", 100, "main");
   await ledger.confirmClosed("ch-2");
   assert.equal(ledger.getState().phase, "completed");
 });
@@ -876,8 +929,84 @@ test("preservation is limited to final-three revisits and never bypasses termina
   assert.equal(endgame.getChallenge("last")?.status, "closing");
   await endgame.confirmClosed("last");
   await endgame.acquire("last", "main", ["last2"]);
-  await endgame.abandon("last", "all evidence reviewed", "main");
+  await endgame.markSolved("last", 100, "main");
   assert.equal(endgame.getChallenge("last")?.status, "closing");
   await endgame.confirmClosed("last");
   assert.equal(endgame.getState().activeContainers, 0);
+});
+
+test("unavailable starts rotate behind useful revisits without spending a solving attempt", async () => {
+  const { ledger } = await setupLedger(["blocked", "partial"]);
+  await ledger.syncFromPlatform([platformChallenge("blocked"), platformChallenge("partial", { flag_count: 2 })], true, "ip");
+  await ledger.reserve("blocked", "main");
+  await ledger.releaseReservation("blocked", "main", { resourceUnavailable: true });
+  await ledger.acquire("partial", "main", ["fixture"]);
+  await ledger.recordSubmission("partial", "fixture-answer", true, 50, 1, 0, "main");
+  await ledger.defer("partial", "fixture", undefined, "main");
+  await ledger.confirmClosed("partial");
+  assert.equal(ledger.getState().phase, "revisit");
+  await ledger.reserve("blocked", "main");
+  assert.equal(ledger.getState().phase, "revisit");
+  await ledger.acquire("partial", "subagent:available", ["fixture"]);
+  await ledger.releaseReservation("blocked", "main", { resourceUnavailable: true });
+  assert.equal(ledger.getChallenge("blocked")?.attemptCount, 0);
+  assert.deepEqual(ledger.candidates().map((challenge) => challenge.uniqueCode), ["blocked"]);
+  assert.equal(ledger.getChallenge("partial")?.attemptCount, 2);
+  assert.equal(ledger.getChallenge("partial")?.correctFlagCount, 1);
+  await ledger.defer("partial", "fixture-next", undefined, "subagent:available", true);
+  await ledger.confirmClosed("partial");
+  await ledger.reserve("blocked", "main");
+  await ledger.releaseReservation("blocked", "main", { resourceUnavailable: true });
+  assert.deepEqual(ledger.candidates().map((challenge) => challenge.uniqueCode), ["partial", "blocked"]);
+});
+
+test("stale submission results cannot regress accepted progress or its authoritative score", async () => {
+  const { ledger } = await setupLedger(["ch-1"]);
+  await ledger.syncFromPlatform([platformChallenge("ch-1", { flag_count: 3 })], true, "ip");
+  await ledger.acquire("ch-1", "main", ["fixture"]);
+  await ledger.recordSubmission("ch-1", "fixture-newer", true, 70, 2, 1, "main");
+  await ledger.recordSubmission("ch-1", "fixture-older", true, 30, 1, 0, "main");
+  assert.equal(ledger.getChallenge("ch-1")?.correctFlagCount, 2);
+  assert.equal(ledger.getState().cumulativeScore, 70);
+  assert.equal(ledger.getState().scoreExact, true);
+  await ledger.bindOwner("ch-1", "main", "subagent:new-owner");
+  await assert.rejects(() => ledger.recordSubmission("ch-1", "fixture-stale-owner", true, 100, 3, 2, "main", true));
+  assert.equal(ledger.getChallenge("ch-1")?.owner, "subagent:new-owner");
+  assert.equal(ledger.getChallenge("ch-1")?.correctFlagCount, 2);
+});
+
+test("warning previews remain due until the matching attempt acknowledges delivery", async () => {
+  let now = 50_000_000;
+  const { ledger, sessionId } = await setupLedger(["ch-1"], () => now);
+  await ledger.acquire("ch-1", "main", ["fixture"]);
+  assert.equal(ledger.firstAttemptWarningFor("main"), undefined);
+  now += FIRST_ATTEMPT_WARNING_MS;
+  const first = ledger.firstAttemptWarningFor("main")!;
+  assert.ok(first);
+  first.firstAttemptWarningIssuedAt = 1;
+  assert.equal(ledger.getChallenge("ch-1")?.firstAttemptWarningIssuedAt, null);
+  assert.ok(ledger.firstAttemptWarningFor("main"));
+  assert.equal(await ledger.acknowledgeFirstAttemptWarning("subagent:other", "ch-1", first.currentAttemptStartedAt), false);
+  assert.equal(await ledger.acknowledgeFirstAttemptWarning("main", "ch-1", first.currentAttemptStartedAt! - 1), false);
+  assert.ok(ledger.firstAttemptWarningFor("main"));
+  assert.equal(await ledger.acknowledgeFirstAttemptWarning("main", "ch-1", first.currentAttemptStartedAt), true);
+  assert.equal(ledger.firstAttemptWarningFor("main"), undefined);
+  assert.equal(await ledger.acknowledgeFirstAttemptWarning("main", "ch-1", first.currentAttemptStartedAt), false);
+  const restored = await new BenchmarkLedger(sessionId, () => now).initialize();
+  assert.equal(restored.getChallenge("ch-1")?.firstAttemptWarningIssuedAt, now);
+});
+
+test("a delayed warning acknowledgement cannot consume a later attempt's notice", async () => {
+  let now = 60_000_000;
+  const { ledger } = await setupLedger(["ch-1"], () => now);
+  await ledger.acquire("ch-1", "main", ["fixture"]);
+  now += FIRST_ATTEMPT_WARNING_MS;
+  const first = ledger.firstAttemptWarningFor("main")!;
+  await ledger.defer("ch-1", "fixture", undefined, "main");
+  await ledger.confirmClosed("ch-1");
+  now += 1_000;
+  await ledger.acquire("ch-1", "main", ["fixture-new"]);
+  assert.notEqual(ledger.getChallenge("ch-1")?.currentAttemptStartedAt, first.currentAttemptStartedAt);
+  assert.equal(await ledger.acknowledgeFirstAttemptWarning("main", "ch-1", first.currentAttemptStartedAt), false);
+  assert.equal(ledger.getChallenge("ch-1")?.firstAttemptWarningIssuedAt, null);
 });

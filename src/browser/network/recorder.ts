@@ -20,6 +20,7 @@ export async function attachRequestRecorder(page: Page, pageId: string, identity
     pending: string[];
     pendingBytes: number;
     overflow: boolean;
+    fallbackToCache: boolean;
   };
   const active = new Map<string, Capture>();
   // Chromium omits Cookie/Set-Cookie from the ordinary Network events. Extra
@@ -79,17 +80,17 @@ export async function attachRequestRecorder(page: Page, pageId: string, identity
       durationMs: Date.now() - Date.parse(record.startedAt)
     });
   };
-  const append = (id: string, data: string) => {
+  const appendBytes = (id: string, bytes: Buffer) => {
     const capture = active.get(id);
     if (!capture) return;
     const record = store.get(capture.ref);
     if (!record) { finish(id, "unavailable"); return; }
-    const bytes = Buffer.from(data, "base64");
     const room = MAX_CAPTURE_BYTES - capture.bytes;
     capture.bytes += Math.min(room, bytes.length);
     store.update(capture.ref, { responseBody: (record.responseBody ?? "") + capture.decoder.write(bytes.subarray(0, room)) });
     if (bytes.length > room) finish(id, "truncated");
   };
+  const append = (id: string, data: string) => appendBytes(id, Buffer.from(data, "base64"));
   session.on("Network.requestWillBeSent", (event) => {
     const previousExchange = headersFor(event.requestId).exchanges.at(-1);
     if (previousExchange && event.redirectResponse) previousExchange.extra = event.redirectHasExtraInfo;
@@ -113,7 +114,7 @@ export async function attachRequestRecorder(page: Page, pageId: string, identity
     timer.unref();
     active.set(event.requestId, {
       ref: record.ref, bytes: 0, observedBytes: 0, decoder: new StringDecoder("utf8"), timer,
-      prefixReady: false, pending: [], pendingBytes: 0, overflow: false
+      prefixReady: false, pending: [], pendingBytes: 0, overflow: false, fallbackToCache: false
     });
     const exchanges = headersFor(event.requestId).exchanges;
     exchanges.push({ ref: record.ref });
@@ -143,9 +144,9 @@ export async function attachRequestRecorder(page: Page, pageId: string, identity
       capture.pending = [];
       if (capture.overflow) finish(event.requestId, "truncated");
     }).catch(() => {
-      // Opaque/evicted bodies are explicit. Never use response.text(), which
-      // buffers the entire body before a caller can apply any limit.
-      if (active.get(event.requestId) === capture) finish(event.requestId, "unavailable");
+      // loadingFinished will read the cached body, even when that event
+      // arrived before the stream setup promise rejected.
+      if (active.get(event.requestId) === capture) capture.fallbackToCache = true;
     });
   });
   session.on("Network.dataReceived", (event) => {
@@ -167,7 +168,25 @@ export async function attachRequestRecorder(page: Page, pageId: string, identity
   session.on("Network.loadingFinished", (event) => {
     const capture = active.get(event.requestId);
     if (!capture) return;
-    void Promise.resolve(capture.ready).then(() => {
+    void Promise.resolve(capture.ready).then(async () => {
+      if (active.get(event.requestId) !== capture) return;
+      if (capture.fallbackToCache) {
+        // A fast response can finish before streamResourceContent reaches CDP.
+        // Read that exchange's browser cache after loadingFinished; never replay
+        // the HTTP request. The existing capture timer and byte cap still apply.
+        try {
+          const { body, base64Encoded } = await session.send("Network.getResponseBody", { requestId: event.requestId });
+          if (active.get(event.requestId) !== capture) return;
+          capture.bytes = 0;
+          capture.decoder = new StringDecoder("utf8");
+          capture.pending = [];
+          store.update(capture.ref, { responseBody: "" });
+          appendBytes(event.requestId, Buffer.from(body, base64Encoded ? "base64" : "utf8"));
+        } catch {
+          if (active.get(event.requestId) === capture) finish(event.requestId, "unavailable");
+          return;
+        }
+      }
       if (active.get(event.requestId) === capture) finish(event.requestId, "complete");
     });
   });

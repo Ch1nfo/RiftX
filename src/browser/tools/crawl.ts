@@ -4,6 +4,7 @@ import { BrowserManager, BrowserDegradedError } from "../runtime/browser-manager
 import { authSignal, extractApiRoutes, normalizeUrl, sameHost } from "./crawl-core";
 import type { ToolOutputStore } from "@/server/tool-output";
 import { runWithDeadline } from "@/server/deadline";
+import { BrowserExecutionBlockedError } from "../runtime/execution-guard";
 
 const CRAWL_OUTPUT_TIMEOUT_MS = 15_000;
 
@@ -188,6 +189,7 @@ export function createCrawlTool(browser: BrowserManager, outputStore?: ToolOutpu
           }
         } catch (error) {
           if (signal?.aborted) { aborted = true; break; }
+          if (error instanceof BrowserExecutionBlockedError) { aborted = true; abortReason = "deadline"; break; }
           errors.push(`${normalized}: ${error instanceof Error ? error.message : String(error)}`);
           if (error instanceof CrawlDestructionError) { aborted = true; abortReason = "degraded"; break; }
         }

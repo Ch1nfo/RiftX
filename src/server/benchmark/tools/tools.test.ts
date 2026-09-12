@@ -65,10 +65,34 @@ const VPN_ROUTES: Route[] = [
   { method: "HEAD", path: "/", body: {} },
 ];
 
-async function execute(tool: ReturnType<typeof createBenchmarkControlTool>, params: Record<string, unknown>) {
+async function execute(tool: ReturnType<typeof createBenchmarkControlTool>, params: Record<string, unknown>, signal?: AbortSignal) {
   const ctx = {} as Parameters<typeof tool.execute>[4];
-  return tool.execute("test-call", params as Parameters<typeof tool.execute>[1], undefined, undefined, ctx);
+  return tool.execute("test-call", params as Parameters<typeof tool.execute>[1], signal, undefined, ctx);
 }
+
+test("main and child cannot abandon a challenge, even through a stale direct call", async () => {
+  for (const child of [false, true]) {
+    const { ledger, controller, browser } = await setupTool([]);
+    await ledger.syncFromPlatform([platformChallenge("ch-1", { flag_count: 3, correct_flag_count: 1 })], true, "ip");
+    await ledger.acquire("ch-1", "main", ["first"]);
+    await ledger.defer("ch-1", "coverage", undefined, "main");
+    await ledger.confirmClosed("ch-1");
+    const owner = child ? "subagent:worker" : "main";
+    await ledger.acquire("ch-1", owner, ["live"]);
+    let closes = 0;
+    let releases = 0;
+    controller.closeChallenge = async () => { closes++; throw new Error("A rejected action must not close the target"); };
+    const tool = createBenchmarkControlTool(controller, ledger, browser, () => owner,
+      child ? "ch-1" : undefined, undefined, async () => { releases++; });
+    assert.doesNotMatch(JSON.stringify(tool.parameters), /"const":"abandon"/);
+    const before = JSON.stringify(ledger.getState());
+    const result = await execute(tool, { action: "abandon", uniqueCode: "ch-1", reason: "no viable path" });
+    assert.match((result.content[0] as { text: string }).text, /Unknown action|not available/);
+    assert.equal(JSON.stringify(ledger.getState()), before);
+    assert.equal(closes, 0);
+    assert.equal(releases, 0);
+  }
+});
 
 test("sync pulls challenges (bare array) and updates ledger", async () => {
   const { tool, ledger } = await setupTool([
@@ -605,4 +629,164 @@ test("environment reset is explicit, owner-gated, records evidence, and starts f
   await execute(tool, { action: "reset_environment", uniqueCode: "binary", reason: "process failed again", evidenceRef: "artifact:health2.txt" });
   assert.equal(recovered.getChallenge("binary")?.status, "closing", "failed reset stays pending reconciliation");
   assert.equal(recovered.getChallenge("binary")?.closeFailureRecorded, true);
+});
+
+test("an exhausted pending confirmation permits an explicit retry after connectivity recovers", async () => {
+  const ledger = await new BenchmarkLedger(`pending-explicit-retry-${Date.now()}`).initialize();
+  await ledger.syncFromPlatform([platformChallenge("ch-1")], true, "ip");
+  await ledger.acquire("ch-1", "main", ["fixture"]);
+  enqueuePendingSubmission(ledger, "ch-1", "fixture-pending", "main", 0);
+  let submits = 0;
+  const controller = {
+    listChallenges: async () => { throw new BenchmarkError("connection_error", "fixture-offline"); },
+    submitFlag: async () => {
+      submits++;
+      return { correct: true, awarded: 100, cumulative_score: 100, correct_flag_count: 1, total_flag_count: 1, matched_flag_index: 0 };
+    },
+    closeChallenge: async () => ({ closed: true })
+  } as unknown as BenchmarkController;
+  for (const now of [30_000, 90_000, 210_000]) await retryPendingSubmissions(controller, ledger, now);
+  assert.equal(pendingSubmission(ledger, "ch-1", "fixture-pending")?.exhausted, true);
+  assert.equal(hasPendingSubmissions(ledger), false);
+  const tool = createBenchmarkControlTool(controller, ledger, fakeBrowser(), () => "main");
+  const result = await execute(tool, { action: "submit", uniqueCode: "ch-1", flag: "fixture-pending" });
+  assert.equal((result.details as { solved: boolean }).solved, true);
+  assert.equal(submits, 1);
+  assert.equal(ledger.getState().cumulativeScore, 100);
+  assert.equal(pendingSubmission(ledger, "ch-1", "fixture-pending"), undefined);
+});
+
+test("a completed platform sync preserves an in-flight child's priced submission and cleanup", async () => {
+  const ledger = await new BenchmarkLedger(`submit-sync-race-${Date.now()}`).initialize();
+  await ledger.syncFromPlatform([platformChallenge("ch-1")], true, "ip");
+  await ledger.acquire("ch-1", "subagent:submit", ["fixture"]);
+  let started!: () => void;
+  let finish!: () => void;
+  const startedPromise = new Promise<void>((resolve) => { started = resolve; });
+  const responseReady = new Promise<void>((resolve) => { finish = resolve; });
+  let synced!: () => void;
+  const syncReady = new Promise<void>((resolve) => { synced = resolve; });
+  const originalSync = ledger.syncFromPlatform.bind(ledger);
+  ledger.syncFromPlatform = async (...args: Parameters<BenchmarkLedger["syncFromPlatform"]>) => {
+    const state = await originalSync(...args);
+    synced();
+    return state;
+  };
+  let closes = 0;
+  let released = 0;
+  const controller = {
+    checkVpn: async () => ({ status: "ok", ok: true, client_ip: "ip" }),
+    listChallenges: async () => [platformChallenge("ch-1", { correct_flag_count: 1, is_completed: true, container_status: "available", container_addr: ["fixture"] })],
+    submitFlag: async () => {
+      started();
+      await responseReady;
+      return { correct: true, awarded: 100, cumulative_score: 100, correct_flag_count: 1, total_flag_count: 1, matched_flag_index: 0 };
+    },
+    closeChallenge: async () => { closes++; return { closed: true }; }
+  } as unknown as BenchmarkController;
+  const child = createBenchmarkControlTool(controller, ledger, fakeBrowser(), () => "subagent:submit", "ch-1", undefined, () => { released++; });
+  const parent = createBenchmarkControlTool(controller, ledger, fakeBrowser(), () => "main");
+  const submission = execute(child, { action: "submit", flag: "fixture-final" });
+  await startedPromise;
+  const sync = execute(parent, { action: "sync" });
+  await syncReady;
+  assert.equal(ledger.getChallenge("ch-1")?.owner, null);
+  finish();
+  const [result] = await Promise.all([submission, sync]);
+  assert.equal((result.details as { solved: boolean }).solved, true);
+  assert.equal(ledger.getState().cumulativeScore, 100);
+  assert.equal(ledger.getState().scoreExact, true);
+  assert.equal(ledger.getState().phase, "completed");
+  assert.equal(closes, 1);
+  assert.equal(released, 1);
+});
+
+test("ambiguous submission reconciliation compares against the immutable pre-dispatch count", async () => {
+  const ledger = await new BenchmarkLedger(`submit-sync-count-${Date.now()}`).initialize();
+  const initial = platformChallenge("ch-1", { flag_count: 2 });
+  const advanced = { ...initial, correct_flag_count: 1, container_status: "available", container_addr: ["fixture"] };
+  await ledger.syncFromPlatform([initial], true, "ip");
+  await ledger.acquire("ch-1", "main", ["fixture"]);
+  let submits = 0;
+  const controller = {
+    listChallenges: async () => [advanced],
+    submitFlag: async () => {
+      submits++;
+      await ledger.syncFromPlatform([advanced], true, "ip");
+      throw new BenchmarkError("connection_error", "fixture-response-lost");
+    }
+  } as unknown as BenchmarkController;
+  const tool = createBenchmarkControlTool(controller, ledger, fakeBrowser(), () => "main");
+  const result = await execute(tool, { action: "submit", uniqueCode: "ch-1", flag: "fixture-partial" });
+  assert.equal((result.details as { partial: boolean }).partial, true);
+  assert.equal(submits, 1);
+  assert.equal(ledger.getChallenge("ch-1")?.correctFlagCount, 1);
+  assert.equal(hasPendingSubmissions(ledger), false);
+});
+
+test("a cancelled assignment closes a container that finishes starting without dispatching a child", async () => {
+  const ledger = await new BenchmarkLedger(`assign-start-abort-${Date.now()}`).initialize();
+  await ledger.syncFromPlatform([platformChallenge("ch-1")], true, "ip");
+  const stop = new AbortController();
+  let started!: () => void;
+  let finish!: () => void;
+  const startSeen = new Promise<void>((resolve) => { started = resolve; });
+  const startReady = new Promise<void>((resolve) => { finish = resolve; });
+  let closes = 0;
+  let children = 0;
+  const controller = {
+    startChallenge: async () => { started(); await startReady; return { unique_code: "ch-1", container_addr: ["fixture"] }; },
+    closeChallenge: async () => { closes++; return { closed: true }; }
+  } as unknown as BenchmarkController;
+  const tool = createAssignBenchmarkChallengeTool(controller, ledger, async () => { children++; return { taskId: "unexpected" }; });
+  const assignment = execute(tool, { uniqueCode: "ch-1" }, stop.signal);
+  await startSeen;
+  stop.abort();
+  finish();
+  const result = await assignment;
+  assert.equal((result.details as { assigned: boolean }).assigned, false);
+  assert.equal(children, 0);
+  assert.equal(closes, 1);
+  assert.equal(ledger.getState().activeContainers, 0);
+  assert.equal(ledger.getChallenge("ch-1")?.owner, null);
+  assert.equal(ledger.getChallenge("ch-1")?.attemptCount, 0);
+});
+
+test("an assignment cancelled before entry never reserves or starts a container", async () => {
+  const ledger = await new BenchmarkLedger(`assign-pre-abort-${Date.now()}`).initialize();
+  await ledger.syncFromPlatform([platformChallenge("ch-1")], true, "ip");
+  let mutations = 0;
+  const controller = { startChallenge: async () => { mutations++; return { unique_code: "ch-1", container_addr: ["fixture"] }; } } as unknown as BenchmarkController;
+  const tool = createAssignBenchmarkChallengeTool(controller, ledger, async () => { mutations++; return { taskId: "unexpected" }; });
+  const result = await execute(tool, { uniqueCode: "ch-1" }, AbortSignal.abort());
+  assert.equal((result.details as { assigned: boolean }).assigned, false);
+  assert.equal(mutations, 0);
+  assert.equal(ledger.getChallenge("ch-1")?.status, "pending");
+  assert.equal(ledger.getChallenge("ch-1")?.owner, null);
+  assert.equal(ledger.getState().activeContainers, 0);
+});
+
+test("cancellation during start confirmation still rolls back before child dispatch", async () => {
+  const ledger = await new BenchmarkLedger(`assign-confirm-abort-${Date.now()}`).initialize();
+  await ledger.syncFromPlatform([platformChallenge("ch-1")], true, "ip");
+  const stop = new AbortController();
+  const confirm = ledger.confirmStarted.bind(ledger);
+  ledger.confirmStarted = async (...args: Parameters<BenchmarkLedger["confirmStarted"]>) => {
+    const state = await confirm(...args);
+    stop.abort();
+    return state;
+  };
+  let children = 0;
+  let closes = 0;
+  const controller = {
+    startChallenge: async () => ({ unique_code: "ch-1", container_addr: ["fixture"] }),
+    closeChallenge: async () => { closes++; return { closed: true }; }
+  } as unknown as BenchmarkController;
+  const tool = createAssignBenchmarkChallengeTool(controller, ledger, async () => { children++; return { taskId: "unexpected" }; });
+  const result = await execute(tool, { uniqueCode: "ch-1" }, stop.signal);
+  assert.equal((result.details as { assigned: boolean }).assigned, false);
+  assert.equal(children, 0);
+  assert.equal(closes, 1);
+  assert.equal(ledger.getState().activeContainers, 0);
+  assert.equal(ledger.getChallenge("ch-1")?.owner, null);
 });

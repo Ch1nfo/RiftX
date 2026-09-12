@@ -17,6 +17,10 @@ export function pendingSubmission(ledger: BenchmarkLedger, code: string, flag: s
   return entry ? { exhausted: entry.attempts >= retryDelays.length, attempts: entry.attempts } : undefined;
 }
 
+export function clearPendingSubmission(ledger: BenchmarkLedger, code: string, flag: string): void {
+  queues.get(ledger)?.delete(key(code, flag));
+}
+
 export function enqueuePendingSubmission(ledger: BenchmarkLedger, uniqueCode: string, flag: string, owner: Exclude<ChallengeOwner, null>, now = Date.now()) {
   let queue = queues.get(ledger);
   if (!queue) queues.set(ledger, queue = new Map());

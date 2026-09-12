@@ -9,6 +9,8 @@ import { gzipSync } from "node:zlib";
 import { EventEmitter } from "node:events";
 import { BrowserManager } from "../runtime/browser-manager";
 import { MAX_CAPTURE_BYTES, RequestStore } from "./request-store";
+import { attachRequestRecorder } from "./recorder";
+import { chromium } from "playwright";
 
 async function eventually<T>(read: () => Promise<T>, accept: (value: T) => boolean) {
   for (let i = 0; i < 100; i++) {
@@ -18,6 +20,99 @@ async function eventually<T>(read: () => Promise<T>, accept: (value: T) => boole
   }
   throw new Error(`Condition not met: ${JSON.stringify(await read())}`);
 }
+
+async function cachedCapture(body: () => Promise<{ body: string; base64Encoded: boolean }>) {
+  const session = new EventEmitter() as EventEmitter & { send: (method: string) => Promise<unknown>; detach: () => Promise<void> };
+  const calls: string[] = [];
+  session.send = async (method) => {
+    calls.push(method);
+    if (method === "Network.streamResourceContent") throw new Error("Request has already finished loading");
+    if (method === "Network.getResponseBody") return body();
+    return {};
+  };
+  session.detach = async () => {};
+  const page = Object.assign(new EventEmitter(), { context: () => ({ newCDPSession: async () => session }) });
+  const store = new RequestStore();
+  await attachRequestRecorder(page as never, "fixture-page", "worker-a", store);
+  session.emit("Network.requestWillBeSent", { requestId: "id", type: "Fetch", wallTime: Date.now() / 1000, request: { method: "GET", url: "http://fixture.invalid/cached", headers: {} } });
+  session.emit("Network.responseReceived", { requestId: "id", type: "Fetch", hasExtraInfo: false, response: { status: 200, statusText: "OK", headers: {}, mimeType: "application/json" } });
+  session.emit("Network.loadingFinished", { requestId: "id" });
+  return { session, page, store, calls };
+}
+
+test("completed responses fall back to cached CDP bodies with byte and identity bounds", async () => {
+  const fixture = await cachedCapture(async () => ({ body: Buffer.from("x".repeat(MAX_CAPTURE_BYTES + 20)).toString("base64"), base64Encoded: true }));
+  try {
+    const record = await eventually(async () => fixture.store.list()[0], (record) => record.captureState === "truncated");
+    assert.equal(record.responseBody, "x".repeat(MAX_CAPTURE_BYTES));
+    assert.equal(record.identity, "worker-a");
+    assert.equal(record.pageId, "fixture-page");
+    assert.deepEqual(fixture.calls, ["Network.enable", "Network.streamResourceContent", "Network.getResponseBody"]);
+  } finally { fixture.page.emit("close"); }
+});
+
+test("cache fallback failure is unavailable and never replays the request", async () => {
+  const fixture = await cachedCapture(async () => { throw new Error("cache evicted"); });
+  try {
+    const record = await eventually(async () => fixture.store.list()[0], (record) => record.captureState === "unavailable");
+    assert.equal(record.responseBody, "");
+    assert.deepEqual(fixture.calls, ["Network.enable", "Network.streamResourceContent", "Network.getResponseBody"]);
+  } finally { fixture.page.emit("close"); }
+});
+
+test("late cache reads cannot overwrite a timed-out or closed capture", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  for (const stop of ["timeout", "close"] as const) {
+    let complete!: (value: { body: string; base64Encoded: boolean }) => void;
+    const response = new Promise<{ body: string; base64Encoded: boolean }>((resolve) => { complete = resolve; });
+    const fixture = await cachedCapture(() => response);
+    for (let turn = 0; turn < 5; turn++) await Promise.resolve();
+    assert.ok(fixture.calls.includes("Network.getResponseBody"));
+    if (stop === "timeout") t.mock.timers.tick(60_000);
+    else fixture.page.emit("close");
+    complete({ body: "late-body", base64Encoded: false });
+    for (let turn = 0; turn < 5; turn++) await Promise.resolve();
+    const record = fixture.store.list()[0];
+    assert.equal(record.captureState, stop === "timeout" ? "timed_out" : "failed");
+    assert.equal(record.responseBody, "");
+    fixture.page.emit("close");
+  }
+});
+
+test("parallel fast gzip responses retain decoded bodies without another HTTP request", async () => {
+  const visits = new Map<string, number>();
+  const server = createServer((req, res) => {
+    visits.set(req.url!, (visits.get(req.url!) ?? 0) + 1);
+    if (req.url === "/") {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end("<main>fixture</main>");
+    } else {
+      res.writeHead(200, { "content-type": "application/json", "content-encoding": "gzip" });
+      res.end(gzipSync(JSON.stringify({ path: req.url, value: "fixture-数据" })));
+    }
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    const store = new RequestStore();
+    await attachRequestRecorder(page, "fixture-page", "worker-gzip", store);
+    await page.goto(origin);
+    await page.evaluate(async () => Promise.all(Array.from({ length: 30 }, (_, index) => fetch(`/cached-${index}`).then((response) => response.json()))));
+    const records = await eventually(async () => store.list().filter((record) => record.resourceType === "fetch"), (records) => records.length === 30 && records.every((record) => record.captureState === "complete"));
+    for (const record of records) {
+      const pathname = new URL(record.url).pathname;
+      assert.deepEqual(JSON.parse(record.responseBody!), { path: pathname, value: "fixture-数据" });
+      assert.equal(record.identity, "worker-gzip");
+      assert.equal(visits.get(pathname), 1);
+    }
+  } finally {
+    await browser.close();
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
 
 test("captures chunked/gzip bodies and live SSE without replay; pins evidence across eviction and restart", async () => {
   const root = await mkdtemp(join(tmpdir(), "riftx-network-"));

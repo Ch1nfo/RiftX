@@ -1,7 +1,7 @@
 /**
  * Authoritative benchmark task ledger, persisted per parent session. The
  * platform is the source of truth for completion state; the ledger adds
- * scheduling state (deferred, exhausted, signal tracking) the platform does
+ * scheduling state (deferred, signal tracking) the platform does
  * not track. Token is never written here.
  */
 
@@ -19,7 +19,7 @@ export const BENCHMARK_MAX_SUBAGENTS = 2;
 export const FIRST_ATTEMPT_WARNING_MS = 25 * 60 * 1000;
 export const FIRST_ATTEMPT_LIMIT_MS = 30 * 60 * 1000;
 
-export type ChallengeStatus = "pending" | "reserved" | "running" | "closing" | "deferred" | "solved" | "exhausted" | "orphaned";
+export type ChallengeStatus = "pending" | "reserved" | "running" | "closing" | "deferred" | "solved" | "orphaned";
 /** Coverage is not a tactical round: it only prevents revisiting a challenge
  * until every challenge has received one real attempt. */
 export type BenchmarkPhase = "coverage" | "revisit" | "completed";
@@ -121,7 +121,6 @@ export type BenchmarkState = {
   scoreExact: boolean;
   totalChallenges: number;
   solvedCount: number;
-  exhaustedCount: number;
   activeContainers: number;
   lastSyncAt: number;
   vpnOk: boolean;
@@ -183,8 +182,12 @@ function isUnfinishedFirstAttempt(challenge: ChallengeState): boolean {
 }
 
 function coverageIsComplete(state: BenchmarkState): boolean {
+  // A failed platform start is deferred without spending a solving attempt.
+  // It joins the revisit FIFO instead of preventing other work from resuming.
   return Object.values(state.challenges).every((challenge) =>
-    challenge.isCompleted || (challenge.attemptCount > 0 && !isUnfinishedFirstAttempt(challenge))
+    challenge.isCompleted || challenge.status === "deferred"
+      || (challenge.status === "reserved" && challenge.reservationPreviousStatus === "deferred")
+      || (challenge.attemptCount > 0 && !isUnfinishedFirstAttempt(challenge))
   );
 }
 
@@ -338,7 +341,6 @@ function defaultState(): BenchmarkState {
     scoreExact: true,
     totalChallenges: 0,
     solvedCount: 0,
-    exhaustedCount: 0,
     activeContainers: 0,
     lastSyncAt: 0,
     vpnOk: false,
@@ -352,7 +354,7 @@ function defaultState(): BenchmarkState {
 function hasActiveContainer(challenge: ChallengeState): boolean {
   // Orphaned is deliberately NOT in the status clause: an orphan whose
   // container the platform already stopped must release its slot, or three
-  // such orphans permanently block every new acquire (defer/abandon are
+  // such orphans permanently block every new acquire (defer is
   // owner-gated and cannot clear an unowned orphan). A live orphan still
   // counts via its containerStatus — confirmStarted/sync leave "available"
   // while the container runs.
@@ -380,7 +382,6 @@ function requireOwner(challenge: ChallengeState, expectedOwner: Exclude<Challeng
 function recalculate(state: BenchmarkState, metrics?: BenchmarkMetrics, now: () => number = Date.now): BenchmarkState {
   const challenges = Object.values(state.challenges);
   state.solvedCount = challenges.filter((challenge) => challenge.status === "solved" || (challenge.status === "closing" && challenge.pendingStatus === "solved")).length;
-  state.exhaustedCount = challenges.filter((challenge) => challenge.status === "exhausted").length;
   state.totalChallenges = challenges.length;
   state.activeContainers = countActiveContainers(state);
   // cumulative_score from the platform is PER-CHALLENGE (该题累计总得分).
@@ -388,10 +389,10 @@ function recalculate(state: BenchmarkState, metrics?: BenchmarkMetrics, now: () 
   // when every challenge that has scored flags carries an authoritative value.
   state.cumulativeScore = challenges.reduce((total, challenge) => total + (Number.isFinite(challenge.scoreObtained) ? challenge.scoreObtained : 0), 0);
   state.scoreExact = challenges.filter((challenge) => challenge.correctFlagCount > 0).every((challenge) => challenge.scoreKnown === true);
-  const allTerminal = challenges.length > 0 && challenges.every((challenge) => challenge.status === "solved" || challenge.status === "exhausted");
-  state.phase = allTerminal ? "completed" : coverageIsComplete(state) ? "revisit" : "coverage";
+  const allSolved = challenges.length > 0 && challenges.every((challenge) => challenge.isCompleted && challenge.status === "solved");
+  state.phase = allSolved ? "completed" : coverageIsComplete(state) ? "revisit" : "coverage";
   if (metrics) {
-    if (allTerminal) metrics.completedAt ??= now();
+    if (allSolved) metrics.completedAt ??= now();
     else metrics.completedAt = null;
   }
   return state;
@@ -415,6 +416,7 @@ export class BenchmarkLedger {
     await mkdir(benchmarkDir(this.parentSessionId), { recursive: true, mode: 0o700 });
     this.state = await readJsonStore<BenchmarkState>(statePath(this.parentSessionId)) ?? defaultState();
     this.metrics = await readJsonStore<BenchmarkMetrics>(metricsPath(this.parentSessionId)) ?? defaultMetrics();
+    delete (this.state as BenchmarkState & { exhaustedCount?: number }).exhaustedCount;
     // Backward-compatible defaults for ledgers created before these fields existed.
     if (typeof this.state.scoreExact !== "boolean") this.state.scoreExact = false;
     if (typeof this.state.vpnChecked !== "boolean") this.state.vpnChecked = false;
@@ -475,6 +477,19 @@ export class BenchmarkLedger {
       if ((challenge.status as string) === "handoff_waiting") {
         challenge.status = challenge.containerStatus === "available" ? "orphaned" : "deferred";
         challenge.owner = null;
+      }
+      // Older runs allowed permanent abandonment. Restore unfinished work,
+      // including a close that was still pending when the process stopped.
+      if ((challenge.pendingStatus as string) === "exhausted") challenge.pendingStatus = "deferred";
+      if ((challenge.reservationPreviousStatus as string) === "exhausted") challenge.reservationPreviousStatus = "deferred";
+      if ((challenge.status as string) === "exhausted") {
+        const stopped = challenge.containerStatus === "stopped";
+        challenge.status = challenge.isCompleted ? (stopped ? "solved" : "closing")
+          : stopped ? "deferred" : challenge.containerStatus === "stop_pending" ? "closing" : "orphaned";
+        challenge.pendingStatus = challenge.status === "closing" ? (challenge.isCompleted ? "solved" : "deferred") : undefined;
+        challenge.owner = null;
+        challenge.reservationPreviousStatus = undefined;
+        challenge.reservationStartedNewAttempt = false;
       }
       delete legacy.handoffExpiresAt;
       delete legacy.reservationPreviousHandoffExpiresAt;
@@ -772,13 +787,13 @@ export class BenchmarkLedger {
       if (options?.isSubagent) {
         const subagentCount = this.activeSubagentCount();
         if (subagentCount >= BENCHMARK_MAX_SUBAGENTS) {
-          throw new Error(`Benchmark SubAgent limit (${BENCHMARK_MAX_SUBAGENTS}) reached — wait for one to return or defer/abandon`);
+          throw new Error(`Benchmark SubAgent limit (${BENCHMARK_MAX_SUBAGENTS}) reached — continue your challenge until a worker returns or a justified handoff frees a slot`);
         }
       }
       // Re-acquiring an orphan whose platform container is already live must
       // not count that same container twice against the three-slot cap.
       if (countActiveContainers(this.state, uniqueCode) >= BENCHMARK_MAX_CONTAINERS) {
-        throw new Error(`Container limit (${BENCHMARK_MAX_CONTAINERS}) reached — defer or abandon one first`);
+        throw new Error(`Container limit (${BENCHMARK_MAX_CONTAINERS}) reached — continue an active challenge or defer one for a justified handoff first`);
       }
       const wasOrphaned = challenge.status === "orphaned";
       const startsNewAttempt = !resumesLiveAttempt;
@@ -1035,15 +1050,15 @@ export class BenchmarkLedger {
       if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
       requireOwner(challenge, expectedOwner, allowUnowned);
       const previousCorrectFlagCount = challenge.correctFlagCount;
-      if (challengeScore !== undefined) {
+      if (challengeScore !== undefined && correctFlagCount >= previousCorrectFlagCount) {
         challenge.scoreObtained = challengeScore;
         challenge.scoreKnown = true;
-      } else if (correct) {
+      } else if (correct && correctFlagCount > previousCorrectFlagCount) {
         // Progress advanced without a priced response — this challenge's
         // cached value no longer matches its correctFlagCount.
         challenge.scoreKnown = false;
       }
-      challenge.correctFlagCount = correctFlagCount;
+      challenge.correctFlagCount = Math.max(previousCorrectFlagCount, correctFlagCount);
       const hash = flagHash(flag);
       challenge.blackboard = challenge.blackboard.filter((entry) => entry.evidenceRef !== `platform:pending:${hash}`);
       if (!challenge.triedFlags.includes(hash)) challenge.triedFlags.push(hash);
@@ -1164,23 +1179,6 @@ export class BenchmarkLedger {
     });
   }
 
-  /** Abandon: terminal exhausted (close must be confirmed). */
-  async abandon(uniqueCode: string, reason: string, expectedOwner: Exclude<ChallengeOwner, null>): Promise<ChallengeState> {
-    return this.serialize(async () => {
-      const challenge = this.state.challenges[uniqueCode];
-      if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
-      requireOwner(challenge, expectedOwner);
-      challenge.deferredReason = cleanText(reason, 1_000);
-      finishAttempt(challenge, this.now(), challenge.deferredReason || "exhausted");
-      challenge.status = "closing";
-      challenge.owner = null;
-      challenge.pendingStatus = "exhausted";
-      recalculate(this.state, this.metrics, this.now);
-      await this.persist();
-      return challenge;
-    });
-  }
-
   /** Confirm the platform closed the container; transition to the pending terminal status. */
   async confirmClosed(uniqueCode: string): Promise<ChallengeState> {
     return this.serialize(async () => {
@@ -1230,7 +1228,7 @@ export class BenchmarkLedger {
       const challenge = this.state.challenges[uniqueCode];
       if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
       if (challenge.attemptCount < 2) throw new Error("Hints are available only from the second attempt onward");
-      if (challenge.status === "solved" || challenge.status === "exhausted" || challenge.status === "closing") {
+      if (challenge.status === "solved" || challenge.status === "closing") {
         throw new Error(`Challenge ${uniqueCode} is ${challenge.status}; a hint would be wasted`);
       }
       // Main may buy a hint for an unowned deferred challenge before assigning
@@ -1251,13 +1249,13 @@ export class BenchmarkLedger {
 
   /** Release a challenge when a subagent exits abnormally without completing it.
    * Callers close only when status is closing; orphaned means the environment is preserved. */
-  async releaseOnSubagentExit(uniqueCode: string, reason: string, expectedOwner: `subagent:${string}`, pendingStatus: "deferred" | "exhausted" = "deferred"): Promise<ChallengeState> {
+  async releaseOnSubagentExit(uniqueCode: string, reason: string, expectedOwner: `subagent:${string}`): Promise<ChallengeState> {
     return this.serialize(async () => {
       const challenge = this.state.challenges[uniqueCode];
       if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
-      if (challenge.status === "solved" || challenge.status === "exhausted") return challenge;
+      if (challenge.status === "solved") return challenge;
       requireOwner(challenge, expectedOwner);
-      const preserve = pendingStatus === "deferred" && this.preserveEnvironment(challenge);
+      const preserve = this.preserveEnvironment(challenge);
       const now = this.now();
       appendBlackboard(challenge, {
         at: now,
@@ -1274,8 +1272,8 @@ export class BenchmarkLedger {
       challenge.status = preserve ? "orphaned" : "closing";
       challenge.owner = null;
       challenge.deferredReason = cleanText(reason, 1_000);
-      challenge.pendingStatus = preserve ? undefined : pendingStatus;
-      if (pendingStatus === "deferred") enqueueForRevisit(this.state, challenge, now);
+      challenge.pendingStatus = preserve ? undefined : "deferred";
+      enqueueForRevisit(this.state, challenge, now);
       recalculate(this.state, this.metrics, this.now);
       await this.persist();
       return challenge;
@@ -1296,11 +1294,9 @@ export class BenchmarkLedger {
       challenge.reservationStartedNewAttempt = false;
       challenge.closeFailureRecorded = false;
 
-      let terminal: "solved" | "exhausted" | "deferred";
+      let terminal: "solved" | "deferred";
       if (challenge.isCompleted || challenge.status === "solved" || challenge.pendingStatus === "solved") {
         terminal = "solved";
-      } else if (challenge.status === "exhausted" || challenge.pendingStatus === "exhausted") {
-        terminal = "exhausted";
       } else {
         terminal = "deferred";
         challenge.deferredReason = cleanText(reason, 1_000);
@@ -1367,6 +1363,26 @@ export class BenchmarkLedger {
     return this.budgetFor(uniqueCode)?.expired ?? false;
   }
 
+  /** Sample a due notice without consuming it before the model receives it. */
+  firstAttemptWarningFor(owner: Exclude<ChallengeOwner, null>): ChallengeState | undefined {
+    const active = Object.values(this.state.challenges).find((challenge) =>
+      challenge.owner === owner && challenge.status === "running"
+    );
+    return active && this.budgetFor(active.uniqueCode)?.warningDue ? structuredClone(active) : undefined;
+  }
+
+  async acknowledgeFirstAttemptWarning(owner: Exclude<ChallengeOwner, null>, uniqueCode: string, currentAttemptStartedAt: number | null): Promise<boolean> {
+    return this.serialize(async () => {
+      const active = this.state.challenges[uniqueCode];
+      if (!active || active.owner !== owner || active.status !== "running"
+        || active.currentAttemptStartedAt !== currentAttemptStartedAt
+        || !this.budgetFor(uniqueCode)?.warningDue) return false;
+      active.firstAttemptWarningIssuedAt = this.now();
+      await this.persist();
+      return true;
+    });
+  }
+
   /** Consume the only proactive timer notice. Routine context remains silent. */
   async consumeFirstAttemptWarning(owner: Exclude<ChallengeOwner, null>): Promise<ChallengeState | undefined> {
     return this.serialize(async () => {
@@ -1390,8 +1406,6 @@ export class BenchmarkLedger {
       && challenge.currentAttemptPhase === "coverage" && !hasReusableBenchmarkContainer(challenge));
     const unseen = challenges.filter((challenge) => !challenge.isCompleted && challenge.attemptCount === 0
       && (challenge.status === "pending" || challenge.status === "orphaned"));
-    const unavailableCoverage = challenges.filter((challenge) => !challenge.isCompleted
-      && challenge.attemptCount === 0 && challenge.status === "deferred");
     // Tiered so coverage keeps priority. A stranded revisit orphan surfaces
     // last during coverage: resuming it is permitted (it already owns its
     // platform slot) and may be the only way to free a saturated container cap.
@@ -1407,8 +1421,6 @@ export class BenchmarkLedger {
               ...stoppedCoverageOrphans.map((challenge) => ({ challenge, tier: 0 })),
               ...liveRevisitOrphans.map((challenge) => ({ challenge, tier: 1 }))
             ]
-        : unavailableCoverage.length > 0
-          ? unavailableCoverage.map((challenge) => ({ challenge, tier: 0 }))
         : liveOrphans.length > 0 && !this.isEndgame()
           ? liveOrphans.map((challenge) => ({ challenge, tier: 0 }))
           : coverageIsComplete(this.state)
@@ -1442,16 +1454,6 @@ export class BenchmarkLedger {
       if (this.state.phase !== "completed") this.state.phase = coverageIsComplete(this.state) ? "revisit" : "coverage";
       await this.persist();
       return this.state.phase;
-    });
-  }
-
-  /** Mark the run as completed. */
-  async complete(): Promise<BenchmarkState> {
-    return this.serialize(async () => {
-      this.state.phase = "completed";
-      this.metrics.completedAt = this.now();
-      await this.persist();
-      return this.state;
     });
   }
 

@@ -99,6 +99,9 @@ export async function abortSessionRecord(record: ShutdownTarget, emit: (event: {
       record.session.abort(),
       record.subagents?.abortAll() ?? Promise.resolve()
     ]);
+    // A tool already awaiting dispatch can create a child while the parent
+    // abort drains. Sweep again after that turn has fully stopped.
+    await record.subagents?.abortAll().catch(() => undefined);
     // The browser tool only races an abort flag; closing the manager is what
     // genuinely cancels in-flight Playwright operations. Stop uses the
     // reopenable close, not the permanent shutdown: the session record

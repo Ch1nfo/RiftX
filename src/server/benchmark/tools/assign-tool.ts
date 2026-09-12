@@ -19,16 +19,18 @@ export function createAssignBenchmarkChallengeTool(
     promptSnippet: "assign_benchmark_challenge(uniqueCode)",
     parameters: Type.Object({ uniqueCode: Type.String({ description: "An eligible unique_code shown by benchmark_control status" }) }),
     executionMode: "parallel",
-    async execute(_toolCallId: string, params: { uniqueCode: string }) {
+    async execute(_toolCallId: string, params: { uniqueCode: string }, signal?: AbortSignal) {
       const uniqueCode = params.uniqueCode;
       return ledger.runChallengeAction(uniqueCode, async () => {
         const reservationId: `subagent:${string}` = `subagent:res-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         let platformStarted = false;
         let rollback: "none" | "released" | "closed" | "close_failed" = "none";
         try {
+          signal?.throwIfAborted();
           const reusable = ledger.getChallenge(uniqueCode);
           const reuseLiveContainer = hasReusableBenchmarkContainer(reusable);
           await ledger.reserve(uniqueCode, reservationId, { isSubagent: true });
+          signal?.throwIfAborted();
           let startResult;
           try {
             startResult = reuseLiveContainer
@@ -46,8 +48,10 @@ export function createAssignBenchmarkChallengeTool(
             throw error;
           }
 
+          signal?.throwIfAborted();
           const challenge = await ledger.confirmStarted(uniqueCode, startResult.container_addr, reservationId);
 
+          signal?.throwIfAborted();
           const brief = buildBrief(challenge, startResult.container_addr, ledger.getState().phase, ledger.isEndgame(),
             ledger.intelForChallenge(challenge, startResult.container_addr).map((entry) => `${entry.target}: ${entry.intel}`));
           const result = await spawnSubagent(brief, uniqueCode, startResult.container_addr, reservationId);

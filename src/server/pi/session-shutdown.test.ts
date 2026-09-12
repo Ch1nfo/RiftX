@@ -133,3 +133,28 @@ test("a user Stop cancels browser work without permanently closing it", async ()
   assert.equal(calls.includes("browser-shutdown"), false, "stop must not permanently close the browser");
   assert.deepEqual(emitted, ["session_state", "done"]);
 });
+
+test("Stop drains children dispatched while the parent abort is pending", async () => {
+  const calls: string[] = [];
+  const record = makeFakeRecord("late-dispatch", calls);
+  let finishParent!: () => void;
+  record.session.abort = () => new Promise<void>((resolve) => { finishParent = resolve; });
+  const activeChildren = new Set(["existing"]);
+  record.subagents!.abortAll = async () => {
+    calls.push("cancel-children");
+    activeChildren.clear();
+  };
+  const events: string[] = [];
+  const stopping = abortSessionRecord(record, (event) => {
+    assert.equal(activeChildren.size, 0);
+    events.push(event.type);
+  });
+  assert.equal(activeChildren.size, 0);
+  assert.equal(events.length, 0);
+  activeChildren.add("dispatched-during-abort");
+  finishParent();
+  await stopping;
+  assert.equal(activeChildren.size, 0);
+  assert.equal(calls.filter((call) => call === "cancel-children").length, 2);
+  assert.deepEqual(events, ["session_state", "done"]);
+});

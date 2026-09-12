@@ -59,6 +59,7 @@ import { listRunningSessionIds, listSessions, getSessionSnapshot, getSessionMess
 import { createToolOutputStore, listToolArtifacts, toolArtifactDir } from "@/server/tool-output";
 import { beginPromptRequest, promptRequestStates as requestStatesFor, settlePromptRequest } from "./prompt-requests";
 import { BenchmarkController, BenchmarkError } from "@/server/benchmark/controller";
+import { BenchmarkWarningDelivery } from "@/server/benchmark/warning-delivery";
 import { BenchmarkLedger, BENCHMARK_MAX_SUBAGENTS } from "@/server/benchmark/ledger";
 import { createBenchmarkControlTool } from "@/server/benchmark/tools/control-tool";
 import { createAssignBenchmarkChallengeTool } from "@/server/benchmark/tools/assign-tool";
@@ -467,7 +468,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
             // already holds this challenge's network-action serializer.
             let released = false;
             try {
-              await benchmarkLedger.releaseOnSubagentExit(uniqueCode, `subagent task ${taskStatus} during binding`, `subagent:${submitted.task.id}`, "deferred");
+              await benchmarkLedger.releaseOnSubagentExit(uniqueCode, `subagent task ${taskStatus} during binding`, `subagent:${submitted.task.id}`);
               released = true;
               if (benchmarkLedger.getChallenge(uniqueCode)?.status === "closing") {
                 await benchmarkController.closeChallenge(uniqueCode);
@@ -534,10 +535,14 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     settingsManager
   });
   evidenceSession = result.session;
+  const warningDelivery = benchmarkLedger ? new BenchmarkWarningDelivery(benchmarkLedger, benchmarkOwner) : undefined;
   if (benchmarkController) {
     const stream = result.session.agent.streamFn;
     // The SDK otherwise caps its default request budget at 32k, even for larger profiles.
-    result.session.agent.streamFn = (model, context, options) => stream(model, context, { ...options, maxTokens: model.maxTokens });
+    result.session.agent.streamFn = (model, context, options) => {
+      warningDelivery?.sample(context.messages);
+      return stream(model, context, { ...options, maxTokens: model.maxTokens });
+    };
   }
   skills = resourceLoader.getSkills().skills as SkillDescriptor[];
   if (benchmarkLedger) {
@@ -564,6 +569,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     return parts.filter(Boolean).join("\n\n");
   };
   const getContinuityContext = async (preview = false): Promise<ContinuityContext> => {
+    if (!preview) warningDelivery?.prepare();
     // Budget inspection must not change workspaces or consume one-shot warnings.
     if (!preview && benchmarkLedger && workspace) {
       const active = benchmarkLedger.budgetForOwner(benchmarkOwner)?.challenge;
@@ -574,11 +580,13 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     // scanning findings/artifacts on every provider request.
     if (benchmarkLedger) {
       const worker = child ? `subagent:${findingSource.subagentId ?? "child"}` as const : "main" as const;
-      const warning = preview ? undefined : await benchmarkLedger.consumeFirstAttemptWarning(worker);
+      const warning = benchmarkLedger.firstAttemptWarningFor(worker);
+      const investigationCapsule = buildBenchmarkContinuity(benchmarkLedger, worker, warning, workspace?.cwd);
+      if (!preview) warningDelivery?.prepare(warning, investigationCapsule);
       return {
         taskContract: "",
         skillContext,
-        investigationCapsule: buildBenchmarkContinuity(benchmarkLedger, worker, warning, workspace?.cwd),
+        investigationCapsule,
         progressCheckpoint: ""
       };
     }
@@ -708,11 +716,14 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     unsubscribe: () => undefined
   };
   const unsubscribe = result.session.subscribe((event) => {
+    if (event.type === "message_end") {
+      void warningDelivery?.complete(event.message).catch(() => undefined);
+    }
     if (event.type === "compaction_start") record.compacting = true;
     else if (event.type === "compaction_end") {
       record.compacting = false;
       // Increment the REAL compaction counter only when a compaction occurred.
-      if (benchmarkLedger) void benchmarkLedger.recordCompaction().catch(() => undefined);
+      if (benchmarkLedger && event.result) void benchmarkLedger.recordCompaction().catch(() => undefined);
       // Covers ordinary end-of-turn/manual compaction. Mid-turn compaction
       // also refreshes its detached sampling array inside the transform hook.
       // Serialized on the prompt chain so the continuity splice can never
@@ -780,7 +791,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
           benchmarkCleanup = benchmarkCleanup.then(() => benchmarkLedger.runChallengeAction(owned.uniqueCode, async () => {
             let released = false;
             try {
-              await benchmarkLedger.releaseOnSubagentExit(owned.uniqueCode, `subagent exited with status=${task.status}`, ownerTag, "deferred");
+              await benchmarkLedger.releaseOnSubagentExit(owned.uniqueCode, `subagent exited with status=${task.status}`, ownerTag);
               released = true;
               if (benchmarkLedger.getChallenge(owned.uniqueCode)?.status === "closing") {
                 await benchmarkController.closeChallenge(owned.uniqueCode);
@@ -897,25 +908,25 @@ async function runChildSession(profile: ModelProfile, cwd: string, mutationLock:
   await mkdir(threadDir, { recursive: true, mode: 0o700 });
   const childSessionManager = AgentSessionManager.create(cwd, threadDir);
   const child = await createRuntimeSession({ profile, cwd, gate: context.gate, child: true, sessionManagerOverride: childSessionManager, mutationLock, bashConcurrencyOverride: bashConcurrency, runtimeDeps, findingSource: { source: "subagent", subagentId: context.task.id } });
-  context.task.model = `${profile.provider}/${profile.model}`;
-  context.updateTaskMeta({ model: context.task.model, threadId: child.id });
   const abortChild = () => {
     child.gate.rejectAll();
     child.session.abortBash();
-    void child.browser?.shutdown();
+    void child.browser?.shutdown().catch(() => undefined);
     void child.session.abort().catch(() => undefined);
   };
-  if (context.signal.aborted) {
-    abortChild();
-    throw new Error("Subagent task was cancelled before the child session started.");
-  }
-  else context.signal.addEventListener("abort", abortChild, { once: true });
-  const unsubscribe = (() => {
-    const listener = (event: RiftxEvent) => context.emit(event);
-    child.emitter.on("event", listener);
-    return () => child.emitter.off("event", listener);
-  })();
+  let unsubscribe: () => void = () => undefined;
   try {
+    context.task.model = `${profile.provider}/${profile.model}`;
+    context.updateTaskMeta({ model: context.task.model, threadId: child.id });
+    if (context.signal.aborted) {
+      throw new Error("Subagent task was cancelled before the child session started.");
+    }
+    else context.signal.addEventListener("abort", abortChild, { once: true });
+    unsubscribe = (() => {
+      const listener = (event: RiftxEvent) => context.emit(event);
+      child.emitter.on("event", listener);
+      return () => child.emitter.off("event", listener);
+    })();
     // Match the delegated task and retain its active skill through compaction.
     if (!runtimeDeps.benchmark) {
       const prepared = await prepareSkillPrompt(context.task.task, child.skills, child.loadedSkills);

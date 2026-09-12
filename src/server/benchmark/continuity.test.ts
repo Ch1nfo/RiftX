@@ -113,3 +113,51 @@ test("solved challenges are compact — no description or process detail", async
   assert.doesNotMatch(text, /My challenge: ch-1/);
   assert.doesNotMatch(text, /Eligible candidates[\s\S]*ch-1/);
 });
+
+test("continuity retains control state and evidence ahead of oversized descriptive details", async () => {
+  const { ledger } = await setup();
+  await ledger.acquire("ch-1", "main", ["127.0.0.1:80"]);
+  const state = structuredClone(ledger.getState());
+  const mine = state.challenges["ch-1"];
+  mine.description = "d".repeat(10_000);
+  mine.hintUsed = true;
+  mine.hintContent = "h".repeat(10_000);
+  mine.blackboard = Array.from({ length: 6 }, (_, index) => ({
+    at: index, worker: "main" as const, kind: "credential" as const,
+    summary: `critical_${index}_` + "e".repeat(800), evidenceRef: `artifact:ref_${index}_` + "r".repeat(250),
+    approach: "", triedFamilies: [], ruledOutFamilies: [], nextProbe: ""
+  }));
+  state.challenges["ch-2"].status = "running";
+  state.challenges["ch-2"].owner = "subagent:fixture";
+  const source = {
+    getState: () => state, isEndgame: () => false, isBudgetExhausted: () => true,
+    intelForChallenge: () => [], candidates: () => [state.challenges["ch-3"]]
+  } as unknown as BenchmarkLedger;
+
+  const text = buildBenchmarkContinuity(source, "main", mine);
+  assert.ok(text.length <= 8_000);
+  assert.match(text, /FIRST_ATTEMPT_COMPLETE/);
+  assert.match(text, /SubAgent challenges \(1\/2\)/);
+  assert.match(text, /ch-2.*running/);
+  assert.match(text, /ch-3.*pending/);
+  for (let index = 0; index < 6; index += 1) assert.ok(text.includes(`artifact:ref_${index}_`));
+  assert.ok(text.endsWith("</riftx-benchmark-continuity>"));
+});
+
+test("rebuilding continuity leaves a due notice available until acknowledged for the same attempt", async () => {
+  let now = 1_000_000;
+  const ledger = await new BenchmarkLedger(`notice-rebuild-${Date.now()}`, () => now).initialize();
+  await ledger.syncFromPlatform([platformChallenge("ch-1")], true, "127.0.0.1");
+  await ledger.acquire("ch-1", "main", ["127.0.0.1:80"]);
+  now += 25 * 60 * 1000;
+  const first = ledger.firstAttemptWarningFor("main");
+  assert.ok(first);
+  const initial = buildBenchmarkContinuity(ledger, "main", first);
+  const repeated = ledger.firstAttemptWarningFor("main");
+  assert.ok(repeated);
+  assert.equal(buildBenchmarkContinuity(ledger, "main", repeated), initial);
+  assert.notEqual(buildBenchmarkContinuity(ledger, "main"), initial);
+  assert.equal(ledger.getChallenge("ch-1")?.firstAttemptWarningIssuedAt, null);
+  assert.equal(await ledger.acknowledgeFirstAttemptWarning("main", first.uniqueCode, first.currentAttemptStartedAt), true);
+  assert.equal(ledger.firstAttemptWarningFor("main"), undefined);
+});

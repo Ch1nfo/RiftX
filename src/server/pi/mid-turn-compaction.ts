@@ -105,23 +105,22 @@ export function installMidTurnCompaction(session: AgentSession, getContinuityCon
     compacting = true;
     try {
       const compacted = await runMidTurnCompaction(session, signal);
-      if (compacted) {
-        replaceAgentMessages(session, messages, session.agent.state.messages);
-        if (getContinuityContext) {
-          try {
-            const continuity = await getContinuityContext();
-            // `messages` is the detached array currently being sampled while
-            // auto-compaction replaces agent.state.messages with a new array.
-            // Refresh both so this very request and every later turn see the
-            // same durable continuity state.
-            upsertContinuityContext(messages as unknown[], continuity);
-            refreshContinuityContext(session, continuity);
-          } catch (error) {
-            console.warn("RiftX could not refresh continuity context after compaction:", error);
-          }
+      if (!compacted) return transformed;
+      replaceAgentMessages(session, messages, session.agent.state.messages);
+      if (getContinuityContext) {
+        try {
+          const continuity = await getContinuityContext();
+          // `messages` is the detached array currently being sampled while
+          // auto-compaction replaces agent.state.messages with a new array.
+          // Refresh both so this very request and every later turn see the
+          // same durable continuity state.
+          upsertContinuityContext(messages as unknown[], continuity);
+          refreshContinuityContext(session, continuity);
+        } catch (error) {
+          console.warn("RiftX could not refresh continuity context after compaction:", error);
         }
       }
-      return messages;
+      return originalTransform ? await originalTransform(messages, signal) : messages;
     } finally {
       compacting = false;
     }

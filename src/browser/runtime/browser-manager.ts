@@ -12,6 +12,7 @@ import { hostMatches, matchScopeUrl, parseScopeRule, parseScopeRules, parseScope
 import type { BrowserManagerOptions, BrowserPageInfo, PageSnapshot } from "../types";
 import { getScreenshotPath } from "@/lib/evidence-path";
 import { createSerializer } from "@/server/serializer";
+import { checkBrowserExecutionGuard } from "./execution-guard";
 
 const EVALUATION_OUTPUT_LIMIT = 8000;
 const IDENTITY_PATTERN = /^[a-z0-9_-]{1,32}$/;
@@ -124,6 +125,7 @@ export class BrowserManager {
     const start = async () => {
       if (this.closed) throw new Error("Browser session is closed");
       signal?.throwIfAborted();
+      checkBrowserExecutionGuard();
       return operation();
     };
     return this.serialize(start);

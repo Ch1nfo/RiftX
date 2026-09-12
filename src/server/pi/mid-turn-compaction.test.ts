@@ -197,3 +197,49 @@ test("without samplingRefresh, ordinary sampling leaves the provider context unt
   assert.equal(refreshCalls, 0, "ordinary sessions must not pay the continuity refresh on every sampling");
   assert.deepEqual(transformed, input);
 });
+
+for (const succeeds of [false, true]) {
+  test(`mid-turn compaction ${succeeds ? "success" : "cancellation"} preserves the final context transform and pending notice`, async () => {
+    const listeners = new Set<(event: { type: string; reason?: string; result?: unknown }) => void>();
+    const input: Array<Record<string, unknown>> = [{ role: "user", content: "fixture_input" }];
+    const state = { messages: input };
+    let transformCalls = 0;
+    let refreshCalls = 0;
+    const session = {
+      agent: {
+        state,
+        transformContext: async (messages: Array<Record<string, unknown>>) => {
+          transformCalls += 1;
+          return [...structuredClone(messages), { role: "custom", customType: "fixture_extension", content: "extension_result" }];
+        }
+      },
+      model: { contextWindow: 1_000 },
+      settingsManager: { getCompactionSettings: () => ({ enabled: true, reserveTokens: 100 }) },
+      getContextUsage: () => ({ tokens: 950, percent: 95 }),
+      subscribe: (listener: (event: { type: string; reason?: string; result?: unknown }) => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      abortCompaction: () => undefined,
+      _agentEventQueue: Promise.resolve(),
+      _runAutoCompaction: async () => {
+        if (succeeds) state.messages = [{ role: "compactionSummary", summary: "fixture_summary" }];
+        for (const listener of listeners) listener({
+          type: "compaction_end", reason: "threshold", result: succeeds ? { summary: "fixture_summary" } : undefined
+        });
+      }
+    } as unknown as AgentSession;
+    installMidTurnCompaction(session, async () => {
+      refreshCalls += 1;
+      return { investigationCapsule: "pending_notice" };
+    }, { samplingRefresh: true });
+
+    const sent = await session.agent.transformContext!(input as never) as unknown as Array<Record<string, unknown>>;
+    assert.equal(sent.filter((message) => message.content === "pending_notice").length, 1);
+    assert.equal(sent.filter((message) => message.customType === "fixture_extension").length, 1);
+    assert.equal(transformCalls, succeeds ? 2 : 1);
+    assert.equal(refreshCalls, succeeds ? 2 : 1);
+    assert.equal(sent.some((message) => message.role === "compactionSummary"), succeeds);
+    if (!succeeds) assert.deepEqual(input, [{ role: "user", content: "fixture_input" }]);
+  });
+}
