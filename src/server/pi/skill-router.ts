@@ -95,9 +95,12 @@ function terms(text: string) {
   // Naive plural stemming: benchmark skill descriptions mix "pyjail"/"pyjails",
   // "puzzle"/"puzzles" \u2014 emitting both forms lets either side match.
   const singulars = words.filter((word) => word.length > 3 && word.endsWith("s")).map((word) => word.slice(0, -1));
-  const cjk = normalized.match(/[\u3400-\u9fff]/g) ?? [];
-  const bigrams = cjk.slice(0, -1).map((char, index) => `${char}${cjk[index + 1]}`);
-  const expanded = [...words, ...singulars, ...cjk, ...bigrams].flatMap(expandAliases);
+  const runs = normalized.match(/[\u3400-\u9fff]+/g) ?? [];
+  const bigrams = runs.flatMap((run) => [...run].slice(0, -1).map((char, index) => `${char}${run[index + 1]}`));
+  // Match known Chinese phrases before tokenization loses terms longer than
+  // two characters. Do not manufacture phrases across punctuation/Latin text.
+  const phrases = Object.keys(TERM_ALIASES).filter((term) => /[\u3400-\u9fff]/.test(term) && normalized.includes(term));
+  const expanded = [...words, ...singulars, ...bigrams, ...phrases].flatMap(expandAliases);
   return [...new Set(expanded.filter((term) => term.length > 1 && !STOP_WORDS.has(term)
     && !(term.endsWith("s") && STOP_WORDS.has(term.slice(0, -1)))))];
 }

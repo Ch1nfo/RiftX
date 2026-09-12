@@ -5,7 +5,7 @@ import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { BenchmarkError, type BenchmarkController, type VpnCheckResult } from "../controller";
 import { hasReusableBenchmarkContainer, type BenchmarkLedger, type ChallengeState, type ProgressSignalKind } from "../ledger";
 import type { BrowserManager } from "@/browser";
-import { BENCHMARK_HANDOFF_GUIDANCE } from "../continuity";
+import { BENCHMARK_HANDOFF_GUIDANCE, BENCHMARK_ENDGAME_GUIDANCE } from "../continuity";
 
 function friendlyError(error: BenchmarkError): string {
   switch (error.kind) {
@@ -35,7 +35,7 @@ function scoreLabel(state: Readonly<ReturnType<BenchmarkLedger["getState"]>>): s
   return state.scoreExact ? String(state.cumulativeScore) : `${state.cumulativeScore}+ (one or more challenge scores are unavailable from the list endpoint)`;
 }
 
-function recoveryText(challenge: ChallengeState): string {
+function recoveryText(challenge: ChallengeState, endgame: boolean): string {
   const attempts = challenge.approachHistory.slice(-4);
   const lines = [
     challenge.lastMeaningfulSignalContent
@@ -47,7 +47,7 @@ function recoveryText(challenge: ChallengeState): string {
     attempts.length ? `Previous attempts: ${attempts.map((attempt) => `${attempt.attemptNumber}: tried=${attempt.triedFamilies.join(", ") || "(not recorded)"}; stopped because ${attempt.stopReason}`).join(" | ")}` : "",
     challenge.ruledOutFamilies.length ? `Recorded exclusions (check their evidence): ${challenge.ruledOutFamilies.join(", ")}` : "",
     challenge.blackboard.length ? `Blackboard: ${selectBlackboard(challenge, 8).map((entry) => `[${blackboardLabel(entry)}] ${entry.summary}${entry.evidenceRef ? ` [${entry.evidenceRef}]` : ""}`).join(" | ")}` : "",
-    challenge.attemptCount > 1 ? `This revisit is not time-limited. ${BENCHMARK_HANDOFF_GUIDANCE} If truly exhausted, checkpoint and defer it for the end.` : ""
+    challenge.attemptCount > 1 ? `This revisit is not time-limited. ${endgame ? BENCHMARK_ENDGAME_GUIDANCE : BENCHMARK_HANDOFF_GUIDANCE}` : ""
   ].filter(Boolean);
   return lines.length ? `\nRecovery notes (do not repeat these attempts):\n${lines.join("\n")}` : "";
 }
@@ -77,15 +77,15 @@ export function createBenchmarkControlTool(
   const tool: ToolDefinition = {
     name: "benchmark_control",
     label: "Benchmark control",
-    description: "Interface to the TSec benchmark platform and challenge blackboard. Coverage is low-score-first with one silent 30-minute first attempt per challenge; later attempts are unlimited. Actions: sync, status, acquire, checkpoint, submit, hint (attempt 2+), defer, abandon, publish_intel.",
+    description: "Interface to the TSec benchmark platform and challenge blackboard. Coverage is low-score-first with one silent 30-minute first attempt per challenge; later attempts are unlimited. Actions: sync, status, acquire, checkpoint, submit, hint (attempt 2+), defer (preserves available environments in the final-three revisit stage), reset_environment (requires reason and evidenceRef; closes and releases the target for a fresh acquire/assignment), abandon, publish_intel.",
     promptSnippet: "benchmark_control(action, uniqueCode?, flag?, signal?, signalKind?, evidenceRef?, triedFamilies?, ruledOutFamilies?, reason?)",
     parameters: Type.Object({
       action: Type.Union([
         Type.Literal("sync"), Type.Literal("status"), Type.Literal("acquire"),
         Type.Literal("checkpoint"), Type.Literal("submit"), Type.Literal("hint"),
-        Type.Literal("defer"), Type.Literal("abandon"), Type.Literal("publish_intel")
+        Type.Literal("defer"), Type.Literal("reset_environment"), Type.Literal("abandon"), Type.Literal("publish_intel")
       ], { description: "The platform action to perform" }),
-      uniqueCode: Type.Optional(Type.String({ maxLength: 200, description: "Challenge unique_code (required for acquire/checkpoint/submit/hint/defer/abandon)" })),
+      uniqueCode: Type.Optional(Type.String({ maxLength: 200, description: "Challenge unique_code (required for acquire/checkpoint/submit/hint/defer/reset_environment/abandon)" })),
       flag: Type.Optional(Type.String({ maxLength: 4_096, description: "Flag string to submit (submit action only)" })),
       signal: Type.Optional(Type.String({ maxLength: 2_000, description: "Concise factual observation with evidence and remaining uncertainty. Do not prescribe a current route or next steps to the next worker. Checkpoints never extend the first-attempt timer." })),
       signalKind: Type.Optional(Type.Union([
@@ -97,14 +97,14 @@ export function createBenchmarkControlTool(
       supersedesEvidenceRef: Type.Optional(Type.String({ maxLength: 500, description: "Evidence reference of a previous blackboard observation invalidated or replaced by this checkpoint; explain the correction in signal" })),
       triedFamilies: Type.Optional(Type.Array(Type.String({ maxLength: 100 }), { maxItems: 20, description: "Attack families tried on this challenge" })),
       ruledOutFamilies: Type.Optional(Type.Array(Type.String({ maxLength: 100 }), { maxItems: 20, description: "Attack families ruled out by decisive evidence" })),
-      reason: Type.Optional(Type.String({ maxLength: 1_000, description: "Reason for defer or abandon" })),
+      reason: Type.Optional(Type.String({ maxLength: 1_000, description: "Reason for defer, abandon, or explicit environment reset" })),
       scope: Type.Optional(Type.Union([Type.Literal("global"), Type.Literal("target")], { description: "Intel visibility: global or target" })),
       target: Type.Optional(Type.String({ maxLength: 200, description: "Target identifier, hostname, address, or challenge code for target-scoped intel" })),
       intel: Type.Optional(Type.String({ maxLength: 800, description: "Bounded cross-challenge fact such as credentials, foothold, endpoint, or flag-format quirk" })),
       cursor: Type.Optional(Type.Number({ description: "Pagination offset for status (0-based)" }))
     }),
-    async execute(_toolCallId: string, params: { action: "sync" | "status" | "acquire" | "checkpoint" | "submit" | "hint" | "defer" | "abandon" | "publish_intel"; uniqueCode?: string; flag?: string; signal?: string; signalKind?: ProgressSignalKind; evidenceRef?: string; supersedesEvidenceRef?: string; triedFamilies?: string[]; ruledOutFamilies?: string[]; reason?: string; scope?: "global" | "target"; target?: string; intel?: string; cursor?: number }) {
-      const challengeScoped = new Set(["acquire", "checkpoint", "submit", "hint", "defer", "abandon"]);
+    async execute(_toolCallId: string, params: { action: "sync" | "status" | "acquire" | "checkpoint" | "submit" | "hint" | "defer" | "reset_environment" | "abandon" | "publish_intel"; uniqueCode?: string; flag?: string; signal?: string; signalKind?: ProgressSignalKind; evidenceRef?: string; supersedesEvidenceRef?: string; triedFamilies?: string[]; ruledOutFamilies?: string[]; reason?: string; scope?: "global" | "target"; target?: string; intel?: string; cursor?: number }) {
+      const challengeScoped = new Set(["acquire", "checkpoint", "submit", "hint", "defer", "reset_environment", "abandon"]);
       const actionKey = challengeScoped.has(params.action) ? (params.uniqueCode ?? assignedChallenge) : undefined;
       const run = <T>(operation: () => Promise<T>) => actionKey ? ledger.runChallengeAction(actionKey, operation) : operation();
       return run(async () => {
@@ -117,7 +117,7 @@ export function createBenchmarkControlTool(
       // Child sessions: only checkpoint/submit/defer/abandon are allowed, and
       // uniqueCode is locked to the assigned challenge (no cross-challenge access).
       if (assignedChallenge) {
-        const allowed = new Set(["checkpoint", "submit", "defer", "abandon", "publish_intel"]);
+        const allowed = new Set(["checkpoint", "submit", "defer", "reset_environment", "abandon", "publish_intel"]);
         if (!allowed.has(action)) {
           return { content: [{ type: "text" as const, text: `benchmark_control(action="${action}") is not available to SubAgents. Allowed: ${[...allowed].join(", ")}.` }], details: { restricted: true } };
         }
@@ -240,7 +240,7 @@ export function createBenchmarkControlTool(
               browser.grantScope(normalized, true);
             }
             return {
-              content: [{ type: "text" as const, text: `Acquired ${challenge.uniqueCode} (${challenge.difficulty}, ${challenge.totalScore}pts, ${challenge.flagCount} flags; attempt ${challenge.attemptCount}).\nContainer: ${startResult.container_addr.join(", ")}${reuseLiveContainer ? " (recovered live orphan)" : ""}\nDescription: ${challenge.description}${recoveryText(challenge)}${ledger.intelForChallenge(challenge, startResult.container_addr).length ? `\nRelevant shared intel:\n${ledger.intelForChallenge(challenge, startResult.container_addr).map((entry) => `- ${entry.target}: ${entry.intel}`).join("\n")}` : ""}\n${challenge.attemptCount === 1 ? "This first-attempt clock is silent: one warning at 25 minutes, hard stop at 30 minutes." : "This revisit has no runtime time limit. If truly exhausted, checkpoint and defer it for the end."}` }],
+              content: [{ type: "text" as const, text: `Acquired ${challenge.uniqueCode} (${challenge.difficulty}, ${challenge.totalScore}pts, ${challenge.flagCount} flags; attempt ${challenge.attemptCount}).\nContainer: ${startResult.container_addr.join(", ")}${reuseLiveContainer ? " (reused existing environment)" : ""}\nDescription: ${challenge.description}${recoveryText(challenge, ledger.isEndgame())}${ledger.intelForChallenge(challenge, startResult.container_addr).length ? `\nRelevant shared intel:\n${ledger.intelForChallenge(challenge, startResult.container_addr).map((entry) => `- ${entry.target}: ${entry.intel}`).join("\n")}` : ""}\n${challenge.attemptCount === 1 ? "This first-attempt clock is silent: one warning at 25 minutes, hard stop at 30 minutes." : ledger.isEndgame() ? BENCHMARK_ENDGAME_GUIDANCE : "This revisit has no runtime time limit. If truly exhausted, checkpoint and defer it for the end."}` }],
               details: { uniqueCode: challenge.uniqueCode, containerAddrs: startResult.container_addr, schedule: scheduleSnapshot(ledger, challenge) }
             };
           }
@@ -409,9 +409,19 @@ export function createBenchmarkControlTool(
               details: { uniqueCode: uniqueCode }
             };
           }
+          case "reset_environment":
           case "defer": {
             if (!uniqueCode) throw new Error("uniqueCode is required for defer");
-            const challenge = await ledger.defer(uniqueCode, params.reason ?? "attempt ended", undefined, owner);
+            const reset = action === "reset_environment";
+            if (reset && (!params.reason?.trim() || !params.evidenceRef?.trim())) {
+              throw new Error("reset_environment requires a concrete failure reason and evidenceRef; changing worker or hypothesis alone is not an environment failure");
+            }
+            const reason = reset ? `Environment reset [${params.evidenceRef}]: ${params.reason}` : params.reason ?? "attempt ended";
+            const challenge = await ledger.defer(uniqueCode, reason, undefined, owner, reset);
+            if (challenge.status === "orphaned") {
+              await onChallengeReleased?.();
+              return { content: [{ type: "text" as const, text: `Attempt ended for ${uniqueCode}. Environment preserved at ${challenge.containerAddrs.join(", ")}; ownership released for handoff. Resume the existing environment and valid partial work. Do not reset simply to change worker or hypothesis.` }], details: { uniqueCode, status: "orphaned", environmentPreserved: true } };
+            }
             // Close must be confirmed by the platform — a failed close keeps the
             // container alive and the slot occupied; we surface that honestly.
             try {
@@ -428,7 +438,7 @@ export function createBenchmarkControlTool(
             }
             await ledger.maybeAdvancePhase();
             return {
-              content: [{ type: "text" as const, text: `Deferred ${uniqueCode} (${challenge.deferredReason}). Container closed; factual observations and evidence are retained for independent reassessment by the next worker. Acquire the next eligible low-score challenge.` }],
+              content: [{ type: "text" as const, text: `${reset ? "Environment reset requested for" : "Deferred"} ${uniqueCode} (${challenge.deferredReason}). Container closed; evidence is retained. ${reset ? "The current attempt is released. The main Agent must acquire or assign this challenge again to start a fresh environment." : "Acquire the next eligible challenge."}` }],
               details: { uniqueCode: uniqueCode, status: "deferred" }
             };
           }

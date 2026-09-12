@@ -469,8 +469,10 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
             try {
               await benchmarkLedger.releaseOnSubagentExit(uniqueCode, `subagent task ${taskStatus} during binding`, `subagent:${submitted.task.id}`, "deferred");
               released = true;
-              await benchmarkController.closeChallenge(uniqueCode);
-              await benchmarkLedger.confirmClosed(uniqueCode);
+              if (benchmarkLedger.getChallenge(uniqueCode)?.status === "closing") {
+                await benchmarkController.closeChallenge(uniqueCode);
+                await benchmarkLedger.confirmClosed(uniqueCode);
+              }
             } catch {
               // A failed platform close is a tracked leak; an owner mismatch
               // means the completion handler's cleanup already released it.
@@ -760,10 +762,8 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   record.unsubscribe = unsubscribe;
   if (subagents) {
     subagents.setCompletionHandler((task, childResult) => {
-      // Benchmark cleanup: when a benchmark subagent exits (any terminal
-      // status), release its challenge from the ledger and close the
-      // container — the child prompt tells it to defer/abandon, but crash,
-      // cancel, or forgetting means the slot would leak otherwise.
+      // Release ownership on every terminal worker status. The ledger chooses
+      // whether to close or preserve the environment for a final-stage handoff.
       let benchmarkCleanup: Promise<void> = benchmarkLedger && task.benchmarkChallenge
         ? benchmarkLedger.recordChildHandoff(task.benchmarkChallenge, `subagent:${task.id}`, childResult.summary)
         : Promise.resolve();
@@ -782,8 +782,10 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
             try {
               await benchmarkLedger.releaseOnSubagentExit(owned.uniqueCode, `subagent exited with status=${task.status}`, ownerTag, "deferred");
               released = true;
-              await benchmarkController.closeChallenge(owned.uniqueCode);
-              await benchmarkLedger.confirmClosed(owned.uniqueCode);
+              if (benchmarkLedger.getChallenge(owned.uniqueCode)?.status === "closing") {
+                await benchmarkController.closeChallenge(owned.uniqueCode);
+                await benchmarkLedger.confirmClosed(owned.uniqueCode);
+              }
             } catch {
               // Only a failed platform close is a leak. An owner mismatch means
               // this stale completion no longer controls the challenge.

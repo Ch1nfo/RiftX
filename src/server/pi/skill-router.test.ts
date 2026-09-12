@@ -179,3 +179,16 @@ test("short single-concept queries still auto-load their skill", () => {
   assert.equal(rankSkills("IDOR", skills, 1)[0]?.name, "exploit-authz");
   assert.equal(rankSkills("密码爆破", skills, 1)[0]?.name, "security-passwords");
 });
+
+test("matches complete Chinese aliases without bridging word boundaries", () => {
+  for (const [query, name, description] of [
+    ["大模型", "llm-model", "LLM model inspection"],
+    ["提示词", "prompt-review", "Prompt analysis"],
+    ["反编译", "decompile", "Binary decompilation"],
+    ["密码学", "crypto", "Cryptography methods"],
+    ["文件包含", "lfi", "Local file include"],
+    ["模糊测试", "fuzzing", "Fuzz testing"]
+  ]) assert.equal(rankSkills(query, [skill(name, description)])[0]?.name, name, query);
+  assert.deepEqual(rankSkills("大，模型", [skill("llm-model", "LLM model inspection")]), []);
+  assert.deepEqual(rankSkills("提 API 示词", [skill("prompt-review", "Prompt analysis")]), []);
+});

@@ -7,7 +7,7 @@ import { HostMappingProxy, type HostMappingTarget } from "./host-mapping-proxy";
 import { PageManager } from "./page-manager";
 import { createSnapshot } from "../snapshot/snapshot";
 import { ElementRefMapper } from "../snapshot/element-refs";
-import { RequestStore, redactHeaders } from "../network/request-store";
+import { RequestStore } from "../network/request-store";
 import { hostMatches, matchScopeUrl, parseScopeRule, parseScopeRules, parseScopeTarget, type ParsedScopeRule, type ScopeDecision, type ScopeTarget } from "@/lib/scope-rules";
 import type { BrowserManagerOptions, BrowserPageInfo, PageSnapshot } from "../types";
 import { getScreenshotPath } from "@/lib/evidence-path";
@@ -130,7 +130,7 @@ export class BrowserManager {
   }
 
   private readonly contextManager = new ContextManager();
-  private readonly requests = new RequestStore();
+  private readonly requests: RequestStore;
   private readonly pages = new Map<string, PageManager>();
   private readonly refs = new Map<string, ElementRefMapper>();
   private readonly identities = new Map<string, IdentityState>();
@@ -159,6 +159,8 @@ export class BrowserManager {
   constructor(options: BrowserManagerOptions) {
     this.evidenceRoot = options.evidenceRoot;
     this.evidenceSessionId = options.evidenceSessionId;
+    this.requests = new RequestStore(options.evidenceRoot && options.evidenceSessionId
+      ? join(options.evidenceRoot, options.evidenceSessionId, "requests") : undefined);
     this.ignoreTlsErrors = options.ignoreTlsErrors ?? true;
     const rawRules = [...(options.scope?.rules ?? []), ...parseEnvironmentRules()].map((rule) => rule.trim()).filter(Boolean);
     this.rawScopeRuleCount = rawRules.length;
@@ -474,7 +476,9 @@ export class BrowserManager {
       await this.applyOverrides(page, identity);
       state.activePageId = manager.id;
     }
-    return this.pages.get(state.activePageId)!;
+    const manager = this.pages.get(state.activePageId)!;
+    await manager.recorderReady;
+    return manager;
   }
 
   private pageManager(identityId?: string) {
@@ -792,30 +796,30 @@ export class BrowserManager {
     return this.requests.list().map((item) => `${item.ref} [${item.identity}] ${item.method.padEnd(6)} ${item.url} ${item.status ?? "pending"}`).join("\n") || "(no requests recorded)";
   }
 
-  requestDetail(ref: string) {
-    const item = this.requests.get(ref);
-    if (!item) throw new Error(`Unknown request ref ${ref}`);
-    const requestHeaders = Object.entries(redactHeaders(item.requestHeaders)).map(([key, value]) => `${key}: ${value}`).join("\n");
+  async requestDetail(ref: string) {
+    const item = await this.requests.snapshot(ref);
+    const requestHeaders = Object.entries(item.requestHeaders).map(([key, value]) => `${key}: ${value}`).join("\n");
     const responseHeaders = Object.entries(item.responseHeaders ?? {}).map(([key, value]) => `${key}: ${value}`).join("\n");
-    return [`# identity: ${item.identity}`, `${item.method} ${item.url} HTTP/1.1`, requestHeaders ? `\n${requestHeaders}` : "", item.requestBody ? `\n\n${item.requestBody}` : "", `\n\nResponse:\n${item.status ?? "pending"} ${item.statusText ?? ""}`, responseHeaders ? `\n${responseHeaders}` : ""].join("");
+    return [`# identity: ${item.identity}\n`, `${item.method} ${item.url}`, requestHeaders ? `\n${requestHeaders}` : "", item.requestBody ? `\n\n${item.requestBody.slice(0, 8000)}${item.requestBody.length > 8000 ? "\n[preview truncated]" : ""}` : "", `\n\nResponse:\n${item.status ?? "pending"} ${item.statusText ?? ""}`, responseHeaders ? `\n${responseHeaders}` : "", `\nCapture: ${item.captureState ?? "unavailable"}`, item.artifactPath ? `\nSnapshot artifact: ${item.artifactPath}` : ""].join("");
   }
 
-  requestEvidence(ref: string) {
-    const item = this.requests.get(ref);
-    if (!item) throw new Error(`Unknown request ref ${ref}`);
+  async requestEvidence(ref: string) {
+    const item = await this.requests.snapshot(ref);
     return {
       type: "request" as const,
       requestRef: item.ref,
       method: item.method,
       url: item.url,
-      status: item.status
+      status: item.status,
+      identity: item.identity,
+      artifactPath: item.artifactPath
     };
   }
 
-  responseBody(ref: string) {
-    const item = this.requests.get(ref);
-    if (!item) throw new Error(`Unknown request ref ${ref}`);
-    return item.responseBody ?? "(response body unavailable or still pending)";
+  async responseBody(ref: string) {
+    const item = await this.requests.snapshot(ref);
+    const body = item.responseBody ?? "(response body unavailable or still pending)";
+    return `${body.slice(0, 8000)}${body.length > 8000 ? "\n[preview truncated]" : ""}\nCapture: ${item.captureState ?? "unavailable"}${item.artifactPath ? `\nSnapshot artifact: ${item.artifactPath}` : ""}`;
   }
 
   async storage(identityId?: string) {

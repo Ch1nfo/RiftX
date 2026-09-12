@@ -83,7 +83,7 @@ test("ordinary continuity does not expose a running countdown", async () => {
   assert.match(text, /fresh signal/);
 });
 
-test("recovery continuity tells the next attempt to change approach", async () => {
+test("final-stage recovery continuity preserves valid partial work", async () => {
   const ledger = await new BenchmarkLedger(`recovery-${Date.now()}`).initialize();
   await ledger.syncFromPlatform([platformChallenge("ch-1")], true, "10.0.0.1");
   await ledger.acquire("ch-1", "main", ["a"]);
@@ -98,7 +98,7 @@ test("recovery continuity tells the next attempt to change approach", async () =
   assert.match(text, /attempt 2/);
   assert.match(text, /#1 tried=SQLi/);
   assert.doesNotMatch(text, /audit authorization|generic SQLi automation/);
-  assert.match(text, /Reassess the recorded evidence independently/);
+  assert.match(text, /Preserve valid partial solutions/);
   assert.match(text, /unsuccessful attempt alone does not rule out/);
   assert.match(text, /No runtime time limit/);
 });

@@ -7,6 +7,8 @@ import { PASSWORD_ENUMERATION_BUDGET_MS } from "./effort";
 export const MAX_BENCHMARK_CONTINUITY_CHARS = 8_000;
 export const BENCHMARK_HANDOFF_GUIDANCE = "Reassess the recorded evidence independently and choose a materially different hypothesis. Previous attempts may have followed a mistaken premise; do not inherit their plan. An unsuccessful attempt alone does not rule out an entire approach.";
 
+export const BENCHMARK_ENDGAME_GUIDANCE = "Final-three revisit: keep working in the same environment while useful work remains. Preserve valid partial solutions, scripts and evidence; change hypothesis when evidence warrants it. An unsuccessful attempt alone does not rule out an entire approach. Do not defer or replace a worker just because the approach is difficult. A justified handoff preserves an available container. Use reset_environment with a concrete reason and evidenceRef only for an observed environment problem; it closes/releases the environment for a fresh acquire or assignment.";
+
 function compact(value: string, limit: number): string {
   return value.length <= limit ? value : `${value.slice(0, Math.max(0, limit - 14))}...[truncated]`;
 }
@@ -33,6 +35,7 @@ export function buildBenchmarkContinuity(
       ? `## Run: schedule=${state.phase} | score=${state.scoreExact ? state.cumulativeScore : `${state.cumulativeScore}+`} | solved=${state.solvedCount}/${state.totalChallenges} | unseen=${unseen} | first_attempts_active=${firstAttemptsActive} | containers=${state.activeContainers}/3`
       : `## Run: schedule=${state.phase} | solved=${state.solvedCount}/${state.totalChallenges}`
   ];
+  if (ledger.isEndgame()) lines.push(`## Final challenges: ${BENCHMARK_ENDGAME_GUIDANCE}`);
   if (workingDirectory) lines.push(`## Working directory: ${workingDirectory} (relative local tool paths and shell commands resolve here)`);
 
   if (mine) {
@@ -58,7 +61,7 @@ export function buildBenchmarkContinuity(
       ));
     }
     if (mine.attemptCount > 1) {
-      lines.push(`## Revisit policy: No runtime time limit. ${BENCHMARK_HANDOFF_GUIDANCE} If truly unsolvable, checkpoint what was learned and defer it for the end.`);
+      lines.push(`## Revisit policy: No runtime time limit. ${ledger.isEndgame() ? "Follow the final-challenges guidance above; preserve the environment and valid partial work." : BENCHMARK_HANDOFF_GUIDANCE} If a handoff is justified, checkpoint the evidence and unresolved work.`);
     }
     if (firstAttemptWarning?.uniqueCode === mine.uniqueCode) {
       lines.push("## FIRST-ATTEMPT NOTICE: 25 minutes have elapsed. Five minutes remain. Consolidate evidence and pursue only the most decisive remaining probe; at 30 minutes, checkpoint and defer immediately.");

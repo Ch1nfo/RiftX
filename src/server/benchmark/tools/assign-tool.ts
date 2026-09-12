@@ -2,8 +2,8 @@ import { selectBlackboard, blackboardLabel } from "../blackboard";
 import { Type } from "@sinclair/typebox";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { BenchmarkError, type BenchmarkController } from "../controller";
-import type { BenchmarkLedger, BenchmarkPhase, ChallengeState } from "../ledger";
-import { BENCHMARK_HANDOFF_GUIDANCE } from "../continuity";
+import { hasReusableBenchmarkContainer, type BenchmarkLedger, type BenchmarkPhase, type ChallengeState } from "../ledger";
+import { BENCHMARK_HANDOFF_GUIDANCE, BENCHMARK_ENDGAME_GUIDANCE } from "../continuity";
 
 /** Reserve, start, dispatch, and bind one challenge. Network mutations are
  * serialized per challenge, not globally across the three workers. */
@@ -26,10 +26,14 @@ export function createAssignBenchmarkChallengeTool(
         let platformStarted = false;
         let rollback: "none" | "released" | "closed" | "close_failed" = "none";
         try {
+          const reusable = ledger.getChallenge(uniqueCode);
+          const reuseLiveContainer = hasReusableBenchmarkContainer(reusable);
           await ledger.reserve(uniqueCode, reservationId, { isSubagent: true });
           let startResult;
           try {
-            startResult = await controller.startChallenge(uniqueCode);
+            startResult = reuseLiveContainer
+              ? { unique_code: uniqueCode, container_addr: [...reusable!.containerAddrs] }
+              : await controller.startChallenge(uniqueCode);
             platformStarted = true;
           } catch (error) {
             if (ledger.getChallenge(uniqueCode)?.owner === reservationId) {
@@ -44,16 +48,18 @@ export function createAssignBenchmarkChallengeTool(
 
           const challenge = await ledger.confirmStarted(uniqueCode, startResult.container_addr, reservationId);
 
-          const brief = buildBrief(challenge, startResult.container_addr, ledger.getState().phase,
+          const brief = buildBrief(challenge, startResult.container_addr, ledger.getState().phase, ledger.isEndgame(),
             ledger.intelForChallenge(challenge, startResult.container_addr).map((entry) => `${entry.target}: ${entry.intel}`));
           const result = await spawnSubagent(brief, uniqueCode, startResult.container_addr, reservationId);
           if (result.duplicate) {
             if (ledger.getChallenge(uniqueCode)?.owner === reservationId) {
               await ledger.releaseOnSubagentExit(uniqueCode, "duplicate subagent task", reservationId);
               try {
-                await controller.closeChallenge(uniqueCode);
-                await ledger.confirmClosed(uniqueCode);
-                rollback = "closed";
+                if (ledger.getChallenge(uniqueCode)?.status === "closing") {
+                  await controller.closeChallenge(uniqueCode);
+                  await ledger.confirmClosed(uniqueCode);
+                  rollback = "closed";
+                } else rollback = "released";
               } catch {
                 await ledger.markCloseFailed(uniqueCode);
                 rollback = "close_failed";
@@ -70,9 +76,11 @@ export function createAssignBenchmarkChallengeTool(
             if (platformStarted) {
               await ledger.releaseOnSubagentExit(uniqueCode, `assignment failed: ${error instanceof Error ? error.message : String(error)}`, reservationId);
               try {
-                await controller.closeChallenge(uniqueCode);
-                await ledger.confirmClosed(uniqueCode);
-                rollback = "closed";
+                if (ledger.getChallenge(uniqueCode)?.status === "closing") {
+                  await controller.closeChallenge(uniqueCode);
+                  await ledger.confirmClosed(uniqueCode);
+                  rollback = "closed";
+                } else rollback = "released";
               } catch {
                 await ledger.markCloseFailed(uniqueCode);
                 rollback = "close_failed";
@@ -83,7 +91,7 @@ export function createAssignBenchmarkChallengeTool(
             }
           }
           const message = error instanceof Error ? error.message : String(error);
-          const rollbackNote = rollback === "released" ? "The reservation was released; no live container was confirmed."
+          const rollbackNote = rollback === "released" ? "The reservation was released; any preserved environment remains available for reassignment."
             : rollback === "closed" ? "The container was closed and the challenge released."
               : rollback === "close_failed" ? "The challenge was released but its container may still occupy a platform slot; sync will reconcile."
                 : "Another worker may own this challenge; no rollback was performed.";
@@ -94,7 +102,7 @@ export function createAssignBenchmarkChallengeTool(
   } as ToolDefinition;
 }
 
-function buildBrief(challenge: ChallengeState, containerAddrs: string[], phase: BenchmarkPhase, sharedIntel: string[]): string {
+function buildBrief(challenge: ChallengeState, containerAddrs: string[], phase: BenchmarkPhase, endgame: boolean, sharedIntel: string[]): string {
   const previousApproaches = challenge.approachHistory.map((attempt) => `- Attempt ${attempt.attemptNumber}: tried=${attempt.triedFamilies.join(", ") || "(not recorded)"}; stopped because ${attempt.stopReason || "stuck"}`);
   const clipped = (value: string, limit: number) => value.length <= limit ? value : `${value.slice(0, limit - 14)}...[truncated]`;
   const blackboard = selectBlackboard(challenge, 10).map((entry) => `- ${blackboardLabel(entry)}: ${clipped(entry.summary, 800)}${entry.evidenceRef ? ` [${clipped(entry.evidenceRef, 200)}]` : ""}`);
@@ -110,7 +118,7 @@ function buildBrief(challenge: ChallengeState, containerAddrs: string[], phase: 
     ...(previousApproaches.length ? [``, `## Previous approaches`, ...previousApproaches] : []),
     ...(challenge.attemptCount > 1 ? [
       ``, `## Recovery instruction`,
-      `This attempt has no runtime time limit. ${BENCHMARK_HANDOFF_GUIDANCE} If every plausible route is exhausted, save a final checkpoint and defer it for the end instead of looping.`
+      `This attempt has no runtime time limit. ${endgame ? BENCHMARK_ENDGAME_GUIDANCE : BENCHMARK_HANDOFF_GUIDANCE} If a handoff is justified, save a checkpoint with evidence and unresolved work.`
     ] : [
       ``, `## First-attempt timing`,
       `The runtime silently limits this first attempt to 30 minutes. It warns once at 25 minutes. At 30 minutes, immediately save concise blackboard notes and defer; checkpoints do not extend the timer.`

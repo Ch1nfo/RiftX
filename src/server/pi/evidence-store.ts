@@ -23,6 +23,8 @@ function sanitizeEvidence(item: unknown): Finding["evidence"][number] | null {
   if (evidence.type === "request" && typeof evidence.requestRef === "string") return {
     type: "request",
     requestRef: evidence.requestRef,
+    ...(typeof evidence.identity === "string" ? { identity: evidence.identity } : {}),
+    ...(typeof evidence.artifactPath === "string" ? { artifactPath: evidence.artifactPath } : {}),
     ...(typeof evidence.method === "string" ? { method: evidence.method } : {}),
     ...(typeof evidence.url === "string" ? { url: evidence.url } : {}),
     ...(typeof evidence.status === "number" ? { status: evidence.status } : {})

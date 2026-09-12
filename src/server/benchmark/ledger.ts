@@ -1117,12 +1117,25 @@ export class BenchmarkLedger {
     });
   }
 
-  /** Defer: save recovery state, set closing (close must be confirmed before terminal). */
-  async defer(uniqueCode: string, reason: string, nextProbe: string | undefined, expectedOwner: Exclude<ChallengeOwner, null>): Promise<ChallengeState> {
+  /** Preserve platform-available environments only after coverage, with at most
+   * three unsolved challenges left. This is not an application health probe. */
+  isEndgame(): boolean {
+    return this.state.phase === "revisit"
+      && Object.values(this.state.challenges).filter((challenge) => !challenge.isCompleted).length <= BENCHMARK_MAX_CONTAINERS;
+  }
+
+  private preserveEnvironment(challenge: ChallengeState): boolean {
+    return this.isEndgame() && challenge.attemptCount > 1
+      && challenge.containerStatus === "available" && challenge.containerAddrs.length > 0;
+  }
+
+  /** End an attempt. Final-three revisits preserve available environments unless reset is explicit. */
+  async defer(uniqueCode: string, reason: string, nextProbe: string | undefined, expectedOwner: Exclude<ChallengeOwner, null>, resetEnvironment = false): Promise<ChallengeState> {
     return this.serialize(async () => {
       const challenge = this.state.challenges[uniqueCode];
       if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
       requireOwner(challenge, expectedOwner);
+      const preserve = !resetEnvironment && this.preserveEnvironment(challenge);
       challenge.deferredReason = cleanText(reason, 1_000);
       if (nextProbe) challenge.nextProbe = cleanText(nextProbe, 1_000);
       const now = this.now();
@@ -1142,9 +1155,9 @@ export class BenchmarkLedger {
       const metric = this.metrics.challenges[uniqueCode];
       if (metric) metric.deferredCount += 1;
       this.metrics.totalDefers += 1;
-      challenge.status = "closing";
+      challenge.status = preserve ? "orphaned" : "closing";
       challenge.owner = null;
-      challenge.pendingStatus = "deferred";
+      challenge.pendingStatus = preserve ? undefined : "deferred";
       recalculate(this.state, this.metrics, this.now);
       await this.persist();
       return challenge;
@@ -1237,13 +1250,14 @@ export class BenchmarkLedger {
   }
 
   /** Release a challenge when a subagent exits abnormally without completing it.
-   * Sets closing state — the caller must confirmClosed() after the platform confirms. */
+   * Callers close only when status is closing; orphaned means the environment is preserved. */
   async releaseOnSubagentExit(uniqueCode: string, reason: string, expectedOwner: `subagent:${string}`, pendingStatus: "deferred" | "exhausted" = "deferred"): Promise<ChallengeState> {
     return this.serialize(async () => {
       const challenge = this.state.challenges[uniqueCode];
       if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
       if (challenge.status === "solved" || challenge.status === "exhausted") return challenge;
       requireOwner(challenge, expectedOwner);
+      const preserve = pendingStatus === "deferred" && this.preserveEnvironment(challenge);
       const now = this.now();
       appendBlackboard(challenge, {
         at: now,
@@ -1257,10 +1271,10 @@ export class BenchmarkLedger {
         nextProbe: challenge.nextProbe
       });
       finishAttempt(challenge, now, reason);
-      challenge.status = "closing";
+      challenge.status = preserve ? "orphaned" : "closing";
       challenge.owner = null;
       challenge.deferredReason = cleanText(reason, 1_000);
-      challenge.pendingStatus = pendingStatus;
+      challenge.pendingStatus = preserve ? undefined : pendingStatus;
       if (pendingStatus === "deferred") enqueueForRevisit(this.state, challenge, now);
       recalculate(this.state, this.metrics, this.now);
       await this.persist();
@@ -1395,7 +1409,7 @@ export class BenchmarkLedger {
             ]
         : unavailableCoverage.length > 0
           ? unavailableCoverage.map((challenge) => ({ challenge, tier: 0 }))
-        : liveOrphans.length > 0
+        : liveOrphans.length > 0 && !this.isEndgame()
           ? liveOrphans.map((challenge) => ({ challenge, tier: 0 }))
           : coverageIsComplete(this.state)
             ? challenges.filter((challenge) => !challenge.isCompleted
@@ -1408,7 +1422,7 @@ export class BenchmarkLedger {
         if (left.tier !== right.tier) return left.tier - right.tier;
         const a = left.challenge;
         const b = right.challenge;
-        const orphanDelta = Number(b.status === "orphaned") - Number(a.status === "orphaned");
+        const orphanDelta = this.isEndgame() ? 0 : Number(b.status === "orphaned") - Number(a.status === "orphaned");
         if (orphanDelta !== 0) return orphanDelta;
         if (unseenCount === 0) {
           const queueDelta = a.revisitQueueOrder - b.revisitQueueOrder;

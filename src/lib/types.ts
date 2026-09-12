@@ -206,7 +206,7 @@ export type FindingSource = "main" | "subagent";
 export type FindingEvidence =
   | { type: "quote"; quote: string }
   | { type: "tool"; toolCallId: string; toolName: string; content?: string }
-  | { type: "request"; requestRef: string; method?: string; url?: string; status?: number }
+  | { type: "request"; requestRef: string; method?: string; url?: string; status?: number; identity?: string; artifactPath?: string }
   | { type: "screenshot"; screenshotId: string; url?: string };
 
 export type Finding = {

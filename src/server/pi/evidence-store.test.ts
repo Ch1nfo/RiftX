@@ -52,7 +52,7 @@ test("drops legacy request detail fields when loading and persisting findings", 
       confidence: "likely",
       impact: "Impact",
       reproduction: "Steps",
-      evidence: [{ type: "request", requestRef: "r1", method: "GET", url: "/api", status: 200 }]
+      evidence: [{ type: "request", requestRef: "r1", method: "GET", url: "/api", status: 200, identity: "admin", artifactPath: "/fixture/evidence.json" }]
     }, "main");
     const file = join(root, "parent", "findings.json");
     const dirty = JSON.parse(await readFile(file, "utf8")) as { findings?: Array<{ evidence?: Array<Record<string, unknown>> }> };
@@ -62,6 +62,8 @@ test("drops legacy request detail fields when loading and persisting findings", 
     const findings = await reopened.list();
     assert.equal(findings[0].evidence[0].type, "request");
     assert.equal((findings[0].evidence[0] as { method?: string }).method, "GET");
+    assert.equal((findings[0].evidence[0] as { artifactPath?: string }).artifactPath, "/fixture/evidence.json");
+    assert.equal((findings[0].evidence[0] as { identity?: string }).identity, "admin");
     assert.equal((findings[0].evidence[0] as { requestDetail?: unknown }).requestDetail, undefined);
     const cleanAfterLoad = JSON.parse(await readFile(file, "utf8")) as { findings?: Array<{ evidence?: Array<Record<string, unknown>> }> };
     assert.equal(cleanAfterLoad.findings?.[0].evidence?.[0].requestDetail, undefined);

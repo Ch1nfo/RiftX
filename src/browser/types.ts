@@ -50,6 +50,7 @@ export type RecordedRequest = {
   statusText?: string;
   responseHeaders?: Record<string, string>;
   responseBody?: string;
+  captureState?: "pending" | "streaming" | "complete" | "truncated" | "timed_out" | "unavailable" | "failed";
   startedAt: string;
   durationMs?: number;
 };

@@ -640,7 +640,7 @@ test("failed second-pass start restores deferred scheduling state", async () => 
   assert.equal(ledger.getChallenge("ch-1")?.status, "deferred");
 });
 
-test("defer always closes the container and preserves the blackboard", async () => {
+test("coverage defer closes the container and preserves the blackboard", async () => {
   const now = 4_000_000;
   const { ledger } = await setupLedger(["ch-1"], () => now);
   await ledger.syncFromPlatform([platformChallenge("ch-1", { flag_count: 2 })], true, "ip");
@@ -747,7 +747,7 @@ test("revisit candidates finish the current sweep before selecting a just-deferr
   assert.deepEqual(ledger.candidates(3).map((challenge) => challenge.uniqueCode), ["low", "mid", "high"]);
   await ledger.acquire("low", "main", ["low-2"]);
   await ledger.defer("low", "still stuck", "try a third approach later", "main");
-  await ledger.confirmClosed("low");
+  assert.equal(ledger.getChallenge("low")?.status, "orphaned");
   assert.deepEqual(ledger.candidates(3).map((challenge) => challenge.uniqueCode), ["mid", "high", "low"]);
 });
 
@@ -850,4 +850,34 @@ test("handoff parsing accepts case variants and Chinese while raw-only reports r
   assert.match(entry.summary, /extraction.*failed/);
   assert.doesNotMatch(entry.summary, /do not inject this plan/);
   assert.equal(await readFile(entry.evidenceRef, "utf8"), raw);
+});
+
+test("preservation is limited to final-three revisits and never bypasses terminal cleanup", async () => {
+  const { ledger } = await setupLedger(["a", "b", "c", "d"]);
+  for (const code of ["a", "b", "c", "d"]) {
+    await ledger.acquire(code, "main", [code]);
+    await ledger.defer(code, "coverage", undefined, "main");
+    assert.equal(ledger.getChallenge(code)?.status, "closing");
+    await ledger.confirmClosed(code);
+  }
+  assert.equal(ledger.isEndgame(), false);
+  await ledger.acquire("a", "main", ["a2"]);
+  await ledger.defer("a", "handoff with four remaining", undefined, "main");
+  assert.equal(ledger.getChallenge("a")?.status, "closing");
+  await ledger.confirmClosed("a");
+  const { ledger: endgame } = await setupLedger(["last"]);
+  await endgame.acquire("last", "main", ["first"]);
+  await endgame.defer("last", "coverage", undefined, "main");
+  await endgame.confirmClosed("last");
+  await endgame.acquire("last", "main", ["retained"]);
+  await endgame.defer("last", "handoff", undefined, "main");
+  assert.equal(endgame.getChallenge("last")?.status, "orphaned");
+  await endgame.releaseForSessionCleanup("last", "session archived", true);
+  assert.equal(endgame.getChallenge("last")?.status, "closing");
+  await endgame.confirmClosed("last");
+  await endgame.acquire("last", "main", ["last2"]);
+  await endgame.abandon("last", "all evidence reviewed", "main");
+  assert.equal(endgame.getChallenge("last")?.status, "closing");
+  await endgame.confirmClosed("last");
+  assert.equal(endgame.getState().activeContainers, 0);
 });

@@ -293,7 +293,7 @@ test("checkpoint updates the blackboard without extending the timer", async () =
   assert.match((repeat.content[0] as { text: string }).text, /blackboard updated/);
 });
 
-test("main and child handoffs omit old plans and request independent reassessment", async () => {
+test("final-stage main and child handoffs preserve evidence without blindly inheriting plans", async () => {
   const ledger = await new BenchmarkLedger(`handoff-${Date.now()}`).initialize();
   await ledger.syncFromPlatform([platformChallenge("ch-1")], true, "ip");
   await ledger.acquire("ch-1", "main", ["old"]);
@@ -313,7 +313,7 @@ test("main and child handoffs omit old plans and request independent reassessmen
   assert.match(text, /OBSERVED_FACT|FACT_EVIDENCE/);
   assert.match(text, /TESTED_DIRECTION/);
   assert.match(text, /SUPPORTED_EXCLUSION/);
-  assert.match(text, /Reassess the recorded evidence independently/);
+  assert.match(text, /Preserve valid partial solutions/);
   assert.doesNotMatch(text, /OLD_NEXT_PROBE|OLD_CURRENT_ROUTE/);
   const recorded = await execute(tool, { action: "checkpoint", uniqueCode: "ch-1", signal: "new observation", nextProbe: "UNWANTED_NEXT", currentApproach: "UNWANTED_ROUTE" });
   assert.doesNotMatch(JSON.stringify(recorded), /OLD_NEXT_PROBE|UNWANTED_NEXT|UNWANTED_ROUTE/);
@@ -326,7 +326,7 @@ test("main and child handoffs omit old plans and request independent reassessmen
   await execute(assign, { uniqueCode: "ch-1" });
   assert.match(brief, /OBSERVED_FACT/);
   assert.match(brief, /FACT_EVIDENCE/);
-  assert.match(brief, /Reassess the recorded evidence independently/);
+  assert.match(brief, /Preserve valid partial solutions/);
   assert.doesNotMatch(brief, /OLD_NEXT_PROBE|OLD_CURRENT_ROUTE|UNWANTED_NEXT|UNWANTED_ROUTE|NEXT:/);
 });
 
@@ -516,4 +516,93 @@ test("a different accepted flag cannot falsely confirm a pending candidate", asy
   assert.equal(submits, 1, "an increased count cannot identify this candidate");
   assert.equal(ledger.getMetrics().totalWrongSubmissions, 1);
   assert.equal(pendingSubmission(ledger, "ch-1", "pending-answer"), undefined);
+});
+
+test("final three reuse one environment through repeated worker handoffs, including failed dispatch", async () => {
+  const ledger = await new BenchmarkLedger(`endgame-reuse-${Date.now()}`).initialize();
+  const codes = ["web", "portal", "binary"];
+  await ledger.syncFromPlatform(codes.map((code) => platformChallenge(code)), true, "ip");
+  for (const code of codes) {
+    await ledger.acquire(code, "main", [code]);
+    await ledger.defer(code, "coverage done", undefined, "main");
+    await ledger.confirmClosed(code);
+  }
+  await ledger.acquire("web", "main", ["web-live"]);
+  await ledger.acquire("portal", "subagent:slow", ["portal-live"]);
+  let starts = 0;
+  let closes = 0;
+  const controller = {
+    startChallenge: async () => { starts++; return { unique_code: "binary", container_addr: ["binary-live"] }; },
+    closeChallenge: async () => { closes++; return { closed: true }; }
+  } as unknown as BenchmarkController;
+  let worker = 0;
+  const assign = createAssignBenchmarkChallengeTool(controller, ledger, async (_task, code, addresses, reservation) => {
+    const id = `worker-${++worker}`;
+    assert.deepEqual(addresses, ["binary-live"]);
+    await ledger.bindOwner(code, reservation, `subagent:${id}`);
+    return { taskId: id };
+  });
+  for (let i = 0; i < 10; i++) {
+    assert.deepEqual(ledger.candidates().map((challenge) => challenge.uniqueCode), ["binary"]);
+    const assigned = await execute(assign, { uniqueCode: "binary" });
+    assert.equal((assigned.details as { assigned: boolean }).assigned, true);
+    const child = createBenchmarkControlTool(controller, ledger, fakeBrowser(), () => `subagent:worker-${worker}`, "binary");
+    const released = await execute(child, { action: "defer", reason: "handoff evidence to next worker" });
+    assert.equal((released.details as { environmentPreserved: boolean }).environmentPreserved, true);
+    assert.equal(ledger.getState().activeContainers, 3, "preserved containers still occupy slots");
+    assert.equal(ledger.getChallenge("binary")?.owner, null);
+  }
+  assert.equal(starts, 1);
+  assert.equal(closes, 0);
+  const failedAssign = createAssignBenchmarkChallengeTool(controller, ledger, async () => { throw new Error("synthetic dispatch failure"); });
+  await execute(failedAssign, { uniqueCode: "binary" });
+  assert.equal(ledger.getChallenge("binary")?.status, "orphaned");
+  assert.equal(starts, 1);
+  assert.equal(closes, 0);
+  await execute(assign, { uniqueCode: "binary" });
+  const ended = await ledger.releaseOnSubagentExit("binary", "subagent exited with status=completed", `subagent:worker-${worker}`);
+  assert.equal(ended.status, "orphaned", "completion cleanup must preserve the environment too");
+  assert.equal(ended.pendingStatus, undefined);
+});
+
+test("environment reset is explicit, owner-gated, records evidence, and starts fresh only on reacquire", async () => {
+  const sessionId = `endgame-reset-${Date.now()}`;
+  const ledger = await new BenchmarkLedger(sessionId).initialize();
+  await ledger.syncFromPlatform([platformChallenge("binary")], true, "ip");
+  await ledger.acquire("binary", "main", ["coverage"]);
+  await ledger.defer("binary", "coverage done", undefined, "main");
+  await ledger.confirmClosed("binary");
+  await ledger.acquire("binary", "main", ["preserved"]);
+  await ledger.defer("binary", "handoff", undefined, "main");
+  const recovered = await new BenchmarkLedger(sessionId).initialize();
+  assert.equal(recovered.getState().activeContainers, 1);
+  let starts = 0;
+  let closes = 0;
+  let failClose = false;
+  const controller = {
+    startChallenge: async () => { starts++; return { unique_code: "binary", container_addr: ["fresh"] }; },
+    closeChallenge: async () => { closes++; if (failClose) throw new Error("synthetic close error"); return { closed: true }; }
+  } as unknown as BenchmarkController;
+  const tool = createBenchmarkControlTool(controller, recovered, fakeBrowser(), () => "main");
+  await execute(tool, { action: "acquire", uniqueCode: "binary" });
+  assert.equal(starts, 0, "main also reuses a preserved container after runtime restart");
+  for (const params of [{}, { reason: "service broken" }, { evidenceRef: "artifact:health.txt" }]) {
+    await assert.rejects(() => execute(tool, { action: "reset_environment", uniqueCode: "binary", ...params }), /requires a concrete failure reason and evidenceRef/);
+  }
+  const stranger = createBenchmarkControlTool(controller, recovered, fakeBrowser(), () => "subagent:other", "binary");
+  await assert.rejects(() => execute(stranger, { action: "reset_environment", reason: "broken", evidenceRef: "artifact:health.txt" }), /own/i);
+  assert.equal(closes, 0);
+  assert.equal(recovered.getChallenge("binary")?.owner, "main");
+  await execute(tool, { action: "reset_environment", uniqueCode: "binary", reason: "process crashed; connection refused", evidenceRef: "artifact:health.txt" });
+  assert.equal(closes, 1);
+  assert.equal(starts, 0);
+  assert.equal(recovered.getChallenge("binary")?.status, "deferred");
+  assert.match(recovered.getChallenge("binary")!.approachHistory.at(-1)!.stopReason, /artifact:health.txt/);
+  await execute(tool, { action: "acquire", uniqueCode: "binary" });
+  assert.equal(starts, 1);
+  assert.deepEqual(recovered.getChallenge("binary")?.containerAddrs, ["fresh"]);
+  failClose = true;
+  await execute(tool, { action: "reset_environment", uniqueCode: "binary", reason: "process failed again", evidenceRef: "artifact:health2.txt" });
+  assert.equal(recovered.getChallenge("binary")?.status, "closing", "failed reset stays pending reconciliation");
+  assert.equal(recovered.getChallenge("binary")?.closeFailureRecorded, true);
 });

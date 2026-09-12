@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { BrowserManager } from "./runtime/browser-manager";
-import { RequestStore, redactBody, redactHeaders } from "./network/request-store";
+import { RequestStore, boundedBody } from "./network/request-store";
 
 function closeServers(...servers: Server[]) {
   return Promise.all(servers.map((server) => new Promise<void>((resolve, reject) => {
@@ -15,13 +15,11 @@ function closeServers(...servers: Server[]) {
   })));
 }
 
-test("redacts sensitive request metadata", () => {
-  assert.equal(redactHeaders({ Authorization: "Bearer secret", Accept: "text/plain" }).Accept, "text/plain");
-  assert.equal(redactHeaders({ Authorization: "Bearer secret", Accept: "text/plain" }).Authorization, "[REDACTED]");
-  assert.equal(redactBody('{"password":"secret"}'), "[REDACTED]");
+test("preserves benchmark target credentials and business data", () => {
+  assert.equal(boundedBody('{"password":"secret","token_count":128}'), '{"password":"secret","token_count":128}');
   const store = new RequestStore();
   const item = store.start({ pageId: "p", identity: "default", method: "GET", url: "https://example.test", resourceType: "document", requestHeaders: {}, startedAt: new Date().toISOString() });
-  assert.equal(store.get(item.ref)?.ref, "r1");
+  assert.equal(store.get(item.ref)?.ref, item.ref);
   store.clear();
   assert.equal(store.get(item.ref), undefined);
 });
