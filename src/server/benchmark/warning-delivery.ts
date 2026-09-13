@@ -9,7 +9,7 @@ export class BenchmarkWarningDelivery {
   private prepared?: Warning;
   private sampled?: Warning;
 
-  constructor(private readonly ledger: Pick<BenchmarkLedger, "acknowledgeFirstAttemptWarning">,
+  constructor(private readonly ledger: Pick<BenchmarkLedger, "acknowledgeAttemptWarning">,
     private readonly owner: Exclude<ChallengeOwner, null>) {}
 
   prepare(warning?: Pick<ChallengeState, "uniqueCode" | "currentAttemptStartedAt">, packet = "") {
@@ -31,7 +31,7 @@ export class BenchmarkWarningDelivery {
     const warning = this.sampled;
     this.sampled = undefined;
     if (warning && message.stopReason && !["error", "aborted"].includes(message.stopReason)) {
-      await this.ledger.acknowledgeFirstAttemptWarning(this.owner, warning.uniqueCode, warning.currentAttemptStartedAt);
+      await this.ledger.acknowledgeAttemptWarning(this.owner, warning.uniqueCode, warning.currentAttemptStartedAt);
     }
   }
 }

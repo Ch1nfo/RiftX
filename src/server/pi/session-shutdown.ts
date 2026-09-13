@@ -21,6 +21,7 @@ export type ShutdownTarget = {
   waitingForSubagents?: boolean;
   compacting?: boolean;
   shutdownPromise?: Promise<void>;
+  benchmarkHandoffPaused?: boolean;
   gate: { rejectAll(): void };
   session: {
     abortBash(): void;
@@ -82,6 +83,8 @@ export async function shutdownSessionRecord(record: ShutdownTarget) {
  * starting a second round of abort/close on a record being torn down.
  */
 export async function abortSessionRecord(record: ShutdownTarget, emit: (event: { type: "session_state"; state: "idle" } | { type: "done"; aborted: boolean }) => void) {
+  // User Stop must survive an already-running timeout abort; only a new user dispatch resumes delivery.
+  record.benchmarkHandoffPaused = true;
   if (record.abortPromise) return record.abortPromise;
   if (record.shutdownPromise) {
     await record.shutdownPromise;

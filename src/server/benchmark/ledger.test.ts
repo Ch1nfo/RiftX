@@ -772,7 +772,7 @@ test("accepted flags cannot extend a first-pass worker beyond its 30-minute cap"
   assert.equal(ledger.budgetFor("ch-1")?.expired, true);
 });
 
-test("attempt 2 and later have no runtime time limit", async () => {
+test("attempt 2 and later expire after their default thirty-minute budget", async () => {
   let now = 30_000_000;
   const { ledger } = await setupLedger(["ch-1"], () => now);
   await ledger.acquire("ch-1", "main", ["a"]);
@@ -783,7 +783,7 @@ test("attempt 2 and later have no runtime time limit", async () => {
   await ledger.acquire("ch-1", "main", ["b"]);
   now += 24 * 60 * 60_000;
   assert.equal(ledger.budgetFor("ch-1")?.firstAttempt, false);
-  assert.equal(ledger.isBudgetExhausted("ch-1"), false);
+  assert.equal(ledger.isBudgetExhausted("ch-1"), true);
 });
 
 test("revisit candidates finish the current sweep before selecting a just-deferred challenge again", async () => {

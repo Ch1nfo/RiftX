@@ -5,11 +5,23 @@ import { BenchmarkWarningDelivery } from "./warning-delivery";
 function setup() {
   const acknowledgements: unknown[][] = [];
   const delivery = new BenchmarkWarningDelivery({
-    acknowledgeFirstAttemptWarning: async (...args) => { acknowledgements.push(args); return true; }
+    acknowledgeAttemptWarning: async (...args) => { acknowledgements.push(args); return true; }
   }, "main");
   return { delivery, acknowledgements };
 }
 const warning = { uniqueCode: "fixture", currentAttemptStartedAt: 100 };
+
+test("warning acknowledgements retain the sampled attempt identity across a new round", async () => {
+  const { delivery, acknowledgements } = setup();
+  delivery.prepare(warning, "old-attempt-packet");
+  delivery.sample([{ content: "old-attempt-packet" }]);
+  delivery.prepare({ ...warning, currentAttemptStartedAt: 200 }, "new-attempt-packet");
+  await delivery.complete({ role: "assistant", stopReason: "toolUse" });
+  assert.deepEqual(acknowledgements, [["main", "fixture", 100]]);
+  delivery.sample([{ content: "new-attempt-packet" }]);
+  await delivery.complete({ role: "assistant", stopReason: "stop" });
+  assert.deepEqual(acknowledgements, [["main", "fixture", 100], ["main", "fixture", 200]]);
+});
 
 test("rebuilding a warning packet does not acknowledge it before a successful sampled reply", async () => {
   const { delivery, acknowledgements } = setup();

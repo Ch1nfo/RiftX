@@ -11,14 +11,17 @@ type JoinManager = {
 type SubagentJoinRecord = {
   subagents?: JoinManager;
   abortPromise?: Promise<void>;
+  shutdownPromise?: Promise<void>;
   aborting?: boolean;
   abortEpoch?: number;
+  benchmarkHandoffPaused?: boolean;
   waitingForSubagents?: boolean;
   deliveredSubagentResults: Set<string>;
   deliveringSubagentResults?: Set<string>;
   promptChain?: Promise<void>;
   pendingSessionActions?: number;
   subagentDeliveryInProgress?: boolean;
+  prepareSubagentCompletion?: (task: SubagentTask, summary?: string) => Promise<void>;
   gate: { beginTask(): void };
   session: {
     isStreaming: boolean;
@@ -75,8 +78,12 @@ export function formatSubagentTerminalMessage(task: SubagentTask, summary?: stri
   return `${SUBAGENT_STATUS_PREFIX}\nSubagent: ${task.name}${benchmarkIdentity}\nStatus: ${task.status}\nDetails:\n${detail}\n\nDo not treat this task as evidence or repeat the same delegated task unless you explicitly decide to retry it. ${untrustedNote}`;
 }
 
-export function shouldDeliverSubagentCompletion(record: Pick<SubagentJoinRecord, "waitingForSubagents" | "abortPromise" | "aborting" | "session"> & { subagents?: { hasActiveTasks(): boolean } }, task?: Pick<SubagentTask, "benchmarkChallenge">) {
-  if (record.abortPromise || record.aborting) return false;
+function deliveryStopped(record: Pick<SubagentJoinRecord, "abortPromise" | "aborting" | "shutdownPromise" | "benchmarkHandoffPaused">, benchmark: boolean) {
+  return Boolean(record.abortPromise || record.aborting || record.shutdownPromise || (benchmark && record.benchmarkHandoffPaused));
+}
+
+export function shouldDeliverSubagentCompletion(record: Pick<SubagentJoinRecord, "waitingForSubagents" | "abortPromise" | "aborting" | "shutdownPromise" | "benchmarkHandoffPaused" | "session"> & { subagents?: { hasActiveTasks(): boolean } }, task?: Pick<SubagentTask, "benchmarkChallenge">) {
+  if (deliveryStopped(record, Boolean(task?.benchmarkChallenge))) return false;
   // Benchmark throughput depends on refilling a slot as soon as one worker
   // returns. Even an idle parent gets a new prompt immediately; batching it
   // behind a slower sibling recreates the "both results arrive together" bug.
@@ -122,8 +129,13 @@ export async function deliverSubagentCompletion(record: SubagentJoinRecord, task
   if (!claimSubagentResult(record, task.id)) return false;
   const message = formatSubagentTerminalMessage(task, summary);
   const mode: PromptMode = record.session.isStreaming ? "steer" : "prompt";
+  const abortEpoch = record.abortEpoch ?? 0;
   try {
+    await record.prepareSubagentCompletion?.(task, summary);
     await dispatchSessionAction(record, mode, async () => {
+      if ((record.abortEpoch ?? 0) !== abortEpoch || deliveryStopped(record, Boolean(task.benchmarkChallenge))) {
+        throw new Error("Subagent result delivery is paused.");
+      }
       record.subagentDeliveryInProgress = true;
       try {
         if (mode === "steer") await record.session.steer(message);
@@ -167,6 +179,7 @@ function requiresDelivery(record: SubagentJoinRecord, task: SubagentTask, knownT
 export async function waitForSubagentsBeforeConclusion(record: SubagentJoinRecord, knownTaskIds: Set<string>, requiredTaskIds: Set<string>, abortEpoch: number) {
   const manager = record.subagents;
   if (!manager) return;
+  if (deliveryStopped(record, manager.list().some((task) => Boolean(task.benchmarkChallenge)))) return;
   if ((record.abortEpoch ?? 0) !== abortEpoch) return;
   for (const task of manager.list()) {
     if (requiresDelivery(record, task, knownTaskIds)) requiredTaskIds.add(task.id);
@@ -193,6 +206,10 @@ export async function waitForSubagentsBeforeConclusion(record: SubagentJoinRecor
       try {
         record.subagentDeliveryInProgress = true;
         await enqueueSessionAction(record, async () => {
+          for (const task of results) await record.prepareSubagentCompletion?.(task, task.summary);
+          if ((record.abortEpoch ?? 0) !== abortEpoch || deliveryStopped(record, results.some((task) => Boolean(task.benchmarkChallenge)))) {
+            throw new Error("Subagent result delivery is paused.");
+          }
           record.gate.beginTask();
           const benchmarkBatch = results.some((task) => Boolean(task.benchmarkChallenge));
           const nextInstruction = benchmarkBatch

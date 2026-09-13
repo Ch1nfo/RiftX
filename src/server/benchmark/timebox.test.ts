@@ -1,90 +1,155 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import type { Challenge } from "./controller";
-import { BenchmarkLedger, FIRST_ATTEMPT_LIMIT_MS } from "./ledger";
-import { installBenchmarkTimeboxGate } from "./timebox";
+import type { BenchmarkLedger, ChallengeState } from "./ledger";
+import { checkBenchmarkToolExecutionGuard, installBenchmarkTimeboxGate } from "./timebox";
 import { BrowserManager } from "@/browser/runtime/browser-manager";
 import { createCrawlTool } from "@/browser/tools/crawl";
 
-const realHome = process.env.HOME;
-let tempDir: string;
+const MINUTE = 60_000;
 
-test.before(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), "riftx-timebox-"));
-  process.env.HOME = tempDir;
-});
-
-test.after(async () => {
-  process.env.HOME = realHome;
-  await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
-});
-
-function challenge(): Challenge {
-  return { unique_code: "ch-1", description: "test", difficulty: "easy", level: 1, total_score: 100, flag_count: 1, correct_flag_count: 0, is_completed: false, container_status: "stopped", container_addr: [] };
+function fixture(attemptCount = 1, clock = () => Date.now()) {
+  const startedAt = clock();
+  const challenge = {
+    uniqueCode: "fixture", owner: "main", status: "running", currentAttemptStartedAt: startedAt, attemptCount
+  } as ChallengeState;
+  let deadlineAt = startedAt + 30 * MINUTE;
+  const ledger = {
+    getChallenge: () => challenge,
+    budgetForOwner: (owner: string) => challenge.owner === owner && ["running", "reserved"].includes(challenge.status) ? {
+      challenge,
+      budget: {
+        firstAttempt: attemptCount === 1, elapsedMs: clock() - startedAt,
+        warningDue: clock() >= startedAt + 25 * MINUTE, expired: clock() >= deadlineAt,
+        deadlineAt, remainingMs: Math.max(0, deadlineAt - clock()), limitMs: deadlineAt - startedAt,
+        extensionUsed: deadlineAt > startedAt + 30 * MINUTE
+      }
+    } : undefined
+  } as unknown as BenchmarkLedger;
+  return { ledger, challenge, get deadlineAt() { return deadlineAt; }, extend() { deadlineAt = startedAt + 40 * MINUTE; } };
 }
 
-test("queued browser actions recheck the timebox without interrupting a running action", async () => {
-  let now = 3_000_000;
-  const ledger = await new BenchmarkLedger(`queued-browser-${Date.now()}`, () => now).initialize();
-  await ledger.syncFromPlatform([challenge()], true, "ip");
-  await ledger.acquire("ch-1", "main", ["a"]);
-  now += FIRST_ATTEMPT_LIMIT_MS - 1;
-  const browser = new BrowserManager({});
-  let release!: () => void;
-  const held = new Promise<void>((resolve) => { release = resolve; });
-  let started!: () => void;
-  const firstStarted = new Promise<void>((resolve) => { started = resolve; });
-  const actions: string[] = [];
-  const tool = { name: "browser", execute: (id: string, _params: unknown, signal?: AbortSignal): Promise<unknown> => browser.run(async () => {
-    actions.push(id);
-    if (id === "first") { started(); await held; }
-    return { content: [{ type: "text", text: id }] };
-  }, signal) };
-  installBenchmarkTimeboxGate(tool, ledger, "main");
-  const first = tool.execute("first", {});
-  const queued = tool.execute("queued", {});
-  await firstStarted;
-  now += 5 * 60_000;
-  release();
-  assert.deepEqual(await first, { content: [{ type: "text", text: "first" }] });
-  assert.equal((await queued as { details: { timeboxExpired?: boolean } }).details.timeboxExpired, true);
-  assert.deepEqual(actions, ["first"]);
-  assert.equal(await browser.run(async () => "control-allowed"), "control-allowed", "the denied caller must not poison the lane or unrelated control work");
+for (const attemptCount of [1, 2, 4]) {
+  test(`solving tools are blocked at the deadline in attempt ${attemptCount}`, async () => {
+    let now = 1_000;
+    const { ledger } = fixture(attemptCount, () => now);
+    let executed = 0;
+    const tool = { name: "read", execute: async (): Promise<unknown> => { executed++; return { content: [] }; } };
+    installBenchmarkTimeboxGate(tool, ledger, "main");
+    await tool.execute();
+    now += 30 * MINUTE;
+    const denied = await tool.execute() as { details: { timeboxExpired: boolean } };
+    assert.equal(denied.details.timeboxExpired, true);
+    assert.equal(executed, 1);
+  });
+}
+
+for (const name of ["bash", "browser", "crawl", "read", "edit", "write"]) {
+  test(`${name} receives a cancellation signal when a revisit deadline expires`, async (t) => {
+    t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000 });
+    const { ledger } = fixture(2);
+    t.mock.timers.tick(30 * MINUTE - 100);
+    let aborted = false;
+    const tool = { name, execute: async (_id: string, _params: unknown, signal?: AbortSignal): Promise<unknown> =>
+      new Promise((_resolve, reject) => signal!.addEventListener("abort", () => { aborted = true; reject(signal!.reason); }, { once: true })) };
+    installBenchmarkTimeboxGate(tool, ledger, "main");
+    const pending = tool.execute("fixture-call", {});
+    t.mock.timers.tick(100);
+    const result = await pending as { details: { timeboxExpired: boolean }; isError: boolean };
+    assert.equal(aborted, true);
+    assert.equal(result.details.timeboxExpired, true);
+    assert.equal(result.isError, true);
+  });
+}
+
+test("a long bash call honors a granted extension instead of the original thirty-minute timer", async (t) => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000 });
+  const run = fixture(2);
+  t.mock.timers.tick(25 * MINUTE);
+  let aborted = false;
+  const tool = { name: "bash", execute: async (_id: string, params: unknown, signal?: AbortSignal): Promise<unknown> => {
+    assert.deepEqual(params, { timeout: 900 }, "the tool timeout must not be frozen to the old attempt remainder");
+    return new Promise((_resolve, reject) => signal!.addEventListener("abort", () => { aborted = true; reject(signal!.reason); }, { once: true }));
+  } };
+  installBenchmarkTimeboxGate(tool, run.ledger, "main");
+  const pending = tool.execute("fixture-call", { timeout: 900 });
+  t.mock.timers.tick(2 * MINUTE);
+  run.extend();
+  t.mock.timers.tick(3 * MINUTE);
+  assert.equal(aborted, false, "the original deadline must re-read the extended ledger budget");
+  t.mock.timers.tick(10 * MINUTE);
+  const result = await pending as { details: { timeboxExpired: boolean } };
+  assert.equal(aborted, true);
+  assert.equal(result.details.timeboxExpired, true);
 });
 
-test("queued browser actions recheck child ownership and drop aborted callers", async () => {
-  const ledger = await new BenchmarkLedger(`queued-lease-${Date.now()}`).initialize();
-  await ledger.syncFromPlatform([challenge()], true, "ip");
-  await ledger.acquire("ch-1", "subagent:t1", ["a"]);
+for (const name of ["bash", "edit"]) {
+  test(`a queued ${name} rechecks the deadline after its lock is acquired`, async () => {
+    let now = 1_000;
+    const run = fixture(2, () => now);
+    let release!: () => void;
+    const lock = new Promise<void>((resolve) => { release = resolve; });
+    let executed = 0;
+    const tool = { name, execute: async (): Promise<unknown> => {
+      await lock;
+      checkBenchmarkToolExecutionGuard();
+      executed++;
+      return { content: [] };
+    } };
+    installBenchmarkTimeboxGate(tool, run.ledger, "main");
+    const pending = tool.execute();
+    now += 30 * MINUTE;
+    release();
+    const result = await pending as { details: { timeboxExpired: boolean } };
+    assert.equal(result.details.timeboxExpired, true);
+    assert.equal(executed, 0);
+  });
+}
+
+test("the browser queue checks the live deadline at operation execution", async () => {
+  let now = 1_000;
+  const run = fixture(2, () => now);
   const browser = new BrowserManager({});
   let release!: () => void;
-  const held = new Promise<void>((resolve) => { release = resolve; });
-  const blocker = browser.run(() => held);
-  let executions = 0;
-  const tool = { name: "browser", execute: (_id: string, _params: unknown, signal?: AbortSignal): Promise<unknown> => browser.run(async () => { executions++; return { content: [] }; }, signal) };
-  installBenchmarkTimeboxGate(tool, ledger, "subagent:t1", "ch-1");
-  const queued = tool.execute("lease", {});
-  const cancel = new AbortController();
-  const cancelled = tool.execute("aborted", {}, cancel.signal);
-  const cancellation = assert.rejects(cancelled, /fixture-stop/);
-  cancel.abort(new Error("fixture-stop"));
-  await ledger.defer("ch-1", "fixture", "fixture", "subagent:t1");
+  const lock = new Promise<void>((resolve) => { release = resolve; });
+  const blocker = browser.run(() => lock);
+  let executed = 0;
+  const tool = { name: "browser", execute: (_id: string, _params: unknown, signal?: AbortSignal): Promise<unknown> =>
+    browser.run(async () => { executed++; return { content: [] }; }, signal) };
+  installBenchmarkTimeboxGate(tool, run.ledger, "main");
+  const pending = tool.execute("fixture-call", {});
+  now += 30 * MINUTE;
   release();
   await blocker;
-  assert.equal((await queued as { details: { challengeReleased?: boolean } }).details.challengeReleased, true);
-  await cancellation;
-  assert.equal(executions, 0);
+  const result = await pending as { details: { timeboxExpired: boolean } };
+  assert.equal(result.details.timeboxExpired, true);
+  assert.equal(executed, 0);
+  assert.equal(await browser.run(async () => "cleanup-allowed"), "cleanup-allowed");
 });
 
-test("crawl keeps completed pages when its next browser action reaches the timebox", async () => {
-  let now = 4_000_000;
-  const ledger = await new BenchmarkLedger(`crawl-timebox-${Date.now()}`, () => now).initialize();
-  await ledger.syncFromPlatform([challenge()], true, "ip");
-  await ledger.acquire("ch-1", "main", ["a"]);
-  now += FIRST_ATTEMPT_LIMIT_MS - 1;
+test("an old queued operation cannot execute in a fresh attempt owned by the same worker", async () => {
+  const run = fixture(2);
+  let release!: () => void;
+  const lock = new Promise<void>((resolve) => { release = resolve; });
+  let executed = 0;
+  const tool = { name: "write", execute: async (): Promise<unknown> => {
+    await lock;
+    checkBenchmarkToolExecutionGuard();
+    executed++;
+    return { content: [] };
+  } };
+  installBenchmarkTimeboxGate(tool, run.ledger, "main");
+  const pending = tool.execute();
+  run.challenge.currentAttemptStartedAt!++;
+  release();
+  const result = await pending as { details: { challengeReleased: boolean } };
+  assert.equal(result.details.challengeReleased, true);
+  assert.equal(executed, 0);
+});
+
+test("crawl preserves completed page evidence when the next queued page is denied", async () => {
+  let now = 1_000;
+  const run = fixture(2, () => now);
+  now += 30 * MINUTE - 1;
   const browser = new BrowserManager({});
   let navigations = 0;
   let probes = 0;
@@ -97,90 +162,43 @@ test("crawl keeps completed pages when its next browser action reaches the timeb
     }
   });
   const tool = createCrawlTool(browser);
-  installBenchmarkTimeboxGate(tool as never, ledger, "main");
-  const result = await (tool.execute as unknown as (id: string, params: unknown) => Promise<{ content: unknown[]; details: { pages: number; timeboxExpired?: boolean } }>)("crawl", { entry: "http://fixture.invalid/", maxPages: 2 });
+  installBenchmarkTimeboxGate(tool as never, run.ledger, "main");
+  const result = await (tool.execute as unknown as (id: string, params: unknown) => Promise<{ content: unknown[]; details: { pages: number; timeboxExpired?: boolean } }>)("fixture-call", { entry: "http://fixture.invalid/", maxPages: 2 });
   assert.equal(navigations, 1);
   assert.equal(result.details.pages, 1);
   assert.equal(result.details.timeboxExpired, true);
   assert.ok(result.content.length >= 2);
 });
 
-test("expired attempts block solving tools but never block benchmark control", async () => {
-  let now = 1_000_000;
-  const ledger = await new BenchmarkLedger(`gate-${Date.now()}`, () => now).initialize();
-  await ledger.syncFromPlatform([challenge()], true, "ip");
-  await ledger.acquire("ch-1", "main", ["a"]);
-  let executions = 0;
-  const browser = { name: "browser", execute: async (_id: string, _params: unknown) => { executions += 1; return { content: [] }; } };
-  const control = { name: "benchmark_control", execute: async (_id: string, _params: unknown) => { executions += 1; return { content: [] }; } };
-  installBenchmarkTimeboxGate(browser, ledger, "main");
-  installBenchmarkTimeboxGate(control, ledger, "main");
-
-  await browser.execute("before", {});
-  now += 30 * 60 * 1000;
-  const blocked = await browser.execute("after", {}) as { details?: { timeboxExpired?: boolean } };
-  await control.execute("control", {});
-
-  assert.equal(blocked.details?.timeboxExpired, true);
-  assert.equal(executions, 2, "the expired browser call must not reach its implementation, while control remains callable");
+test("checkpoint, submission and cleanup control paths remain callable after the deadline", async () => {
+  let now = 1_000;
+  const run = fixture(2, () => now);
+  now += 30 * MINUTE;
+  for (const name of ["benchmark_control", "checkpoint_progress", "assign_benchmark_challenge"]) {
+    let executed = false;
+    const tool = { name, execute: async () => { executed = true; return { content: [] }; } };
+    installBenchmarkTimeboxGate(tool, run.ledger, "main", "fixture");
+    await tool.execute();
+    assert.equal(executed, true);
+  }
 });
 
-test("attempt 2 remains unblocked regardless of elapsed time", async () => {
-  let now = 2_000_000;
-  const ledger = await new BenchmarkLedger(`gate-revisit-${Date.now()}`, () => now).initialize();
-  await ledger.syncFromPlatform([challenge()], true, "ip");
-  await ledger.acquire("ch-1", "main", ["a"]);
-  await ledger.defer("ch-1", "covered", "different approach", "main");
-  await ledger.confirmClosed("ch-1");
-  await ledger.maybeAdvancePhase();
-  await ledger.acquire("ch-1", "main", ["b"]);
-  let executions = 0;
-  const browser = { name: "browser", execute: async () => { executions += 1; return { content: [] }; } };
-  installBenchmarkTimeboxGate(browser, ledger, "main");
-  now += 24 * 60 * 60_000;
-  await browser.execute();
-  assert.equal(executions, 1);
+test("a released assigned challenge cannot start another solving operation", async () => {
+  const run = fixture(2);
+  const tool = { name: "bash", execute: async (): Promise<unknown> => { throw new Error("must not execute"); } };
+  installBenchmarkTimeboxGate(tool, run.ledger, "main", "fixture");
+  run.challenge.owner = null;
+  const result = await tool.execute() as { details: { challengeReleased: boolean } };
+  assert.equal(result.details.challengeReleased, true);
 });
 
-test("a child cannot keep solving after it released its assigned challenge", async () => {
-  const ledger = await new BenchmarkLedger(`gate-child-${Date.now()}`).initialize();
-  await ledger.syncFromPlatform([challenge()], true, "ip");
-  await ledger.acquire("ch-1", "subagent:t1", ["a"]);
-  let executions = 0;
-  const bash = { name: "bash", execute: async () => { executions += 1; return { content: [] }; } };
-  installBenchmarkTimeboxGate(bash, ledger, "subagent:t1", "ch-1");
-  await ledger.defer("ch-1", "timebox", "fresh approach", "subagent:t1");
-
-  const blocked = await bash.execute() as { details?: { challengeReleased?: boolean } };
-  assert.equal(blocked.details?.challengeReleased, true);
-  assert.equal(executions, 0);
-});
-
-
-test("bash is interrupted at the remaining first-attempt deadline", async () => {
-  let now = 1_000_000;
-  const ledger = await new BenchmarkLedger(`deadline-${Date.now()}`, () => now).initialize();
-  await ledger.syncFromPlatform([challenge()], true, "ip");
-  await ledger.acquire("ch-1", "main", ["a"]);
-  now += FIRST_ATTEMPT_LIMIT_MS - 40;
-  let aborted = false;
-  const bash = { name: "bash", execute: async (_id: string, params: unknown, signal?: AbortSignal): Promise<unknown> => {
-    assert.equal((params as { timeout: number }).timeout, 0.04);
-    return new Promise((_resolve, reject) => signal!.addEventListener("abort", () => { aborted = true; reject(signal!.reason); }, { once: true }));
-  } };
-  installBenchmarkTimeboxGate(bash, ledger, "main");
-  const result = await bash.execute("fixture", { timeout: 1800 });
-  assert.equal(aborted, true);
-  assert.match(JSON.stringify(result), /FIRST_ATTEMPT_COMPLETE/);
-});
-
-test("deadline wrapper preserves explicit cancellation", async () => {
-  const ledger = await new BenchmarkLedger(`cancel-${Date.now()}`).initialize();
-  await ledger.syncFromPlatform([challenge()], true, "ip");
-  await ledger.acquire("ch-1", "main", ["a"]);
-  const cancel = new AbortController();
-  cancel.abort(new Error("fixture cancellation"));
-  const bash = { name: "bash", execute: async (_id: string, _params: unknown, signal?: AbortSignal): Promise<unknown> => { signal!.throwIfAborted(); return undefined; } };
-  installBenchmarkTimeboxGate(bash, ledger, "main");
-  await assert.rejects(bash.execute("fixture", {}, cancel.signal), /fixture cancellation/);
+test("caller cancellation stays distinct from an attempt timeout", async () => {
+  const run = fixture(2);
+  const caller = new AbortController();
+  const tool = { name: "bash", execute: async (_id: string, _params: unknown, signal?: AbortSignal): Promise<unknown> =>
+    new Promise((_resolve, reject) => signal!.addEventListener("abort", () => reject(signal!.reason), { once: true })) };
+  installBenchmarkTimeboxGate(tool, run.ledger, "main");
+  const pending = tool.execute("fixture-call", {}, caller.signal);
+  caller.abort(new Error("fixture-caller-cancelled"));
+  await assert.rejects(pending, /fixture-caller-cancelled/);
 });

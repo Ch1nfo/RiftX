@@ -95,6 +95,7 @@ export async function runBenchmark(): Promise<number> {
     let lastTools = 0;
     let emptyTurns = 0;
     let probeFailures = 0;
+    let inspectedAttemptTimeoutEpoch = 0;
     while (stopCode === undefined) {
       if (Date.now() >= deadline) { exitCode = 124; log("run_deadline"); break; }
       if (Date.now() - lastProbe >= 60_000) {
@@ -120,6 +121,15 @@ export async function runBenchmark(): Promise<number> {
         continue;
       }
       const lastAssistant = [...record.session.messages].reverse().find((message) => message.role === "assistant");
+      if ((record.benchmarkAttemptTimeoutEpoch ?? 0) !== inspectedAttemptTimeoutEpoch) {
+        // A deliberate per-attempt abort is a scheduler yield, not a model
+        // failure that should terminate the entire Benchmark run.
+        inspectedAttemptTimeoutEpoch = record.benchmarkAttemptTimeoutEpoch ?? 0;
+        inspectedAssistant = lastAssistant;
+        failure = undefined;
+        emptyTurns = 0;
+        recovery.succeeded();
+      }
       if (failure || (lastAssistant !== inspectedAssistant && lastAssistant?.role === "assistant" && ["error", "aborted"].includes(lastAssistant.stopReason))) {
         recovery.failed(failure || (lastAssistant?.role === "assistant" ? lastAssistant.errorMessage || `Model stopped: ${lastAssistant.stopReason}` : "Agent failed"));
         failure = undefined;

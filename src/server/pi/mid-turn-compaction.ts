@@ -3,14 +3,14 @@ export { estimateCompactedUsage, estimateMessagesContextUsage } from "./context-
 
 import { replaceAgentMessages, runAutoCompaction, waitForAgentEvents } from "./pi-internals";
 import { refreshContinuityContext, upsertContinuityContext, type ContinuityContext } from "./continuity-context";
-import { keepRecentTokensForContext } from "./compaction-budget";
+import { assertBenchmarkSamplingAllowed, benchmarkInputLimit, benchmarkReserveTokens, BenchmarkContextBudgetError, estimateBenchmarkInputTokens, keepRecentTokensForContext } from "./compaction-budget";
 
 export { COMPACTION_KEEP_RECENT_RATIO, keepRecentTokensForContext } from "./compaction-budget";
 
 const budgetInstalled = new WeakSet<object>();
 
 /** Pi computes its cut point from SettingsManager, so apply the 10% ceiling at that source. */
-function installCompactionBudget(session: AgentSession) {
+function installCompactionBudget(session: AgentSession, benchmark = false) {
   const manager = session.settingsManager;
   if (budgetInstalled.has(manager)) return;
   budgetInstalled.add(manager);
@@ -18,7 +18,10 @@ function installCompactionBudget(session: AgentSession) {
   manager.getCompactionSettings = () => {
     const settings = original();
     const keepRecentTokens = keepRecentTokensForContext(session.model?.contextWindow ?? 0);
-    return keepRecentTokens ? { ...settings, keepRecentTokens } : settings;
+    const reserveTokens = benchmark
+      ? benchmarkReserveTokens(session.model?.contextWindow ?? 0, session.model?.maxTokens ?? 0, settings.reserveTokens)
+      : settings.reserveTokens;
+    return keepRecentTokens ? { ...settings, keepRecentTokens, reserveTokens } : settings;
   };
 }
 
@@ -66,13 +69,15 @@ async function runMidTurnCompaction(session: AgentSession, signal?: AbortSignal)
  * opt-in: ordinary sessions pay the refresh only after a real compaction.
  */
 export function installMidTurnCompaction(session: AgentSession, getContinuityContext?: () => Promise<ContinuityContext>, options?: { samplingRefresh?: boolean }) {
-  installCompactionBudget(session);
+  const benchmark = Boolean(options?.samplingRefresh);
+  installCompactionBudget(session, benchmark);
   const agent = session.agent;
   const originalTransform = agent.transformContext;
   let compacting = false;
 
   agent.transformContext = async (messages, signal) => {
-    const transformed = originalTransform ? await originalTransform(messages, signal) : messages;
+    if (benchmark) assertBenchmarkSamplingAllowed(session);
+    let transformed = originalTransform ? await originalTransform(messages, signal) : messages;
     if (compacting || signal?.aborted) return transformed;
 
     if (options?.samplingRefresh && getContinuityContext) {
@@ -90,22 +95,40 @@ export function installMidTurnCompaction(session: AgentSession, getContinuityCon
     const settings = session.settingsManager.getCompactionSettings();
     const contextWindow = session.model?.contextWindow ?? 0;
     const usage = session.getContextUsage();
-    if (!settings.enabled || !shouldCompactBeforeSampling(usage?.percent === null ? null : usage?.tokens, contextWindow, settings.reserveTokens)) {
+    const samplingTokens = () => benchmark ? estimateBenchmarkInputTokens(session, transformed) : 0;
+    const checkBudget = () => {
+      if (!benchmark) return;
+      assertBenchmarkSamplingAllowed(session);
+      const tokens = samplingTokens();
+      const limit = benchmarkInputLimit(session);
+      if (tokens > limit) throw new BenchmarkContextBudgetError(`Benchmark request exceeds its context budget (estimated input ${tokens}, limit ${limit})`);
+    };
+    const initialTokens = Math.max(usage?.percent === null ? 0 : usage?.tokens ?? 0, samplingTokens());
+    if (!settings.enabled || !shouldCompactBeforeSampling(initialTokens, contextWindow, settings.reserveTokens)) {
+      checkBudget();
       return transformed;
     }
 
     // The session file must be settled before compaction reads its branch, but
     // avoid paying this await on ordinary sampling turns far below the limit.
+    const previousState = session.agent.state.messages;
     await waitForAgentEvents(session);
+    if (previousState !== session.agent.state.messages) {
+      replaceAgentMessages(session, messages, session.agent.state.messages);
+      transformed = originalTransform ? await originalTransform(messages, signal) : messages;
+      if (benchmark && getContinuityContext) upsertContinuityContext(transformed as unknown[], await getContinuityContext());
+    }
     const settledUsage = session.getContextUsage();
-    if (!shouldCompactBeforeSampling(settledUsage?.percent === null ? null : settledUsage?.tokens, contextWindow, settings.reserveTokens)) {
+    const settledTokens = Math.max(settledUsage?.percent === null ? 0 : settledUsage?.tokens ?? 0, samplingTokens());
+    if (!shouldCompactBeforeSampling(settledTokens, contextWindow, settings.reserveTokens)) {
+      checkBudget();
       return transformed;
     }
 
     compacting = true;
     try {
       const compacted = await runMidTurnCompaction(session, signal);
-      if (!compacted) return transformed;
+      if (!compacted) { checkBudget(); return transformed; }
       replaceAgentMessages(session, messages, session.agent.state.messages);
       if (getContinuityContext) {
         try {
@@ -120,7 +143,9 @@ export function installMidTurnCompaction(session: AgentSession, getContinuityCon
           console.warn("RiftX could not refresh continuity context after compaction:", error);
         }
       }
-      return originalTransform ? await originalTransform(messages, signal) : messages;
+      transformed = originalTransform ? await originalTransform(messages, signal) : messages;
+      checkBudget();
+      return transformed;
     } finally {
       compacting = false;
     }

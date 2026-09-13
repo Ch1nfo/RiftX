@@ -1,4 +1,4 @@
-import type { BlackboardEntry, ChallengeState } from "./ledger";
+import type { AttemptSummary, BlackboardEntry, ChallengeState } from "./ledger";
 
 function priority(entry: BlackboardEntry): number {
   if (entry.kind === "handoff") return entry.summary.startsWith("FINDINGS:") || entry.summary.startsWith("EVIDENCE:") ? 1 : 0;
@@ -12,21 +12,59 @@ function priority(entry: BlackboardEntry): number {
 export function retainBlackboard(entries: BlackboardEntry[]): BlackboardEntry[] {
   const unique = new Map<string, BlackboardEntry>();
   for (const entry of entries) {
-    const key = JSON.stringify([entry.kind, entry.summary, entry.evidenceRef]);
+    // Identical wording in different attempts is still a separate observation.
+    const key = JSON.stringify(entry);
     unique.delete(key);
     unique.set(key, entry);
   }
-  const all = [...unique.values()];
-  const recent = new Set(all.filter((entry) => !priority(entry)).slice(-30));
-  return all.filter((entry) => priority(entry) || recent.has(entry));
+  // This is durable memory, not a prompt budget. Context projections select a
+  // bounded view; old unsuccessful attempts must remain available on demand.
+  return [...unique.values()];
 }
 
 /** Reserve space for recent uncertainty as well as lasting observations. */
 export function selectBlackboard(challenge: Pick<ChallengeState, "blackboard">, limit: number): BlackboardEntry[] {
-  const facts = challenge.blackboard.filter((entry) => priority(entry))
-    .sort((a, b) => priority(b) - priority(a) || b.at - a.at).slice(0, Math.ceil(limit * 2 / 3));
-  const recent = challenge.blackboard.filter((entry) => !facts.includes(entry)).slice(-(limit - facts.length));
+  const latest = new Map<string, BlackboardEntry>();
+  for (const entry of challenge.blackboard) {
+    const key = JSON.stringify([entry.kind, entry.summary, entry.evidenceRef]);
+    latest.delete(key);
+    latest.set(key, entry);
+  }
+  // Repeated observations stay in durable history but use only one preview slot.
+  const entries = [...latest.values()];
+  const ranked = entries.filter((entry) => priority(entry))
+    .sort((a, b) => priority(b) - priority(a) || b.at - a.at);
+  // Repeated credentials must not displace every later stage or exclusion.
+  const kinds = new Set<BlackboardEntry["kind"]>();
+  const diverse = ranked.filter((entry) => kinds.has(entry.kind) ? false : (kinds.add(entry.kind), true));
+  const facts = [...diverse, ...ranked.filter((entry) => !diverse.includes(entry))].slice(0, Math.ceil(limit * 2 / 3));
+  const recent = entries.filter((entry) => !facts.includes(entry)).slice(-(limit - facts.length));
   return [...facts, ...recent].slice(0, limit);
+}
+
+export function handoffCandidate(approach = "", nextProbe = "") {
+  if (!approach && !nextProbe) return undefined;
+  return { requiresRevalidation: true, approach: approach.slice(0, 300), nextProbe: nextProbe.slice(0, 1_000) };
+}
+
+export function evidenceBackedRuleOuts(challenge: Pick<ChallengeState, "blackboard" | "ruledOutFamilies">): string[] {
+  const supported = new Set(challenge.blackboard.filter((entry) => entry.kind === "decisive_rule_out" && entry.evidenceRef)
+    .flatMap((entry) => entry.ruledOutFamilies));
+  return challenge.ruledOutFamilies.filter((family) => supported.has(family)).slice(-20);
+}
+
+/** Historical observations and a separate, unverified proposal for revisiting. */
+export function handoffAttempt(attempt: AttemptSummary, supportedRuleOuts: readonly string[]) {
+  return {
+    attemptNumber: attempt.attemptNumber, phase: attempt.phase, worker: attempt.worker,
+    startedAt: attempt.startedAt, endedAt: attempt.endedAt,
+    flagsBefore: attempt.flagsBefore, flagsAfter: attempt.flagsAfter,
+    flagsDelta: attempt.flagsAfter - attempt.flagsBefore,
+    triedFamilies: attempt.triedFamilies.slice(-20).map((value) => value.slice(0, 100)),
+    ruledOutFamilies: attempt.ruledOutFamilies.filter((value) => supportedRuleOuts.includes(value)).slice(-20).map((value) => value.slice(0, 100)),
+    stopReason: (attempt.stopReason ?? "").slice(0, 1_000),
+    previousCandidate: handoffCandidate(attempt.approach, attempt.nextDistinctApproach)
+  };
 }
 
 export function blackboardLabel(entry: BlackboardEntry): string {

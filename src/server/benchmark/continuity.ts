@@ -1,13 +1,14 @@
-import { selectBlackboard, blackboardLabel } from "./blackboard";
+import { benchmarkMemoryLocator } from "./memory";
+import { selectBlackboard, blackboardLabel, evidenceBackedRuleOuts, handoffAttempt, handoffCandidate } from "./blackboard";
 /** Compact, replaceable benchmark context derived from the authoritative ledger. */
 
 import type { BenchmarkLedger, ChallengeState } from "./ledger";
 import { PASSWORD_ENUMERATION_BUDGET_MS } from "./effort";
 
 export const MAX_BENCHMARK_CONTINUITY_CHARS = 8_000;
-export const BENCHMARK_HANDOFF_GUIDANCE = "Reassess the recorded evidence independently and choose a materially different hypothesis. Previous attempts may have followed a mistaken premise; do not inherit their plan. An unsuccessful attempt alone does not rule out an entire approach.";
+export const BENCHMARK_HANDOFF_GUIDANCE = "Preserve valid partial solutions, the inherited blackboard and evidence artifacts. Review the previous failure reason, approach and next probe before selecting a new route. Treat inherited plans as candidates to verify; an unsuccessful attempt alone does not rule out an approach.";
 
-export const BENCHMARK_ENDGAME_GUIDANCE = "Final-three revisit: keep working in the same environment while useful work remains. Preserve valid partial solutions, scripts and evidence; change hypothesis when evidence warrants it. An unsuccessful attempt alone does not rule out an entire approach. Do not defer or replace a worker just because the approach is difficult. A justified handoff preserves an available container. Use reset_environment with a concrete reason and evidenceRef only for an observed environment problem; it closes/releases the environment for a fresh acquire or assignment.";
+export const BENCHMARK_ENDGAME_GUIDANCE = "Every attempt has a 30-minute default deadline. A revisit can receive one verified progress extension to 40 minutes. Prepare a handoff at 25 minutes and retain valid partial solutions and evidence; inherited next probes are candidates to reassess.";
 
 function compact(value: string, limit: number): string {
   return value.length <= limit ? value : `${value.slice(0, Math.max(0, limit - 14))}...[truncated]`;
@@ -20,7 +21,7 @@ function challengeLine(challenge: ChallengeState): string {
 export function buildBenchmarkContinuity(
   ledger: BenchmarkLedger,
   worker: "main" | `subagent:${string}` = "main",
-  firstAttemptWarning?: ChallengeState,
+  attemptWarning?: ChallengeState,
   workingDirectory?: string
 ): string {
   const state = ledger.getState();
@@ -32,9 +33,11 @@ export function buildBenchmarkContinuity(
   // Keep live control state and evidence ahead of descriptive detail so the
   // bounded packet cannot lose a timebox or worker slot to a long hint.
   const evidenceLines: string[] = [];
+  const evidenceWithoutReferences = new Map<string, string>();
   const detailLines: string[] = [];
   const lines = [
     "<riftx-benchmark-continuity>",
+    JSON.stringify(benchmarkMemoryLocator(worker === "main" ? mine?.uniqueCode : undefined)),
     worker === "main"
       ? `## Run: schedule=${state.phase} | score=${state.scoreExact ? state.cumulativeScore : `${state.cumulativeScore}+`} | solved=${state.solvedCount}/${state.totalChallenges} | unseen=${unseen} | first_attempts_active=${firstAttemptsActive} | containers=${state.activeContainers}/3`
       : `## Run: schedule=${state.phase} | solved=${state.solvedCount}/${state.totalChallenges}`
@@ -44,6 +47,9 @@ export function buildBenchmarkContinuity(
   if (workingDirectory) lines.push(`## Working directory: ${workingDirectory} (relative local tool paths and shell commands resolve here)`);
 
   if (mine) {
+    const supportedRuleOuts = evidenceBackedRuleOuts(mine);
+    const budget = ledger.budgetFor(mine.uniqueCode);
+    if (budget) lines.push(`Attempt deadline: ${budget.deadlineAt === null ? "pending start" : new Date(budget.deadlineAt).toISOString()}; limit=${Math.round(budget.limitMs / 60_000)} minutes; extension=${budget.extensionUsed ? "used" : mine.attemptCount > 1 ? "available once for verified progress in the final five minutes" : "not available on the first attempt"}.`);
     lines.push(
       `## My challenge: ${mine.uniqueCode} | ${mine.totalScore}pts | attempt ${mine.attemptCount} | flags ${mine.correctFlagCount}/${mine.flagCount}`,
       `  addr: ${mine.containerAddrs.join(", ") || "(none)"}`
@@ -54,27 +60,41 @@ export function buildBenchmarkContinuity(
     );
     if (mine.passwordEnumerationMs > 0) lines.push(`## Online password guessing: ${Math.ceil(mine.passwordEnumerationMs / 1000)}/${PASSWORD_ENUMERATION_BUDGET_MS / 1000} seconds consumed across all workers and attempts.`);
     if (mine.triedFamilies.length) detailLines.push(`## Previously tried: ${mine.triedFamilies.join(", ")}`);
-    if (mine.ruledOutFamilies.length) detailLines.push(`## Recorded exclusions (check their evidence): ${mine.ruledOutFamilies.join(", ")}`);
+    if (supportedRuleOuts.length) detailLines.push(`Evidence-backed ruled-out families: ${supportedRuleOuts.join(", ")}`);
+    const previousAttempt = mine.approachHistory.at(-1);
+    const previous = previousAttempt ? handoffAttempt(previousAttempt, supportedRuleOuts) : undefined;
+    if (previous) {
+      lines.push(`Previous attempt to review: ${JSON.stringify({
+        attemptNumber: previous.attemptNumber, phase: previous.phase, worker: previous.worker,
+        startedAt: previous.startedAt, endedAt: previous.endedAt,
+        flagsBefore: previous.flagsBefore, flagsAfter: previous.flagsAfter, flagsDelta: previous.flagsDelta,
+        stopReason: previous.stopReason
+      })}`);
+      if (previous.previousCandidate) lines.push(`Previous attempt candidate to verify: ${JSON.stringify(previous.previousCandidate)}`);
+    }
+    const candidate = handoffCandidate(mine.currentApproach, mine.nextProbe);
+    if (candidate) lines.push(`Candidates to verify against the blackboard: ${JSON.stringify(candidate)}`);
     const board = selectBlackboard(mine, 6);
     if (board.length) {
-      evidenceLines.push("## Challenge blackboard:", ...board.map((entry) =>
-        `  - ${blackboardLabel(entry)}: ${compact(entry.summary, 600)}${entry.evidenceRef ? ` [${compact(entry.evidenceRef, 200)}]` : ""}`
-      ));
+      evidenceLines.push("Inherited blackboard evidence:", ...board.map((entry) => {
+        const evidence = { kind: blackboardLabel(entry), summary: compact(entry.summary, 600) };
+        const line = JSON.stringify({ ...evidence, ...(entry.evidenceRef ? { evidenceRef: entry.evidenceRef } : {}) });
+        if (entry.evidenceRef) evidenceWithoutReferences.set(line, JSON.stringify({ ...evidence, evidenceRefOmitted: true }));
+        return line;
+      }));
     }
-    const history = mine.approachHistory.slice(-4);
-    if (history.length) {
-      detailLines.push("## Previous attempts:", ...history.map((attempt) =>
-        `  - #${attempt.attemptNumber} tried=${attempt.triedFamilies.join(", ") || "(not recorded)"}; stopped because ${attempt.stopReason}`
-      ));
-    }
+    const history = mine.approachHistory.slice(-4).reverse();
+    if (history.length) detailLines.push("Previous attempts and candidates to reassess:",
+      ...history.map((attempt) => JSON.stringify(handoffAttempt(attempt, supportedRuleOuts)))
+    );
     if (mine.attemptCount > 1) {
-      lines.push(`## Revisit policy: No runtime time limit. ${ledger.isEndgame() ? "Follow the final-challenges guidance above; preserve the environment and valid partial work." : BENCHMARK_HANDOFF_GUIDANCE} If a handoff is justified, checkpoint the evidence and unresolved work.`);
+      lines.push(`Revisit handoff: ${BENCHMARK_HANDOFF_GUIDANCE}`);
     }
-    if (firstAttemptWarning?.uniqueCode === mine.uniqueCode) {
-      lines.push("## FIRST-ATTEMPT NOTICE: 25 minutes have elapsed. Five minutes remain. Consolidate evidence and pursue only the most decisive remaining probe; at 30 minutes, checkpoint and defer immediately.");
+    if (attemptWarning?.uniqueCode === mine.uniqueCode) {
+      lines.push("ATTEMPT_WARNING: 25 minutes reached. Save verified findings, evidence artifacts, failure reasons and a candidate nextProbe now. The recorded deadline still applies; a revisit may extend once only for verifiable progress.");
     }
     if (ledger.isBudgetExhausted(mine.uniqueCode)) {
-      lines.push("## FIRST_ATTEMPT_COMPLETE: Solving tools are blocked. Write the final blackboard checkpoint and defer now.");
+      lines.push("ATTEMPT_TIMEBOX_COMPLETE: Solving tools are blocked. Preserve your checkpoint; submission and cleanup remain available while the runtime closes this attempt.");
     }
     const intel = ledger.intelForChallenge(mine).slice(-4);
     if (intel.length) detailLines.push("## Relevant shared intel:", ...intel.map((entry) => `  - [${entry.target}] ${entry.intel}`));
@@ -95,8 +115,25 @@ export function buildBenchmarkContinuity(
   lines.push(`## Platform sync: ${state.lastSyncAt ? new Date(state.lastSyncAt).toISOString() : "never"} | VPN: ${state.vpnChecked ? (state.vpnOk ? "ok" : "FAIL") : "not prechecked"}`, ...evidenceLines, ...detailLines, "</riftx-benchmark-continuity>");
 
   const configuredToken = process.env.BENCHMARK_TOKEN ?? "";
-  const joined = configuredToken ? lines.join("\n").split(configuredToken).join("[REDACTED_BENCHMARK_TOKEN]") : lines.join("\n");
-  if (joined.length <= MAX_BENCHMARK_CONTINUITY_CHARS) return joined;
-  const trimmed = joined.slice(0, MAX_BENCHMARK_CONTINUITY_CHARS - 50);
-  return `${trimmed.slice(0, trimmed.lastIndexOf("\n"))}\n[...truncated by continuity budget]\n</riftx-benchmark-continuity>`;
+  const scrub = (line: string) => configuredToken ? line.split(configuredToken).join("[REDACTED_BENCHMARK_TOKEN]") : line;
+  const closing = "</riftx-benchmark-continuity>";
+  const retained: string[] = [];
+  let used = closing.length + 1;
+  let omitted = false;
+  for (const original of lines.slice(0, -1)) {
+    let line = scrub(original);
+    const separator = retained.length ? 1 : 0;
+    if (used + separator + line.length > MAX_BENCHMARK_CONTINUITY_CHARS) {
+      const fallback = evidenceWithoutReferences.get(original);
+      if (fallback) line = scrub(fallback);
+      omitted = true;
+    }
+    if (used + separator + line.length <= MAX_BENCHMARK_CONTINUITY_CHARS) {
+      retained.push(line);
+      used += separator + line.length;
+    }
+  }
+  const notice = "Some lower-priority details were omitted to fit the continuity budget.";
+  if (omitted && used + notice.length + 1 <= MAX_BENCHMARK_CONTINUITY_CHARS) retained.push(notice);
+  return retained.join("\n") + "\n" + closing;
 }

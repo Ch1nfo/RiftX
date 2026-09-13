@@ -1,4 +1,5 @@
-import { selectBlackboard, blackboardLabel } from "../blackboard";
+import { benchmarkMemoryLocator } from "../memory";
+import { selectBlackboard, blackboardLabel, handoffAttempt, handoffCandidate, evidenceBackedRuleOuts } from "../blackboard";
 import { Type } from "@sinclair/typebox";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { BenchmarkError, type BenchmarkController } from "../controller";
@@ -107,25 +108,31 @@ export function createAssignBenchmarkChallengeTool(
 }
 
 function buildBrief(challenge: ChallengeState, containerAddrs: string[], phase: BenchmarkPhase, endgame: boolean, sharedIntel: string[]): string {
-  const previousApproaches = challenge.approachHistory.map((attempt) => `- Attempt ${attempt.attemptNumber}: tried=${attempt.triedFamilies.join(", ") || "(not recorded)"}; stopped because ${attempt.stopReason || "stuck"}`);
+  const supportedRuleOuts = evidenceBackedRuleOuts(challenge);
+  const previousApproaches = challenge.approachHistory.slice(-6).map((attempt) => JSON.stringify(handoffAttempt(attempt, supportedRuleOuts)));
   const clipped = (value: string, limit: number) => value.length <= limit ? value : `${value.slice(0, limit - 14)}...[truncated]`;
-  const blackboard = selectBlackboard(challenge, 10).map((entry) => `- ${blackboardLabel(entry)}: ${clipped(entry.summary, 800)}${entry.evidenceRef ? ` [${clipped(entry.evidenceRef, 200)}]` : ""}`);
+  const blackboard = selectBlackboard(challenge, 10).map((entry) => `- ${blackboardLabel(entry)}: ${clipped(entry.summary, 800)}${entry.evidenceRef ? ` [${entry.evidenceRef}]` : ""}`);
+  const previousCandidate = handoffCandidate(challenge.currentApproach, challenge.nextProbe);
   return [
+    JSON.stringify(benchmarkMemoryLocator(challenge.uniqueCode)),
     `Solve this TSec benchmark challenge and find ALL remaining flag(s).`, ``,
     `## Challenge: ${challenge.uniqueCode}`,
     `Schedule: ${phase} | Attempt: ${challenge.attemptCount} | Score: ${challenge.totalScore}pts | Progress: ${challenge.correctFlagCount}/${challenge.flagCount}`,
+    `Flag format: default flag{...}; any format stated in the description takes precedence.`,
     ``, `## Description`, challenge.description,
     ``, `## Target`, `Container address(es): ${containerAddrs.join(", ")}`,
+    ...(challenge.hintUsed ? [``, `## Hint (already purchased, score deducted)`, clipped(challenge.hintContent || "(requested; no content returned)", 1_200)] : []),
     ...(blackboard.length ? [``, `## Challenge blackboard`, ...blackboard] : []),
     ...(challenge.triedFamilies.length ? [`Previously tried: ${challenge.triedFamilies.join(", ")}`] : []),
-    ...(challenge.ruledOutFamilies.length ? [`Recorded exclusions (check their evidence): ${challenge.ruledOutFamilies.join(", ")}`] : []),
+    ...(supportedRuleOuts.length ? [`Recorded exclusions (check their evidence): ${supportedRuleOuts.join(", ")}`] : []),
+    ...(previousCandidate ? [JSON.stringify({ previousCandidate })] : []),
     ...(previousApproaches.length ? [``, `## Previous approaches`, ...previousApproaches] : []),
     ...(challenge.attemptCount > 1 ? [
       ``, `## Recovery instruction`,
-      `This attempt has no runtime time limit. ${endgame ? BENCHMARK_ENDGAME_GUIDANCE : BENCHMARK_HANDOFF_GUIDANCE} If a handoff is justified, save a checkpoint with evidence and unresolved work.`
+      `This attempt runs under the same 30-minute deadline: one notice at 25, hard stop at 30 (checkpoint and submit stay available there). Only verified progress in the final five minutes — a newly accepted flag or a stage_transition checkpoint with previously unseen evidence — can earn one 10-minute extension; plan to checkpoint before the deadline. ${endgame ? BENCHMARK_ENDGAME_GUIDANCE : BENCHMARK_HANDOFF_GUIDANCE} If a handoff is justified, save a checkpoint with evidence and unresolved work.`
     ] : [
       ``, `## First-attempt timing`,
-      `The runtime silently limits this first attempt to 30 minutes. It warns once at 25 minutes. At 30 minutes, immediately save concise blackboard notes and defer; checkpoints do not extend the timer.`
+      `The runtime silently limits this first attempt to 30 minutes. It warns once at 25 minutes. At 30 minutes, immediately save concise blackboard notes and defer; checkpoints and flags do not extend this timer.`
     ]),
     ...(sharedIntel.length ? [``, `## Relevant shared intelligence`, ...sharedIntel.map((item) => `- ${item}`)] : []),
     ``, `## Standing orders`,

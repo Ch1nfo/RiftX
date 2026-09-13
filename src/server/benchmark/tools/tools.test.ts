@@ -312,46 +312,63 @@ test("checkpoint updates the blackboard without extending the timer", async () =
   const first = await execute(tool, { action: "checkpoint", uniqueCode: "ch-1", signal: "found login", signalKind: "new_surface" });
   assert.match((first.content[0] as { text: string }).text, /blackboard updated/);
   const strong = await execute(tool, { action: "checkpoint", uniqueCode: "ch-1", signal: "obtained admin access", signalKind: "privilege_change", evidenceRef: "request:req-1" });
-  assert.match((strong.content[0] as { text: string }).text, /do not alter/);
+  assert.match((strong.content[0] as { text: string }).text, /Checkpoints never extend attempt 1/);
   const repeat = await execute(tool, { action: "checkpoint", uniqueCode: "ch-1", signal: "admin access confirmed", signalKind: "privilege_change", evidenceRef: "request:req-1" });
   assert.match((repeat.content[0] as { text: string }).text, /blackboard updated/);
 });
 
-test("final-stage main and child handoffs preserve evidence without blindly inheriting plans", async () => {
-  const ledger = await new BenchmarkLedger(`handoff-${Date.now()}`).initialize();
+test("revisit handoff preserves outcomes and labels checkpoint candidates for revalidation", async () => {
+  const ledger = await new BenchmarkLedger("test-handoff-" + Date.now()).initialize();
   await ledger.syncFromPlatform([platformChallenge("ch-1")], true, "ip");
   await ledger.acquire("ch-1", "main", ["old"]);
   await ledger.checkpoint("ch-1", "OBSERVED_FACT", ["TESTED_DIRECTION"], "OLD_NEXT_PROBE", "main", {
-    currentApproach: "OLD_CURRENT_ROUTE", evidenceRef: "artifact:FACT_EVIDENCE", ruledOutFamilies: ["SUPPORTED_EXCLUSION"]
+    signalKind: "decisive_rule_out", currentApproach: "OLD_CURRENT_ROUTE", evidenceRef: "artifact:FACT_EVIDENCE", ruledOutFamilies: ["SUPPORTED_EXCLUSION"]
   });
-  await ledger.defer("ch-1", "previous attempt unsuccessful", "OLD_NEXT_PROBE", "main");
+  await ledger.defer("ch-1", "fixture_round_end", "OLD_NEXT_PROBE", "main");
   await ledger.confirmClosed("ch-1");
   const controller = {
     startChallenge: async () => ({ unique_code: "ch-1", container_addr: ["new"] }),
     closeChallenge: async () => ({ unique_code: "ch-1", closed: true })
   } as unknown as BenchmarkController;
   const tool = createBenchmarkControlTool(controller, ledger, fakeBrowser(), () => "main");
-  assert.doesNotMatch(JSON.stringify(tool.parameters), /"nextProbe"|"currentApproach"/);
+  assert.match(JSON.stringify(tool.parameters), /"nextProbe"/);
+  assert.match(JSON.stringify(tool.parameters), /"currentApproach"/);
   const acquired = await execute(tool, { action: "acquire", uniqueCode: "ch-1" });
   const text = (acquired.content[0] as { text: string }).text;
-  assert.match(text, /OBSERVED_FACT|FACT_EVIDENCE/);
-  assert.match(text, /TESTED_DIRECTION/);
-  assert.match(text, /SUPPORTED_EXCLUSION/);
-  assert.match(text, /Preserve valid partial solutions/);
-  assert.doesNotMatch(text, /OLD_NEXT_PROBE|OLD_CURRENT_ROUTE/);
-  const recorded = await execute(tool, { action: "checkpoint", uniqueCode: "ch-1", signal: "new observation", nextProbe: "UNWANTED_NEXT", currentApproach: "UNWANTED_ROUTE" });
-  assert.doesNotMatch(JSON.stringify(recorded), /OLD_NEXT_PROBE|UNWANTED_NEXT|UNWANTED_ROUTE/);
-  assert.notEqual(ledger.getChallenge("ch-1")!.currentApproach, "UNWANTED_ROUTE");
-  assert.notEqual(ledger.getChallenge("ch-1")!.nextProbe, "UNWANTED_NEXT");
-  const deferred = await execute(tool, { action: "defer", uniqueCode: "ch-1", reason: "observation recorded", nextProbe: "UNWANTED_NEXT" });
-  assert.doesNotMatch(JSON.stringify(deferred), /OLD_NEXT_PROBE|UNWANTED_NEXT/);
+  for (const field of ["OBSERVED_FACT", "FACT_EVIDENCE", "TESTED_DIRECTION", "SUPPORTED_EXCLUSION", "OLD_NEXT_PROBE", "OLD_CURRENT_ROUTE", "requiresRevalidation"]) assert.ok(text.includes(field));
+  await execute(tool, { action: "checkpoint", uniqueCode: "ch-1", signal: "fixture_new_observation", nextProbe: "NEW_NEXT_PROBE", currentApproach: "NEW_CURRENT_ROUTE" });
+  assert.equal(ledger.getChallenge("ch-1")!.currentApproach, "NEW_CURRENT_ROUTE");
+  assert.equal(ledger.getChallenge("ch-1")!.nextProbe, "NEW_NEXT_PROBE");
+  await execute(tool, { action: "defer", uniqueCode: "ch-1", reason: "fixture_round_end", nextProbe: "FINAL_NEXT_PROBE" });
+  assert.equal(ledger.getChallenge("ch-1")!.nextProbe, "FINAL_NEXT_PROBE");
   let brief = "";
   const assign = createAssignBenchmarkChallengeTool(controller, ledger, async (task) => { brief = task; return { taskId: "fresh" }; });
   await execute(assign, { uniqueCode: "ch-1" });
-  assert.match(brief, /OBSERVED_FACT/);
-  assert.match(brief, /FACT_EVIDENCE/);
-  assert.match(brief, /Preserve valid partial solutions/);
-  assert.doesNotMatch(brief, /OLD_NEXT_PROBE|OLD_CURRENT_ROUTE|UNWANTED_NEXT|UNWANTED_ROUTE|NEXT:/);
+  for (const field of ["OBSERVED_FACT", "FACT_EVIDENCE", "NEW_CURRENT_ROUTE", "FINAL_NEXT_PROBE", "requiresRevalidation", "flagsDelta"]) assert.ok(brief.includes(field));
+});
+
+test("revisit brief carries the purchased hint and flag-format default", async () => {
+  const ledger = await new BenchmarkLedger(`hint-${Date.now()}`).initialize();
+  await ledger.syncFromPlatform([platformChallenge("ch-1")], true, "ip");
+  await ledger.acquire("ch-1", "main", ["old"]);
+  await ledger.defer("ch-1", "first attempt ended", undefined, "main");
+  await ledger.confirmClosed("ch-1");
+  // recordHint requires attempt 2+; children cannot call hint themselves, so the
+  // paid content must reach the revisit brief.
+  await ledger.acquire("ch-1", "main", ["mid"]);
+  await ledger.recordHint("ch-1", "check the backup endpoint", "main");
+  // Single-challenge revisit is endgame: defer preserves the environment (orphaned).
+  await ledger.defer("ch-1", "previous attempt unsuccessful", undefined, "main");
+  const controller = {
+    startChallenge: async () => ({ unique_code: "ch-1", container_addr: ["new"] }),
+    closeChallenge: async () => ({ unique_code: "ch-1", closed: true })
+  } as unknown as BenchmarkController;
+  let brief = "";
+  const assign = createAssignBenchmarkChallengeTool(controller, ledger, async (task) => { brief = task; return { taskId: "fresh" }; });
+  await execute(assign, { uniqueCode: "ch-1" });
+  assert.match(brief, /## Hint \(already purchased, score deducted\)\ncheck the backup endpoint/);
+  assert.match(brief, /Flag format: default flag\{\.\.\.\}/);
+  assert.doesNotMatch(brief, /NEXT:/);
 });
 
 test("hint forbidden in pass 1", async () => {

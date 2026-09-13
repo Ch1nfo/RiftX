@@ -1,163 +1,182 @@
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { buildBenchmarkContinuity } from "./continuity";
-import { BenchmarkLedger } from "./ledger";
+import { BenchmarkLedger, ATTEMPT_LIMIT_MS, ATTEMPT_WARNING_MS } from "./ledger";
 import type { Challenge } from "./controller";
 
-const realHome = process.env.HOME;
-let tempDir: string;
+const MINUTE = 60_000;
 
-test.before(async () => {
-  tempDir = await mkdtemp(join(tmpdir(), "riftx-cont-"));
-  process.env.HOME = tempDir;
-});
-
-test.after(async () => {
-  process.env.HOME = realHome;
-  await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
-});
-
-function platformChallenge(code: string, overrides: Partial<Challenge> = {}): Challenge {
+function platformChallenge(code: string): Challenge {
   return {
-    unique_code: code, description: `Challenge ${code}`, difficulty: "easy", level: 1,
-    total_score: 100, flag_count: 1, correct_flag_count: 0, is_completed: false,
-    container_status: "stopped", container_addr: [], ...overrides
+    unique_code: code, description: `Synthetic fixture ${code}`, difficulty: "easy", level: 1,
+    total_score: 100, flag_count: 3, correct_flag_count: 0, is_completed: false,
+    container_status: "stopped", container_addr: []
   };
 }
 
-async function setup() {
-  const sessionId = `cont-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const ledger = await new BenchmarkLedger(sessionId).initialize();
-  await ledger.syncFromPlatform([
-    platformChallenge("ch-1"), platformChallenge("ch-2"), platformChallenge("ch-3")
-  ], true, "10.0.0.1");
-  return { ledger };
+async function setup(t: TestContext, now = () => Date.now(), codes = ["fixture", "second", "third"]) {
+  const sessionId = `continuity-rotation-test-${randomUUID()}`;
+  t.after(() => BenchmarkLedger.destroy(sessionId));
+  const ledger = await new BenchmarkLedger(sessionId, now).initialize();
+  if (codes.length) await ledger.syncFromPlatform(codes.map(platformChallenge), true, "127.0.0.1");
+  return ledger;
 }
 
-test("empty ledger produces empty continuity", async () => {
-  const sessionId = `empty-${Date.now()}`;
-  const ledger = await new BenchmarkLedger(sessionId).initialize();
-  assert.equal(buildBenchmarkContinuity(ledger), "");
-});
-
-test("includes run state, challenge queue, and my-challenge", async () => {
-  const { ledger } = await setup();
-  await ledger.acquire("ch-1", "main", ["10.0.0.1:80"]);
-  await ledger.checkpoint("ch-1", "found login at /admin", ["web"], "LEGACY_NEXT_PROBE", "main", { currentApproach: "LEGACY_CURRENT_ROUTE", evidenceRef: "artifact:observation" });
-  const text = buildBenchmarkContinuity(ledger);
-  assert.match(text, /<riftx-benchmark-continuity>/);
-  assert.match(text, /schedule=coverage/);
-  assert.match(text, /solved=0\/3/);
-  assert.match(text, /My challenge: ch-1/);
-  assert.match(text, /addr: 10\.0\.0\.1:80/);
-  assert.match(text, /found login at \/admin/);
-  assert.doesNotMatch(text, /LEGACY_NEXT_PROBE|LEGACY_CURRENT_ROUTE|next_probe|current_approach/);
-  assert.match(text, /artifact:observation/);
-  assert.match(text, /SubAgent challenges \(0\/2\)/);
-  assert.match(text, /Eligible candidates/);
-  assert.match(text, /ch-2.*100pts/);
-  assert.match(text, /<\/riftx-benchmark-continuity>/);
-});
-
-test("first-attempt exhaustion emits an enforced stop directive", async () => {
-  let now = 1_000_000;
-  const sessionId = `timeout-${Date.now()}`;
-  const ledger = await new BenchmarkLedger(sessionId, () => now).initialize();
-  await ledger.syncFromPlatform([platformChallenge("ch-1")], true, "ip");
-  await ledger.acquire("ch-1", "main", ["a"]);
-  now += 30 * 60 * 1000;
-  const text = buildBenchmarkContinuity(ledger);
-  assert.match(text, /FIRST_ATTEMPT_COMPLETE/);
-  assert.match(text, /Solving tools are blocked/);
-});
-
-test("ordinary continuity does not expose a running countdown", async () => {
-  const { ledger } = await setup();
-  await ledger.acquire("ch-1", "main", ["a"]);
-  await ledger.checkpoint("ch-1", "fresh signal", undefined, undefined, "main");
-  const text = buildBenchmarkContinuity(ledger);
-  assert.doesNotMatch(text, /elapsed|remaining|minute/i);
-  assert.match(text, /fresh signal/);
-});
-
-test("final-stage recovery continuity preserves valid partial work", async () => {
-  const ledger = await new BenchmarkLedger(`recovery-${Date.now()}`).initialize();
-  await ledger.syncFromPlatform([platformChallenge("ch-1")], true, "10.0.0.1");
-  await ledger.acquire("ch-1", "main", ["a"]);
-  await ledger.checkpoint("ch-1", "sqlmap found no injectable parameters", ["SQLi"], "audit authorization", "main", {
-    signalKind: "decisive_rule_out", currentApproach: "generic SQLi automation", ruledOutFamilies: ["SQLi"]
-  });
-  await ledger.defer("ch-1", "timebox", "audit authorization", "main");
-  await ledger.confirmClosed("ch-1");
+async function startRevisit(ledger: BenchmarkLedger) {
+  await ledger.acquire("fixture", "main", ["127.0.0.1:80"]);
+  await ledger.defer("fixture", "fixture-previous-failure", "fixture-proposed-next-probe", "main");
+  await ledger.confirmClosed("fixture");
   await ledger.maybeAdvancePhase();
-  await ledger.acquire("ch-1", "main", ["b"]);
-  const text = buildBenchmarkContinuity(ledger);
-  assert.match(text, /attempt 2/);
-  assert.match(text, /#1 tried=SQLi/);
-  assert.doesNotMatch(text, /audit authorization|generic SQLi automation/);
-  assert.match(text, /Preserve valid partial solutions/);
-  assert.match(text, /unsuccessful attempt alone does not rule out/);
-  assert.match(text, /No runtime time limit/);
+  await ledger.acquire("fixture", "main", ["127.0.0.1:80"]);
+}
+
+test("empty ledgers have no continuity packet", async (t) => {
+  assert.equal(buildBenchmarkContinuity(await setup(t, undefined, [])), "");
 });
 
-test("solved challenges are compact — no description or process detail", async () => {
-  const { ledger } = await setup();
-  await ledger.acquire("ch-1", "main", ["a"]);
-  await ledger.markSolved("ch-1", 100, "main");
-  const text = buildBenchmarkContinuity(ledger);
-  // ch-1 appears as solved in run state but not in candidates or my challenge
-  assert.match(text, /solved=1\/3/);
-  assert.doesNotMatch(text, /My challenge: ch-1/);
-  assert.doesNotMatch(text, /Eligible candidates[\s\S]*ch-1/);
-});
-
-test("continuity retains control state and evidence ahead of oversized descriptive details", async () => {
-  const { ledger } = await setup();
-  await ledger.acquire("ch-1", "main", ["127.0.0.1:80"]);
+test("active continuity retains verified evidence and labels proposed plans as candidates", async (t) => {
+  const ledger = await setup(t);
+  await ledger.acquire("fixture", "main", ["127.0.0.1:80"]);
+  await ledger.checkpoint("fixture", "fixture-confirmed-evidence", ["fixture-tried-family"], "fixture-candidate-next-probe", "main", {
+    signalKind: "credential", evidenceRef: "artifact:fixture-observation", currentApproach: "fixture-candidate-approach"
+  });
   const state = structuredClone(ledger.getState());
-  const mine = state.challenges["ch-1"];
+  const packet = buildBenchmarkContinuity(ledger);
+  for (const marker of ["fixture-confirmed-evidence", "artifact:fixture-observation", "fixture-candidate-next-probe", "fixture-candidate-approach"]) assert.ok(packet.includes(marker));
+  assert.match(packet, /Candidates to verify against the blackboard/);
+  assert.match(packet, /limit=30 minutes/);
+  assert.deepEqual(ledger.getState(), state, "rendering evidence cannot alter ownership, exclusion decisions or scores");
+});
+
+for (const revisit of [false, true]) {
+  test(`${revisit ? "revisit" : "first attempt"} shows the generic deadline notice`, async (t) => {
+    let now = 1_000_000;
+    const ledger = await setup(t, () => now, ["fixture"]);
+    if (revisit) await startRevisit(ledger);
+    else await ledger.acquire("fixture", "main", ["127.0.0.1:80"]);
+    now += ATTEMPT_LIMIT_MS;
+    const packet = buildBenchmarkContinuity(ledger);
+    assert.match(packet, /ATTEMPT_TIMEBOX_COMPLETE/);
+    assert.match(packet, /Solving tools are blocked/);
+    assert.match(packet, /submission and cleanup remain available/);
+    assert.doesNotMatch(packet, /FIRST_ATTEMPT_COMPLETE|No runtime time limit/);
+  });
+
+  test(`${revisit ? "revisit" : "first attempt"} warning is sampled at twenty-five minutes without consumption`, async (t) => {
+    let now = 1_000_000;
+    const ledger = await setup(t, () => now, ["fixture"]);
+    if (revisit) await startRevisit(ledger);
+    else await ledger.acquire("fixture", "main", ["127.0.0.1:80"]);
+    now += ATTEMPT_WARNING_MS;
+    const warning = ledger.attemptWarningFor("main");
+    assert.ok(warning);
+    const packet = buildBenchmarkContinuity(ledger, "main", warning);
+    assert.match(packet, /ATTEMPT_WARNING: 25 minutes/);
+    assert.equal(buildBenchmarkContinuity(ledger, "main", ledger.attemptWarningFor("main")), packet);
+    assert.ok(ledger.attemptWarningFor("main"));
+    await ledger.acknowledgeAttemptWarning("main", warning.uniqueCode, warning.currentAttemptStartedAt);
+    assert.equal(ledger.attemptWarningFor("main"), undefined);
+  });
+}
+
+test("routine continuity uses a stable absolute deadline instead of a changing countdown", async (t) => {
+  let now = 1_000_000;
+  const ledger = await setup(t, () => now);
+  await ledger.acquire("fixture", "main", ["127.0.0.1:80"]);
+  const before = buildBenchmarkContinuity(ledger);
+  now += MINUTE;
+  assert.equal(buildBenchmarkContinuity(ledger), before);
+  assert.doesNotMatch(before, /elapsed|remaining/i);
+});
+
+test("a verified revisit extension appears as forty minutes with its updated deadline", async (t) => {
+  let now = 1_000_000;
+  const ledger = await setup(t, () => now, ["fixture"]);
+  await startRevisit(ledger);
+  now += 27 * MINUTE;
+  const checkpoint = await ledger.checkpoint("fixture", "fixture-verified-stage-transition", undefined, "fixture-follow-up", "main", {
+    signalKind: "stage_transition", evidenceRef: "artifact:fixture-stage-transition"
+  });
+  assert.equal(checkpoint.extended, true);
+  const budget = ledger.budgetFor("fixture")!;
+  const packet = buildBenchmarkContinuity(ledger);
+  assert.match(packet, /limit=40 minutes; extension=used/);
+  assert.ok(packet.includes(new Date(budget.deadlineAt!).toISOString()));
+});
+
+test("a new attempt inherits blackboard evidence and reviews the previous failure and next probe", async (t) => {
+  const ledger = await setup(t, undefined, ["fixture"]);
+  await ledger.acquire("fixture", "main", ["127.0.0.1:80"]);
+  await ledger.checkpoint("fixture", "fixture-valid-partial-evidence", ["fixture-tried-family"], "fixture-proposed-next-probe", "main", {
+    signalKind: "credential", evidenceRef: "artifact:fixture-stage-one", currentApproach: "fixture-previous-approach"
+  });
+  await ledger.defer("fixture", "fixture-previous-failure", "fixture-proposed-next-probe", "main");
+  await ledger.confirmClosed("fixture");
+  await ledger.maybeAdvancePhase();
+  await ledger.acquire("fixture", "main", ["127.0.0.1:80"]);
+  const packet = buildBenchmarkContinuity(ledger);
+  for (const marker of ["fixture-valid-partial-evidence", "artifact:fixture-stage-one", "fixture-previous-failure", "fixture-proposed-next-probe", "fixture-previous-approach"]) assert.ok(packet.includes(marker));
+  assert.match(packet, /Previous attempt to review/);
+  assert.match(packet, /candidates to verify/);
+  assert.match(packet, /unsuccessful attempt alone does not rule out/);
+  assert.deepEqual(ledger.getChallenge("fixture")!.ruledOutFamilies, []);
+});
+
+test("bounded continuity retains warnings, slots, key evidence and the immediate handoff", async (t) => {
+  const ledger = await setup(t);
+  await ledger.acquire("fixture", "main", ["127.0.0.1:80"]);
+  const state = structuredClone(ledger.getState());
+  const mine = state.challenges.fixture;
   mine.description = "d".repeat(10_000);
   mine.hintUsed = true;
   mine.hintContent = "h".repeat(10_000);
+  mine.approachHistory = [{ attemptNumber: 1, phase: "coverage", worker: "main", startedAt: 1, endedAt: 2,
+    flagsBefore: 0, flagsAfter: 1, triedFamilies: [], ruledOutFamilies: [], stopReason: "fixture-prior-failure",
+    approach: "fixture-prior-approach", nextDistinctApproach: "fixture-prior-next-probe" }];
   mine.blackboard = Array.from({ length: 6 }, (_, index) => ({
     at: index, worker: "main" as const, kind: "credential" as const,
-    summary: `critical_${index}_` + "e".repeat(800), evidenceRef: `artifact:ref_${index}_` + "r".repeat(250),
+    summary: `fixture-evidence-${index} ` + "e".repeat(800), evidenceRef: `artifact:fixture-${index} ` + "r".repeat(250),
     approach: "", triedFamilies: [], ruledOutFamilies: [], nextProbe: ""
   }));
-  state.challenges["ch-2"].status = "running";
-  state.challenges["ch-2"].owner = "subagent:fixture";
+  state.challenges.second.status = "running";
+  state.challenges.second.owner = "subagent:fixture-worker";
   const source = {
     getState: () => state, isEndgame: () => false, isBudgetExhausted: () => true,
-    intelForChallenge: () => [], candidates: () => [state.challenges["ch-3"]]
+    budgetFor: () => ledger.budgetFor("fixture"), intelForChallenge: () => [], candidates: () => [state.challenges.third]
   } as unknown as BenchmarkLedger;
-
-  const text = buildBenchmarkContinuity(source, "main", mine);
-  assert.ok(text.length <= 8_000);
-  assert.match(text, /FIRST_ATTEMPT_COMPLETE/);
-  assert.match(text, /SubAgent challenges \(1\/2\)/);
-  assert.match(text, /ch-2.*running/);
-  assert.match(text, /ch-3.*pending/);
-  for (let index = 0; index < 6; index += 1) assert.ok(text.includes(`artifact:ref_${index}_`));
-  assert.ok(text.endsWith("</riftx-benchmark-continuity>"));
+  const packet = buildBenchmarkContinuity(source, "main", mine);
+  assert.ok(packet.length <= 8_000);
+  assert.match(packet, /ATTEMPT_WARNING/);
+  assert.match(packet, /ATTEMPT_TIMEBOX_COMPLETE/);
+  assert.match(packet, /fixture-prior-failure/);
+  assert.match(packet, /fixture-prior-next-probe/);
+  assert.match(packet, /"flagsDelta":1/);
+  assert.match(packet, /"requiresRevalidation":true/);
+  assert.match(packet, /SubAgent challenges \(1\/2\)/);
+  for (let index = 0; index < 6; index++) assert.ok(packet.includes(`fixture-evidence-${index}`));
+  assert.ok(packet.endsWith("</riftx-benchmark-continuity>"));
 });
 
-test("rebuilding continuity leaves a due notice available until acknowledged for the same attempt", async () => {
-  let now = 1_000_000;
-  const ledger = await new BenchmarkLedger(`notice-rebuild-${Date.now()}`, () => now).initialize();
-  await ledger.syncFromPlatform([platformChallenge("ch-1")], true, "127.0.0.1");
-  await ledger.acquire("ch-1", "main", ["127.0.0.1:80"]);
-  now += 25 * 60 * 1000;
-  const first = ledger.firstAttemptWarningFor("main");
-  assert.ok(first);
-  const initial = buildBenchmarkContinuity(ledger, "main", first);
-  const repeated = ledger.firstAttemptWarningFor("main");
-  assert.ok(repeated);
-  assert.equal(buildBenchmarkContinuity(ledger, "main", repeated), initial);
-  assert.notEqual(buildBenchmarkContinuity(ledger, "main"), initial);
-  assert.equal(ledger.getChallenge("ch-1")?.firstAttemptWarningIssuedAt, null);
-  assert.equal(await ledger.acknowledgeFirstAttemptWarning("main", first.uniqueCode, first.currentAttemptStartedAt), true);
-  assert.equal(ledger.firstAttemptWarningFor("main"), undefined);
+test("evidence references are preserved exactly or omitted as a complete field", async (t) => {
+  const ledger = await setup(t, undefined, ["fixture"]);
+  await ledger.acquire("fixture", "main", ["127.0.0.1:80"]);
+  const state = structuredClone(ledger.getState());
+  const reference = "artifact:/" + "fixture-long-segment/".repeat(30) + "evidence.json";
+  const entry = { at: 1, worker: "main" as const, kind: "credential" as const,
+    summary: "fixture-reference-evidence", evidenceRef: reference, approach: "", triedFamilies: [], ruledOutFamilies: [], nextProbe: "" };
+  state.challenges.fixture.blackboard = [entry];
+  const source = {
+    getState: () => state, isEndgame: () => false, isBudgetExhausted: () => false,
+    budgetFor: () => ledger.budgetFor("fixture"), intelForChallenge: () => [], candidates: () => []
+  } as unknown as BenchmarkLedger;
+  const packet = buildBenchmarkContinuity(source);
+  assert.ok(packet.includes(reference));
+  const hugeReference = reference.repeat(20);
+  entry.evidenceRef = hugeReference;
+  const bounded = buildBenchmarkContinuity(source);
+  assert.ok(bounded.length <= 8_000);
+  assert.ok(bounded.includes("fixture-reference-evidence"));
+  assert.match(bounded, /"evidenceRefOmitted":true/);
+  assert.equal(bounded.includes("fixture-long-segment"), false, "an incomplete pathname must never look usable");
 });

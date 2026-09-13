@@ -16,11 +16,17 @@ test("prompt embeds every benchmark continuity section plus conversation and pre
     customInstructions: "focus on flag 3"
   });
   for (const section of [
-    "## Run state", "## Current challenge", "## Challenge blackboard", "## Confirmed facts",
-    "## Attempts and ruled-out paths", "## Attempt and approach history",
-    "## Ruled-out assumptions", "## Target credentials and session state",
-    "## Browser and network references", "## Artifacts", "## SubAgent ownership",
-    "## Exact next probe", "## Score optimization notes"
+    "## Run state",
+    "## Current challenge",
+    "## Challenge blackboard",
+    "## Confirmed facts",
+    "## Attempt history and exclusion evidence",
+    "## Target credentials and session state",
+    "## Browser and network references",
+    "## Artifacts",
+    "## SubAgent ownership",
+    "## Exact next probe",
+    "## Score optimization notes"
   ]) {
     assert.ok(prompt.includes(section), `missing section: ${section}`);
   }
@@ -45,6 +51,6 @@ test("validates only summaries containing every required section with minimum le
   assert.equal(isValidPentestCompactionSummary(valid.replace("## Artifacts", "## Missing")), false);
   assert.equal(isValidPentestCompactionSummary("too short"), false);
   const headings = [...PENTEST_COMPACTION_SYSTEM_PROMPT.matchAll(/^## .+$/gm)].map(([heading]) => heading).join("\n");
-  assert.equal(isValidPentestCompactionSummary(headings), true, "section bodies are not subject to strict validation");
+  assert.equal(isValidPentestCompactionSummary(headings), false, "Headings alone must not pass without checkpoint content.");
   assert.equal(isValidPentestCompactionSummary(valid + "\n## Artifacts\nadditional reference"), true);
 });

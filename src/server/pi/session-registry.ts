@@ -59,11 +59,14 @@ export type SessionRecord = {
   abortPromise?: Promise<void>;
   aborting?: boolean;
   abortEpoch?: number;
+  benchmarkAttemptTimeoutEpoch?: number;
+  benchmarkHandoffPaused?: boolean;
   waitingForSubagents?: boolean;
   compacting?: boolean;
   promptChain?: Promise<void>;
   pendingSessionActions?: number;
   subagentDeliveryInProgress?: boolean;
+  prepareSubagentCompletion?: (task: import("@/lib/types").SubagentTask, summary?: string) => Promise<void>;
   deliveredSubagentResults: Set<string>;
   deliveringSubagentResults: Set<string>;
   skills: SkillDescriptor[];
@@ -91,7 +94,7 @@ export type RuntimeDeps = {
 };
 
 /** Bump to force process-global session objects to rebuild from disk. */
-export const RUNTIME_VERSION = 47;
+export const RUNTIME_VERSION = 48;
 
 declare global {
   var __riftxSessions: Map<string, SessionRecord> | undefined;

@@ -62,11 +62,16 @@ import { BenchmarkController, BenchmarkError } from "@/server/benchmark/controll
 import { BenchmarkWarningDelivery } from "@/server/benchmark/warning-delivery";
 import { BenchmarkLedger, BENCHMARK_MAX_SUBAGENTS } from "@/server/benchmark/ledger";
 import { createBenchmarkControlTool } from "@/server/benchmark/tools/control-tool";
+import { persistBenchmarkEvidenceRef } from "@/server/benchmark/evidence";
+import { createBenchmarkChildHandoff } from "@/server/benchmark/child-handoff";
 import { createAssignBenchmarkChallengeTool } from "@/server/benchmark/tools/assign-tool";
 import { buildBenchmarkContinuity } from "@/server/benchmark/continuity";
+import { buildBenchmarkCompactionFallback } from "@/server/benchmark/compaction-fallback";
+import { blockBenchmarkSampling, clearBenchmarkCompactionFailure } from "./compaction-budget";
 import { installPasswordEnumerationBudget, installBenchmarkRepeatNotice } from "@/server/benchmark/effort";
-import { installBenchmarkTimeboxGate } from "@/server/benchmark/timebox";
-import { benchmarkWorkspaceRoot, BenchmarkWorkspace, createWorkspaceLocalTools, benchmarkMutationLock } from "@/server/benchmark/workspace";
+import { checkBenchmarkToolExecutionGuard, installBenchmarkTimeboxGate } from "@/server/benchmark/timebox";
+import { abortBenchmarkAttempt, startBenchmarkAttemptWatchdog } from "@/server/benchmark/attempt-watchdog";
+import { benchmarkWorkspaceRoot, BenchmarkWorkspace, createWorkspaceLocalTools, benchmarkMutationLock, challengeDirectory } from "@/server/benchmark/workspace";
 import { createChallengeSkillSelection } from "@/server/benchmark/challenge-skills";
 
 type BenchmarkRuntime = { controller: BenchmarkController; ledger: BenchmarkLedger };
@@ -400,6 +405,26 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
         async () => {
           await selectChallengeSkills!();
           await workspace!.activate();
+        },
+        async (reference, uniqueCode) => {
+          const runDirectory = join(paths.root, "benchmark", evidenceSessionId);
+          const browserEvidenceDirectory = join(paths.evidence, evidenceSessionId);
+          return persistBenchmarkEvidenceRef(reference, {
+            directory: challengeDirectory(join(runDirectory, "evidence"), uniqueCode),
+            cwd: workspace!.cwd,
+            allowedRoots: [workspace!.cwd, toolArtifactDir(paths.artifacts, evidenceSessionId), browserEvidenceDirectory,
+              join(runDirectory, "evidence"), join(runDirectory, "handoffs")],
+            evidenceDirectory: browserEvidenceDirectory,
+            browser,
+            resolveToolEvidence: (toolCallId) => {
+              const entry = evidenceSession?.sessionManager.getBranch().slice().reverse().find((entry) =>
+                entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolCallId === toolCallId);
+              if (entry?.type !== "message" || entry.message.role !== "toolResult") return undefined;
+              const details = entry.message.details as { artifactPath?: unknown } | undefined;
+              return { toolName: entry.message.toolName, content: JSON.stringify(entry.message.content),
+                ...(typeof details?.artifactPath === "string" ? { artifactPath: details.artifactPath } : {}) };
+            }
+          });
         }
       )]
     : [];
@@ -495,7 +520,20 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   const compactionExtension = createPentestCompactionExtension({
     getSession: () => evidenceSession,
     modelRegistry,
-    getActiveSkills: () => [...activeSkillNames]
+    getActiveSkills: () => [...activeSkillNames],
+    benchmarkFallback: benchmarkLedger ? {
+      buildSummary: (maxChars) => buildBenchmarkCompactionFallback({
+        ledger: benchmarkLedger, worker: benchmarkOwner, workingDirectory: workspace?.cwd ?? cwd,
+        assignedChallenge: child ? runtimeDeps?.benchmark?.assignedChallenge : undefined,
+        ledgerFile: join(paths.root, "benchmark", evidenceSessionId, "state.json"),
+        sessionFile: sessionManager.getSessionFile()
+      }, maxChars),
+      getContinuityContext: () => getContinuityContext(true),
+      onError: (error) => {
+        if (evidenceSession) blockBenchmarkSampling(evidenceSession, error);
+        emitter.emit("event", { type: "error", error: error.message });
+      }
+    } : undefined
   });
   const resourceLoader = new DefaultResourceLoader({
     cwd,
@@ -580,7 +618,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     // scanning findings/artifacts on every provider request.
     if (benchmarkLedger) {
       const worker = child ? `subagent:${findingSource.subagentId ?? "child"}` as const : "main" as const;
-      const warning = benchmarkLedger.firstAttemptWarningFor(worker);
+      const warning = benchmarkLedger.attemptWarningFor(worker);
       const investigationCapsule = buildBenchmarkContinuity(benchmarkLedger, worker, warning, workspace?.cwd);
       if (!preview) warningDelivery?.prepare(warning, investigationCapsule);
       return {
@@ -655,6 +693,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
             throw error;
           }
           try {
+            checkBenchmarkToolExecutionGuard();
             return await original(toolCallId, params, signal, ...rest);
           } finally {
             mutationRelease?.();
@@ -667,6 +706,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
         tool.execute = async (toolCallId: string, params: unknown, signal?: AbortSignal, ...rest: unknown[]) => {
           const release = await fileLock().acquire(signal);
           try {
+            checkBenchmarkToolExecutionGuard();
             return await original(toolCallId, params, signal, ...rest);
           } finally {
             release?.();
@@ -723,7 +763,10 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     else if (event.type === "compaction_end") {
       record.compacting = false;
       // Increment the REAL compaction counter only when a compaction occurred.
-      if (benchmarkLedger && event.result) void benchmarkLedger.recordCompaction().catch(() => undefined);
+      if (benchmarkLedger && event.result) {
+        const details = event.result.details as { riftx?: { fallback?: unknown } } | undefined;
+        void benchmarkLedger.recordCompaction(Boolean(details?.riftx?.fallback)).catch(() => undefined);
+      }
       // Covers ordinary end-of-turn/manual compaction. Mid-turn compaction
       // also refreshes its detached sampling array inside the transform hook.
       // Serialized on the prompt chain so the continuity splice can never
@@ -772,44 +815,20 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   });
   record.unsubscribe = unsubscribe;
   if (subagents) {
-    subagents.setCompletionHandler((task, childResult) => {
-      // Release ownership on every terminal worker status. The ledger chooses
-      // whether to close or preserve the environment for a final-stage handoff.
-      let benchmarkCleanup: Promise<void> = benchmarkLedger && task.benchmarkChallenge
-        ? benchmarkLedger.recordChildHandoff(task.benchmarkChallenge, `subagent:${task.id}`, childResult.summary)
-        : Promise.resolve();
-      benchmarkCleanup = benchmarkCleanup.catch((error) => {
-        console.warn("Could not persist benchmark child handoff:", error);
-      });
-      if (benchmarkController && benchmarkLedger) {
-        const taskId = task.id;
-        const ownerTag: `subagent:${string}` = `subagent:${taskId}`;
-        const owned = Object.values(benchmarkLedger.getState().challenges).find(
-          (challenge) => challenge.owner === ownerTag && (challenge.status === "running" || challenge.status === "reserved")
-        );
-        if (owned) {
-          benchmarkCleanup = benchmarkCleanup.then(() => benchmarkLedger.runChallengeAction(owned.uniqueCode, async () => {
-            let released = false;
-            try {
-              await benchmarkLedger.releaseOnSubagentExit(owned.uniqueCode, `subagent exited with status=${task.status}`, ownerTag);
-              released = true;
-              if (benchmarkLedger.getChallenge(owned.uniqueCode)?.status === "closing") {
-                await benchmarkController.closeChallenge(owned.uniqueCode);
-                await benchmarkLedger.confirmClosed(owned.uniqueCode);
-              }
-            } catch {
-              // Only a failed platform close is a leak. An owner mismatch means
-              // this stale completion no longer controls the challenge.
-              if (released) await benchmarkLedger.markCloseFailed(owned.uniqueCode).catch(() => undefined);
-            }
-          }));
-        }
+    if (benchmarkController && benchmarkLedger) {
+      record.prepareSubagentCompletion = createBenchmarkChildHandoff({ ledger: benchmarkLedger, controller: benchmarkController });
+    }
+    subagents.setCompletionHandler(async (task, childResult) => {
+      // Saving does not start a model turn, so it must also run during Stop.
+      // A failed save remains pending for the recovery timer or next resume.
+      try {
+        await record.prepareSubagentCompletion?.(task, childResult.summary);
+      } catch (error) {
+        console.warn("[benchmark] Completion handoff remains pending", { taskId: task.id }, error);
+        return;
       }
-      // Deliver only after the ledger owner and platform slot are reconciled.
-      // Otherwise the parent immediately tries to refill the returned worker
-      // slot while the ledger still counts it as occupied, causing a needless
-      // failed assignment on every child that exits without explicit defer.
-      return benchmarkCleanup.catch(() => undefined).then(() => deliverSubagentCompletion(record, task, childResult.summary))
+      // Every delivery route persists the handoff and reconciles its slot first.
+      return deliverSubagentCompletion(record, task, childResult.summary)
         .then(() => {
           // When this was the last active subagent, deliver any previously
           // stranded results alongside this one — otherwise a result that
@@ -899,6 +918,46 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   await refreshContinuity(initialBranch.some((entry) => entry.type === "compaction")).catch((error) => {
     console.warn("RiftX could not restore continuity context:", error);
   });
+  if (benchmarkLedger && benchmarkController) {
+    const watchdog = startBenchmarkAttemptWatchdog({
+      ledger: benchmarkLedger,
+      controller: benchmarkController,
+      owner: benchmarkOwner,
+      stopWorker: () => abortBenchmarkAttempt(record),
+      isStopping: () => Boolean(record.shutdownPromise || record.aborting),
+      warn: async (challenge) => {
+        const deadline = benchmarkLedger.budgetFor(challenge.uniqueCode)?.deadlineAt;
+        await result.session.sendCustomMessage({
+          customType: "riftx_benchmark_attempt_warning",
+          content: `Attempt ${challenge.attemptCount} for ${challenge.uniqueCode} has reached 25 minutes. Save a checkpoint now with confirmed progress, durable evidence references, tried approaches, evidence-backed exclusions, and a different candidate nextProbe requiring revalidation. The framework will stop this attempt at ${deadline ? new Date(deadline).toISOString() : "its deadline"} and release its environment.`,
+          display: false
+        }, { deliverAs: "steer", triggerTurn: false });
+      },
+      event: (event, attempt) => console.log(JSON.stringify({
+        time: new Date().toISOString(), event, worker: benchmarkOwner,
+        ...(attempt ? { uniqueCode: attempt.uniqueCode, attempt: attempt.attemptCount, startedAt: attempt.currentAttemptStartedAt } : {})
+      }))
+    });
+    // Terminal results remain undelivered after a transient storage/platform
+    // error. Retry even when no model turn arrives to trigger the normal join.
+    const retryingHandoffs = new Set<string>();
+    const handoffRetryTimer = subagents ? setInterval(() => {
+      if (record.shutdownPromise || record.aborting) return;
+      for (const task of undeliveredTerminalTasks(record, subagents.list())) {
+        if (retryingHandoffs.has(task.id)) continue;
+        retryingHandoffs.add(task.id);
+        const retry = record.benchmarkHandoffPaused
+          ? record.prepareSubagentCompletion?.(task, task.summary) ?? Promise.resolve()
+          : deliverSubagentCompletion(record, task, task.summary, { retries: 0 });
+        void retry.catch((error) => {
+          console.warn("[benchmark] Handoff recovery failed; result remains pending", error);
+        }).finally(() => retryingHandoffs.delete(task.id));
+      }
+    }, 5_000) : undefined;
+    handoffRetryTimer?.unref();
+    const unsubscribeWithWatchdog = record.unsubscribe;
+    record.unsubscribe = () => { clearInterval(handoffRetryTimer); watchdog.dispose(); unsubscribeWithWatchdog(); };
+  }
   return record;
 }
 
@@ -935,7 +994,14 @@ async function runChildSession(profile: ModelProfile, cwd: string, mutationLock:
         await child.session.sendCustomMessage({ customType: "riftx_skill_context", content: prepared.skillContext, display: false });
       }
     }
-    await child.session.prompt(context.task.task);
+    try {
+      await child.session.prompt(context.task.task);
+    } catch (error) {
+      if (!child.benchmarkAttemptTimeoutEpoch) throw error;
+    }
+    if (child.benchmarkAttemptTimeoutEpoch) {
+      return { summary: "Attempt time limit reached. Checkpoint and attempt history were saved for a later retry." };
+    }
     const result = extractLastAssistantResult(child.session.sessionManager.getBranch());
     if (result.error) throw new Error(result.error);
 
@@ -1107,6 +1173,7 @@ async function promptSession(id: string, text: string, mode: "prompt" | "steer" 
   const acceptDispatch = () => {
     if (dispatchAccepted) return;
     dispatchAccepted = true;
+    record.benchmarkHandoffPaused = false;
     // Explicit abstention clears stale guidance; bare continuations preserve it.
     updateActiveSkills(record.activeSkillNames, ready);
     settlePromptRequest(record, extras.requestId, "accepted");
@@ -1499,6 +1566,11 @@ export async function setActiveProfile(profile: ModelProfile, sessionId?: string
     applyTransport: (session, transport) => setAgentTransport(session as AgentSession, transport)
   }));
   // Only a successful switch becomes the provider's tracked registration.
-  if (switched) record.providerRegistrations.set(profile.provider, profile);
+  if (switched) {
+    record.providerRegistrations.set(profile.provider, profile);
+    // A corrected key, endpoint, or output limit may keep the same model ID.
+    // Let the next request validate its budget and attempt compaction again.
+    clearBenchmarkCompactionFailure(record.session);
+  }
   return switched;
 }
