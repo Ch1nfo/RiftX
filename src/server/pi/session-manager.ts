@@ -39,6 +39,8 @@ import { createTimedBashTool } from "./bash-timeout";
 import { createTimedLocalTools } from "./local-tool-timeout";
 import { createCrawlTool } from "@/browser/tools/crawl";
 import { sessionToolNames } from "@/server/session-tools";
+import { buildRuntimeToolIndex, getRuntimeToolCatalog } from "@/server/runtime-tool-catalog";
+import { createToolInventoryTool } from "./tools/tool-inventory-tool";
 import { composeAttachmentText, type PromptAttachment, type PromptImage } from "@/lib/attachments";
 import { withMcpReferences, type McpServerEntry } from "@/server/mcp/manager";
 import { buildMcpTools } from "@/server/mcp/tools";
@@ -48,7 +50,7 @@ import { switchSessionProfile, withProfileSwitchLock } from "./apply-session-pro
 import { registerTrackedProfile, registerProfileModel, sdkThinkingLevel, restoreProviderRegistration, memoizedTitleRuntime, type ProviderRegistrations } from "./model-registration";
 import { extractLastAssistantResult, buildSummaryTranscript } from "./subagent-result";
 import { buildInvestigationCapsule } from "./investigation-capsule";
-import { refreshContinuityContext, type ContinuityContext } from "./continuity-context";
+import { refreshContinuityContext, upsertToolInventory, type ContinuityContext } from "./continuity-context";
 import { buildTaskContract, userRequestsFromBranch } from "./task-contract";
 import { buildProgressCheckpointContext, progressCheckpointFromBranch, type ProgressCheckpoint } from "./progress-checkpoint";
 import { createPentestCompactionExtension } from "./pentest-compaction";
@@ -389,6 +391,14 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   let skills: SkillDescriptor[] = [];
   const benchmarkOwner: "main" | `subagent:${string}` = child ? `subagent:${findingSource.subagentId ?? "child"}` : "main";
   const initialChallenge = benchmarkLedger?.budgetForOwner(benchmarkOwner)?.challenge;
+  const runtimeToolCatalog = benchmarkLedger ? await getRuntimeToolCatalog() : undefined;
+  const toolInventory = runtimeToolCatalog ? createToolInventoryTool(() => Promise.resolve(runtimeToolCatalog)) : undefined;
+  const refreshRuntimeToolIndex = (messages = evidenceSession?.agent.state.messages) => {
+    if (!messages || !runtimeToolCatalog) return;
+    upsertToolInventory(messages, buildRuntimeToolIndex(
+      runtimeToolCatalog, benchmarkLedger?.budgetForOwner(benchmarkOwner)?.challenge.uniqueCode
+    ));
+  };
   const workspace = benchmarkLedger ? new BenchmarkWorkspace(workspaceRoot, initialChallenge?.uniqueCode, () => browser.run(() => browser.close())) : undefined;
   let selectChallengeSkills: ((description?: string) => Promise<void>) | undefined;
   const benchmarkTools: ToolDefinition[] = benchmarkController && benchmarkLedger
@@ -399,10 +409,12 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
         () => benchmarkOwner,
         child ? runtimeDeps?.benchmark?.assignedChallenge : undefined,
         async (challenge) => {
+          refreshRuntimeToolIndex();
           await workspace!.activate(challenge.uniqueCode);
           await selectChallengeSkills!(challenge.description);
         },
         async () => {
+          refreshRuntimeToolIndex();
           await selectChallengeSkills!();
           await workspace!.activate();
         },
@@ -445,7 +457,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   };
   const localTools = workspace ? createWorkspaceLocalTools(() => workspace.cwd, bashOptions)
     : [...createTimedLocalTools(cwd), createTimedBashTool(cwd, bashOptions) as ToolDefinition];
-  const customTools = [...localTools, ...benchmarkTools, createCrawlTool(browser, outputStore), ...(subagents && benchmarkController && benchmarkLedger ? [createAssignBenchmarkChallengeTool(benchmarkController, benchmarkLedger, async (task, uniqueCode, containerAddrs, reservationOwner) => {
+  const customTools = [...localTools, ...benchmarkTools, ...(toolInventory ? [toolInventory] : []), createCrawlTool(browser, outputStore), ...(subagents && benchmarkController && benchmarkLedger ? [createAssignBenchmarkChallengeTool(benchmarkController, benchmarkLedger, async (task, uniqueCode, containerAddrs, reservationOwner) => {
         // Bridge to the existing subagent spawn mechanism. The benchmark
         // metadata (uniqueCode, containerAddrs) is stored on the SubagentTask
         // itself so retry/restart can recover the binding regardless of the
@@ -566,7 +578,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     thinkingLevel: sdkThinkingLevel(profile.thinkingLevel),
     // Hard whitelist (see src/server/session-tools.ts): the SDK silently
     // drops any tool — built-in or custom — whose name is absent here.
-    tools: [...sessionToolNames(Boolean(subagents)), ...mcpTools.map((tool) => tool.name)],
+    tools: [...sessionToolNames(Boolean(subagents), Boolean(toolInventory)), ...mcpTools.map((tool) => tool.name)],
     customTools,
     resourceLoader,
     sessionManager,
@@ -625,6 +637,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
         taskContract: "",
         skillContext,
         investigationCapsule,
+        toolInventory: runtimeToolCatalog ? buildRuntimeToolIndex(runtimeToolCatalog, benchmarkLedger.budgetForOwner(worker)?.challenge.uniqueCode) : "",
         progressCheckpoint: ""
       };
     }
@@ -652,6 +665,16 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   // Sampling-time continuity refresh is a benchmark need (dynamic budgets,
   // live ownership). Ordinary pentest sessions keep the cheaper contract:
   // continuity is rebuilt only after a real compaction.
+  if (runtimeToolCatalog) {
+    const transform = result.session.agent.transformContext;
+    result.session.agent.transformContext = async (messages, signal) => {
+      const transformed = transform ? await transform(messages, signal) : messages;
+      // Discovery is independent of workspace I/O, including after compaction.
+      // Install before the compaction hook so its budget includes this block.
+      refreshRuntimeToolIndex(transformed);
+      return transformed;
+    };
+  }
   installMidTurnCompaction(result.session, getContinuityContext, { samplingRefresh: Boolean(benchmarkLedger) });
   // Install after compaction so the final context sent to the provider drops
   // stale report-skill messages unless the current user request asks for one.

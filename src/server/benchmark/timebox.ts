@@ -15,7 +15,7 @@ export function installBenchmarkTimeboxGate(
   owner: Exclude<ChallengeOwner, null>,
   assignedChallenge?: string
 ): void {
-  if (["benchmark_control", "assign_benchmark_challenge", "checkpoint_progress"].includes(tool.name)
+  if (["benchmark_control", "assign_benchmark_challenge", "checkpoint_progress", "tool_inventory"].includes(tool.name)
     || typeof tool.execute !== "function") return;
   const original = tool.execute.bind(tool);
   const blockedResult = (attempt?: AttemptIdentity) => {

@@ -34,6 +34,7 @@ for (const mode of ["complete", "signal", "delegate", "abstain", "parallel", "re
   let mainRequests = 0;
   let childRequests = 0;
   const bodies: Array<{ messages: unknown[]; tools: Array<{ function: { name: string } }>; max_tokens?: number; max_completion_tokens?: number }> = [];
+  const inventorySamples: Array<{ body: typeof bodies[number]; activeChallenge?: string }> = [];
   let releaseChild!: () => void;
   const mainResumed = new Promise<void>((resolve) => { releaseChild = resolve; });
   let resumedBeforeChild = false;
@@ -49,6 +50,9 @@ for (const mode of ["complete", "signal", "delegate", "abstain", "parallel", "re
     const index = requests++;
     const isChild = isAgent && !body.tools.some((tool) => tool.function.name === "assign_benchmark_challenge");
     const step = !isAgent ? "idle" : isChild ? ["bash", "submit", "idle"][childRequests++] ?? "idle" : steps[mainRequests++] ?? "idle";
+    if (isAgent) inventorySamples.push({ body, activeChallenge:
+      ["bash", "submit", "hang", "model-error"].includes(step) ? "ch-001"
+        : ["bash2", "submit2a", "submit2b"].includes(step) ? "ch-002" : undefined });
     if (parallel && step === "acquire2") { resumedBeforeChild = true; releaseChild(); }
     if (parallel && isChild && step === "bash") {
       // The old runner waited for this child before resuming the main worker.
@@ -133,6 +137,17 @@ for (const mode of ["complete", "signal", "delegate", "abstain", "parallel", "re
       if (!delegate) assert.match(output, /"tool":"bash"/);
     }
     assert.ok(bodies.every((body) => (body.max_tokens ?? body.max_completion_tokens) === 40000));
+    for (const { body, activeChallenge } of inventorySamples) {
+      const context = JSON.stringify(body.messages);
+      const marker = JSON.stringify('"type":"runtime_tool_inventory"').slice(1, -1);
+      assert.equal(context.split(marker).length - 1, activeChallenge ? 1 : 0,
+        "one inventory block for the active challenge, none after release");
+      assert.ok(body.tools.some((tool) => tool.function.name === "tool_inventory"));
+      if (activeChallenge) {
+        assert.ok(context.includes(JSON.stringify(`"activeChallenge":"${activeChallenge}"`).slice(1, -1)));
+        if (image) assert.ok(context.includes(JSON.stringify('"catalogStatus":"available"').slice(1, -1)));
+      }
+    }
     for (const body of bodies) {
       const context = JSON.stringify(body.messages);
       assert.ok(context.includes("benchmark-fixture"), "SDK skill catalog is visible");

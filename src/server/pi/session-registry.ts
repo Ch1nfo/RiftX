@@ -94,7 +94,7 @@ export type RuntimeDeps = {
 };
 
 /** Bump to force process-global session objects to rebuild from disk. */
-export const RUNTIME_VERSION = 48;
+export const RUNTIME_VERSION = 49;
 
 declare global {
   var __riftxSessions: Map<string, SessionRecord> | undefined;

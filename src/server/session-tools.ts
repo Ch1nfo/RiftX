@@ -11,11 +11,11 @@
 export const WEB_TOOL_NAMES = ["web_search", "web_fetch"] as const;
 export const BENCHMARK_TOOL_NAMES = ["benchmark_control", "assign_benchmark_challenge"] as const;
 
-export function sessionToolNames(_subagents: boolean): string[] {
+export function sessionToolNames(_subagents: boolean, toolInventory = false): string[] {
   // Benchmark branch: spawn_subagent is REMOVED — assign_benchmark_challenge
   // is the only dispatch path and it enforces reservation, limits, and scope.
   return [
     "read", "grep", "find", "ls", "bash", "write", "edit", "browser",
-    ...BENCHMARK_TOOL_NAMES, "crawl"
+    ...BENCHMARK_TOOL_NAMES, "crawl", ...(toolInventory ? ["tool_inventory"] : [])
   ];
 }

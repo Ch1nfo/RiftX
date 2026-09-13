@@ -64,7 +64,7 @@ export class BenchmarkWorkspace {
   }
 
   install(tool: { name: string; execute?: (id: string, params: unknown, signal?: AbortSignal, ...rest: unknown[]) => Promise<unknown> }) {
-    if (!tool.execute || tool.name === "assign_benchmark_challenge") return;
+    if (!tool.execute || tool.name === "assign_benchmark_challenge" || tool.name === "tool_inventory") return;
     const execute = tool.execute.bind(tool);
     tool.execute = async (id, params, signal, ...rest) => {
       const epoch = this.epoch;

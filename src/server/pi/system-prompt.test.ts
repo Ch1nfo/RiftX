@@ -53,6 +53,7 @@ test("harness mechanics appendix names the runtime-enforced rules", () => {
   assert.match(prompt, /never\n  bash\/curl the benchmark API/);
   assert.match(prompt, /"Parked" = defer/);
   assert.match(prompt, /benchmark_control\(action="status"\) IS the live board/);
+  assert.match(prompt, /tool_inventory/);
 });
 
 test("benchmark scope boundary permits challenge exploitation but protects platform infrastructure", () => {
@@ -87,6 +88,7 @@ test("child prompt carries the commander return format, playbook, and tool restr
   assert.match(prompt, /Do NOT use assign_benchmark_challenge \(commander-only\)/);
   assert.match(prompt, /# PLAYBOOK BY CATEGORY/);
   assert.match(prompt, /steghide \(bruteforce passphrase with rockyou/);
+  assert.match(prompt, /- tool_inventory: check command, Python module and wordlist availability/);
   assert.match(prompt, /Credential testing is evidence-gated/);
   assert.match(prompt, /if the blackboard shows it was already spent, do not restart it/);
   assert.match(prompt, /Benchmark Scope and Approval Boundary/);

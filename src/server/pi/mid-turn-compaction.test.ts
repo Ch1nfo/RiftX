@@ -1,7 +1,55 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { AgentSession } from "@mariozechner/pi-coding-agent";
+import { convertToLlm, type AgentSession } from "@mariozechner/pi-coding-agent";
 import { estimateMessagesContextUsage, installMidTurnCompaction, keepRecentTokensForContext, shouldCompactBeforeSampling } from "./mid-turn-compaction";
+import { TOOL_INVENTORY_CONTEXT_TYPE, upsertToolInventory } from "./continuity-context";
+import { BenchmarkContextBudgetError, estimateBenchmarkInputTokens } from "./compaction-budget";
+
+function inventoryFailureFixture(getInventory: () => string, contextWindow = 16_384) {
+  const messages: Array<Record<string, unknown>> = [
+    { role: "assistant", content: [{ type: "toolCall", id: "fixture_call", name: "fixture_tool", arguments: {} }] },
+    { role: "custom", customType: TOOL_INVENTORY_CONTEXT_TYPE, content: "fixture_stale_inventory" },
+    { role: "toolResult", toolCallId: "fixture_call", toolName: "fixture_tool", content: [{ type: "text", text: "fixture_result" }] }
+  ];
+  const state = { messages, systemPrompt: "fixture_system", tools: [] };
+  const session = {
+    agent: {
+      state,
+      transformContext: async (input: Array<Record<string, unknown>>) => {
+        const transformed = structuredClone(input);
+        upsertToolInventory(transformed, getInventory());
+        return transformed;
+      }
+    },
+    model: { provider: "fixture", id: "fixture", contextWindow, maxTokens: 512 },
+    get messages() { return state.messages; },
+    settingsManager: { getCompactionSettings: () => ({ enabled: false, reserveTokens: 512, keepRecentTokens: 400 }) },
+    getContextUsage: () => null
+  } as unknown as AgentSession;
+  installMidTurnCompaction(session, async () => { throw new Error("fixture_workspace_reconcile_failed"); }, { samplingRefresh: true });
+  return { session, messages };
+}
+
+test("inventory refresh survives failed continuity I/O and preserves tool call/result ordering", async () => {
+  let current = "fixture_current_inventory";
+  const { session, messages } = inventoryFailureFixture(() => current);
+  const sent = await session.agent.transformContext!(messages as never) as unknown as Array<Record<string, unknown>>;
+  const inventory = sent.filter((message) => message.customType === TOOL_INVENTORY_CONTEXT_TYPE);
+  assert.equal(inventory.length, 1);
+  assert.equal(inventory[0].content, current);
+  assert.equal(sent.some((message) => message.content === "fixture_stale_inventory"), false);
+  assert.deepEqual(convertToLlm(sent as never).map((message) => message.role), ["assistant", "toolResult", "user"]);
+  assert.ok(estimateBenchmarkInputTokens(session, sent) > estimateBenchmarkInputTokens(session, sent.filter((message) => message.customType !== TOOL_INVENTORY_CONTEXT_TYPE)));
+  current = "";
+  const released = await session.agent.transformContext!(messages as never) as unknown as Array<Record<string, unknown>>;
+  assert.equal(released.some((message) => message.customType === TOOL_INVENTORY_CONTEXT_TYPE), false);
+  assert.deepEqual(convertToLlm(released as never).map((message) => message.role), ["assistant", "toolResult"]);
+});
+
+test("inventory added before failed continuity refresh is included in the sampling budget gate", async () => {
+  const { session, messages } = inventoryFailureFixture(() => "fixture_inventory".repeat(2_000), 4_096);
+  await assert.rejects(session.agent.transformContext!(messages as never), BenchmarkContextBudgetError);
+});
 
 test("caps recent history at ten percent of the current model context", () => {
   assert.equal(keepRecentTokensForContext(64_000), 6_400);

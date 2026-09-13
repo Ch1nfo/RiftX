@@ -174,10 +174,15 @@ test("checkpoint, submission and cleanup control paths remain callable after the
   let now = 1_000;
   const run = fixture(2, () => now);
   now += 30 * MINUTE;
-  for (const name of ["benchmark_control", "checkpoint_progress", "assign_benchmark_challenge"]) {
+  for (const name of ["benchmark_control", "checkpoint_progress", "assign_benchmark_challenge", "tool_inventory"]) {
+    run.challenge.owner = "main";
     let executed = false;
     const tool = { name, execute: async () => { executed = true; return { content: [] }; } };
     installBenchmarkTimeboxGate(tool, run.ledger, "main", "fixture");
+    await tool.execute();
+    assert.equal(executed, true);
+    run.challenge.owner = null;
+    executed = false;
     await tool.execute();
     assert.equal(executed, true);
   }

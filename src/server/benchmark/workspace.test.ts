@@ -10,6 +10,16 @@ import { activeSkillNamesFromBranch } from "@/server/pi/skill-router";
 import { BenchmarkWorkspace, benchmarkWorkspaceRoot, challengeDirectory, createWorkspaceLocalTools, benchmarkMutationLock } from "./workspace";
 import { createChallengeSkillSelection } from "./challenge-skills";
 
+test("tool inventory remains available after workspace activation fails", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "riftx-inventory-workspace-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const workspace = new BenchmarkWorkspace(root, "A", async () => { throw new Error("fixture-reset-failure"); });
+  const tool = { name: "tool_inventory", execute: async () => "catalog" };
+  workspace.install(tool);
+  await assert.rejects(workspace.activate("B"), /fixture-reset-failure/);
+  assert.equal(await tool.execute(), "catalog");
+});
+
 test("relative file tools, shell cwd and temporary files follow the challenge and survive revisits", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "riftx-workspace-"));
   t.after(() => rm(root, { recursive: true, force: true }));
