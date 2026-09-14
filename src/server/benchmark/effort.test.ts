@@ -1,87 +1,85 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { BenchmarkLedger, ChallengeState } from "./ledger";
-import { installBenchmarkRepeatNotice, installPasswordEnumerationBudget, isPasswordEnumeration, PASSWORD_ENUMERATION_BUDGET_MS } from "./effort";
+import { randomUUID } from "node:crypto";
+import { BenchmarkLedger } from "./ledger";
+import { installBenchmarkRepeatNotice } from "./effort";
+import { captureFence } from "./fencing";
 
-function fixture(spent = 0) {
-  const challenge = { uniqueCode: "fixture", passwordEnumerationMs: spent, lastMeaningfulProgressAt: 1, correctFlagCount: 0 } as ChallengeState;
-  const ledger = {
-    budgetForOwner: () => ({ challenge, budget: { expired: false } }),
-    recordPasswordEnumerationTime: async (_code: string, ms: number) => { challenge.passwordEnumerationMs += ms; }
-  } as unknown as BenchmarkLedger;
-  return { ledger, challenge };
+async function fixture(t: test.TestContext) {
+  let now = 1_000_000;
+  const id = `observation-${randomUUID()}`;
+  t.after(() => BenchmarkLedger.destroy(id));
+  const ledger = await new BenchmarkLedger(id, () => now).initialize();
+  await ledger.syncFromPlatform([{ unique_code: "fixture", description: "synthetic", difficulty: "easy", level: 1, total_score: 100,
+    flag_count: 4, correct_flag_count: 0, is_completed: false, container_status: "stopped", container_addr: [] }], true, "ip");
+  const challenge = await ledger.acquire("fixture", "main", ["fixture"]);
+  return { ledger, challenge, advance: (ms: number) => { now += ms; } };
 }
 
-test("online guessing classification leaves offline work and ordinary login checks alone", () => {
-  for (const command of ["hydra -L users -P passwords target ssh", "sudo /usr/bin/medusa -h fixture", "python custom.py"]) {
-    assert.ok(isPasswordEnumeration({ command, ...(command.startsWith("python") ? { passwordEnumeration: true } : {}) }));
-  }
-  for (const command of ["hydra --help", "hashcat hashes.txt", "patator unzip_pass archive=fixture.zip", "curl https://fixture/login", "python analyze.py"]) assert.equal(isPasswordEnumeration({ command }), false);
-  assert.ok(isPasswordEnumeration({ command: "ncrack fixture", passwordEnumeration: false }));
-});
-
-test("guessing timeout aborts execution and a concurrent fresh worker shares the remaining budget", async () => {
-  const { ledger, challenge } = fixture(PASSWORD_ENUMERATION_BUDGET_MS - 20);
-  let executions = 0;
-  const makeTool = () => ({ name: "bash", execute: async (_id: string, input: unknown, signal?: AbortSignal): Promise<unknown> => {
-    executions++;
-    assert.ok((input as { timeout: number }).timeout <= 0.020);
-    return await new Promise<void>((_resolve, reject) => {
-      if (signal?.aborted) reject(signal.reason);
-      else signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
-    });
-  } });
-  const first = makeTool();
-  const second = makeTool();
-  installPasswordEnumerationBudget(first, ledger, "main");
-  installPasswordEnumerationBudget(second, ledger, "subagent:replacement");
-  const [a, b] = await Promise.all([first.execute("a", { passwordEnumeration: true }), second.execute("b", { passwordEnumeration: true })]);
-  assert.ok(JSON.stringify(a).includes("passwordEnumerationTimedOut"));
-  assert.ok(JSON.stringify(b).includes("passwordEnumerationBlocked"));
-  assert.equal(executions, 1);
-  assert.ok(challenge.passwordEnumerationMs >= PASSWORD_ENUMERATION_BUDGET_MS);
-});
-
-test("ordinary commands execute after enumeration budget exhaustion", async () => {
-  const { ledger } = fixture(PASSWORD_ENUMERATION_BUDGET_MS);
+test("repeat warning does not block tools; evidence, credential, foothold and stage reset counters", async (t) => {
+  const { ledger, challenge } = await fixture(t);
   let calls = 0;
-  const tool = { name: "bash", execute: async (_id: string, _params: unknown) => { calls++; return { content: [] }; } };
-  installPasswordEnumerationBudget(tool, ledger, "main");
-  await tool.execute("guess", { command: "hydra fixture" });
-  await tool.execute("analysis", { command: "python inspect.py" });
-  assert.equal(calls, 1);
-});
-
-test("repeated identical operations warn across workers, interleaving and cosmetic timestamps; new evidence resets", async () => {
-  const { ledger, challenge } = fixture();
-  let tick = 0;
-  const make = () => ({ name: "bash", execute: async (_id: string, _params: unknown) => ({ content: [{ type: "text", text: `unchanged 2026-09-11T10:00:0${tick++}.000Z` }], details: { duration: tick } }) });
-  const a = make(), b = make();
-  installBenchmarkRepeatNotice(a, ledger, "main");
-  installBenchmarkRepeatNotice(b, ledger, "subagent:replacement");
-  await a.execute("1", { command: "inspect", timeout: 30 });
-  await b.execute("2", { timeout: 90, command: "inspect" });
-  await a.execute("other", { command: "other" });
-  assert.match(JSON.stringify(await b.execute("3", { command: "inspect" })), /REPEATED_WITHOUT_NEW_INFORMATION/);
-  challenge.lastMeaningfulProgressAt++;
-  assert.doesNotMatch(JSON.stringify(await a.execute("4", { command: "inspect" })), /REPEATED_WITHOUT_NEW_INFORMATION/);
-});
-
-test("different results and active computation do not produce repetition warnings", async () => {
-  const { ledger } = fixture();
-  let value = 0;
-  const tool = { name: "read", execute: async (_id: string, _params: unknown) => ({ content: [{ type: "text", text: `new value ${value++}` }] }) };
+  const tool = { name: "bash", execute: async (_id: string, _params: unknown): Promise<unknown> => { calls++; return { content: [{ type: "text", text: "unchanged" }] }; } };
   installBenchmarkRepeatNotice(tool, ledger, "main");
-  for (let i = 0; i < 5; i++) assert.doesNotMatch(JSON.stringify(await tool.execute(String(i), {})), /REPEATED_WITHOUT_NEW_INFORMATION/);
+  for (const kind of ["note", "credential", "foothold", "stage_transition"] as const) {
+    for (let i = 0; i < 3; i++) {
+      const result = await tool.execute(String(i), { command: "synthetic", timeout: 100 + i });
+      assert.equal(JSON.stringify(result).includes("REPEATED_WITHOUT_NEW_INFORMATION"), i === 2);
+    }
+    await ledger.checkpoint("fixture", `new ${kind}`, [], undefined, "main", { signalKind: kind, evidenceRef: `synthetic:${kind}` });
+    assert.equal(challenge.resources?.repeatCount, 0);
+    assert.equal(challenge.resources?.callsWithoutProgress, 0);
+  }
+  assert.equal(calls, 12);
+  assert.equal(challenge.resources?.progressEvents, 4);
+  await ledger.recordSubmission("fixture", "synthetic flag", true, 25, 1, 0, "main");
+  assert.equal(challenge.resources?.callsWithoutProgress, 0);
+  assert.equal(challenge.resources?.repeatCount, 0);
 });
 
+test("no-progress warning covers bash, browser and crawl without interrupting any call", async (t) => {
+  const { ledger, advance } = await fixture(t);
+  advance(6 * 60_000);
+  let calls = 0;
+  for (const name of ["bash", "browser", "crawl"]) {
+    const tool = { name, execute: async (_id: string, _params: unknown): Promise<unknown> => ({ content: [{ type: "text", text: `value-${++calls}` }] }) };
+    installBenchmarkRepeatNotice(tool, ledger, "main");
+    let warned = false;
+    for (let i = 0; i < 10; i++) {
+      const result = await tool.execute(String(i), { i });
+      warned = JSON.stringify(result).includes("NO_DURABLE_PROGRESS") || warned;
+    }
+    assert.equal(warned, true);
+    await tool.execute("after", {});
+  }
+  assert.equal(calls, 33);
+  assert.equal(ledger.getChallenge("fixture")?.status, "running");
+});
 
-test("repeated thrown tool errors warn without swallowing the original failure", async () => {
-  const { ledger } = fixture();
-  const failure = new Error("fixture operation failed");
-  const tool = { name: "bash", execute: async (_id: string, _params: unknown): Promise<unknown> => { throw failure; } };
+test("password enumeration retains requested timeout and has no independent hard gate", async (t) => {
+  const { ledger, challenge } = await fixture(t);
+  challenge.passwordEnumerationMs = 1_000_000;
+  let calls = 0;
+  const tool = { name: "bash", execute: async (_id: string, params: unknown): Promise<unknown> => {
+    assert.equal((params as { timeout: number }).timeout, 600); calls++; return { content: [] };
+  } };
   installBenchmarkRepeatNotice(tool, ledger, "main");
-  await assert.rejects(tool.execute("1", {}), (error) => error === failure);
-  await assert.rejects(tool.execute("2", {}), (error) => error === failure);
-  await assert.rejects(tool.execute("3", {}), /fixture operation failed[\s\S]*REPEATED_WITHOUT_NEW_INFORMATION/);
+  for (let i = 0; i < 4; i++) assert.doesNotMatch(JSON.stringify(await tool.execute(String(i), { command: "hydra synthetic", timeout: 600 })), /passwordEnumerationBlocked/);
+  assert.equal(calls, 4);
+});
+
+test("thrown errors preserve failure and increment attempt metrics, warnings remain soft", async (t) => {
+  const { ledger, challenge } = await fixture(t);
+  const tool = { name: "crawl", execute: async (_id: string, _params: unknown): Promise<unknown> => { throw new Error("synthetic tool failure"); } };
+  installBenchmarkRepeatNotice(tool, ledger, "main");
+  await assert.rejects(tool.execute("1", {}), /synthetic tool failure/);
+  await assert.rejects(tool.execute("2", {}), /synthetic tool failure/);
+  await assert.rejects(tool.execute("3", {}), /REPEATED_WITHOUT_NEW_INFORMATION/);
+  await ledger.recordCompaction(captureFence(challenge));
+  await ledger.defer("fixture", "unfinished", undefined, "main");
+  const ended = challenge.approachHistory.at(-1)!;
+  assert.equal(ended.terminationSource, "tool_failure");
+  assert.equal(ended.toolErrorCount, 3);
+  assert.equal(ended.compactionCount, 1);
+  assert.equal(ledger.getMetrics().resources.toolCalls, 3);
 });

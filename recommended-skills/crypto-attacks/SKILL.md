@@ -40,7 +40,8 @@ description: Cryptographic challenge solving 密码学攻击:编码识别、经�
 ## RiftX 工作流
 
 - 推导逐步写进 work/solve.py(可重放),还原出的中间量(n、d、密钥、明文片段)
-  checkpoint 留黑板(signalKind=note,evidenceRef=中间值来源);flag 立即 submit。
+  checkpoint 留黑板(signalKind=note,evidenceRef=中间值来源);flag 立即 submit(带
+  checkpoint 用过的同一 evidenceRef)。
 - 先估算可行性再动手:数学题的"便宜口子"几乎总在题面或参数本身。
 
 ## 验收清单(Testing Checklist)

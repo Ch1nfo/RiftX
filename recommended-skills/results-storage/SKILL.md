@@ -33,7 +33,7 @@ work/
 | `evidenceRef` | 稳定引用——work/ 下落盘文件路径、请求或产物 |
 | `triedFamilies` / `ruledOutFamilies` | 已试 / 已排除的打法族 |
 
-拿到 flag 时立即 `benchmark_control(action="submit")`——不要只把 flag 存进 work/ 文件，提交动作本身才是终点。
+拿到 flag 时立即 `benchmark_control(action="submit", evidenceRef=...)`——evidenceRef 必须是此前 checkpoint 已记录的同一字符串（先 checkpoint 留证，再带证提交）；不要只把 flag 存进 work/ 文件，提交动作本身才是终点。
 
 ## 反模式
 

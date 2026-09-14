@@ -1,3 +1,6 @@
+import { captureFence } from "./fencing";
+import type { BenchmarkLedger } from "./ledger";
+import type { FailureSource } from "./attempt-observation";
 import { setTimeout as delay } from "node:timers/promises";
 import { BenchmarkController, BenchmarkError } from "./controller";
 import { hasPendingSubmissions, retryPendingSubmissions } from "./pending-submissions";
@@ -44,6 +47,13 @@ export async function runBenchmark(): Promise<number> {
   let cleanup: ((id: string) => Promise<void>) | undefined;
   let exitCode = 0;
   let submissionDrain: Promise<void> | undefined;
+  let runLedger: BenchmarkLedger | undefined;
+  const recordRunFailure = async (source: FailureSource, reason: string) => {
+    if (!runLedger) return;
+    for (const challenge of Object.values(runLedger.getState().challenges)) {
+      if (challenge.currentAttemptStartedAt !== null) await runLedger.recordAttemptIncident(captureFence(challenge, challenge.currentAttemptWorker ?? undefined), source, reason, "runner");
+    }
+  };
   try {
     let initialChallenges: Awaited<ReturnType<BenchmarkController["listChallenges"]>> | undefined;
     let initialVpn: Awaited<ReturnType<BenchmarkController["checkVpn"]>> | undefined;
@@ -74,6 +84,7 @@ export async function runBenchmark(): Promise<number> {
     sessionId = (await createSession()).id;
     const record = sessions.get(sessionId)!;
     const runtime = getBenchmarkRuntime(sessionId)!;
+    runLedger = runtime.ledger;
     await runtime.ledger.syncFromPlatform(initialChallenges, initialVpn.ok, initialVpn.client_ip, initialVpn.status !== "unchecked");
     let toolsCompleted = 0;
     const recovery = new ModelRecovery();
@@ -96,13 +107,13 @@ export async function runBenchmark(): Promise<number> {
     let emptyTurns = 0;
     let probeFailures = 0;
     while (stopCode === undefined) {
-      if (Date.now() >= deadline) { exitCode = 124; log("run_deadline"); break; }
+      if (Date.now() >= deadline) { await recordRunFailure("harness_timeout", "Configured run deadline reached"); exitCode = 124; log("run_deadline"); break; }
       if (Date.now() - lastProbe >= 60_000) {
         try {
           await controller.listChallenges(); // Detect platform expiry even during a long agent turn.
           probeFailures = 0;
         } catch (error) {
-          if (error instanceof BenchmarkError && error.kind === "invalid_state_task_ended") { log("platform_ended"); break; }
+          if (error instanceof BenchmarkError && error.kind === "invalid_state_task_ended") { await recordRunFailure("platform_failure", "Platform ended the benchmark run"); log("platform_ended"); break; }
           if (!(error instanceof BenchmarkError) || !["connection_error", "timeout", "internal_error", "resource_unavailable"].includes(error.kind) || ++probeFailures >= 3) throw error;
           log("platform_probe_retry", { attempt: probeFailures });
         }
@@ -131,7 +142,10 @@ export async function runBenchmark(): Promise<number> {
         break;
       }
       const decision = recovery.decision(Boolean(record.subagents?.hasActiveTasks()) || hasPendingSubmissions(runtime.ledger));
-      if (decision.action === "fail") throw new Error(decision.error);
+      if (decision.action === "fail") {
+        await runtime.ledger.recordAttemptIncident(captureFence(runtime.ledger.budgetForOwner("main")?.challenge), "model_failure", decision.error, "model_recovery");
+        throw new Error(decision.error);
+      }
       if (decision.action === "wait") { await delay(1_000); continue; }
       if (!firstPrompt && !benchmarkMainHasWork(runtime.ledger)) {
         await delay(1_000);
@@ -161,6 +175,7 @@ export async function runBenchmark(): Promise<number> {
     }
     exitCode = stopCode ?? exitCode;
   } catch (error) {
+    await recordRunFailure(error instanceof BenchmarkError ? "platform_failure" : "environment_failure", error instanceof Error ? error.message : String(error));
     exitCode = stopCode ?? 1;
     log("failed", { error: redactRuntimeSecrets(error instanceof Error ? error.message : String(error)) });
   } finally {

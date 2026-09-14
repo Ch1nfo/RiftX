@@ -4,8 +4,9 @@ import { buildChildPentestSystemPrompt, buildPentestSystemPrompt } from "./syste
 
 test("main and child benchmark prompts allow relevant skills", () => {
   for (const prompt of [buildPentestSystemPrompt("default"), buildChildPentestSystemPrompt()]) {
-    assert.match(prompt, /Use relevant available Agent Skills/);
-    assert.match(prompt, /if none clearly fits, proceed without loading one/);
+    // On-demand lookup via benchmark_skill_hint; abstention stays valid.
+    assert.match(prompt, /available on demand through benchmark_skill_hint/);
+    assert.match(prompt, /choosing none is valid/);
     assert.doesNotMatch(prompt, /Do not load skills|do not load Agent Skills/);
   }
 });
@@ -24,10 +25,11 @@ test("commander prompt is verbatim: role, principles, workflow, endgame report",
   assert.match(prompt, /Final report: every solved challenge with its method, plus each captured flag/);
   assert.match(prompt, /never re-derive or guess a flag string/);
   assert.match(prompt, /Credential guessing is evidence-gated/);
-  // Budget text must match the enforced values in benchmark/effort.ts (120s per
-  // challenge, 30s per call), not an invented approximation.
-  assert.match(prompt, /120 seconds\n  total, at most 30 seconds per call/);
-  assert.match(prompt, /shared across you, every sub-agent,\n  every attempt, and every tool switch/);
+  // Enumeration is soft-disciplined since the hard budget was removed: the prompt
+  // must not promise an enforced quota the runtime no longer keeps.
+  assert.match(prompt, /Password enumeration is not hard-capped/);
+  assert.match(prompt, /no-progress warning as the signal to stop/);
+  assert.match(prompt, /Submit each flag the moment it is confirmed\. Submission requires evidence/);
   assert.match(prompt, /"Try another wordlist" or "run it a\n  bit longer" is not new evidence/);
   assert.match(prompt, /Submit each flag the moment it is confirmed/);
 });
@@ -45,6 +47,10 @@ test("harness mechanics appendix names the runtime-enforced rules", () => {
   assert.match(prompt, /"Parked" = defer/);
   assert.match(prompt, /benchmark_control\(action="status"\) IS the live board/);
   assert.match(prompt, /benchmark_tool_catalog lists the runtime's installed commands/);
+  assert.match(prompt, /benchmark_skill_hint returns up to two relevant local skill documents/);
+  // Submit's evidence precondition matches control-tool's checkpoint-evidence gate.
+  assert.match(prompt, /submit", uniqueCode, flag, evidenceRef\)/);
+  assert.match(prompt, /checkpoint already recorded for that challenge/);
 });
 
 test("playbooks only name tools that exist on the shipped image", () => {
@@ -85,15 +91,18 @@ test("child prompt carries the commander return format, playbook, and tool restr
   assert.match(prompt, /FINDINGS: creds, access gained/);
   assert.match(prompt, /RULED_OUT: approaches tried and why they failed/);
   assert.match(prompt, /NEXT: best remaining hypotheses for a fresh agent/);
-  assert.match(prompt, /benchmark_control\(action="submit",\n  flag="\.\.\."\) — that is the submission method/);
-  assert.match(prompt, /ONLY for: checkpoint, submit, defer, abandon,\n  publish_intel/);
-  assert.match(prompt, /Do NOT use sync\/status\/acquire\/\n  hint/);
+  assert.match(prompt, /benchmark_control\(action="submit",\n  flag="\.\.\.", evidenceRef="\.\.\."\)/);
+  assert.match(prompt, /checkpoint of the observed output already recorded/);
+  // The runtime grants children scoped status and hint (attempt 2+); the prompt
+  // must not deny capabilities the tool actually accepts.
+  assert.match(prompt, /ONLY for: checkpoint, submit, defer, abandon,\n  publish_intel, hint \(from attempt 2 onward\), and status \(scoped to YOUR assigned\n  challenge\)/);
+  assert.match(prompt, /Do NOT use sync or acquire/);
   assert.match(prompt, /Do NOT use assign_benchmark_challenge \(commander-only\)/);
   assert.match(prompt, /# PLAYBOOK BY CATEGORY/);
   assert.match(prompt, /steghide \(bruteforce passphrase with the bundled/);
   assert.match(prompt, /benchmark_tool_catalog: call once at the start/);
-  assert.match(prompt, /challenge-wide time budget \(120 seconds total, at most 30 seconds per call\)/);
+  assert.match(prompt, /benchmark_skill_hint: query it at the start or whenever stuck/);
+  assert.match(prompt, /Password enumeration is not hard-capped/);
   assert.match(prompt, /Credential testing is evidence-gated/);
-  assert.match(prompt, /if the blackboard shows it was\s+already spent, do not restart it/);
   assert.match(prompt, /Benchmark Scope and Approval Boundary/);
 });

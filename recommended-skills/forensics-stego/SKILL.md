@@ -39,7 +39,8 @@ description: Forensics and steganography 取证与隐写:文件雕刻(binwalk/fo
 
 ## RiftX 工作流
 
-- 切出的文件统一落 work/carved/,按来源命名;flag 一出现立即 submit。
+- 切出的文件统一落 work/carved/,按来源命名;flag 一出现先 checkpoint 留证、立即
+  submit(带同一 evidenceRef)。
 - 关键结论(载体类型、隐写方式、破解出的密码)checkpoint(signalKind=note,
   evidenceRef=文件名+提取命令);破解出的密码可能可复用,跨阶段记牢。
 - 大 pcap/镜像扫描放后台、输出重定向到文件再 grep,不刷上下文。

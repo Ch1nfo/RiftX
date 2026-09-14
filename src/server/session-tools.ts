@@ -10,7 +10,7 @@
  * assign_benchmark_challenge).
  */
 export const WEB_TOOL_NAMES = ["web_search", "web_fetch"] as const;
-export const BENCHMARK_TOOL_NAMES = ["benchmark_control", "benchmark_tool_catalog", "assign_benchmark_challenge"] as const;
+export const BENCHMARK_TOOL_NAMES = ["benchmark_control", "benchmark_tool_catalog", "benchmark_skill_hint", "assign_benchmark_challenge"] as const;
 
 export function sessionToolNames(_subagents: boolean): string[] {
   // Benchmark branch: spawn_subagent is REMOVED — assign_benchmark_challenge

@@ -56,7 +56,7 @@ async function setupTool(routes: Route[]) {
     }
   });
   const ledger = await new BenchmarkLedger(sessionId).initialize();
-  const tool = createBenchmarkControlTool(controller, ledger, browser, () => "main");
+  const tool = createBenchmarkControlTool(controller, ledger, browser, () => "main", undefined, undefined, undefined, { allowSyntheticEvidence: true });
   return { tool, ledger, controller, browser, sessionId };
 }
 
@@ -67,6 +67,7 @@ const VPN_ROUTES: Route[] = [
 
 async function execute(tool: ReturnType<typeof createBenchmarkControlTool>, params: Record<string, unknown>) {
   const ctx = {} as Parameters<typeof tool.execute>[4];
+  if (params.action === "submit" && params.evidenceRef === undefined) params = { ...params, evidenceRef: "test:evidence" };
   return tool.execute("test-call", params as Parameters<typeof tool.execute>[1], undefined, undefined, ctx);
 }
 
@@ -104,7 +105,7 @@ test("sync does not report a false leak when defer finishes before reconciliatio
       return { unique_code: "ch-1", closed: true };
     }
   } as unknown as BenchmarkController;
-  const tool = createBenchmarkControlTool(controller, ledger, fakeBrowser(), () => "main");
+  const tool = createBenchmarkControlTool(controller, ledger, fakeBrowser(), () => "main", undefined, undefined, undefined, { allowSyntheticEvidence: true });
 
   const deferResult = execute(tool, { action: "defer", uniqueCode: "ch-1", reason: "covered" });
   await firstCloseStarted;
@@ -139,7 +140,7 @@ test("sync persists a failed VPN preflight instead of retaining stale success", 
     }
   });
   const ledger = await new BenchmarkLedger(sessionId).initialize();
-  const tool = createBenchmarkControlTool(controller, ledger, browser, () => "main");
+  const tool = createBenchmarkControlTool(controller, ledger, browser, () => "main", undefined, undefined, undefined, { allowSyntheticEvidence: true });
 
   await execute(tool, { action: "sync" });
   assert.equal(ledger.getState().vpnOk, true);
@@ -186,7 +187,7 @@ test("acquire reuses a live orphan after Runtime restart without calling start a
     }
   });
   const ledger = await new BenchmarkLedger(sessionId).initialize();
-  const tool = createBenchmarkControlTool(controller, ledger, browser, () => "main");
+  const tool = createBenchmarkControlTool(controller, ledger, browser, () => "main", undefined, undefined, undefined, { allowSyntheticEvidence: true });
   await execute(tool, { action: "sync" });
   assert.equal(ledger.getChallenge("ch-live")?.status, "orphaned");
 
@@ -210,6 +211,17 @@ test("submit correct flag on single-flag challenge marks solved and closes conta
   const result = await execute(tool, { action: "submit", uniqueCode: "ch-1", flag: "flag{test}" });
   assert.match((result.content[0] as { text: string }).text, /CORRECT.*solved/);
   assert.equal(ledger.getChallenge("ch-1")?.status, "solved");
+});
+
+test("submit requires an evidence reference", async () => {
+  const { tool } = await setupTool([
+    ...VPN_ROUTES,
+    { method: "GET", path: "/openapi/v1/challenges", body: [platformChallenge("ch-1", { container_status: "available", container_addr: ["http://10.0.0.1"] })] },
+    { method: "POST", path: "/openapi/v1/challenges/ch-1/start", body: { container_addr: ["http://10.0.0.1"] } }
+  ]);
+  await execute(tool, { action: "sync" });
+  await execute(tool, { action: "acquire", uniqueCode: "ch-1" });
+  await assert.rejects(() => tool.execute("test-call", { action: "submit", uniqueCode: "ch-1", flag: "flag{missing-evidence}" } as Parameters<typeof tool.execute>[1], undefined, undefined, {} as Parameters<typeof tool.execute>[4]), /evidenceRef is required/);
 });
 
 test("submit partial flag on multi-flag challenge keeps running", async () => {
@@ -257,7 +269,7 @@ test("an ambiguous submit is reconciled and retried once instead of losing the f
   const ledger = await new BenchmarkLedger(sessionId).initialize();
   await ledger.syncFromPlatform([platformChallenge("ch-1", { container_status: "available", container_addr: ["a"] })], true, "ip");
   await ledger.acquire("ch-1", "main", ["a"]);
-  const tool = createBenchmarkControlTool(controller, ledger, browser, () => "main");
+  const tool = createBenchmarkControlTool(controller, ledger, browser, () => "main", undefined, undefined, undefined, { allowSyntheticEvidence: true });
   const result = await execute(tool, { action: "submit", uniqueCode: "ch-1", flag: "flag{network}" });
   assert.equal(submitCalls, 2);
   assert.match((result.content[0] as { text: string }).text, /CORRECT.*solved/);
@@ -306,7 +318,7 @@ test("main and child handoffs omit old plans and request independent reassessmen
     startChallenge: async () => ({ unique_code: "ch-1", container_addr: ["new"] }),
     closeChallenge: async () => ({ unique_code: "ch-1", closed: true })
   } as unknown as BenchmarkController;
-  const tool = createBenchmarkControlTool(controller, ledger, fakeBrowser(), () => "main");
+  const tool = createBenchmarkControlTool(controller, ledger, fakeBrowser(), () => "main", undefined, undefined, undefined, { allowSyntheticEvidence: true });
   assert.doesNotMatch(JSON.stringify(tool.parameters), /"nextProbe"|"currentApproach"/);
   const acquired = await execute(tool, { action: "acquire", uniqueCode: "ch-1" });
   const text = (acquired.content[0] as { text: string }).text;
@@ -377,7 +389,7 @@ test("child session with assignedChallenge: only allowed actions, locked uniqueC
   const ledger = await new BenchmarkLedger(sessionId).initialize();
   await ledger.syncFromPlatform([platformChallenge("ch-1"), platformChallenge("ch-2")], true, "ip");
   await ledger.acquire("ch-1", "subagent:t1", ["10.0.0.1:80"]);
-  const tool = createBenchmarkControlTool(controller, ledger, browser, () => "subagent:t1", "ch-1");
+  const tool = createBenchmarkControlTool(controller, ledger, browser, () => "subagent:t1", "ch-1", undefined, undefined, { allowSyntheticEvidence: true });
   const ctx = {} as Parameters<typeof tool.execute>[4];
 
   const sync = await tool.execute("c1", { action: "sync" }, undefined, undefined, ctx);
@@ -459,28 +471,26 @@ test("assign tool reports a SubAgent cancelled during dispatch as not assigned",
 });
 
 
-test("unknown submit is queued, survives release, and becomes accepted after connectivity recovers", async () => {
+test("unknown submit is queued and becomes accepted after connectivity recovers in the same attempt", async () => {
   const ledger = await new BenchmarkLedger(`pending-${Date.now()}`).initialize();
   await ledger.syncFromPlatform([platformChallenge("ch-1")], true, "ip");
   await ledger.acquire("ch-1", "main", ["a"]);
   let submits = 0;
   const controller = {
-    listChallenges: async () => [platformChallenge("ch-1")],
+    listChallenges: async () => [platformChallenge("ch-1", { container_status: "available", container_addr: ["a"] })],
     submitFlag: async () => {
       if (++submits <= 2) throw new BenchmarkError("connection_error", "fixture disconnected");
       return { unique_code: "ch-1", correct: true, awarded: 100, cumulative_score: 100, correct_flag_count: 1, total_flag_count: 1, matched_flag_index: 0 };
     },
     closeChallenge: async () => ({})
   } as unknown as BenchmarkController;
-  const tool = createBenchmarkControlTool(controller, ledger, fakeBrowser(), () => "main");
+  const tool = createBenchmarkControlTool(controller, ledger, fakeBrowser(), () => "main", undefined, undefined, undefined, { allowSyntheticEvidence: true });
   const first = await execute(tool, { action: "submit", uniqueCode: "ch-1", flag: "fixture-answer" });
   assert.match(JSON.stringify(first), /outcomeUnknown/);
   assert.equal(submits, 2);
   assert.equal(ledger.hasTriedFlag("ch-1", "fixture-answer"), false);
   await execute(tool, { action: "submit", uniqueCode: "ch-1", flag: "fixture-answer" });
   assert.equal(submits, 2, "manual duplicates must not bypass backoff");
-  await ledger.defer("ch-1", "covered", undefined, "main");
-  await ledger.confirmClosed("ch-1");
   await retryPendingSubmissions(controller, ledger, Date.now() + 31_000);
   assert.equal(submits, 3);
   assert.equal(ledger.getChallenge("ch-1")!.isCompleted, true);
@@ -492,6 +502,7 @@ test("unknown submit is queued, survives release, and becomes accepted after con
 test("pending confirmation is bounded without converting unknown outcomes into incorrect flags", async () => {
   const ledger = await new BenchmarkLedger(`pending-bounded-${Date.now()}`).initialize();
   await ledger.syncFromPlatform([platformChallenge("ch-1")], true, "ip");
+  await ledger.acquire("ch-1", "main", ["a"]);
   let checks = 0;
   const controller = { listChallenges: async () => { checks++; throw new BenchmarkError("connection_error", "fixture offline"); } } as unknown as BenchmarkController;
   enqueuePendingSubmission(ledger, "ch-1", "unknown-answer", "main", 0);

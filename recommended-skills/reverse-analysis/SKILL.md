@@ -35,7 +35,8 @@ description: Static and dynamic binary reverse engineering 逆向工程与反编
 ## RiftX 工作流
 
 - 产物落 work/:out.c、patch.py、solver.py;还原出的算法写成可重放脚本,flag
-  一出现立即 benchmark_control(action="submit")。
+  一出现立即 benchmark_control(action="submit", evidenceRef=...)(evidenceRef 用刚才
+  checkpoint 记过的同一字符串,先留证再提交)。
 - 大型 analyzeHeadless 放后台、输出重定向到文件再 grep,不刷上下文。
 - 关键结论(算法结构、密钥常量、patch 偏移)checkpoint(signalKind=note,
   evidenceRef=函数名/偏移),不要只在对话里"记着"。

@@ -5,7 +5,7 @@
  * not track. Token is never written here.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { access, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -13,6 +13,8 @@ import { readJsonStore, writeJsonStoreAtomic } from "@/server/json-store";
 import { createSerializer } from "@/server/serializer";
 import type { Challenge } from "./controller";
 import { childHandoffSections, retainBlackboard } from "./blackboard";
+import { assertFence, attemptContext, captureFence, type AttemptFence } from "./fencing";
+import { emptyResources, FAILURE_PRIORITY, HarnessGateError, type AttemptIncident, type AttemptResources, type FailureSource, type TerminationSource } from "./attempt-observation";
 
 export const BENCHMARK_MAX_CONTAINERS = 3;
 export const BENCHMARK_MAX_SUBAGENTS = 2;
@@ -39,6 +41,17 @@ export type AttemptSummary = {
   ruledOutFamilies: string[];
   stopReason: string;
   nextDistinctApproach: string;
+  terminationReason?: string;
+  terminationSource?: TerminationSource;
+  activeGate?: string | null;
+  lastProgressAt?: number;
+  compactionCount?: number;
+  toolErrorCount?: number;
+  handoffStatus?: "not_requested" | "saved" | "failed";
+  resources?: AttemptResources;
+  lastProgressKind?: string | null;
+  attemptId?: string;
+  containerEpoch?: number;
 };
 
 export type ChallengeBudget = {
@@ -86,6 +99,12 @@ export type ChallengeState = {
   currentAttemptStartedAt: number | null;
   currentAttemptPhase: BenchmarkPhase | null;
   currentAttemptWorker: Exclude<ChallengeOwner, null> | null;
+  attemptId?: string;
+  containerEpoch?: number;
+  resources?: AttemptResources;
+  progressRevision?: number;
+  attemptIncident?: AttemptIncident;
+  handoffStatus?: "not_requested" | "saved" | "failed";
   flagsAtAttemptStart: number;
   currentApproach: string;
   lastMeaningfulProgressAt: number;
@@ -160,6 +179,9 @@ export type BenchmarkMetrics = {
   containerLeaks: number;
   compactionCount: number;
   challenges: Record<string, ChallengeMetric>;
+  terminationCounts: Partial<Record<TerminationSource, number>>;
+  incidentCounts: Partial<Record<FailureSource, number>>;
+  resources: AttemptResources;
 };
 
 function benchmarkDir(parentSessionId: string) {
@@ -205,22 +227,30 @@ function progressKey(kind: ProgressSignalKind, evidenceRef: string): string {
   return `${kind}\u0000${cleanText(evidenceRef, 500).toLowerCase()}`;
 }
 
-function finishAttempt(challenge: ChallengeState, now: number, stopReason: string): void {
-  if (!challenge.currentAttemptStartedAt || !challenge.currentAttemptWorker || !challenge.currentAttemptPhase) return;
+function finishAttempt(challenge: ChallengeState, now: number, stopReason: string, metrics: BenchmarkMetrics, source?: TerminationSource): void {
+  if (challenge.currentAttemptStartedAt === null || !challenge.currentAttemptWorker || !challenge.currentAttemptPhase) return;
+  const timedOut = challenge.hardDeadlineAt !== null && now >= challenge.hardDeadlineAt;
+  const fallback = timedOut ? "harness_timeout" : source ?? "solver_failure";
+  const recorded = challenge.attemptIncident;
+  const incident = recorded && FAILURE_PRIORITY[recorded.source] >= (FAILURE_PRIORITY[fallback as FailureSource] ?? 0) ? recorded : undefined;
+  const terminationSource = source === "solved" ? source : incident?.source ?? fallback;
+  const resources = { ...emptyResources(), ...challenge.resources, wallTime: Math.max(0, now - challenge.currentAttemptStartedAt) };
   challenge.approachHistory = [...challenge.approachHistory, {
-    attemptNumber: challenge.attemptCount,
-    phase: challenge.currentAttemptPhase,
-    worker: challenge.currentAttemptWorker,
-    approach: challenge.currentApproach || "(not recorded)",
-    startedAt: challenge.currentAttemptStartedAt,
-    endedAt: now,
-    flagsBefore: challenge.flagsAtAttemptStart,
-    flagsAfter: challenge.correctFlagCount,
-    triedFamilies: challenge.triedFamilies.slice(-20),
-    ruledOutFamilies: challenge.ruledOutFamilies.slice(-20),
-    stopReason: cleanText(stopReason, 1_000),
-    nextDistinctApproach: challenge.nextProbe
+    attemptNumber: challenge.attemptCount, phase: challenge.currentAttemptPhase, worker: challenge.currentAttemptWorker,
+    approach: challenge.currentApproach || "(not recorded)", startedAt: challenge.currentAttemptStartedAt, endedAt: now,
+    flagsBefore: challenge.flagsAtAttemptStart, flagsAfter: challenge.correctFlagCount,
+    triedFamilies: challenge.triedFamilies.slice(-20), ruledOutFamilies: challenge.ruledOutFamilies.slice(-20),
+    stopReason: cleanText(stopReason, 1_000), nextDistinctApproach: challenge.nextProbe,
+    terminationReason: cleanText(terminationSource === "solved" ? stopReason : incident?.reason ?? stopReason, 1_000), terminationSource,
+    activeGate: terminationSource === "solved" ? null : incident?.gate ?? (timedOut ? "timebox" : null),
+    lastProgressKind: resources.lastProgressKind, lastProgressAt: resources.lastProgressAt,
+    compactionCount: resources.compactionCount, toolErrorCount: resources.toolErrorCount,
+    handoffStatus: challenge.handoffStatus ?? "not_requested", resources,
+    attemptId: challenge.attemptId, containerEpoch: challenge.containerEpoch
   }].slice(-6);
+  metrics.terminationCounts[terminationSource] = (metrics.terminationCounts[terminationSource] ?? 0) + 1;
+  metrics.resources.wallTime += resources.wallTime;
+  metrics.resources.progressEvents += resources.progressEvents;
   challenge.currentAttemptStartedAt = null;
   challenge.currentAttemptPhase = null;
   challenge.currentAttemptWorker = null;
@@ -234,7 +264,7 @@ function syncGuardToken(challenge: ChallengeState): string {
     challenge.containerStatus,
     challenge.pendingStatus ?? null,
     challenge.attemptCount,
-    challenge.currentAttemptStartedAt
+    challenge.currentAttemptStartedAt, challenge.attemptId, challenge.containerEpoch
   ]);
 }
 
@@ -244,10 +274,28 @@ function enqueueForRevisit(state: BenchmarkState, challenge: ChallengeState, now
 }
 
 function appendBlackboard(challenge: ChallengeState, entry: BlackboardEntry): void {
+  const knownEvidence = challenge.blackboard.some((prior) => prior.evidenceRef === entry.evidenceRef && prior.kind === entry.kind);
   const previous = challenge.blackboard.at(-1);
   const duplicate = previous && previous.kind === entry.kind
     && previous.summary === entry.summary && previous.evidenceRef === entry.evidenceRef;
   if (!duplicate) challenge.blackboard = retainBlackboard([...challenge.blackboard, entry]);
+  if (!duplicate && entry.evidenceRef && !["handoff", "attempt_end"].includes(entry.kind)
+    && !entry.evidenceRef.startsWith("platform:pending:")
+    && !knownEvidence) {
+    challenge.progressRevision = (challenge.progressRevision ?? 0) + 1;
+    if (challenge.resources) {
+      challenge.resources.progressEvents++;
+      challenge.resources.lastProgressAt = entry.at;
+      challenge.resources.lastProgressKind = entry.kind;
+    }
+    if (challenge.attemptIncident?.source === "solver_failure") challenge.attemptIncident = undefined;
+    if (challenge.resources) {
+      challenge.resources.callsWithoutProgress = 0;
+      challenge.resources.repeatCount = 0;
+      challenge.resources.fingerprints = {};
+      challenge.resources.progressRevision = challenge.progressRevision ?? 0;
+    }
+  }
 }
 
 function statePath(parentSessionId: string) {
@@ -289,6 +337,11 @@ function newChallengeState(challenge: Challenge): ChallengeState {
     currentAttemptStartedAt: null,
     currentAttemptPhase: null,
     currentAttemptWorker: null,
+    attemptId: undefined,
+    containerEpoch: containerIsActive ? 1 : 0,
+    resources: emptyResources(),
+    progressRevision: 0,
+    handoffStatus: "not_requested",
     flagsAtAttemptStart: challenge.correct_flag_count,
     currentApproach: "",
     lastMeaningfulProgressAt: 0,
@@ -327,7 +380,7 @@ function defaultMetrics(): BenchmarkMetrics {
     duplicateAcquires: 0,
     containerLeaks: 0,
     compactionCount: 0,
-    challenges: {}
+    challenges: {}, terminationCounts: {}, incidentCounts: {}, resources: emptyResources()
   };
 }
 
@@ -372,9 +425,11 @@ function flagHash(flag: string): string {
 }
 
 function requireOwner(challenge: ChallengeState, expectedOwner: Exclude<ChallengeOwner, null>, allowUnowned = false): void {
+  const fence = attemptContext.getStore();
+  if (fence) assertFence(challenge, fence, allowUnowned);
   if (challenge.owner === expectedOwner) return;
   if (allowUnowned && challenge.owner === null) return;
-  throw new Error(`Challenge ${challenge.uniqueCode} is owned by ${challenge.owner ?? "nobody"}, not by ${expectedOwner}`);
+  throw new HarnessGateError("harness_concurrency", "owner", `Challenge ${challenge.uniqueCode} is owned by ${challenge.owner ?? "nobody"}, not by ${expectedOwner}`);
 }
 
 function recalculate(state: BenchmarkState, metrics?: BenchmarkMetrics, now: () => number = Date.now): BenchmarkState {
@@ -404,6 +459,11 @@ export class BenchmarkLedger {
   private metrics: BenchmarkMetrics = defaultMetrics();
   private readonly parentSessionId: string;
   private readonly now: () => number;
+  private readonly stateListeners = new Set<() => void>();
+  onStateChange(listener: () => void) {
+    this.stateListeners.add(listener);
+    return () => { this.stateListeners.delete(listener); };
+  }
 
   constructor(parentSessionId: string, now: () => number = Date.now) {
     this.parentSessionId = parentSessionId;
@@ -415,6 +475,9 @@ export class BenchmarkLedger {
     await mkdir(benchmarkDir(this.parentSessionId), { recursive: true, mode: 0o700 });
     this.state = await readJsonStore<BenchmarkState>(statePath(this.parentSessionId)) ?? defaultState();
     this.metrics = await readJsonStore<BenchmarkMetrics>(metricsPath(this.parentSessionId)) ?? defaultMetrics();
+    this.metrics.terminationCounts ??= {};
+    this.metrics.incidentCounts ??= {};
+    this.metrics.resources = { ...emptyResources(), ...this.metrics.resources };
     // Backward-compatible defaults for ledgers created before these fields existed.
     if (typeof this.state.scoreExact !== "boolean") this.state.scoreExact = false;
     if (typeof this.state.vpnChecked !== "boolean") this.state.vpnChecked = false;
@@ -440,6 +503,11 @@ export class BenchmarkLedger {
         ? (challenge.attemptCount <= 1 ? "coverage" : "revisit")
         : null;
       challenge.currentAttemptWorker ??= null;
+      challenge.attemptId = typeof challenge.attemptId === "string" ? challenge.attemptId : challenge.currentAttemptStartedAt !== null ? randomUUID() : undefined;
+      challenge.resources = { ...emptyResources(challenge.currentAttemptStartedAt ?? 0), ...challenge.resources };
+      challenge.progressRevision ??= 0;
+      challenge.handoffStatus ??= "not_requested";
+      challenge.containerEpoch = Number.isFinite(Number(challenge.containerEpoch)) ? Number(challenge.containerEpoch) : 0;
       challenge.flagsAtAttemptStart = Number.isFinite(Number(challenge.flagsAtAttemptStart)) ? Number(challenge.flagsAtAttemptStart) : challenge.correctFlagCount;
       challenge.currentApproach = typeof challenge.currentApproach === "string" ? challenge.currentApproach : "";
       challenge.lastMeaningfulProgressAt = Number.isFinite(Number(challenge.lastMeaningfulProgressAt))
@@ -499,6 +567,7 @@ export class BenchmarkLedger {
   }
 
   private async persist() {
+    for (const listener of this.stateListeners) listener();
     await writeJsonStoreAtomic(statePath(this.parentSessionId), this.state);
     await writeJsonStoreAtomic(metricsPath(this.parentSessionId), this.metrics);
   }
@@ -532,7 +601,11 @@ export class BenchmarkLedger {
       serializer = createSerializer();
       this.actionSerializers.set(uniqueCode, serializer);
     }
-    return serializer(action);
+    const fence = attemptContext.getStore();
+    return serializer(() => {
+      if (fence && fence.uniqueCode === uniqueCode) assertFence(this.state.challenges[uniqueCode], fence);
+      return action();
+    });
   }
 
   async assertOwned(uniqueCode: string, expectedOwner: Exclude<ChallengeOwner, null>, allowedStatuses: ChallengeStatus[] = ["running"]): Promise<ChallengeState> {
@@ -659,6 +732,11 @@ export class BenchmarkLedger {
         }
         existing.isCompleted = existing.isCompleted || platform.is_completed;
         if (schedulingSnapshotIsCurrent) {
+          if (platform.container_status === "available" && platform.container_addr.length &&
+            (existing.containerStatus === "stopped" || (existing.containerAddrs.length > 0 &&
+              JSON.stringify([...existing.containerAddrs].sort()) !== JSON.stringify([...platform.container_addr].sort())))) {
+            existing.containerEpoch = (existing.containerEpoch ?? 0) + 1;
+          }
           existing.containerStatus = platform.container_status;
           // Platform available → take its addresses; platform stopped → clear stale local addresses.
           if (platform.container_status === "available" && platform.container_addr.length) {
@@ -682,7 +760,7 @@ export class BenchmarkLedger {
             existing.containerStatus = platform.container_status;
             existing.containerAddrs = platform.container_status === "available" ? platform.container_addr : [];
           }
-          if (existing.currentAttemptStartedAt) finishAttempt(existing, this.now(), "platform sync confirmed solved");
+          if (existing.currentAttemptStartedAt) finishAttempt(existing, this.now(), "platform sync confirmed solved", this.metrics, "solved");
           const needsClose = platformContainerIsCurrent ? platform.container_status !== "stopped" : hasActiveContainer(existing);
           existing.status = needsClose ? "closing" : "solved";
           existing.pendingStatus = needsClose ? "solved" : undefined;
@@ -795,7 +873,7 @@ export class BenchmarkLedger {
         // resumes it above). Starting fresh must still record what the
         // interrupted attempt did, or the recovery brief loses that route.
         if (challenge.currentAttemptStartedAt !== null) {
-          finishAttempt(challenge, now, "attempt interrupted by restart before a fresh attempt");
+          finishAttempt(challenge, now, "attempt interrupted by restart before a fresh attempt", this.metrics, "environment_failure");
         }
         // The attempt clock starts only after the platform start succeeds.
         // Slow or unstable control-plane calls must not steal solving time.
@@ -828,7 +906,7 @@ export class BenchmarkLedger {
     });
   }
 
-  async confirmStarted(uniqueCode: string, containerAddrs: string[], expectedOwner: Exclude<ChallengeOwner, null>): Promise<ChallengeState> {
+  async confirmStarted(uniqueCode: string, containerAddrs: string[], expectedOwner: Exclude<ChallengeOwner, null>, containerRecreated = false): Promise<ChallengeState> {
     return this.serialize(async () => {
       const challenge = this.state.challenges[uniqueCode];
       if (!challenge) throw new Error(`Challenge ${uniqueCode} not found in ledger`);
@@ -840,10 +918,17 @@ export class BenchmarkLedger {
       challenge.status = "running";
       challenge.reservationPreviousStatus = undefined;
       challenge.reservationStartedNewAttempt = false;
+      const sameLiveContainer = challenge.containerStatus === "available" && challenge.containerAddrs.length > 0
+        && JSON.stringify([...challenge.containerAddrs].sort()) === JSON.stringify([...containerAddrs].sort());
+      if (containerRecreated || !sameLiveContainer) challenge.containerEpoch = (challenge.containerEpoch ?? 0) + 1;
       challenge.containerAddrs = containerAddrs;
       challenge.containerStatus = "available";
       if (startsNewAttempt || challenge.currentAttemptStartedAt === null) {
         challenge.attemptCount += 1;
+        challenge.attemptId = randomUUID();
+        challenge.resources = emptyResources(now);
+        challenge.attemptIncident = undefined;
+        challenge.handoffStatus = "not_requested";
         challenge.currentAttemptStartedAt = now;
         challenge.currentAttemptPhase = challenge.attemptCount === 1 ? "coverage" : "revisit";
         challenge.currentAttemptWorker = expectedOwner;
@@ -985,19 +1070,46 @@ export class BenchmarkLedger {
     });
   }
 
+  /** Evidence references recorded for a challenge are the only references a submit may use. */
+  hasEvidenceReference(uniqueCode: string, evidenceRef: string): boolean {
+    const challenge = this.state.challenges[uniqueCode];
+    if (!challenge || !evidenceRef.trim()) return false;
+    return challenge.blackboard.some((entry) => entry.evidenceRef === evidenceRef)
+      || challenge.lastEvidenceRef === evidenceRef;
+  }
+
+  assertAttemptFence(uniqueCode: string, owner: Exclude<ChallengeOwner, null>, attemptId?: string, containerEpoch?: number): void {
+    const challenge = this.state.challenges[uniqueCode];
+    if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
+    requireOwner(challenge, owner);
+    assertFence(challenge, { uniqueCode, owner, attemptId: attemptId ?? challenge.attemptId ?? "", containerEpoch: containerEpoch ?? challenge.containerEpoch ?? 0 });
+  }
+
   /** Save final reports even after explicit defer; do not alter ownership or progress. */
   async recordChildHandoff(uniqueCode: string, worker: `subagent:${string}`, summary: string): Promise<void> {
     const sections = childHandoffSections(summary);
-    if (!summary.trim()) return;
+    // An empty report is solver behavior (e.g. the model spent its output budget on
+    // thinking), not a harness fault — attribute it to the attempt and move on.
+    if (!summary.trim()) {
+      const fence = captureFence(this.state.challenges[uniqueCode], worker);
+      if (fence) await this.recordAttemptIncident(fence, "solver_failure", "Child returned an empty report", "handoff");
+      return;
+    }
     await this.serialize(async () => {
       const challenge = this.state.challenges[uniqueCode];
       if (!challenge || (challenge.owner !== worker && challenge.currentAttemptWorker !== worker
-        && !challenge.approachHistory.some((attempt) => attempt.worker === worker))) return;
+        && challenge.approachHistory.at(-1)?.worker !== worker)) return;
+      if (challenge.currentAttemptStartedAt !== null && challenge.currentAttemptWorker !== worker) return;
+      const fence = attemptContext.getStore();
+      if (fence) assertFence(challenge, fence, challenge.owner === null);
       const directory = join(benchmarkDir(this.parentSessionId), "handoffs");
       await mkdir(directory, { recursive: true, mode: 0o700 });
       const reportPath = join(directory, `${createHash("sha256").update(worker + summary).digest("hex")}.txt`);
       const token = process.env.BENCHMARK_TOKEN;
       await writeFile(reportPath, token ? summary.split(token).join("[REDACTED_BENCHMARK_TOKEN]") : summary, { mode: 0o600 });
+      challenge.handoffStatus = "saved";
+      const ended = challenge.approachHistory.at(-1);
+      if (ended && ended.attemptId === challenge.attemptId) ended.handoffStatus = "saved";
       if (!sections.length) sections.push("UNCERTAINTIES: Automatic extraction of this child report failed. Inspect the original report as unverified data; do not inherit its plan.");
       for (const section of sections) appendBlackboard(challenge, {
         at: this.now(), worker, kind: "handoff", summary: cleanText(section, 2_000),
@@ -1011,6 +1123,8 @@ export class BenchmarkLedger {
     await this.serialize(async () => {
       const challenge = this.state.challenges[uniqueCode];
       if (!challenge) return;
+      const fence = attemptContext.getStore();
+      if (fence) assertFence(challenge, fence);
       appendBlackboard(challenge, { at: this.now(), worker, kind: "note", summary: cleanText(summary, 1_000),
         evidenceRef: `platform:pending:${flagHash(flag)}`, approach: "", triedFamilies: [], ruledOutFamilies: [], nextProbe: "" });
       await this.persist();
@@ -1091,7 +1205,7 @@ export class BenchmarkLedger {
       if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
       requireOwner(challenge, expectedOwner, allowUnowned);
       const now = this.now();
-      finishAttempt(challenge, now, "solved");
+      finishAttempt(challenge, now, "solved", this.metrics, "solved");
       const needsClose = hasActiveContainer(challenge);
       challenge.status = needsClose ? "closing" : "solved";
       challenge.pendingStatus = needsClose ? "solved" : undefined;
@@ -1137,7 +1251,7 @@ export class BenchmarkLedger {
         ruledOutFamilies: challenge.ruledOutFamilies.slice(-10),
         nextProbe: challenge.nextProbe
       });
-      finishAttempt(challenge, now, challenge.deferredReason || "deferred");
+      finishAttempt(challenge, now, challenge.deferredReason || "deferred", this.metrics, "deferred");
       enqueueForRevisit(this.state, challenge, now);
       const metric = this.metrics.challenges[uniqueCode];
       if (metric) metric.deferredCount += 1;
@@ -1158,7 +1272,7 @@ export class BenchmarkLedger {
       if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
       requireOwner(challenge, expectedOwner);
       challenge.deferredReason = cleanText(reason, 1_000);
-      finishAttempt(challenge, this.now(), challenge.deferredReason || "exhausted");
+      finishAttempt(challenge, this.now(), challenge.deferredReason || "exhausted", this.metrics);
       challenge.status = "closing";
       challenge.owner = null;
       challenge.pendingStatus = "exhausted";
@@ -1173,6 +1287,8 @@ export class BenchmarkLedger {
     return this.serialize(async () => {
       const challenge = this.state.challenges[uniqueCode];
       if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
+      const fence = attemptContext.getStore();
+      if (fence) assertFence(challenge, fence, true);
       if (challenge.status !== "closing" || !challenge.pendingStatus) {
         throw new Error(`Challenge ${uniqueCode} is ${challenge.status}, not awaiting close confirmation`);
       }
@@ -1194,6 +1310,8 @@ export class BenchmarkLedger {
     return this.serialize(async () => {
       const challenge = this.state.challenges[uniqueCode];
       if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
+      const fence = attemptContext.getStore();
+      if (fence) assertFence(challenge, fence, true);
       if (!challenge.closeFailureRecorded) this.metrics.containerLeaks += 1;
       challenge.closeFailureRecorded = true;
       // Keep the container visible in the active count — for solved challenges,
@@ -1256,7 +1374,7 @@ export class BenchmarkLedger {
         ruledOutFamilies: challenge.ruledOutFamilies.slice(-10),
         nextProbe: challenge.nextProbe
       });
-      finishAttempt(challenge, now, reason);
+      finishAttempt(challenge, now, reason, this.metrics);
       challenge.status = "closing";
       challenge.owner = null;
       challenge.deferredReason = cleanText(reason, 1_000);
@@ -1276,7 +1394,7 @@ export class BenchmarkLedger {
       if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
       const now = this.now();
       const cleanupWorker = challenge.currentAttemptWorker ?? challenge.owner ?? "main";
-      if (challenge.currentAttemptStartedAt !== null) finishAttempt(challenge, now, reason);
+      if (challenge.currentAttemptStartedAt !== null) finishAttempt(challenge, now, reason, this.metrics, "cancelled");
       challenge.owner = null;
       challenge.reservationPreviousStatus = undefined;
       challenge.reservationStartedNewAttempt = false;
@@ -1442,10 +1560,96 @@ export class BenchmarkLedger {
   }
 
   /** Increment compaction counter for metrics. */
-  async recordCompaction(): Promise<void> {
+  async recordCompaction(fence?: AttemptFence): Promise<void> {
     return this.serialize(async () => {
       this.metrics.compactionCount += 1;
+      this.metrics.resources.compactionCount++;
+      const challenge = fence ? this.state.challenges[fence.uniqueCode] : undefined;
+      if (challenge && challenge.attemptId === fence?.attemptId && challenge.containerEpoch === fence?.containerEpoch) {
+        (challenge.resources ??= emptyResources(this.now())).compactionCount++;
+      }
       await this.persist();
+    });
+  }
+
+  /** Observation never adopts a replacement worker's identity. */
+  async recordAttemptIncident(fence: AttemptFence | undefined, source: FailureSource, reason: string, gate: string | null = null, metricsOnly = false): Promise<void> {
+    if (!fence) return;
+    await this.serialize(async () => {
+      this.metrics.incidentCounts[source] = (this.metrics.incidentCounts[source] ?? 0) + 1;
+      const challenge = this.state.challenges[fence.uniqueCode];
+      const same = !metricsOnly && challenge?.attemptId === fence.attemptId && challenge.containerEpoch === fence.containerEpoch;
+      const incident: AttemptIncident = { source, reason: cleanText(reason, 1_000), gate, at: this.now() };
+      if (same && challenge.currentAttemptWorker === fence.owner && challenge.currentAttemptStartedAt !== null) {
+        if (!challenge.attemptIncident || (FAILURE_PRIORITY[source] > FAILURE_PRIORITY[challenge.attemptIncident.source] || source === challenge.attemptIncident.source)) challenge.attemptIncident = incident;
+        if (source === "harness_bad_handoff") challenge.handoffStatus = "failed";
+      } else if (same) {
+        // A close or handoff can fail just after logical release. Amend only
+        // that attempt, never the replacement attempt or its blackboard.
+        const ended = challenge.approachHistory.at(-1);
+        if (ended?.attemptId === fence.attemptId && ended.worker === fence.owner && ended.terminationSource !== "solved"
+          && FAILURE_PRIORITY[source] >= (FAILURE_PRIORITY[ended.terminationSource as FailureSource] ?? 0)) {
+          const previous = ended.terminationSource ?? "unknown";
+          this.metrics.terminationCounts[previous] = Math.max(0, (this.metrics.terminationCounts[previous] ?? 0) - 1);
+          this.metrics.terminationCounts[source] = (this.metrics.terminationCounts[source] ?? 0) + 1;
+          ended.terminationSource = source;
+          ended.terminationReason = incident.reason;
+          ended.activeGate = gate;
+          if (source === "harness_bad_handoff") ended.handoffStatus = "failed";
+        }
+      }
+      // Rejected old-generation calls only affect metrics, not ledger state.
+      if (same) await this.persist();
+      else await writeJsonStoreAtomic(metricsPath(this.parentSessionId), this.metrics);
+    });
+  }
+
+  /** A recovered compaction is still counted in metrics, but must not become the attempt's final cause. */
+  async clearAttemptIncident(fence: AttemptFence | undefined, source: FailureSource): Promise<void> {
+    if (!fence) return;
+    await this.serialize(async () => {
+      const challenge = this.state.challenges[fence.uniqueCode];
+      if (!challenge || challenge.attemptId !== fence.attemptId || challenge.containerEpoch !== fence.containerEpoch
+        || challenge.currentAttemptWorker !== fence.owner || challenge.attemptIncident?.source !== source) return;
+      challenge.attemptIncident = undefined;
+      await this.persist();
+    });
+  }
+
+  async observeTool(fence: AttemptFence, observation: { fingerprint: string; wallTime: number; estimatedTokens: number; error: boolean }): Promise<Record<string, unknown> | undefined> {
+    return this.serialize(async () => {
+      const challenge = this.state.challenges[fence.uniqueCode];
+      if (!challenge || challenge.attemptId !== fence.attemptId || challenge.containerEpoch !== fence.containerEpoch) return;
+      const ended = challenge.currentAttemptStartedAt === null ? challenge.approachHistory.at(-1) : undefined;
+      if (ended && ended.attemptId !== fence.attemptId) return;
+      const resources = ended?.resources ?? (challenge.resources ??= emptyResources(this.now()));
+      const progress = challenge.progressRevision ?? 0;
+      if (resources.progressRevision !== progress) {
+        resources.callsWithoutProgress = 0; resources.repeatCount = 0; resources.fingerprints = {}; resources.progressRevision = progress;
+      }
+      resources.toolCalls++;
+      resources.callsWithoutProgress++;
+      resources.toolWallTime += observation.wallTime;
+      resources.estimatedTokens += observation.estimatedTokens;
+      resources.toolErrorCount += Number(observation.error);
+      resources.wallTime = ended ? ended.endedAt - ended.startedAt : Math.max(0, this.now() - (challenge.currentAttemptStartedAt ?? this.now()));
+      const count = (resources.fingerprints[observation.fingerprint] ?? 0) + 1;
+      resources.fingerprints[observation.fingerprint] = count;
+      if (Object.keys(resources.fingerprints).length > 32) delete resources.fingerprints[Object.keys(resources.fingerprints)[0]];
+      resources.repeatCount += Number(count > 1);
+      if (ended) ended.toolErrorCount = resources.toolErrorCount;
+      for (const [key, amount] of Object.entries({ toolCalls: 1, toolWallTime: observation.wallTime, estimatedTokens: observation.estimatedTokens, toolErrorCount: Number(observation.error), repeatCount: Number(count > 1) })) {
+        this.metrics.resources[key as "toolCalls"] += amount;
+      }
+      const stalled = resources.callsWithoutProgress >= 20 || (resources.callsWithoutProgress >= 5 && this.now() - resources.lastProgressAt >= 5 * 60_000);
+      const warn = !ended && (count % 3 === 0 || (stalled && resources.toolCalls - resources.lastWarningCall >= 10));
+      if (warn) resources.lastWarningCall = resources.toolCalls;
+      await this.persist();
+      return warn ? { kind: count % 3 === 0 ? "REPEATED_WITHOUT_NEW_INFORMATION" : "NO_DURABLE_PROGRESS", challenge: fence.uniqueCode,
+        attemptId: fence.attemptId, containerEpoch: fence.containerEpoch, attempt: challenge.attemptCount,
+        lastProgressAt: resources.lastProgressAt, lastProgressKind: resources.lastProgressKind,
+        callsWithoutProgress: resources.callsWithoutProgress, repeatCount: resources.repeatCount,
+        suggestion: "Recheck assumptions, call benchmark_skill_hint, or try a different direction. This warning does not block execution." } : undefined;
     });
   }
 

@@ -42,6 +42,8 @@ sudo nmap -O <target>
 
 ## Follow-up Selection
 
+表中引用的技能都可用 `benchmark_skill_hint` 按名查询：
+
 | 发现 | 下一步 |
 |------|--------|
 | Web 端口（80/443/8080/8443） | `browser navigate` 确认形态 → 转 recon-fingerprint / recon-dir-scan |

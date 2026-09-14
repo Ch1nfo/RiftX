@@ -63,11 +63,12 @@ import { BenchmarkLedger, BENCHMARK_MAX_SUBAGENTS } from "@/server/benchmark/led
 import { createBenchmarkControlTool } from "@/server/benchmark/tools/control-tool";
 import { createAssignBenchmarkChallengeTool } from "@/server/benchmark/tools/assign-tool";
 import { buildBenchmarkContinuity } from "@/server/benchmark/continuity";
-import { installPasswordEnumerationBudget, installBenchmarkRepeatNotice } from "@/server/benchmark/effort";
+import { BenchmarkExecutionBinding, captureFence, StaleAttemptError } from "@/server/benchmark/fencing";
+import { installBenchmarkRepeatNotice } from "@/server/benchmark/effort";
 import { installBenchmarkTimeboxGate } from "@/server/benchmark/timebox";
 import { benchmarkWorkspaceRoot, BenchmarkWorkspace, createWorkspaceLocalTools, benchmarkMutationLock } from "@/server/benchmark/workspace";
-import { createChallengeSkillSelection } from "@/server/benchmark/challenge-skills";
 import { createBenchmarkToolCatalogTool } from "@/server/benchmark/tool-catalog";
+import { createBenchmarkSkillHintTool } from "@/server/benchmark/skill-hint-tool";
 
 type BenchmarkRuntime = { controller: BenchmarkController; ledger: BenchmarkLedger };
 
@@ -383,24 +384,21 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   let evidenceSession: AgentSession | undefined;
   let skills: SkillDescriptor[] = [];
   const benchmarkOwner: "main" | `subagent:${string}` = child ? `subagent:${findingSource.subagentId ?? "child"}` : "main";
+  const benchmarkBinding = benchmarkLedger ? new BenchmarkExecutionBinding(benchmarkLedger, benchmarkOwner, child) : undefined;
   const initialChallenge = benchmarkLedger?.budgetForOwner(benchmarkOwner)?.challenge;
-  const workspace = benchmarkLedger ? new BenchmarkWorkspace(workspaceRoot, initialChallenge?.uniqueCode, () => browser.run(() => browser.close())) : undefined;
-  let selectChallengeSkills: ((description?: string) => Promise<void>) | undefined;
+  const workspace = benchmarkLedger ? new BenchmarkWorkspace(workspaceRoot, initialChallenge?.uniqueCode, () => browser.run(() => browser.close()), benchmarkBinding) : undefined;
   const benchmarkTools: ToolDefinition[] = benchmarkController && benchmarkLedger
-    ? [createBenchmarkToolCatalogTool(), createBenchmarkControlTool(
+    ? [createBenchmarkToolCatalogTool(), createBenchmarkSkillHintTool(
+        () => skills,
+        () => benchmarkLedger.budgetForOwner(benchmarkOwner)?.challenge.description ?? ""
+      ), createBenchmarkControlTool(
         benchmarkController,
         benchmarkLedger,
         browser,
         () => benchmarkOwner,
         child ? runtimeDeps?.benchmark?.assignedChallenge : undefined,
-        async (challenge) => {
-          await workspace!.activate(challenge.uniqueCode);
-          await selectChallengeSkills!(challenge.description);
-        },
-        async () => {
-          await selectChallengeSkills!();
-          await workspace!.activate();
-        }
+        async (challenge) => { benchmarkBinding!.bind(challenge); await workspace!.activate(challenge.uniqueCode); },
+        async () => { benchmarkBinding!.bind(); await workspace!.activate(); }
       )]
     : [];
   const bashOptions: BashToolOptions = {
@@ -455,7 +453,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
           throw error;
         }
         try {
-          await subagents.setBenchmarkBinding(submitted.task.id, uniqueCode, containerAddrs);
+          await subagents.setBenchmarkBinding(submitted.task.id, uniqueCode, containerAddrs, captureFence(benchmarkLedger.getChallenge(uniqueCode)));
           await benchmarkLedger.bindOwner(uniqueCode, reservationOwner, `subagent:${submitted.task.id}`);
           releaseBinding();
           // A cancel that landed during binding saw the owner as the temporary
@@ -493,7 +491,20 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   const compactionExtension = createPentestCompactionExtension({
     getSession: () => evidenceSession,
     modelRegistry,
-    getActiveSkills: () => [...activeSkillNames]
+    getActiveSkills: () => benchmarkLedger ? [] : [...activeSkillNames],
+    onFailure: benchmarkLedger ? () => {
+      const fence = benchmarkBinding?.snapshot();
+      return (reason) => benchmarkLedger.recordAttemptIncident(fence, "harness_bad_compaction", reason, "compaction");
+    } : undefined,
+    getFallbackContext: benchmarkLedger ? async () => {
+      const active = benchmarkLedger.budgetForOwner(benchmarkOwner)?.challenge;
+      if (!active) return undefined;
+      const worker = child ? `subagent:${findingSource.subagentId ?? "child"}` as const : "main" as const;
+      return buildBenchmarkContinuity(benchmarkLedger, worker, undefined, workspace?.cwd);
+    } : undefined,
+    onFallbackRecovered: benchmarkLedger ? async () => {
+      await benchmarkLedger.clearAttemptIncident(benchmarkBinding?.snapshot(), "harness_bad_compaction");
+    } : undefined
   });
   const resourceLoader = new DefaultResourceLoader({
     cwd,
@@ -539,12 +550,6 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     result.session.agent.streamFn = (model, context, options) => stream(model, context, { ...options, maxTokens: model.maxTokens });
   }
   skills = resourceLoader.getSkills().skills as SkillDescriptor[];
-  if (benchmarkLedger) {
-    selectChallengeSkills = createChallengeSkillSelection(skills, activeSkillNames, (content) => {
-      sessionManager.appendCustomMessageEntry("riftx_skill_context", content, false);
-    });
-    await selectChallengeSkills(initialChallenge?.description);
-  }
   const skillContextCache = new Map<string, string>();
   const activeSkillContext = async () => {
     const parts = await Promise.all([...activeSkillNames].map(async (name) => {
@@ -566,9 +571,11 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     // Budget inspection must not change workspaces or consume one-shot warnings.
     if (!preview && benchmarkLedger && workspace) {
       const active = benchmarkLedger.budgetForOwner(benchmarkOwner)?.challenge;
-      if (await workspace.reconcile(active?.uniqueCode)) await selectChallengeSkills!(active?.description);
+      const bound = benchmarkBinding?.snapshot();
+      if (!active && bound && benchmarkLedger.getChallenge(bound.uniqueCode)?.attemptId === bound.attemptId) benchmarkBinding?.bind();
+      await workspace.reconcile(active?.uniqueCode);
     }
-    const skillContext = await activeSkillContext();
+    const skillContext = benchmarkLedger ? "" : await activeSkillContext();
     // Benchmark continuity uses the ledger and cached active skills, without
     // scanning findings/artifacts on every provider request.
     if (benchmarkLedger) {
@@ -624,6 +631,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     runtimeAgent.toolExecution = "parallel";
     for (const tool of runtimeAgent.state?.tools ?? []) {
       tool.executionMode = "parallel";
+      benchmarkBinding?.guard(tool);
       // Benchmark timeboxes are enforcement, not prompt decoration. Let an
       // already-running call finish, then reject subsequent solving calls
       // until the worker records real progress or yields the challenge.
@@ -633,7 +641,6 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
       // release while an exclusive waiter (write) is stuck in pre-processing.
       // The execute wrapper acquires and releases around the real execute.
       const fileLock = () => benchmarkLedger && workspace ? benchmarkMutationLock(benchmarkLedger, workspace.cwd) : mutationLock;
-      if (benchmarkLedger) installPasswordEnumerationBudget(tool, benchmarkLedger, benchmarkOwner);
       if (tool.name === "bash" && typeof tool.execute === "function") {
         const original = tool.execute.bind(tool);
         tool.execute = async (toolCallId: string, params: unknown, signal?: AbortSignal, ...rest: unknown[]) => {
@@ -671,6 +678,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
       // calls from the previous challenge cannot execute in the new directory.
       if (benchmarkLedger) installBenchmarkRepeatNotice(tool, benchmarkLedger, benchmarkOwner);
       workspace?.install(tool);
+      benchmarkBinding?.install(tool);
     }
   }
   record = {
@@ -711,7 +719,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     else if (event.type === "compaction_end") {
       record.compacting = false;
       // Increment the REAL compaction counter only when a compaction occurred.
-      if (benchmarkLedger) void benchmarkLedger.recordCompaction().catch(() => undefined);
+      if (benchmarkLedger) void benchmarkLedger.recordCompaction(benchmarkBinding?.snapshot()).catch(() => undefined);
       // Covers ordinary end-of-turn/manual compaction. Mid-turn compaction
       // also refreshes its detached sampling array inside the transform hook.
       // Serialized on the prompt chain so the continuity splice can never
@@ -719,6 +727,9 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
       void enqueueSessionAction(record, refreshContinuity).catch((error) => {
         console.warn("RiftX could not refresh continuity context after compaction:", error);
       });
+    }
+    if (event.type === "message_end" && event.message.role === "assistant" && event.message.stopReason === "error" && benchmarkLedger) {
+      void benchmarkLedger.recordAttemptIncident(benchmarkBinding?.snapshot(), "model_failure", event.message.errorMessage ?? "Model request failed", "model").catch(() => undefined);
     }
     if (event.type === "agent_end" && subagents && !record.subagentDeliveryInProgress) {
       // Only enter the waiting state when subagents are actually still
@@ -758,19 +769,24 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
       : usageFromRecord(record);
     if (usage) emitter.emit("event", { type: "usage", usage: normalizeContextUsage(usage, record.profile.contextWindow) });
   });
-  record.unsubscribe = unsubscribe;
+  record.unsubscribe = () => { unsubscribe(); benchmarkBinding?.dispose(); };
   if (subagents) {
     subagents.setCompletionHandler((task, childResult) => {
       // Benchmark cleanup: when a benchmark subagent exits (any terminal
       // status), release its challenge from the ledger and close the
       // container — the child prompt tells it to defer/abandon, but crash,
       // cancel, or forgetting means the slot would leak otherwise.
+      const finishedFence = benchmarkLedger && task.benchmarkChallenge ? captureFence(benchmarkLedger.getChallenge(task.benchmarkChallenge), `subagent:${task.id}`) : undefined;
       let benchmarkCleanup: Promise<void> = benchmarkLedger && task.benchmarkChallenge
         ? benchmarkLedger.recordChildHandoff(task.benchmarkChallenge, `subagent:${task.id}`, childResult.summary)
         : Promise.resolve();
       benchmarkCleanup = benchmarkCleanup.catch((error) => {
         console.warn("Could not persist benchmark child handoff:", error);
+        return benchmarkLedger?.recordAttemptIncident(finishedFence,
+          "harness_bad_handoff", "Could not persist child handoff", "handoff");
       });
+      if (task.error && benchmarkLedger) benchmarkCleanup = benchmarkCleanup.then(() => benchmarkLedger.recordAttemptIncident(finishedFence,
+        "environment_failure", task.error!, "child_session"));
       if (benchmarkController && benchmarkLedger) {
         const taskId = task.id;
         const ownerTag: `subagent:${string}` = `subagent:${taskId}`;
@@ -785,10 +801,13 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
               released = true;
               await benchmarkController.closeChallenge(owned.uniqueCode);
               await benchmarkLedger.confirmClosed(owned.uniqueCode);
-            } catch {
+            } catch (error) {
               // Only a failed platform close is a leak. An owner mismatch means
               // this stale completion no longer controls the challenge.
-              if (released) await benchmarkLedger.markCloseFailed(owned.uniqueCode).catch(() => undefined);
+              if (released) {
+                await benchmarkLedger.recordAttemptIncident(finishedFence, "platform_failure", error instanceof Error ? error.message : String(error), "platform_close");
+                await benchmarkLedger.markCloseFailed(owned.uniqueCode).catch(() => undefined);
+              }
             }
           }));
         }
@@ -863,15 +882,24 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
             throw new Error(`Benchmark challenge ${meta.benchmarkChallenge} has no live recoverable container (status=${platform.container_status})`);
           }
           recoverBenchmark.containerAddrs = platform.container_addr;
-          await subagents.setBenchmarkBinding(context.task.id, meta.benchmarkChallenge!, platform.container_addr);
           const challenge = recoveryLedger.getChallenge(meta.benchmarkChallenge!);
           if (!challenge) throw new Error(`Benchmark challenge ${meta.benchmarkChallenge} is missing from the recovered ledger`);
+          if ((meta.benchmarkAttemptId !== undefined && meta.benchmarkAttemptId !== challenge.attemptId)
+            || (meta.benchmarkContainerEpoch !== undefined && meta.benchmarkContainerEpoch !== challenge.containerEpoch)
+            || (challenge.currentAttemptWorker !== owner)) throw new StaleAttemptError();
+          await subagents.setBenchmarkBinding(context.task.id, challenge.uniqueCode, platform.container_addr, captureFence(challenge, owner));
           if (challenge.owner === owner && challenge.status === "running") return;
           if (challenge.owner !== null || challenge.status !== "orphaned") {
             throw new Error(`Benchmark challenge ${challenge.uniqueCode} cannot be recovered by ${owner}: status=${challenge.status}, owner=${challenge.owner ?? "none"}`);
           }
           await recoveryLedger.reserve(challenge.uniqueCode, owner, { isSubagent: true });
           await recoveryLedger.confirmStarted(challenge.uniqueCode, recoverBenchmark.containerAddrs, owner);
+        }).catch(async (error) => {
+          const fence = captureFence(recoveryLedger.getChallenge(recoveredUniqueCode), owner);
+          await recoveryLedger.recordAttemptIncident(fence,
+            error instanceof BenchmarkError ? "platform_failure" : error instanceof StaleAttemptError ? "harness_stale_state" : "harness_bad_handoff",
+            error instanceof Error ? error.message : String(error), "child_recovery", error instanceof StaleAttemptError);
+          throw error;
         });
       }
       return runChildSession(getChildProfile(), cwd, mutationLock, bashConcurrency, context, {

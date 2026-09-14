@@ -1,3 +1,4 @@
+import { attemptContext, captureFence, scopedControl } from "../fencing";
 import { enqueuePendingSubmission, pendingSubmission } from "../pending-submissions";
 import { selectBlackboard, blackboardLabel } from "../blackboard";
 import { Type } from "@sinclair/typebox";
@@ -37,7 +38,9 @@ function scoreLabel(state: Readonly<ReturnType<BenchmarkLedger["getState"]>>): s
 
 function recoveryText(challenge: ChallengeState): string {
   const attempts = challenge.approachHistory.slice(-4);
+  const last = challenge.approachHistory.at(-1);
   const lines = [
+    last ? `Last termination: ${last.terminationSource ?? "unknown"}; ${last.terminationReason ?? last.stopReason}; gate=${last.activeGate ?? "none"}; handoff=${last.handoffStatus ?? "unknown"}` : "",
     challenge.lastMeaningfulSignalContent
       ? `Previous meaningful signal: ${challenge.lastMeaningfulSignalContent}`
       : challenge.lastSignalContent ? `Latest checkpoint: ${challenge.lastSignalContent}` : "",
@@ -72,12 +75,15 @@ export function createBenchmarkControlTool(
   /** When set (child session), only challenge-scoped mutations are allowed and uniqueCode is locked to this value. */
   assignedChallenge?: string,
   onChallengeAcquired?: (challenge: ChallengeState) => void | Promise<void>,
-  onChallengeReleased?: () => void | Promise<void>
+  onChallengeReleased?: () => void | Promise<void>,
+  /** Test-only escape hatch for synthetic fixtures: skip the checkpoint-evidence
+   * requirement on submit. Production callers never pass it. */
+  options?: { allowSyntheticEvidence?: boolean }
 ): ToolDefinition {
   const tool: ToolDefinition = {
     name: "benchmark_control",
     label: "Benchmark control",
-    description: "Interface to the TSec benchmark platform and challenge blackboard. Coverage is low-score-first with one silent 30-minute first attempt per challenge; later attempts are unlimited. Actions: sync, status, acquire, checkpoint, submit, hint (attempt 2+), defer, abandon, publish_intel.",
+    description: "Interface to the TSec benchmark platform and challenge blackboard. Coverage is low-score-first with one silent 30-minute first attempt per challenge; later attempts are unlimited. Submitting a flag requires an evidenceRef that a prior checkpoint already recorded (pass the exact same string). Actions: sync, status, acquire, checkpoint, submit, hint (attempt 2+), defer, abandon, publish_intel.",
     promptSnippet: "benchmark_control(action, uniqueCode?, flag?, signal?, signalKind?, evidenceRef?, triedFamilies?, ruledOutFamilies?, reason?)",
     parameters: Type.Object({
       action: Type.Union([
@@ -101,23 +107,30 @@ export function createBenchmarkControlTool(
       scope: Type.Optional(Type.Union([Type.Literal("global"), Type.Literal("target")], { description: "Intel visibility: global or target" })),
       target: Type.Optional(Type.String({ maxLength: 200, description: "Target identifier, hostname, address, or challenge code for target-scoped intel" })),
       intel: Type.Optional(Type.String({ maxLength: 800, description: "Bounded cross-challenge fact such as credentials, foothold, endpoint, or flag-format quirk" })),
-      cursor: Type.Optional(Type.Number({ description: "Pagination offset for status (0-based)" }))
+      cursor: Type.Optional(Type.Number({ description: "Pagination offset for status (0-based)" })),
+      attemptId: Type.Optional(Type.String({ maxLength: 100, description: "Current attempt identity returned by challenge status" })),
+      containerEpoch: Type.Optional(Type.Number({ description: "Current container epoch returned by challenge status" }))
     }),
-    async execute(_toolCallId: string, params: { action: "sync" | "status" | "acquire" | "checkpoint" | "submit" | "hint" | "defer" | "abandon" | "publish_intel"; uniqueCode?: string; flag?: string; signal?: string; signalKind?: ProgressSignalKind; evidenceRef?: string; supersedesEvidenceRef?: string; triedFamilies?: string[]; ruledOutFamilies?: string[]; reason?: string; scope?: "global" | "target"; target?: string; intel?: string; cursor?: number }) {
+    async execute(_toolCallId: string, params: { action: "sync" | "status" | "acquire" | "checkpoint" | "submit" | "hint" | "defer" | "abandon" | "publish_intel"; uniqueCode?: string; flag?: string; signal?: string; signalKind?: ProgressSignalKind; evidenceRef?: string; supersedesEvidenceRef?: string; triedFamilies?: string[]; ruledOutFamilies?: string[]; reason?: string; scope?: "global" | "target"; target?: string; intel?: string; cursor?: number; attemptId?: string; containerEpoch?: number }) {
       const challengeScoped = new Set(["acquire", "checkpoint", "submit", "hint", "defer", "abandon"]);
       const actionKey = challengeScoped.has(params.action) ? (params.uniqueCode ?? assignedChallenge) : undefined;
       const run = <T>(operation: () => Promise<T>) => actionKey ? ledger.runChallengeAction(actionKey, operation) : operation();
-      return run(async () => {
+      const fence = attemptContext.getStore() ?? (scopedControl(params) ? captureFence(ledger.getChallenge(actionKey ?? ""), getOwner()) : undefined);
+      const execute = () => run(async () => {
       const action = params.action;
       let uniqueCode = params.uniqueCode;
       const flag = params.flag;
       const signal = params.signal;
       const cursor = params.cursor;
+      const attemptId = params.attemptId;
+      const containerEpoch = params.containerEpoch;
+      const evidenceRef = params.evidenceRef?.trim();
       const owner = getOwner();
+      if (actionKey && params.action !== "acquire" && (attemptId !== undefined || containerEpoch !== undefined)) ledger.assertAttemptFence(actionKey, owner, attemptId, containerEpoch);
       // Child sessions: only checkpoint/submit/defer/abandon are allowed, and
       // uniqueCode is locked to the assigned challenge (no cross-challenge access).
       if (assignedChallenge) {
-        const allowed = new Set(["checkpoint", "submit", "defer", "abandon", "publish_intel"]);
+        const allowed = new Set(["checkpoint", "submit", "defer", "abandon", "hint", "status", "publish_intel"]);
         if (!allowed.has(action)) {
           return { content: [{ type: "text" as const, text: `benchmark_control(action="${action}") is not available to SubAgents. Allowed: ${[...allowed].join(", ")}.` }], details: { restricted: true } };
         }
@@ -181,6 +194,11 @@ export function createBenchmarkControlTool(
             };
           }
           case "status": {
+            if (assignedChallenge) {
+              const current = ledger.getChallenge(assignedChallenge);
+              return { content: [{ type: "text", text: current ? `Challenge ${current.uniqueCode}: ${current.status}, flags ${current.correctFlagCount}/${current.flagCount}, attemptId=${current.attemptId}, containerEpoch=${current.containerEpoch}${recoveryText(current)}` : "Assigned challenge is unavailable." }],
+                details: { uniqueCode: assignedChallenge, attemptId: current?.attemptId, containerEpoch: current?.containerEpoch } };
+            }
             const state = ledger.getState();
             const offset = Math.max(0, Math.floor(cursor ?? 0));
             const queue = ledger.candidates(10, offset);
@@ -202,6 +220,7 @@ export function createBenchmarkControlTool(
                 ...terminalPage.map((challenge) => `  ${challenge.uniqueCode} | flags ${challenge.correctFlagCount}/${challenge.flagCount} | ${challenge.deferredReason || "no viable hypothesis recorded"}`)
               );
             }
+            if (mine[0]) lines.push(`Identity: attemptId=${mine[0].attemptId}, containerEpoch=${mine[0].containerEpoch}`);
             if (mine[0] && ledger.isBudgetExhausted(mine[0].uniqueCode)) {
               lines.push(`\nFIRST_ATTEMPT_COMPLETE on ${mine[0].uniqueCode}. Save a concise blackboard checkpoint and defer immediately; solving tools are now blocked.`);
             }
@@ -231,7 +250,7 @@ export function createBenchmarkControlTool(
               }
             }
             // Phase 3: confirm and activate.
-            const challenge = await ledger.confirmStarted(uniqueCode, startResult.container_addr, owner);
+            const challenge = await ledger.confirmStarted(uniqueCode, startResult.container_addr, owner, !reuseLiveContainer);
             await onChallengeAcquired?.(challenge);
             // Grant precise browser scope: normalize bare IP:port to http:// URL,
             // use exact-port grant so only this host:port is allowed.
@@ -241,7 +260,7 @@ export function createBenchmarkControlTool(
             }
             return {
               content: [{ type: "text" as const, text: `Acquired ${challenge.uniqueCode} (${challenge.difficulty}, ${challenge.totalScore}pts, ${challenge.flagCount} flags; attempt ${challenge.attemptCount}).\nContainer: ${startResult.container_addr.join(", ")}${reuseLiveContainer ? " (recovered live orphan)" : ""}\nDescription: ${challenge.description}${recoveryText(challenge)}${ledger.intelForChallenge(challenge, startResult.container_addr).length ? `\nRelevant shared intel:\n${ledger.intelForChallenge(challenge, startResult.container_addr).map((entry) => `- ${entry.target}: ${entry.intel}`).join("\n")}` : ""}\n${challenge.attemptCount === 1 ? "This first-attempt clock is silent: one warning at 25 minutes, hard stop at 30 minutes." : "This revisit has no runtime time limit. If truly exhausted, checkpoint and defer it for the end."}` }],
-              details: { uniqueCode: challenge.uniqueCode, containerAddrs: startResult.container_addr, schedule: scheduleSnapshot(ledger, challenge) }
+              details: { uniqueCode: challenge.uniqueCode, containerAddrs: startResult.container_addr, attemptId: challenge.attemptId, containerEpoch: challenge.containerEpoch, schedule: scheduleSnapshot(ledger, challenge) }
             };
           }
           case "checkpoint": {
@@ -260,6 +279,10 @@ export function createBenchmarkControlTool(
           }
           case "submit": {
             if (!uniqueCode || !flag) throw new Error("uniqueCode and flag are required for submit");
+            if (!evidenceRef) throw new Error("evidenceRef is required for submit; checkpoint the observed output first");
+            if (!ledger.hasEvidenceReference(uniqueCode, evidenceRef) && !options?.allowSyntheticEvidence) {
+              throw new Error(`Evidence reference ${evidenceRef} is not recorded for ${uniqueCode}; checkpoint the observed output first`);
+            }
             const before = await ledger.assertOwned(uniqueCode, owner);
             if (ledger.hasTriedFlag(uniqueCode, flag)) {
               return {
@@ -287,6 +310,7 @@ export function createBenchmarkControlTool(
             const challengeSnapshot = async () => (await controller.listChallenges())
               .find((challenge) => challenge.unique_code === uniqueCode);
             try {
+              await ledger.assertOwned(uniqueCode, owner);
               submitResult = await controller.submitFlag(uniqueCode, flag);
             } catch (error) {
               if (isAmbiguousMutationError(error)) {
@@ -307,6 +331,7 @@ export function createBenchmarkControlTool(
                 } else {
                   try {
                     retriedAfterAmbiguous = true;
+                    await ledger.assertOwned(uniqueCode, owner);
                     submitResult = await controller.submitFlag(uniqueCode, flag);
                   } catch (retryError) {
                     if (isBenchmarkError(retryError) && retryError.kind === "duplicate_submit") {
@@ -318,6 +343,9 @@ export function createBenchmarkControlTool(
                       }
                       submitResult = snapshotAsSubmitResult(duplicateMatch);
                     } else if (isAmbiguousMutationError(retryError)) {
+                      await ledger.assertOwned(uniqueCode, owner);
+                      await ledger.recordAttemptIncident(fence, "platform_failure", retryError.message, "pending_submission");
+                      await ledger.assertOwned(uniqueCode, owner);
                       enqueuePendingSubmission(ledger, uniqueCode, flag, owner);
                       await ledger.recordSubmissionAttempt(uniqueCode, flag, owner);
                       return {
@@ -357,6 +385,7 @@ export function createBenchmarkControlTool(
                   await controller.closeChallenge(uniqueCode);
                   await ledger.confirmClosed(uniqueCode);
                 } catch {
+                  await ledger.recordAttemptIncident(fence, "platform_failure", "Platform container close failed", "platform_close");
                   await ledger.markCloseFailed(uniqueCode);
                   closeNote = "Container close FAILED — it may still occupy a platform slot; sync will reconcile.";
                 }
@@ -402,6 +431,7 @@ export function createBenchmarkControlTool(
                 details: { uniqueCode, cached: true }
               };
             }
+            await ledger.assertOwned(uniqueCode, owner);
             const hint = await controller.getHint(uniqueCode);
             await ledger.recordHint(uniqueCode, hint.hint, owner);
             return {
@@ -418,6 +448,7 @@ export function createBenchmarkControlTool(
               await controller.closeChallenge(uniqueCode);
               await ledger.confirmClosed(uniqueCode);
             } catch {
+              await ledger.recordAttemptIncident(fence, "platform_failure", "Platform container close failed", "platform_close");
               await ledger.markCloseFailed(uniqueCode);
               return {
                 content: [{ type: "text" as const, text: `Deferred ${uniqueCode}, but the container close FAILED — it is still running on the platform and occupying a slot. The main Agent must run benchmark_control(action="sync") to reconcile it; do not retry defer or abandon because ownership has already been released.` }],
@@ -443,6 +474,7 @@ export function createBenchmarkControlTool(
               await controller.closeChallenge(uniqueCode);
               await ledger.confirmClosed(uniqueCode);
             } catch {
+              await ledger.recordAttemptIncident(fence, "platform_failure", "Platform container close failed", "platform_close");
               await ledger.markCloseFailed(uniqueCode);
               return {
                 content: [{ type: "text" as const, text: `Abandoned ${uniqueCode} logically, but the container close FAILED — it is still running on the platform. Next sync will reconcile.` }],
@@ -472,11 +504,13 @@ export function createBenchmarkControlTool(
         }
       } catch (error) {
         if (isBenchmarkError(error)) {
+          await ledger.recordAttemptIncident(fence, "platform_failure", error.message, "platform");
           return { content: [{ type: "text" as const, text: friendlyError(error) }] };
         }
         throw error;
       }
       });
+      return fence ? attemptContext.run(fence, execute) : execute();
     }
   } as ToolDefinition;
   return tool;

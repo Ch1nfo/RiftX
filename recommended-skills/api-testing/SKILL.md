@@ -10,7 +10,7 @@ description: API security testing 接口安全测试：REST/GraphQL 面发现、
 1. **API 面发现靠浏览器的网络记录**：以正常用户在浏览器里走完全部功能，`requests` 自动记录所有 XHR/fetch——这是最真实的 API 清单（比 swagger 文档更接近实际部署）；`request_detail` 逐个看真实结构（方法、路径、头、体、token 形态）
 2. **文档端点用浏览器确认**：`/swagger` `/openapi.json` `/api-docs` `/graphql` `/graphiql`——命中即拿到全量接口定义（本身若未鉴权也是一处暴露面，checkpoint 写黑板，signalKind: `new_surface`）
 3. **重放与篡改在 bash**：`cookies_export` 导出会话 → curl 重放修改（换方法/换路径/加字段/改 token）；GraphQL 在浏览器 `evaluate` 里发 query 最方便（页面上下文自带 token 与同源策略）
-4. **并行**：参数/端点长 fuzz 放 bash 后台跑（nohup + 输出落盘，完成后 grep 汇总），主会话同时手工做逻辑类测试（越权、mass assignment——交叉 `exploit-authz`）。子代理（`assign_benchmark_challenge`，仅主 Agent 可派发）派发的是**另一道题**，不要用来跑当前题的任务
+4. **并行**：参数/端点长 fuzz 放 bash 后台跑（nohup + 输出落盘，完成后 grep 汇总），主会话同时手工做逻辑类测试（越权、mass assignment——交叉 `exploit-authz`，用 `benchmark_skill_hint` 查它）。子代理（`assign_benchmark_challenge`，仅主 Agent 可派发）派发的是**另一道题**，不要用来跑当前题的任务
 
 ---
 

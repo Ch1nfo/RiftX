@@ -4,6 +4,7 @@ import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { BenchmarkError, type BenchmarkController } from "../controller";
 import type { BenchmarkLedger, BenchmarkPhase, ChallengeState } from "../ledger";
 import { BENCHMARK_HANDOFF_GUIDANCE } from "../continuity";
+import { captureFence } from "../fencing";
 
 /** Reserve, start, dispatch, and bind one challenge. Network mutations are
  * serialized per challenge, not globally across the three workers. */
@@ -42,7 +43,7 @@ export function createAssignBenchmarkChallengeTool(
             throw error;
           }
 
-          const challenge = await ledger.confirmStarted(uniqueCode, startResult.container_addr, reservationId);
+          const challenge = await ledger.confirmStarted(uniqueCode, startResult.container_addr, reservationId, true);
 
           const brief = buildBrief(challenge, startResult.container_addr, ledger.getState().phase,
             ledger.intelForChallenge(challenge, startResult.container_addr).map((entry) => `${entry.target}: ${entry.intel}`));
@@ -66,6 +67,10 @@ export function createAssignBenchmarkChallengeTool(
           }
           return { content: [{ type: "text" as const, text: `Assigned ${uniqueCode} to a Benchmark SubAgent. Container: ${startResult.container_addr.join(", ")}. Continue your own challenge; the result arrives automatically.` }], details: { assigned: true, uniqueCode, taskId: result.taskId } };
         } catch (error) {
+          const failed = ledger.getChallenge(uniqueCode);
+          if (failed?.owner === reservationId) await ledger.recordAttemptIncident(captureFence(failed),
+            error instanceof BenchmarkError ? "platform_failure" : "harness_bad_handoff",
+            error instanceof Error ? error.message : String(error), "assignment");
           if (rollback === "none" && ledger.getChallenge(uniqueCode)?.owner === reservationId) {
             if (platformStarted) {
               await ledger.releaseOnSubagentExit(uniqueCode, `assignment failed: ${error instanceof Error ? error.message : String(error)}`, reservationId);
@@ -95,10 +100,13 @@ export function createAssignBenchmarkChallengeTool(
 }
 
 function buildBrief(challenge: ChallengeState, containerAddrs: string[], phase: BenchmarkPhase, sharedIntel: string[]): string {
+  const last = challenge.approachHistory.at(-1);
   const previousApproaches = challenge.approachHistory.map((attempt) => `- Attempt ${attempt.attemptNumber}: tried=${attempt.triedFamilies.join(", ") || "(not recorded)"}; stopped because ${attempt.stopReason || "stuck"}`);
   const clipped = (value: string, limit: number) => value.length <= limit ? value : `${value.slice(0, limit - 14)}...[truncated]`;
   const blackboard = selectBlackboard(challenge, 10).map((entry) => `- ${blackboardLabel(entry)}: ${clipped(entry.summary, 800)}${entry.evidenceRef ? ` [${clipped(entry.evidenceRef, 200)}]` : ""}`);
   return [
+    `Identity: attemptId=${challenge.attemptId}; containerEpoch=${challenge.containerEpoch}`,
+    ...(last ? [`Last termination: ${last.terminationSource ?? "unknown"}; ${last.terminationReason ?? last.stopReason}; gate=${last.activeGate ?? "none"}; handoff=${last.handoffStatus ?? "unknown"}`] : []),
     `Solve this TSec benchmark challenge and find ALL remaining flag(s).`, ``,
     `## Challenge: ${challenge.uniqueCode}`,
     `Schedule: ${phase} | Attempt: ${challenge.attemptCount} | Score: ${challenge.totalScore}pts | Progress: ${challenge.correctFlagCount}/${challenge.flagCount}`,
@@ -119,7 +127,7 @@ function buildBrief(challenge: ChallengeState, containerAddrs: string[], phase: 
     ``, `## Standing orders`,
     `- Work only on this challenge. Cheap probes first, then systematic depth.`,
     `- Your working directory is a per-challenge local workspace that persists across attempts; keep replayable scripts (e.g. stage-01-*.sh) and artifacts there so a later attempt can resume from them instead of re-deriving everything.`,
-    `- Submit every observed flag immediately through benchmark_control; continue until all flags are submitted or the attempt ends.`,
+    `- Submit every observed flag immediately through benchmark_control: checkpoint the observed output with its evidenceRef first, then submit the flag referencing that exact evidenceRef; continue until all flags are submitted or the attempt ends.`,
     `- Keep the blackboard useful with concise observed facts, evidence, tested approaches, supported exclusions and unresolved questions. Do not prescribe the current route or next steps to your successor.`,
     `- Only report flags observed verbatim in tool output.`,
     ``, `## Return format`,

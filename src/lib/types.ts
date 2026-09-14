@@ -102,6 +102,8 @@ export type SubagentTask = {
   /** Benchmark metadata: the unique_code this task was assigned to, so retry
    * and restart can recover the challenge binding without owner-tag lookup. */
   benchmarkChallenge?: string;
+  benchmarkAttemptId?: string;
+  benchmarkContainerEpoch?: number;
   /** Benchmark metadata: container addresses for the child's browser scope. */
   benchmarkContainerAddrs?: string[];
   pendingApprovalCount: number;

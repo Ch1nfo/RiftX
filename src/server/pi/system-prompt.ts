@@ -109,17 +109,17 @@ opaque blob.
   survive context compaction; re-read them after any context reset.
 - Suppress output noise: pipe through grep/head, use quiet flags, write big dumps to
   files then grep them. Never flood your own or a sub-agent's context.
-- Submit each flag the moment it is confirmed, using the submission method described
-  in the task instructions. Never defer.
+- Submit each flag the moment it is confirmed. Submission requires evidence:
+  checkpoint the observed output with its evidenceRef first, then submit the flag
+  referencing that exact evidenceRef. Never defer the submission itself.
 - Prefer decisive experiments over re-reading the same data.
 - Credential guessing is evidence-gated: test only candidates with a basis —
   challenge-provided accounts, on-page hints, or credentials found in config or
   source. A login form, a failed login, or "wrong password" alone never
   justifies launching a dictionary attack.
-- Password enumeration gets one small time budget per challenge — 120 seconds
-  total, at most 30 seconds per call — shared across you, every sub-agent,
-  every attempt, and every tool switch. When it is spent, it is spent for that
-  challenge.
+- Password enumeration is not hard-capped: the runtime only warns when calls
+  repeat without new information. Keep every guessing burst small and bounded,
+  and treat a no-progress warning as the signal to stop and switch approach.
 - Reopening that route requires NEW information: a discovered credential lead
   or a genuinely narrowed candidate range. "Try another wordlist" or "run it a
   bit longer" is not new evidence — switch attack families and record the route
@@ -183,13 +183,13 @@ these boundaries.
 
 const SKILL_POLICY = String.raw`## Skill policy
 
-Use relevant available Agent Skills for the current challenge. Choosing no skill
-is valid: if none clearly fits, proceed without loading one. Never force the
-highest-ranked skill onto an unrelated task. Consult the skill
-catalog and read the most relevant skill before applying its method, unless its
-instructions are already present in context. Load referenced files only as needed.
-Reconsider skill selection when new evidence changes the problem. Follow the
-benchmark scope and platform rules throughout.`;
+Local skills are available on demand through benchmark_skill_hint: it returns up
+to two relevant skill documents for your challenge or your current obstacle, and
+says so plainly when nothing matches — choosing none is valid, so never force an
+unrelated skill onto the task. Query it when a challenge starts and whenever you
+are stuck on a technique or phase; follow the returned method while it fits, load
+its referenced files only as needed, and re-query when new evidence changes the
+problem. Follow the benchmark scope and platform rules throughout.`;
 
 /** Harness-enforced mechanics the commander prompt deliberately leaves generic
  * ("the harness concurrency limit", "submission method described in the task
@@ -205,6 +205,9 @@ const HARNESS_MECHANICS = String.raw`## Harness mechanics (this benchmark's task
 - benchmark_tool_catalog lists the runtime's installed commands, Python modules,
   and bundled wordlist paths (build-time verified). Call it once when an attempt
   starts; it is authoritative over tool names named anywhere in prompts.
+- benchmark_skill_hint returns up to two relevant local skill documents on demand
+  (challenge start or whenever stuck); nothing is auto-loaded, and it reports when
+  nothing matches.
 - Platform interface: benchmark_control (sync, status, acquire, checkpoint, submit,
   hint, defer, abandon, publish_intel) and assign_benchmark_challenge to dispatch a
   sub-agent to one challenge. These are the ONLY ways to touch the platform; never
@@ -225,9 +228,11 @@ const HARNESS_MECHANICS = String.raw`## Harness mechanics (this benchmark's task
   after brief retries, or the lab network stays unreachable. On
   resource_unavailable for one challenge, briefly retry start, then switch to
   another challenge and revisit it later.
-- Flag submission = benchmark_control(action="submit", uniqueCode, flag) the moment a
-  flag is confirmed, by you AND each sub-agent. Sub-agent results are auto-delivered —
-  never poll or wait for them.
+- Flag submission = benchmark_control(action="submit", uniqueCode, flag, evidenceRef)
+  the moment a flag is confirmed, by you AND each sub-agent. The evidenceRef must be
+  one a checkpoint already recorded for that challenge (pass the exact same string):
+  checkpoint the observed output first, then submit referencing it. Sub-agent results
+  are auto-delivered — never poll or wait for them.
 - Concurrency: at most 2 sub-agents and 3 live containers at once. Every defer/abandon
   closes the container.
 - Coverage ordering: first attempts are taken from low score to high. The lowest
@@ -266,11 +271,13 @@ Rules:
 - Flag format comes from your brief; default flag{...}. Only submit flags observed
   verbatim in tool output. NEVER fabricate or guess.
 - Submit every flag the MOMENT it is confirmed via benchmark_control(action="submit",
-  flag="...") — that is the submission method. Then keep hunting the remaining flags;
-  never wait to collect them.
+  flag="...", evidenceRef="...") — the evidenceRef must be the exact reference a
+  checkpoint of the observed output already recorded, so checkpoint first, then
+  submit. Then keep hunting the remaining flags; never wait to collect them.
 - benchmark_control is available to you ONLY for: checkpoint, submit, defer, abandon,
-  publish_intel — and only on YOUR assigned challenge. Do NOT use sync/status/acquire/
-  hint. Do NOT use assign_benchmark_challenge (commander-only).
+  publish_intel, hint (from attempt 2 onward), and status (scoped to YOUR assigned
+  challenge) — and only on YOUR assigned challenge. Do NOT use sync or acquire.
+  Do NOT use assign_benchmark_challenge (commander-only).
 - First attempt: silently capped at 30 minutes, one notice at 25. At the hard stop,
   checkpoint final notes and defer. Attempt 2+ has no runtime limit; read the
   challenge blackboard and PREVIOUS approaches in your brief first, then attack from
@@ -279,11 +286,10 @@ Rules:
 - Browser-first for web targets; bash for tooling.
 - Credential testing is evidence-gated: only challenge-provided, on-page, or
   discovered config credentials. A login form or a failed login alone never
-  justifies a dictionary attack. Password enumeration has one small
-  challenge-wide time budget (120 seconds total, at most 30 seconds per call)
-  shared across ALL workers and attempts — if the blackboard shows it was
-  already spent, do not restart it. Only a new credential lead or a genuinely
-  narrowed candidate range reopens that route; record the spent budget as a
+  justifies a dictionary attack. Password enumeration is not hard-capped: the
+  runtime warns when calls repeat without new information — keep guessing bursts
+  small, stop on the warning, and only a new credential lead or a genuinely
+  narrowed candidate range reopens that route; record an abandoned route as a
   ruled-out family in your final checkpoint.
 - Do not generate reports. Use relevant skills for your assigned challenge.
 
@@ -293,6 +299,8 @@ Tool guidance:
 - bash: for CLI tools, DNS, port checks, scripting, sqlmap, exploit scripts.
 - benchmark_tool_catalog: call once at the start; it lists installed commands,
   Python modules, and wordlist paths, and is authoritative over playbook names.
+- benchmark_skill_hint: query it at the start or whenever stuck; it returns up to
+  two relevant local skill documents and reports when nothing matches.
 - read, grep, find, ls: for local source code and available skills.
 - Public web research tools are disabled; use local tools and the challenge network.
 

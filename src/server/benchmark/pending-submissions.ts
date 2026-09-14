@@ -1,9 +1,11 @@
+import { assertFence, attemptContext, captureFence, StaleAttemptError, type AttemptFence } from "./fencing";
 import { createHash } from "node:crypto";
 import { BenchmarkError, type BenchmarkController } from "./controller";
 import type { BenchmarkLedger, ChallengeOwner } from "./ledger";
 
 type PendingSubmission = {
   uniqueCode: string; flag: string; owner: Exclude<ChallengeOwner, null>;
+  fence: AttemptFence;
   attempts: number; retryAt: number; evidenceRef: string;
 };
 // Candidates live only for this run; the persisted ledger contains hashes/notes.
@@ -18,10 +20,13 @@ export function pendingSubmission(ledger: BenchmarkLedger, code: string, flag: s
 }
 
 export function enqueuePendingSubmission(ledger: BenchmarkLedger, uniqueCode: string, flag: string, owner: Exclude<ChallengeOwner, null>, now = Date.now()) {
+  const fence = attemptContext.getStore() ?? captureFence(ledger.getChallenge(uniqueCode), owner);
+  if (!fence) throw new StaleAttemptError();
+  assertFence(ledger.getChallenge(uniqueCode), fence);
   let queue = queues.get(ledger);
   if (!queue) queues.set(ledger, queue = new Map());
   const id = key(uniqueCode, flag);
-  if (!queue.has(id)) queue.set(id, { uniqueCode, flag, owner, attempts: 0, retryAt: now + retryDelays[0], evidenceRef: ledger.getChallenge(uniqueCode)?.lastEvidenceRef ?? "" });
+  if (!queue.has(id)) queue.set(id, { uniqueCode, flag, owner, fence, attempts: 0, retryAt: now + retryDelays[0], evidenceRef: ledger.getChallenge(uniqueCode)?.lastEvidenceRef ?? "" });
 }
 
 export function hasPendingSubmissions(ledger: BenchmarkLedger): boolean {
@@ -40,17 +45,21 @@ export function retryPendingSubmissions(controller: BenchmarkController, ledger:
       selected.add(entry.uniqueCode);
       return true;
     });
-    await Promise.all(due.map(([id, entry]) => ledger.runChallengeAction(entry.uniqueCode, async () => {
+    await Promise.all(due.map(([id, entry]) => attemptContext.exit(() => ledger.runChallengeAction(entry.uniqueCode, () => attemptContext.run(entry.fence, async () => {
+      try { assertFence(ledger.getChallenge(entry.uniqueCode), entry.fence); }
+      catch { queue.delete(id); await ledger.recordAttemptIncident(entry.fence, "harness_stale_state", "Pending submission belongs to an old attempt", "pending_submission", true); return; }
       entry.attempts++;
       entry.retryAt = now + (retryDelays[entry.attempts] ?? Infinity);
       try {
         const guard = ledger.captureSyncGuard();
         const board = await controller.listChallenges();
+        assertFence(ledger.getChallenge(entry.uniqueCode), entry.fence);
         const state = ledger.getState();
         await ledger.syncFromPlatform(board, state.vpnOk, state.vpnClientIp, state.vpnChecked, guard);
         const challenge = ledger.getChallenge(entry.uniqueCode);
         if (!challenge) { entry.attempts = retryDelays.length; return; }
         if (challenge.isCompleted) { queue.delete(id); return; }
+        assertFence(challenge, entry.fence);
         // Counts alone cannot identify which pending flag was accepted. The
         // platform's exact-candidate duplicate response resolves that ambiguity.
         let result: Awaited<ReturnType<BenchmarkController["submitFlag"]>>;
@@ -64,7 +73,8 @@ export function retryPendingSubmissions(controller: BenchmarkController, ledger:
           result = { unique_code: entry.uniqueCode, correct: true, awarded: 0, cumulative_score: 0,
             correct_flag_count: match.correct_flag_count, total_flag_count: match.flag_count, matched_flag_index: null };
         }
-        const owner = ledger.getChallenge(entry.uniqueCode)?.owner ?? entry.owner;
+        assertFence(ledger.getChallenge(entry.uniqueCode), entry.fence);
+        const owner = entry.owner;
         await ledger.recordSubmission(entry.uniqueCode, entry.flag, result.correct, duplicate ? undefined : result.cumulative_score,
           result.correct_flag_count, result.matched_flag_index, owner, true);
         if (result.correct && result.correct_flag_count >= result.total_flag_count) {
@@ -76,6 +86,9 @@ export function retryPendingSubmissions(controller: BenchmarkController, ledger:
         }
         queue.delete(id);
       } catch (error) {
+        try { assertFence(ledger.getChallenge(entry.uniqueCode), entry.fence); }
+        catch { queue.delete(id); await ledger.recordAttemptIncident(entry.fence, "harness_stale_state", "Pending submission invalidated during retry", "pending_submission", true); return; }
+        await ledger.recordAttemptIncident(entry.fence, "platform_failure", error instanceof Error ? error.message : String(error), "pending_submission");
         if (!(error instanceof BenchmarkError) || !["timeout", "connection_error", "internal_error", "resource_unavailable"].includes(error.kind)) {
           entry.attempts = retryDelays.length;
         }
@@ -83,7 +96,7 @@ export function retryPendingSubmissions(controller: BenchmarkController, ledger:
         await ledger.recordPendingSubmissionStatus(entry.uniqueCode, entry.owner,
           (entry.attempts >= retryDelays.length ? "Pending flag confirmation exhausted its bounded recovery attempts; outcome remains unknown." : "Pending flag confirmation will retry after backoff; outcome remains unknown.") + (entry.evidenceRef ? ` Source evidence: ${entry.evidenceRef}` : ""), entry.flag);
       }
-    })));
+    })))));
   };
   const promise = run().finally(() => draining.delete(ledger));
   draining.set(ledger, promise);

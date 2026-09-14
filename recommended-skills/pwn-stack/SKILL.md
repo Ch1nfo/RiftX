@@ -45,7 +45,8 @@ p.interactive()
 - `gdb ./pwn`;偏移用 `cyclic 200` 喂入、`cyclic -l <寄存器值>` 反查,不要手数。
 - 远程打不通先回泄露段验证环境(libc 版本差异是第一嫌疑人),再查网络形态。
 - 每拿到一个原语(泄露/写/执行)立刻 checkpoint(signalKind=exploit_primitive,
-  evidenceRef=关键偏移与泄露输出);拿到 flag 立即 submit。
+  evidenceRef=关键偏移与泄露输出);拿到 flag 先 checkpoint 留证、立即 submit(带同一个
+  evidenceRef)。
 
 ## RiftX 工作流
 

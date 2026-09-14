@@ -1,3 +1,4 @@
+import { attemptContext, captureFence } from "./fencing";
 import { FIRST_ATTEMPT_LIMIT_MS, type BenchmarkLedger, type ChallengeOwner } from "./ledger";
 import { resolveBashTimeout } from "@/server/pi/bash-timeout-policy";
 
@@ -14,7 +15,7 @@ export function installBenchmarkTimeboxGate(
 ): void {
   // benchmark_tool_catalog is read-only runtime information, not solving work;
   // blocking it after expiry would only turn a status lookup into a timeout error.
-  if (tool.name === "benchmark_control" || tool.name === "benchmark_tool_catalog" || tool.name === "assign_benchmark_challenge" || typeof tool.execute !== "function") return;
+  if (tool.name === "benchmark_control" || (tool.name === "benchmark_tool_catalog" || tool.name === "benchmark_skill_hint") || tool.name === "assign_benchmark_challenge" || typeof tool.execute !== "function") return;
   const original = tool.execute.bind(tool);
   tool.execute = async (toolCallId: string, params: unknown, signal?: AbortSignal, ...rest: unknown[]) => {
     if (assignedChallenge) {
@@ -28,6 +29,7 @@ export function installBenchmarkTimeboxGate(
     }
     const active = ledger.budgetForOwner(owner);
     if (active?.budget.expired) {
+      await ledger.recordAttemptIncident(attemptContext.getStore() ?? captureFence(active.challenge, owner), "harness_timeout", "First attempt reached its 30-minute deadline", "timebox");
       return {
         content: [{ type: "text" as const, text: `FIRST_ATTEMPT_COMPLETE for ${active.challenge.uniqueCode}: the fixed 30-minute first attempt has ended. This solving tool was not executed. Immediately write one concise benchmark_control checkpoint with observed findings, evidence, tested routes, supported exclusions, artifacts and unresolved questions. Let the next worker reassess independently and choose a different hypothesis; then defer and move to the next eligible challenge.` }],
         details: { timeboxExpired: true, uniqueCode: active.challenge.uniqueCode, reason: "fixed first-attempt limit" }
@@ -43,6 +45,7 @@ export function installBenchmarkTimeboxGate(
         signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal, ...rest);
     } catch (error) {
       if (!deadline.signal.aborted || signal?.aborted) throw error;
+      await ledger.recordAttemptIncident(attemptContext.getStore() ?? captureFence(active.challenge, owner), "harness_timeout", "First attempt command interrupted at deadline", "timebox");
       return { content: [{ type: "text", text: `FIRST_ATTEMPT_COMPLETE: the command was interrupted at the existing first-attempt deadline. Save observed findings and defer.\n${error instanceof Error ? error.message : String(error)}` }], details: { timeboxExpired: true }, isError: true };
     } finally { clearTimeout(timer); }
   };

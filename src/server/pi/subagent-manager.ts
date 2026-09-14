@@ -333,11 +333,13 @@ export class SubagentManager {
   }
 
   /** Persist benchmark ownership metadata before a queued runner is released. */
-  async setBenchmarkBinding(taskId: string, uniqueCode: string, containerAddrs: string[]) {
+  async setBenchmarkBinding(taskId: string, uniqueCode: string, containerAddrs: string[], fence?: { attemptId: string; containerEpoch: number }) {
     const task = this.tasks.get(taskId);
     if (!task) throw new Error(`Subagent task ${taskId} not found`);
     task.benchmarkChallenge = uniqueCode;
     task.benchmarkContainerAddrs = [...containerAddrs];
+    task.benchmarkAttemptId = fence?.attemptId;
+    task.benchmarkContainerEpoch = fence?.containerEpoch;
     await this.persistOrThrow();
   }
 
