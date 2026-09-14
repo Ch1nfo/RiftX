@@ -67,6 +67,7 @@ import { installPasswordEnumerationBudget, installBenchmarkRepeatNotice } from "
 import { installBenchmarkTimeboxGate } from "@/server/benchmark/timebox";
 import { benchmarkWorkspaceRoot, BenchmarkWorkspace, createWorkspaceLocalTools, benchmarkMutationLock } from "@/server/benchmark/workspace";
 import { createChallengeSkillSelection } from "@/server/benchmark/challenge-skills";
+import { createBenchmarkToolCatalogTool } from "@/server/benchmark/tool-catalog";
 
 type BenchmarkRuntime = { controller: BenchmarkController; ledger: BenchmarkLedger };
 
@@ -386,7 +387,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   const workspace = benchmarkLedger ? new BenchmarkWorkspace(workspaceRoot, initialChallenge?.uniqueCode, () => browser.run(() => browser.close())) : undefined;
   let selectChallengeSkills: ((description?: string) => Promise<void>) | undefined;
   const benchmarkTools: ToolDefinition[] = benchmarkController && benchmarkLedger
-    ? [createBenchmarkControlTool(
+    ? [createBenchmarkToolCatalogTool(), createBenchmarkControlTool(
         benchmarkController,
         benchmarkLedger,
         browser,
