@@ -1,6 +1,6 @@
 ---
 name: llm-testing
-description: Comprehensive LLM security testing prompts for bias detection, data leakage, alignment testing, and adversarial prompt resistance.
+description: Comprehensive LLM security testing prompts for bias detection, data leakage, alignment testing, and adversarial prompt resistance. Use this skill when the target exposes an LLM/chat API, prompt injection, agent tool abuse, or model integration flaws.
 ---
 
 # LLM Testing Skill

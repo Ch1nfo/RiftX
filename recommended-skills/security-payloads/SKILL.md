@@ -1,6 +1,6 @@
 ---
 name: security-payloads
-description: "Essential exploitation payloads: anti-virus test files, file name exploits, malicious files. Curated for testing."
+description: "Essential exploitation payloads: anti-virus test files, file name exploits, malicious files. Curated for testing. Use this skill when you need a payload wordlist, fuzz 字典 for file names, upload/traversal test files, or malicious payload samples."
 ---
 
 # SecLists Payloads (Curated)

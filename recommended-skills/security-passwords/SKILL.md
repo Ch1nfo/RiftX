@@ -1,6 +1,6 @@
 ---
 name: security-passwords
-description: "Top password lists for password brute force 密码爆破/撞库: common passwords, darkweb leaks, worst passwords, default credentials. Curated essentials."
+description: "Top password lists for password brute force 密码爆破/撞库: common passwords, darkweb leaks, worst passwords, default credentials. Curated essentials. Use this skill when you need a password wordlist, credential dictionary, default password checks, or 密码字典."
 ---
 
 # SecLists Passwords (Curated)

@@ -8,9 +8,9 @@ description: API security testing 接口安全测试：REST/GraphQL 面发现、
 ## RiftX Workflow
 
 1. **API 面发现靠浏览器的网络记录**：以正常用户在浏览器里走完全部功能，`requests` 自动记录所有 XHR/fetch——这是最真实的 API 清单（比 swagger 文档更接近实际部署）；`request_detail` 逐个看真实结构（方法、路径、头、体、token 形态）
-2. **文档端点用浏览器确认**：`/swagger` `/openapi.json` `/api-docs` `/graphql` `/graphiql`——命中即拿到全量接口定义（本身若未鉴权也是一个 finding，`confidence: likely`）
+2. **文档端点用浏览器确认**：`/swagger` `/openapi.json` `/api-docs` `/graphql` `/graphiql`——命中即拿到全量接口定义（本身若未鉴权也是一处暴露面，checkpoint 写黑板，signalKind: `new_surface`）
 3. **重放与篡改在 bash**：`cookies_export` 导出会话 → curl 重放修改（换方法/换路径/加字段/改 token）；GraphQL 在浏览器 `evaluate` 里发 query 最方便（页面上下文自带 token 与同源策略）
-4. **并行**：参数/端点 fuzz 交给 `spawn_subagent`，主会话手工做逻辑类测试（越权、mass assignment——交叉 `exploit-authz`）
+4. **并行**：参数/端点长 fuzz 放 bash 后台跑（nohup + 输出落盘，完成后 grep 汇总），主会话同时手工做逻辑类测试（越权、mass assignment——交叉 `exploit-authz`）。子代理（`assign_benchmark_challenge`，仅主 Agent 可派发）派发的是**另一道题**，不要用来跑当前题的任务
 
 ---
 
@@ -26,7 +26,7 @@ description: API security testing 接口安全测试：REST/GraphQL 面发现、
 
 ### 2. 认证与会话
 
-- **JWT**：解码看 alg/claims → `alg: none` 与弱密钥（`jwt-tool`/hashcat 离线爆破）、claim 篡改（sub/role/exp）重放
+- **JWT**：解码看 alg/claims → `alg: none` 与弱密钥（python3 + PyJWT 解码/验证；弱密钥离线爆破 `hashcat -m 16500 jwt.txt /opt/wordlists/Passwords/10k-most-common.txt`）、claim 篡改（sub/role/exp）重放
 - **令牌泄露**：token 在 URL（进日志/Referer）、前端 JS 硬编码的 API key、localStorage 里的长期 token（`storage` action 直接看）
 - **令牌作用域**：用户 token 访问管理 API、登出后 token 仍有效、刷新令牌无轮换
 
@@ -46,7 +46,7 @@ description: API security testing 接口安全测试：REST/GraphQL 面发现、
 
 ### 5. 限流与滥用
 
-- 登录/验证码/敏感操作端点连续请求观察限流（无限流=暴力破解面，记录 finding）
+- 登录/验证码/敏感操作端点连续请求观察限流（无限流=暴力破解面，checkpoint 写黑板，signalKind: `note`）
 - 批量枚举控制速率与并发，不发起拒绝服务级别的压力
 
 ---
@@ -60,13 +60,13 @@ description: API security testing 接口安全测试：REST/GraphQL 面发现、
 - [ ] 对象级越权（交叉 exploit-authz 打法）
 - [ ] GraphQL：introspection/字段建议/mutation 越权
 - [ ] 限流验证
-- [ ] 每个确认点：`request_detail` 证据 + `record_finding`
+- [ ] 每个确认点：`request_detail` 证据 + `benchmark_control(action="checkpoint")` 写黑板（凭据/会话类发现 signalKind: `credential`）
 
 ---
 
 ## 相关 Skills
 
-`exploit-authz`（越权/BOLA 深入打法）、`exploit-oauth`（OAuth 流程与 JWT 深度）、`recon-dir-scan`（端点发现）、`exploit-sqli`（注入类 API 参数）、`results-storage`（findings 持久化机制）
+`exploit-authz`（越权/BOLA 深入打法）、`exploit-oauth`（OAuth 流程与 JWT 深度）、`recon-dir-scan`（端点发现）、`exploit-sqli`（注入类 API 参数）、`results-storage`（checkpoint 黑板与 work/ 持久化机制）
 
 ## 深度参考
 

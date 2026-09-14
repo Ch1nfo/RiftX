@@ -1,6 +1,6 @@
 ---
 name: security-usernames
-description: "Top username lists for enumeration: common usernames, default credentials, names. Curated essentials for testing."
+description: "Top username lists for enumeration: common usernames, default credentials, names. Curated essentials for testing. Use this skill when you need a username wordlist, username enumeration lists, default account names, or 用户名字典/用户名枚举."
 ---
 
 # SecLists Usernames (Curated)

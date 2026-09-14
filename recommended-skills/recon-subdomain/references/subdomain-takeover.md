@@ -22,7 +22,7 @@ Subdomain takeover occurs when:
 ### 2.1 CNAME Enumeration
 
 ```
-1. Collect subdomains (amass, subfinder, assetfinder, crt.sh, SecurityTrails)
+1. Collect subdomains (dig + /opt/wordlists/DNS/subdomains-top1million-5000.txt resolution loop, ffuf Host header vhost scan)
 2. Resolve DNS for each:
    dig CNAME sub.target.com +short
 3. For each CNAME → check if the CNAME target returns NXDOMAIN or a provider error
@@ -43,8 +43,8 @@ Subdomain takeover occurs when:
 
 | Tool | Purpose |
 |---|---|
-| `subjack` | Automated CNAME takeover checking |
-| `nuclei -t takeovers/` | Nuclei takeover detection templates |
+| `dig CNAME <sub> +short` + `curl -s` | Manual CNAME takeover checking (resolve + fetch fingerprint) |
+| `bash` loop over subs.txt | Fetch each CNAME target, grep for known fingerprints (Section 3) |
 | `can-i-take-over-xyz` (GitHub) | Reference for which services are vulnerable |
 | `dnsreaper` | Multi-provider takeover scanner |
 | `subzy` | Fast subdomain takeover verification |

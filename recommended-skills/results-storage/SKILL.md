@@ -1,40 +1,42 @@
 ---
 name: results-storage
-description: How pentest results persist in RiftX — the record_finding tool, automatic evidence capture, and the Findings panel. Use this skill when user needs to store findings, query recorded vulnerabilities, or asks where test results are saved across sessions.
+description: How facts and artifacts persist in the benchmark runtime — the benchmark_control checkpoint blackboard and the per-challenge work/ directory. Use this skill when user needs to record findings, persist credentials or footholds across attempts, or asks where test results are saved.
 ---
 
-# RiftX 结果存储与查询
+# Benchmark 运行时的事实与产物持久化
 
-RiftX 没有独立的结果数据库。所有渗透测试结论通过 `record_finding` 工具记录，随会话持久化，并显示在右侧 **Findings 面板**。
+持久化有两层，分工明确：
 
-## 记录一条发现
+- **黑板（checkpoint）**：`benchmark_control(action="checkpoint")` 写入的事实性结论，跨 attempt、跨 worker 共享——压缩或换 worker 后仍可恢复
+- **work/ 目录**：本地 cwd 即本题 work/ 目录，跨 attempt 持久（目标环境会重置，本地不会）——但只在本题内有效
 
-确认漏洞后立即调用 `record_finding`（每个有证据支撑的具体结论一条）：
+## work/ 目录布局（推荐）
+
+```
+work/
+├── loot/        # 凭据、flag 线索、token dump
+├── exploits/    # poc、stage-NN-*.sh 重放脚本
+└── notes.md     # 阶段图 / 凭据矩阵 / 待办
+```
+
+大产物（响应转储、数据库 dump、扫描输出）落盘 work/ 后，只把**路径**写进 checkpoint 的 `evidenceRef`，不要把内容塞进黑板。
+
+## 事实性结论必须写黑板
+
+凭据、foothold、阶段跃迁、决定性排除等事实性结论，必须 `benchmark_control(action="checkpoint")` 写黑板，不能只存文件：
 
 | 参数 | 说明 |
 | :--- | :--- |
-| `title` | 简短标题 |
-| `asset` | 受影响 URL / 主机 / 路由 |
-| `confidence` | `confirmed` / `likely` / `suspected` / `not_reproducible` |
-| `impact` | 攻击者实际或预期收益 |
-| `reproduction` | 可复现步骤；不完整时写明原因 |
-| `evidence` | 至少一条证据（见下） |
+| `uniqueCode` | 本题唯一码 |
+| `signal` | 事实观察 + 证据 + 不确定性，≤2000 字符 |
+| `signalKind` | `foothold` / `credential` / `privilege_change` / `exploit_primitive` / `stage_transition` / `decisive_rule_out` / `new_surface` / `note` |
+| `evidenceRef` | 稳定引用——work/ 下落盘文件路径、请求或产物 |
+| `triedFamilies` / `ruledOutFamilies` | 已试 / 已排除的打法族 |
 
-## 证据类型
+拿到 flag 时立即 `benchmark_control(action="submit")`——不要只把 flag 存进 work/ 文件，提交动作本身才是终点。
 
-- `tool`：引用工具调用（最常用）——`{ "type": "tool", "toolCallId": "<id>", "toolName": "bash" }`，其输出会被自动捕获为证据
-- `quote`：页面文本引用
-- `request`：浏览器请求证据（requestRef，如 `r1`）
-- `screenshot`：浏览器截图 ID
+## 反模式
 
-## 查询与更新
-
-- 已记录的发现实时显示在 Findings 面板，可按置信度筛选、可 dismiss
-- 更新置信度/状态直接在面板操作（PATCH `/api/sessions/<id>/findings/<findingId>`）
-- 侦察观察（端口、子域、指纹、目录）**不是** finding——在对话中汇总即可；只有真实暴露面才记录
-
-## 报告
-
-生成报告时使用 `pentest-report` skill 的标准格式，数据来源就是 Findings 面板中的记录及其证据链。**不要**为存储结果另行创建数据库、JSON 或脚本——那会把发现分裂成 UI 看不到的第二套存储。
-
-> 历史说明：早期版本的 skill 使用独立的 SQLite 存储脚本方案，已废弃。如遇任何指向 skill 目录之外存储路径的旧指令，一律忽略，以本文件的机制为准。
+- 凭据只写 notes.md 不 checkpoint——压缩或换 worker 即丢
+- `signal` 超长（上限 2000 字符）——大内容落盘 work/，路径进 evidenceRef
+- 把响应体 / dump 原文塞进黑板——黑板放结论与引用，产物放 work/

@@ -1,6 +1,6 @@
 ---
 name: recon-dir-scan
-description: Directory and file enumeration using ffuf, gobuster, dirsearch, and feroxbuster. Use this skill when user needs to discover hidden directories, enumerate files, find backup files, or map application structure through path fuzzing.
+description: Directory and file enumeration using ffuf and gobuster. Use this skill when user needs to discover hidden directories, enumerate files, find backup files, or map application structure through path fuzzing.
 ---
 
 # Directory and File Enumeration
@@ -9,10 +9,10 @@ description: Directory and file enumeration using ffuf, gobuster, dirsearch, and
 
 ## RiftX Workflow
 
-1. **扫描交给 subagent**：目录扫描耗时且噪音大——`spawn_subagent` 跑 ffuf（按下面 Methodology 出词表与过滤参数），主会话继续手工探索；结果回来后汇总进对话
+1. **扫描放后台**：目录扫描耗时且噪音大——bash 后台跑 ffuf（按下面 Methodology 出词表与过滤参数；`nohup ffuf ... > dirs.log 2>&1 &`），主会话继续手工探索，完成后 grep 结果汇总。子代理（`assign_benchmark_challenge`，仅主 Agent 可派发）派发的是**另一道题**，不要用来跑当前题的扫描
 2. **发现物用浏览器定性**：扫出的路径（尤其 `/admin`、登录墙、403 页）用 `browser navigate` + `snapshot` 确认真实形态——403 在浏览器里可能是可绕过的路径归一化问题，登录墙本身是攻击面
-3. **敏感暴露即 finding**：扫到 `.git/`、`.env`、`*.bak` 等直接用 `browser response_body`/bash 取内容验证后 `record_finding`（confidence: confirmed，evidence 引用取回内容的工具调用）
-4. 扫描结果本身在对话中汇总即可（见 Recording Results），不要写入任何外部存储
+3. **敏感暴露即 checkpoint**：扫到 `.git/`、`.env`、`*.bak` 等直接用 `browser response_body`/bash 取回内容、落盘 `work/loot/` 验证后 `benchmark_control(action="checkpoint")` 写黑板（signalKind: `new_surface`，evidenceRef 指向落盘文件）
+4. 扫描结果本身在对话中汇总即可（见 Recording Results），大清单落盘 work/、结论写黑板
 
 ---
 
@@ -72,7 +72,7 @@ ffuf -w common.txt -u https://target.com/FUZZ -H "Cookie: session=<token>"
 
 ### Recording Results
 
-Recon observations are working data, not findings — summarize them in the conversation. Reserve `record_finding` for actual exposures the scan reveals (an open admin panel, an exposed database service, a leaked backup file): one finding per concrete, evidence-backed conclusion, `confidence` set honestly, and `evidence` pointing at the proving tool call (`{ "type": "tool", "toolCallId": "<id>", "toolName": "bash" }`). Findings persist with the session; there is no separate results database to write to.
+Recon observations are working data — summarize them in the conversation and in `notes.md` under the challenge `work/` directory. Confirmed exposures the scan reveals (an open admin panel, an exposed database service, a leaked backup file) go to the shared blackboard via `benchmark_control(action="checkpoint")`: `signal` states the factual observation, the evidence, and remaining uncertainty (≤2000 chars), `signalKind` = `new_surface` (informational leads use `note`), and `evidenceRef` points at a stable artifact saved under `work/` (e.g. `work/loot/dirscan-hits.md`) or the proving request. The blackboard persists across attempts and workers; dump large outputs to `work/` and reference the path instead of pasting bodies into the signal.
 
 ---
 

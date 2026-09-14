@@ -1,6 +1,6 @@
 ---
 name: security-fuzzing
-description: "Essential fuzzing payloads: SQL injection, command injection, special characters. Curated essentials for vulnerability testing."
+description: "Essential fuzzing payloads: SQL injection, command injection, special characters. Curated essentials for vulnerability testing. Use this skill when you need fuzz payloads, a fuzzing wordlist, injection payload dictionaries, or 模糊测试 fuzz 字典."
 ---
 
 # SecLists Fuzzing (Curated)

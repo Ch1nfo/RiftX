@@ -4,32 +4,8 @@ Advanced methods for comprehensive DNS reconnaissance.
 
 ## Certificate Transparency Log Search
 
-### crt.sh API
-
-```bash
-# Basic search
-curl -s "https://crt.sh/?q=%.example.com&output=json" | \
-  jq -r '.[].name_value' | sort -u
-
-# With subdomain expansion
-curl -s "https://crt.sh/?q=example.com&output=json" | \
-  jq -r '.[].name_value' | sed 's/\*\.//g' | sort -u
-```
-
-### Google CT Logs
-
-```bash
-# Using subfinder with CT sources
-subfinder -d example.com -sources crtsh -o ct_subs.txt
-```
-
-### Censys Certificate Search
-
-```bash
-# Censys API for certificate search
-curl -s "https://search.censys.io/api/v2/certificates/search?q=names: example.com&per_page=100" \
-  -H "Authorization: YOUR_API_KEY"
-```
+Certificate transparency log search requires public internet access —
+unavailable in offline environments, skip.
 
 ---
 
@@ -144,11 +120,11 @@ for i in {1..10}; do
 done
 ```
 
-### Using dnsx
+### Using dig
 
 ```bash
 # Test for wildcard
-echo "test$(date +%s).example.com" | dnsx -silent
+dig +short "test$(date +%s).example.com"
 ```
 
 ---
@@ -164,7 +140,9 @@ Generate permutations from discovered subdomains:
 altdns -i subs.txt -o output.txt -w words.txt
 
 # Resolve permutations
-cat output.txt | dnsx -silent -o resolved.txt
+while read sub; do
+  [ -n "$(dig +short "$sub")" ] && echo "$sub"
+done < output.txt > resolved.txt
 ```
 
 ### Custom Permutations
@@ -179,7 +157,10 @@ for sub in $(cat subs.txt); do
   echo "dev-${sub}"
   echo "stage-${sub}"
   echo "prod-${sub}"
-done | dnsx -silent
+done | while read cand; do
+  # Keep only candidates that resolve
+  [ -n "$(dig +short "$cand")" ] && echo "$cand"
+done
 ```
 
 ---
@@ -237,9 +218,9 @@ dnsrecon -n example.com -c cache_snoop
 ```bash
 # With delay
 while read sub; do
-  echo "$sub"
+  [ -n "$(dig +short "$sub")" ] && echo "$sub"
   sleep 1
-done < subs.txt | dnsx -silent
+done < subs.txt
 ```
 
 ### Using Different Resolvers
@@ -274,10 +255,10 @@ done
 
 | Technique | Tools | Detects |
 |-----------|-------|---------|
-| Certificate Search | crt.sh, subfinder | Historical SSL certificates |
+| Dictionary Enumeration | dig + /opt/wordlists DNS wordlist, ffuf vhost (Host header) | Subdomains from wordlist resolution |
 | Zone Transfer | dig, host | Complete zone (if allowed) |
 | SRV Discovery | dig | Service-specific records |
 | DNSSEC | dig | DNSSEC configuration |
 | Reverse DNS | dnsrecon, host | Domains from IP ranges |
-| Permutations | altdns | Dev/prod variants |
-| Wildcards | dnsx, custom | Wildcard patterns |
+| Permutations | altdns + dig loop | Dev/prod variants |
+| Wildcards | dig, custom | Wildcard patterns |

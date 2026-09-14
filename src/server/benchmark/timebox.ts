@@ -12,7 +12,9 @@ export function installBenchmarkTimeboxGate(
   owner: Exclude<ChallengeOwner, null>,
   assignedChallenge?: string
 ): void {
-  if (tool.name === "benchmark_control" || tool.name === "assign_benchmark_challenge" || typeof tool.execute !== "function") return;
+  // benchmark_tool_catalog is read-only runtime information, not solving work;
+  // blocking it after expiry would only turn a status lookup into a timeout error.
+  if (tool.name === "benchmark_control" || tool.name === "benchmark_tool_catalog" || tool.name === "assign_benchmark_challenge" || typeof tool.execute !== "function") return;
   const original = tool.execute.bind(tool);
   tool.execute = async (toolCallId: string, params: unknown, signal?: AbortSignal, ...rest: unknown[]) => {
     if (assignedChallenge) {

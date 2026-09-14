@@ -137,8 +137,14 @@ openssl s_client -connect target.com:443 -servername target.com
 # Certificate details
 curl -vI https://target.com 2>&1 | grep -i ssl
 
-# Using testssl.sh
-testssl.sh --quiet target.com:443
+# TLS protocol/cipher via openssl
+openssl s_client -connect target.com:443 -tls1_2 </dev/null 2>/dev/null | grep -E "Protocol|Cipher"
+
+# Check which TLS versions are enabled
+for v in tls1 tls1_1 tls1_2 tls1_3; do
+  echo "== $v =="
+  openssl s_client -connect target.com:443 -$v </dev/null 2>/dev/null | grep -E "Protocol|Cipher" | head -2
+done
 ```
 
 ## JARM Fingerprinting
@@ -182,17 +188,16 @@ curl -I https://target.com/apple-touch-icon.png
 ### 3. Automated Detection
 
 ```bash
-# WhatWeb
-whatweb -a 3 https://target.com
+# Header + content fingerprint
+curl -si https://target.com | head -40
 
-# Nuclei
-nuclei -u https://target.com -tags tech
+# Service/version detection
+nmap -sV -sC target.com
 
-# HTTPx
-httpx -u https://target.com -tech-detect -server -cdn
-
-# WAFW00F
-wafw00f https://target.com
+# WAF manual fingerprint:
+# 1. Baseline: curl -si https://target.com/ — record status/headers/body
+# 2. Attack probe: curl -si "https://target.com/?q=<script>alert(1)</script>" — check for block page / 403
+# 3. Payload mutation comparison: encode/mutate the probe, diff responses to map WAF behavior
 ```
 
 ## Bypass Techniques

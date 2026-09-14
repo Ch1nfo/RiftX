@@ -16,8 +16,8 @@ crawl 走真实浏览器访问目标，必须遵守浏览器 scope 与速率约�
    - **Forms（含 hidden 字段）**——隐藏域是 mass assignment 与越权测试的入口（`exploit-authz`）
    - **AUTH 标记的页面**——login-walled 端点用 `use_identity` + `cookies_import` 带认证会话再测；匿名可达面优先测未授权访问
    - **Cross-host leads**——crawl 不跟随跨主机链接，但记下了 host 清单：核对后可扩大 scope 或交给 `recon-subdomain`/`recon-dir-scan`
-4. **分流**：爬完把端点清单交给对应的 exploit skill（/api/* → `api-testing`；表单反射 → `exploit-xss`；下载/文件参数 → `exploit-file-download`）；大站可 `spawn_subagent` 并行处理不同端点组
-5. **记录**：爬到的**暴露面**（无需认证的管理端点、泄露的调试接口）验证后 `record_finding`；普通端点清单留在对话里即可，不要把每个 URL 都记成 finding
+4. **分流**：爬完把端点清单交给对应的 exploit skill（/api/* → `api-testing`；表单反射 → `exploit-xss`；下载/文件参数 → `exploit-file-download`）；大站的批量验证按接口组分脚本放 bash 后台并行。子代理（`assign_benchmark_challenge`，仅主 Agent 可派发）派发的是**另一道题**，不要用来处理当前题的端点
+5. **记录**：爬到的**暴露面**（无需认证的管理端点、泄露的调试接口）验证后 `benchmark_control(action="checkpoint")` 写黑板（signalKind: `new_surface`，证据落盘 work/ 后 evidenceRef 指向文件）；普通端点清单留在对话/work/ 笔记里即可，不要把每个 URL 都写进黑板
 
 ---
 
@@ -47,20 +47,20 @@ crawl 走真实浏览器访问目标，必须遵守浏览器 scope 与速率约�
 - [ ] Forms 的 hidden 字段单独过一遍（tamper/mass assignment）
 - [ ] AUTH 页面带认证身份复测
 - [ ] cross-host leads 核对后决定是否扩大 scope
-- [ ] 大站按端点组分派 subagent 并行
-- [ ] 暴露面验证后 record_finding
+- [ ] 大站批量验证已用 bash 后台并行，结果落盘汇总
+- [ ] 暴露面验证后 benchmark_control checkpoint 写黑板
 
 ---
 
 ### Recording Results
 
-Recon observations are working data, not findings — summarize them in the conversation. Reserve `record_finding` for actual exposures the crawl reveals (an unauthenticated admin endpoint, a leaked debug interface, a sensitive file in a linked path): one finding per concrete, evidence-backed conclusion, `confidence` set honestly, and `evidence` pointing at the proving tool call (`{ "type": "tool", "toolCallId": "<id>", "toolName": "crawl" }`). Findings persist with the session; there is no separate results database to write to.
+Recon observations are working data — summarize them in the conversation and in `notes.md` under the challenge `work/` directory. Confirmed exposures the crawl reveals (an unauthenticated admin endpoint, a leaked debug interface, a sensitive file in a linked path) go to the shared blackboard via `benchmark_control(action="checkpoint")`: `signal` states the factual observation, the evidence, and remaining uncertainty (≤2000 chars), `signalKind` = `new_surface` (informational leads use `note`), and `evidenceRef` points at a stable artifact saved under `work/` (e.g. `work/loot/crawl-surface.md`) or the proving crawl request. The blackboard persists across attempts and workers; dump large outputs to `work/` and reference the path instead of pasting bodies into the signal.
 
 ---
 
 ## 相关 Skills
 
-`api-testing`（API 面深入）、`exploit-authz`（越权/隐藏域）、`recon-dir-scan`（目录爆破互补）、`recon-fingerprint`（技术栈）、`results-storage`（findings 机制）
+`api-testing`（API 面深入）、`exploit-authz`（越权/隐藏域）、`recon-dir-scan`（目录爆破互补）、`recon-fingerprint`（技术栈）、`results-storage`（checkpoint 黑板与 work/ 持久化）
 
 ## 深度参考
 

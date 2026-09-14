@@ -398,16 +398,14 @@ pip3 install graphw00f
 graphw00f -t https://target.com/graphql
 ```
 
-### InQL（Burp 插件）
+### 内省等价做法（无插件环境）
 
-```
-功能:
-- 自动 Introspection
-- 生成查询模板
-- 批量测试
-- 可视化 Schema
+内省查询直接用 curl/requests 发送 `__schema` 查询（模板见上文完整 Introspection Query），保存响应后用 jq 提取类型与 mutation 字段：
 
-安装: Burp → Extender → BApp Store → InQL Scanner
+```bash
+curl -s -X POST "https://target.com/graphql" -H "Content-Type: application/json" \
+  -d '{"query":"{ __schema { types { name } mutationType { fields { name } } } }"}' -o schema.json
+jq -r '.data.__schema.types[].name, .data.__schema.mutationType.fields[].name' schema.json
 ```
 
 ### graphql-voyager（Schema 可视化）

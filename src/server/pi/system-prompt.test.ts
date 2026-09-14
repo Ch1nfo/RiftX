@@ -24,7 +24,10 @@ test("commander prompt is verbatim: role, principles, workflow, endgame report",
   assert.match(prompt, /Final report: every solved challenge with its method, plus each captured flag/);
   assert.match(prompt, /never re-derive or guess a flag string/);
   assert.match(prompt, /Credential guessing is evidence-gated/);
-  assert.match(prompt, /shared across you, every sub-agent, and every tool switch/);
+  // Budget text must match the enforced values in benchmark/effort.ts (120s per
+  // challenge, 30s per call), not an invented approximation.
+  assert.match(prompt, /120 seconds\n  total, at most 30 seconds per call/);
+  assert.match(prompt, /shared across you, every sub-agent,\n  every attempt, and every tool switch/);
   assert.match(prompt, /"Try another wordlist" or "run it a\n  bit longer" is not new evidence/);
   assert.match(prompt, /Submit each flag the moment it is confirmed/);
 });
@@ -41,6 +44,20 @@ test("harness mechanics appendix names the runtime-enforced rules", () => {
   assert.match(prompt, /never\n  bash\/curl the benchmark API/);
   assert.match(prompt, /"Parked" = defer/);
   assert.match(prompt, /benchmark_control\(action="status"\) IS the live board/);
+  assert.match(prompt, /benchmark_tool_catalog lists the runtime's installed commands/);
+});
+
+test("playbooks only name tools that exist on the shipped image", () => {
+  // The image toolchain is fixed at build time (docker/build-tool-catalog.py);
+  // naming absent tools teaches the agent to call missing binaries.
+  for (const prompt of [buildPentestSystemPrompt("default"), buildChildPentestSystemPrompt()]) {
+    for (const absent of ["feroxbuster", "radare2", "RsaCtfTool", "sage,", "angr", "volatility", "stegsolve", "sonic-visualizer", "rockyou if", "factordb"]) {
+      assert.doesNotMatch(prompt, new RegExp(absent));
+    }
+    assert.match(prompt, /ffuf\/gobuster with the bundled \/opt\/wordlists/);
+    assert.match(prompt, /ghidra\/riftx-decompile\/objdump/);
+    assert.match(prompt, /python \(sympy\/gmpy2\/z3\), openssl/);
+  }
 });
 
 test("benchmark scope boundary permits challenge exploitation but protects platform infrastructure", () => {
@@ -73,8 +90,10 @@ test("child prompt carries the commander return format, playbook, and tool restr
   assert.match(prompt, /Do NOT use sync\/status\/acquire\/\n  hint/);
   assert.match(prompt, /Do NOT use assign_benchmark_challenge \(commander-only\)/);
   assert.match(prompt, /# PLAYBOOK BY CATEGORY/);
-  assert.match(prompt, /steghide \(bruteforce passphrase with rockyou/);
+  assert.match(prompt, /steghide \(bruteforce passphrase with the bundled/);
+  assert.match(prompt, /benchmark_tool_catalog: call once at the start/);
+  assert.match(prompt, /challenge-wide time budget \(120 seconds total, at most 30 seconds per call\)/);
   assert.match(prompt, /Credential testing is evidence-gated/);
-  assert.match(prompt, /if the blackboard shows it was already spent, do not restart it/);
+  assert.match(prompt, /if the blackboard shows it was\s+already spent, do not restart it/);
   assert.match(prompt, /Benchmark Scope and Approval Boundary/);
 });
