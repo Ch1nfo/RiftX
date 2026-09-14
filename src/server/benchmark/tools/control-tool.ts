@@ -467,7 +467,7 @@ export function createBenchmarkControlTool(
             if (!uniqueCode) throw new Error("uniqueCode is required for abandon");
             const existing = ledger.getChallenge(uniqueCode);
             if (!existing || existing.attemptCount < 2) {
-              return { content: [{ type: "text" as const, text: `abandon is terminal and is allowed only from attempt 2 onward. Use defer during coverage.` }], details: { abandonBlocked: true } };
+              return { content: [{ type: "text" as const, text: `abandon is available only from attempt 2 onward. Use defer during coverage; abandoned challenges remain eligible for later reassessment.` }], details: { abandonBlocked: true } };
             }
             const challenge = await ledger.abandon(uniqueCode, params.reason ?? "no viable path", owner);
             try {
@@ -485,8 +485,8 @@ export function createBenchmarkControlTool(
             }
             await ledger.maybeAdvancePhase();
             return {
-              content: [{ type: "text" as const, text: `Abandoned ${uniqueCode} (${challenge.deferredReason}). Container closed. This challenge is now terminal (exhausted).` }],
-              details: { uniqueCode: uniqueCode, status: "exhausted" }
+              content: [{ type: "text" as const, text: `Abandoned ${uniqueCode} (${challenge.deferredReason}). Container closed; the challenge remains eligible for a later attempt.` }],
+              details: { uniqueCode: uniqueCode, status: "deferred" }
             };
           }
           case "publish_intel": {

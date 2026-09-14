@@ -443,7 +443,10 @@ function recalculate(state: BenchmarkState, metrics?: BenchmarkMetrics, now: () 
   // when every challenge that has scored flags carries an authoritative value.
   state.cumulativeScore = challenges.reduce((total, challenge) => total + (Number.isFinite(challenge.scoreObtained) ? challenge.scoreObtained : 0), 0);
   state.scoreExact = challenges.filter((challenge) => challenge.correctFlagCount > 0).every((challenge) => challenge.scoreKnown === true);
-  const allTerminal = challenges.length > 0 && challenges.every((challenge) => challenge.status === "solved" || challenge.status === "exhausted");
+  // An unfinished challenge is always eligible for a later revisit.  There is
+  // no terminal "exhausted" outcome anymore; a run completes only when every
+  // challenge is solved.
+  const allTerminal = challenges.length > 0 && challenges.every((challenge) => challenge.status === "solved");
   state.phase = allTerminal ? "completed" : coverageIsComplete(state) ? "revisit" : "coverage";
   if (metrics) {
     if (allTerminal) metrics.completedAt ??= now();
@@ -489,6 +492,10 @@ export class BenchmarkLedger {
         reservationPreviousHandoffExpiresAt?: unknown;
       };
       challenge.reservationPreviousStatus ??= undefined;
+      // Migrate ledgers written by the old abandon-terminal behavior.  An
+      // abandoned challenge must remain revisit-able under the current model.
+      if (challenge.status === "exhausted") challenge.status = "deferred";
+      if (challenge.pendingStatus === "exhausted") challenge.pendingStatus = "deferred";
       challenge.reservationStartedNewAttempt = challenge.reservationStartedNewAttempt === true;
       challenge.closeFailureRecorded ??= false;
       challenge.level = Number.isFinite(Number(challenge.level)) ? Number(challenge.level) : 0;
@@ -1265,17 +1272,19 @@ export class BenchmarkLedger {
     });
   }
 
-  /** Abandon: terminal exhausted (close must be confirmed). */
+  /** Abandon is retained as a compatibility action, but remains revisit-able. */
   async abandon(uniqueCode: string, reason: string, expectedOwner: Exclude<ChallengeOwner, null>): Promise<ChallengeState> {
     return this.serialize(async () => {
       const challenge = this.state.challenges[uniqueCode];
       if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
       requireOwner(challenge, expectedOwner);
       challenge.deferredReason = cleanText(reason, 1_000);
-      finishAttempt(challenge, this.now(), challenge.deferredReason || "exhausted", this.metrics);
+      const now = this.now();
+      finishAttempt(challenge, now, challenge.deferredReason || "abandoned for later reassessment", this.metrics, "deferred");
+      enqueueForRevisit(this.state, challenge, now);
       challenge.status = "closing";
       challenge.owner = null;
-      challenge.pendingStatus = "exhausted";
+      challenge.pendingStatus = "deferred";
       recalculate(this.state, this.metrics, this.now);
       await this.persist();
       return challenge;

@@ -322,13 +322,13 @@ test("defer closes container and saves recovery state", async () => {
   assert.equal(ledger.getMetrics().totalDefers, 1);
 });
 
-test("abandon is terminal", async () => {
+test("abandon remains eligible for revisit", async () => {
   const { ledger } = await setupLedger();
   await ledger.acquire("ch-1", "main", ["a"]);
   await ledger.abandon("ch-1", "no path forward", "main");
   await ledger.confirmClosed("ch-1");
-  assert.equal(ledger.getChallenge("ch-1")?.status, "exhausted");
-  assert.equal(ledger.getState().exhaustedCount, 1);
+  assert.equal(ledger.getChallenge("ch-1")?.status, "deferred");
+  assert.equal(ledger.getState().exhaustedCount, 0);
 });
 
 test("restart recovery marks running as orphaned, keeps deferred", async () => {
@@ -557,7 +557,7 @@ test("recordHint tracks usage", async () => {
   assert.equal(ledger.getMetrics().totalHintsUsed, 1);
 });
 
-test("all terminal → completed", async () => {
+test("an unfinished abandoned challenge keeps the run open", async () => {
   const { ledger } = await setupLedger(["ch-1", "ch-2"]);
   await ledger.acquire("ch-1", "main", ["a"]);
   await ledger.markSolved("ch-1", 100, "main");
@@ -565,7 +565,7 @@ test("all terminal → completed", async () => {
   await ledger.acquire("ch-2", "main", ["b"]);
   await ledger.abandon("ch-2", "dead end", "main");
   await ledger.confirmClosed("ch-2");
-  assert.equal(ledger.getState().phase, "completed");
+  assert.equal(ledger.getState().phase, "revisit");
 });
 
 test("automatic completion freezes run elapsed time", async () => {
