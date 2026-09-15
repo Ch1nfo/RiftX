@@ -3,7 +3,6 @@ import { selectBlackboard, blackboardLabel, evidenceBackedRuleOuts, handoffAttem
 /** Compact, replaceable benchmark context derived from the authoritative ledger. */
 
 import type { BenchmarkLedger, ChallengeState } from "./ledger";
-import { PASSWORD_ENUMERATION_BUDGET_MS } from "./effort";
 
 export const MAX_BENCHMARK_CONTINUITY_CHARS = 8_000;
 export const BENCHMARK_HANDOFF_GUIDANCE = "Preserve valid partial solutions, the inherited blackboard and evidence artifacts. Review the previous failure reason, approach and next probe before selecting a new route. Treat inherited plans as candidates to verify; an unsuccessful attempt alone does not rule out an approach.";
@@ -48,8 +47,6 @@ export function buildBenchmarkContinuity(
 
   if (mine) {
     const supportedRuleOuts = evidenceBackedRuleOuts(mine);
-    const budget = ledger.budgetFor(mine.uniqueCode);
-    if (budget) lines.push(`Attempt deadline: ${budget.deadlineAt === null ? "pending start" : new Date(budget.deadlineAt).toISOString()}; limit=${Math.round(budget.limitMs / 60_000)} minutes; extension=${budget.extensionUsed ? "used" : mine.attemptCount > 1 ? "available once for verified progress in the final five minutes" : "not available on the first attempt"}.`);
     lines.push(
       `## My challenge: ${mine.uniqueCode} | ${mine.totalScore}pts | attempt ${mine.attemptCount} | flags ${mine.correctFlagCount}/${mine.flagCount}`,
       `  addr: ${mine.containerAddrs.join(", ") || "(none)"}`
@@ -58,7 +55,6 @@ export function buildBenchmarkContinuity(
       `  description: ${compact(mine.description, 2_400) || "(none)"}`,
       `  hint: ${mine.hintUsed ? compact(mine.hintContent || "", 1_200) || "requested; no content returned" : "not used"}`
     );
-    if (mine.passwordEnumerationMs > 0) lines.push(`## Online password guessing: ${Math.ceil(mine.passwordEnumerationMs / 1000)}/${PASSWORD_ENUMERATION_BUDGET_MS / 1000} seconds consumed across all workers and attempts.`);
     if (mine.triedFamilies.length) detailLines.push(`## Previously tried: ${mine.triedFamilies.join(", ")}`);
     if (supportedRuleOuts.length) detailLines.push(`Evidence-backed ruled-out families: ${supportedRuleOuts.join(", ")}`);
     const previousAttempt = mine.approachHistory.at(-1);
@@ -68,7 +64,14 @@ export function buildBenchmarkContinuity(
         attemptNumber: previous.attemptNumber, phase: previous.phase, worker: previous.worker,
         startedAt: previous.startedAt, endedAt: previous.endedAt,
         flagsBefore: previous.flagsBefore, flagsAfter: previous.flagsAfter, flagsDelta: previous.flagsDelta,
-        stopReason: previous.stopReason
+        stopReason: previous.stopReason,
+        delta: {
+          evidence: previous.newEvidenceCount ?? 0,
+          credentials: previous.newCredentialCount ?? 0,
+          footholds: previous.newFootholdCount ?? 0,
+          stages: previous.newStageTransitions ?? 0,
+          ruleOuts: previous.newRuleOutCount ?? 0
+        }
       })}`);
       if (previous.previousCandidate) lines.push(`Previous attempt candidate to verify: ${JSON.stringify(previous.previousCandidate)}`);
     }
@@ -83,10 +86,6 @@ export function buildBenchmarkContinuity(
         return line;
       }));
     }
-    const history = mine.approachHistory.slice(-4).reverse();
-    if (history.length) detailLines.push("Previous attempts and candidates to reassess:",
-      ...history.map((attempt) => JSON.stringify(handoffAttempt(attempt, supportedRuleOuts)))
-    );
     if (mine.attemptCount > 1) {
       lines.push(`Revisit handoff: ${BENCHMARK_HANDOFF_GUIDANCE}`);
     }
@@ -96,8 +95,6 @@ export function buildBenchmarkContinuity(
     if (ledger.isBudgetExhausted(mine.uniqueCode)) {
       lines.push("ATTEMPT_TIMEBOX_COMPLETE: Solving tools are blocked. Preserve your checkpoint; submission and cleanup remain available while the runtime closes this attempt.");
     }
-    const intel = ledger.intelForChallenge(mine).slice(-4);
-    if (intel.length) detailLines.push("## Relevant shared intel:", ...intel.map((entry) => `  - [${entry.target}] ${entry.intel}`));
   } else {
     lines.push('## My challenge: (none — acquire one from the eligible candidates)');
   }

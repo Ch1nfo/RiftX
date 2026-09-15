@@ -42,6 +42,11 @@ export type AttemptSummary = {
   ruledOutFamilies: string[];
   stopReason: string;
   nextDistinctApproach: string;
+  newEvidenceCount?: number;
+  newCredentialCount?: number;
+  newFootholdCount?: number;
+  newStageTransitions?: number;
+  newRuleOutCount?: number;
 };
 
 export type ChallengeBudget = {
@@ -232,6 +237,8 @@ function progressKey(kind: ProgressSignalKind, evidenceRef: string): string {
 
 function finishAttempt(challenge: ChallengeState, now: number, stopReason: string): void {
   if (challenge.currentAttemptStartedAt === null || !challenge.currentAttemptWorker || !challenge.currentAttemptPhase) return;
+  const startedAt = challenge.currentAttemptStartedAt;
+  const delta = challenge.blackboard.filter((entry) => entry.at >= startedAt && entry.evidenceRef);
   challenge.approachHistory = [...challenge.approachHistory, {
     attemptNumber: challenge.attemptCount,
     phase: challenge.currentAttemptPhase,
@@ -244,7 +251,12 @@ function finishAttempt(challenge: ChallengeState, now: number, stopReason: strin
     triedFamilies: challenge.triedFamilies.slice(-20),
     ruledOutFamilies: challenge.ruledOutFamilies.slice(-20),
     stopReason: cleanText(stopReason, 1_000),
-    nextDistinctApproach: challenge.nextProbe
+    nextDistinctApproach: challenge.nextProbe,
+    newEvidenceCount: new Set(delta.map((entry) => entry.evidenceRef)).size,
+    newCredentialCount: delta.filter((entry) => entry.kind === "credential").length,
+    newFootholdCount: delta.filter((entry) => entry.kind === "foothold").length,
+    newStageTransitions: delta.filter((entry) => entry.kind === "stage_transition").length,
+    newRuleOutCount: delta.filter((entry) => entry.kind === "decisive_rule_out").length
   }];
   challenge.currentAttemptStartedAt = null;
   challenge.currentAttemptPhase = null;
@@ -1150,14 +1162,9 @@ export class BenchmarkLedger {
         challenge.progressKeys = [...challenge.progressKeys, key].slice(-30);
       }
       appendBlackboard(challenge, {
-        at: this.now(),
-        worker: expectedOwner,
-        kind,
-        summary: normalizedSignal,
-        evidenceRef,
-        approach: challenge.currentApproach,
-        triedFamilies: normalizedTriedFamilies,
-        ruledOutFamilies,
+        at: this.now(), worker: expectedOwner, kind, summary: normalizedSignal,
+        evidenceRef, approach: challenge.currentApproach,
+        triedFamilies: normalizedTriedFamilies, ruledOutFamilies,
         nextProbe: challenge.nextProbe
       });
       await this.persist();

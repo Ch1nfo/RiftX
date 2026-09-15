@@ -54,7 +54,7 @@ export function createAssignBenchmarkChallengeTool(
 
           signal?.throwIfAborted();
           const brief = buildBrief(challenge, startResult.container_addr, ledger.getState().phase, ledger.isEndgame(),
-            ledger.intelForChallenge(challenge, startResult.container_addr).map((entry) => `${entry.target}: ${entry.intel}`));
+            []);
           const result = await spawnSubagent(brief, uniqueCode, startResult.container_addr, reservationId);
           if (result.duplicate) {
             if (ledger.getChallenge(uniqueCode)?.owner === reservationId) {

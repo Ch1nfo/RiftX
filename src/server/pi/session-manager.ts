@@ -74,7 +74,6 @@ import { installBenchmarkRepeatNotice } from "@/server/benchmark/effort";
 import { checkBenchmarkToolExecutionGuard, installBenchmarkTimeboxGate } from "@/server/benchmark/timebox";
 import { abortBenchmarkAttempt, startBenchmarkAttemptWatchdog } from "@/server/benchmark/attempt-watchdog";
 import { benchmarkWorkspaceRoot, BenchmarkWorkspace, createWorkspaceLocalTools, benchmarkMutationLock, challengeDirectory } from "@/server/benchmark/workspace";
-import { createChallengeSkillSelection } from "@/server/benchmark/challenge-skills";
 
 type BenchmarkRuntime = { controller: BenchmarkController; ledger: BenchmarkLedger };
 
@@ -400,7 +399,6 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     ));
   };
   const workspace = benchmarkLedger ? new BenchmarkWorkspace(workspaceRoot, initialChallenge?.uniqueCode, () => browser.run(() => browser.close())) : undefined;
-  let selectChallengeSkills: ((description?: string) => Promise<void>) | undefined;
   const benchmarkTools: ToolDefinition[] = benchmarkController && benchmarkLedger
     ? [createBenchmarkControlTool(
         benchmarkController,
@@ -411,11 +409,9 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
         async (challenge) => {
           refreshRuntimeToolIndex();
           await workspace!.activate(challenge.uniqueCode);
-          await selectChallengeSkills!(challenge.description);
         },
         async () => {
           refreshRuntimeToolIndex();
-          await selectChallengeSkills!();
           await workspace!.activate();
         },
         async (reference, uniqueCode) => {
@@ -596,10 +592,9 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   }
   skills = resourceLoader.getSkills().skills as SkillDescriptor[];
   if (benchmarkLedger) {
-    selectChallengeSkills = createChallengeSkillSelection(skills, activeSkillNames, (content) => {
-      sessionManager.appendCustomMessageEntry("riftx_skill_context", content, false);
-    });
-    await selectChallengeSkills(initialChallenge?.description);
+    // Benchmark solving starts without automatically selected skill bodies.
+    // The solver may request guidance explicitly when it is actually stuck.
+    activeSkillNames.clear();
   }
   const skillContextCache = new Map<string, string>();
   const activeSkillContext = async () => {
@@ -623,9 +618,9 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     // Budget inspection must not change workspaces or consume one-shot warnings.
     if (!preview && benchmarkLedger && workspace) {
       const active = benchmarkLedger.budgetForOwner(benchmarkOwner)?.challenge;
-      if (await workspace.reconcile(active?.uniqueCode)) await selectChallengeSkills!(active?.description);
+      await workspace.reconcile(active?.uniqueCode);
     }
-    const skillContext = await activeSkillContext();
+    const skillContext = benchmarkLedger ? "" : await activeSkillContext();
     // Benchmark continuity uses the ledger and cached active skills, without
     // scanning findings/artifacts on every provider request.
     if (benchmarkLedger) {
@@ -637,7 +632,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
         taskContract: "",
         skillContext,
         investigationCapsule,
-        toolInventory: runtimeToolCatalog ? buildRuntimeToolIndex(runtimeToolCatalog, benchmarkLedger.budgetForOwner(worker)?.challenge.uniqueCode) : "",
+        toolInventory: "",
         progressCheckpoint: ""
       };
     }
@@ -665,16 +660,6 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   // Sampling-time continuity refresh is a benchmark need (dynamic budgets,
   // live ownership). Ordinary pentest sessions keep the cheaper contract:
   // continuity is rebuilt only after a real compaction.
-  if (runtimeToolCatalog) {
-    const transform = result.session.agent.transformContext;
-    result.session.agent.transformContext = async (messages, signal) => {
-      const transformed = transform ? await transform(messages, signal) : messages;
-      // Discovery is independent of workspace I/O, including after compaction.
-      // Install before the compaction hook so its budget includes this block.
-      refreshRuntimeToolIndex(transformed);
-      return transformed;
-    };
-  }
   installMidTurnCompaction(result.session, getContinuityContext, { samplingRefresh: Boolean(benchmarkLedger) });
   // Install after compaction so the final context sent to the provider drops
   // stale report-skill messages unless the current user request asks for one.
