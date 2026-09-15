@@ -13,6 +13,15 @@
 
 import type { McpServerEntry } from "../mcp/manager";
 
+const SHUTDOWN_STEP_TIMEOUT_MS = 15_000;
+
+async function bounded(run: () => unknown, timeoutMs = SHUTDOWN_STEP_TIMEOUT_MS): Promise<void> {
+  await Promise.race([
+    Promise.resolve().then(run).then(() => undefined),
+    new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))
+  ]);
+}
+
 export type ShutdownTarget = {
   id: string;
   aborting?: boolean;
@@ -58,7 +67,7 @@ export async function shutdownSessionRecord(record: ShutdownTarget) {
     await safe("abortBash", () => session.abortBash());
     await safe("abortCompaction", () => session.abortCompaction());
     await safe("abortAgent", () => session.abort());
-    if (record.subagents) await safe("abortSubagents", () => record.subagents!.abortAll());
+    if (record.subagents) await safe("abortSubagents", () => bounded(() => record.subagents!.abortAll()));
     // The session is being destroyed: the browser must shut down permanently
     // so queued operations reject instead of relaunching resources after
     // cleanup. close() alone would leave the manager reopenable.

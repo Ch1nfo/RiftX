@@ -47,7 +47,8 @@ async function runMidTurnCompaction(session: AgentSession, signal?: AbortSignal)
     signal.addEventListener("abort", abortCompaction, { once: true });
   }
   try {
-    await runAutoCompaction(session);
+  const started = await runAutoCompaction(session);
+  if (!started) return false;
   } finally {
     unsubscribe();
     signal?.removeEventListener("abort", abortCompaction);
@@ -87,8 +88,10 @@ export function installMidTurnCompaction(session: AgentSession, getContinuityCon
         // the array that will actually be returned to the provider, not the
         // pre-transform input that is discarded after this hook.
         upsertContinuityContext(transformed as unknown[], continuity);
-      } catch {
-        // Continuity refresh is best-effort; sampling must proceed.
+      } catch (error) {
+        // Ordinary sessions may proceed without the optional continuity packet;
+        // Benchmark sessions must not sample without their durable handoff.
+        if (benchmark) throw new BenchmarkContextBudgetError(`Benchmark continuity refresh failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
 
@@ -141,6 +144,7 @@ export function installMidTurnCompaction(session: AgentSession, getContinuityCon
           refreshContinuityContext(session, continuity);
         } catch (error) {
           console.warn("RiftX could not refresh continuity context after compaction:", error);
+          if (benchmark) throw new BenchmarkContextBudgetError(`Benchmark continuity refresh failed after compaction: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
       transformed = originalTransform ? await originalTransform(messages, signal) : messages;

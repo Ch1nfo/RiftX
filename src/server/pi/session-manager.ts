@@ -564,22 +564,32 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   // The SDK only reloads a resource loader it creates internally. RiftX supplies
   // its own loader, so load the custom system prompt and inline extensions before
   // createAgentSession builds the runtime.
-  await resourceLoader.reload();
-  const result = await createAgentSession({
-    cwd,
-    agentDir: paths.agent,
-    authStorage,
-    modelRegistry,
-    model,
-    thinkingLevel: sdkThinkingLevel(profile.thinkingLevel),
-    // Hard whitelist (see src/server/session-tools.ts): the SDK silently
-    // drops any tool — built-in or custom — whose name is absent here.
-    tools: [...sessionToolNames(Boolean(subagents), Boolean(toolInventory)), ...mcpTools.map((tool) => tool.name)],
-    customTools,
-    resourceLoader,
-    sessionManager,
-    settingsManager
-  });
+  let result: Awaited<ReturnType<typeof createAgentSession>>;
+  try {
+    await resourceLoader.reload();
+    result = await createAgentSession({
+      cwd,
+      agentDir: paths.agent,
+      authStorage,
+      modelRegistry,
+      model,
+      thinkingLevel: sdkThinkingLevel(profile.thinkingLevel),
+      // Hard whitelist (see src/server/session-tools.ts): the SDK silently
+      // drops any tool — built-in or custom — whose name is absent here.
+      tools: [...sessionToolNames(Boolean(subagents), Boolean(toolInventory)), ...mcpTools.map((tool) => tool.name)],
+      customTools,
+      resourceLoader,
+      sessionManager,
+      settingsManager
+    });
+  } catch (error) {
+    await Promise.allSettled([
+      subagents?.abortAll() ?? Promise.resolve(),
+      browser.shutdown(),
+      Promise.resolve().then(() => restoreProviderRegistration({ authStorage, modelRegistry, registrations: providerRegistrations }, profile.provider, undefined))
+    ]);
+    throw error;
+  }
   evidenceSession = result.session;
   const warningDelivery = benchmarkLedger ? new BenchmarkWarningDelivery(benchmarkLedger, benchmarkOwner) : undefined;
   if (benchmarkController) {
@@ -1131,6 +1141,10 @@ export async function setWorkingDirectory(input: string) {
 
   const config = await readConfig();
   if (config.cwd !== cwd) {
+    // Drain creations that started under the old workspace before closing the
+    // registry. Otherwise a late create can finish after this switch and
+    // reinsert an old-cwd session into the process-global map.
+    await Promise.allSettled([...sessionCreation.values()]);
     for (const [id, record] of sessions) {
       await shutdownSessionRecord(record);
       sessions.delete(id);

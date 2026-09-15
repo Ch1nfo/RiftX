@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { convertToLlm, type AgentSession } from "@mariozechner/pi-coding-agent";
+import type { AgentSession } from "@mariozechner/pi-coding-agent";
 import { estimateMessagesContextUsage, installMidTurnCompaction, keepRecentTokensForContext, shouldCompactBeforeSampling } from "./mid-turn-compaction";
 import { TOOL_INVENTORY_CONTEXT_TYPE, upsertToolInventory } from "./continuity-context";
-import { BenchmarkContextBudgetError, estimateBenchmarkInputTokens } from "./compaction-budget";
+import { BenchmarkContextBudgetError } from "./compaction-budget";
 
 function inventoryFailureFixture(getInventory: () => string, contextWindow = 16_384) {
   const messages: Array<Record<string, unknown>> = [
@@ -30,20 +30,11 @@ function inventoryFailureFixture(getInventory: () => string, contextWindow = 16_
   return { session, messages };
 }
 
-test("inventory refresh survives failed continuity I/O and preserves tool call/result ordering", async () => {
-  let current = "fixture_current_inventory";
+test("benchmark sampling stops when continuity refresh fails", async () => {
+  const current = "fixture_current_inventory";
   const { session, messages } = inventoryFailureFixture(() => current);
-  const sent = await session.agent.transformContext!(messages as never) as unknown as Array<Record<string, unknown>>;
-  const inventory = sent.filter((message) => message.customType === TOOL_INVENTORY_CONTEXT_TYPE);
-  assert.equal(inventory.length, 1);
-  assert.equal(inventory[0].content, current);
-  assert.equal(sent.some((message) => message.content === "fixture_stale_inventory"), false);
-  assert.deepEqual(convertToLlm(sent as never).map((message) => message.role), ["assistant", "toolResult", "user"]);
-  assert.ok(estimateBenchmarkInputTokens(session, sent) > estimateBenchmarkInputTokens(session, sent.filter((message) => message.customType !== TOOL_INVENTORY_CONTEXT_TYPE)));
-  current = "";
-  const released = await session.agent.transformContext!(messages as never) as unknown as Array<Record<string, unknown>>;
-  assert.equal(released.some((message) => message.customType === TOOL_INVENTORY_CONTEXT_TYPE), false);
-  assert.deepEqual(convertToLlm(released as never).map((message) => message.role), ["assistant", "toolResult"]);
+  await assert.rejects(session.agent.transformContext!(messages as never), /continuity refresh failed/);
+  assert.equal(current, "fixture_current_inventory");
 });
 
 test("inventory added before failed continuity refresh is included in the sampling budget gate", async () => {

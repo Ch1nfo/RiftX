@@ -16,10 +16,17 @@ export async function waitForAgentEvents(session: AgentSession) {
   await internalSession(session)._agentEventQueue;
 }
 
-export async function runAutoCompaction(session: AgentSession) {
+export async function runAutoCompaction(session: AgentSession): Promise<boolean> {
   const internal = internalSession(session);
-  if (!internal._runAutoCompaction) throw new Error("Auto-compaction hook is unavailable");
+  if (!internal._runAutoCompaction) {
+    if (!warnedMissingCompactionModule) {
+      warnedMissingCompactionModule = true;
+      console.warn("[riftx] PI_AUTO_COMPACTION_HOOK_UNAVAILABLE", { reason: "SDK private hook is unavailable" });
+    }
+    return false;
+  }
   await internal._runAutoCompaction("threshold", false);
+  return true;
 }
 
 export function replaceAgentMessages<T>(session: AgentSession, target: T[], source: readonly T[]) {
