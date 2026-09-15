@@ -101,10 +101,10 @@ export function installBenchmarkRepeatNotice(tool: Tool, ledger: BenchmarkLedger
       state.repeats.delete(key);
       state.repeats.set(key, count);
       if (state.repeats.size > 32) state.repeats.delete(state.repeats.keys().next().value!);
-      if (count % 3 || !result || typeof result !== "object" || !Array.isArray((result as { content?: unknown }).content)) return result;
-      return { ...result, content: [...(result as { content: unknown[] }).content, ...notice(
-        `REPEATED_WITHOUT_NEW_INFORMATION: this operation and substantially identical result have occurred ${count} times without recorded new evidence. Reassess the hypothesis. If repetition is justified, identify the expected new observation; otherwise choose a different hypothesis. This notice does not interrupt useful ongoing computation.`
-      ).content] };
+      // Repetition is retained as internal bookkeeping only. Do not inject
+      // advisory text into the model context: black-box scoring benefits from
+      // leaving route selection to the solver.
+      return result;
     };
     let result: unknown;
     try { result = await execute(id, params, signal, ...rest); }

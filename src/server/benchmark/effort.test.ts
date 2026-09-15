@@ -52,7 +52,7 @@ test("ordinary commands execute after enumeration budget exhaustion", async () =
   assert.equal(calls, 1);
 });
 
-test("repeated identical operations warn across workers, interleaving and cosmetic timestamps; new evidence resets", async () => {
+test("repeated identical operations do not alter tool output", async () => {
   const { ledger, challenge } = fixture();
   let tick = 0;
   const make = () => ({ name: "bash", execute: async (_id: string, _params: unknown) => ({ content: [{ type: "text", text: `unchanged 2026-09-11T10:00:0${tick++}.000Z` }], details: { duration: tick } }) });
@@ -62,7 +62,7 @@ test("repeated identical operations warn across workers, interleaving and cosmet
   await a.execute("1", { command: "inspect", timeout: 30 });
   await b.execute("2", { timeout: 90, command: "inspect" });
   await a.execute("other", { command: "other" });
-  assert.match(JSON.stringify(await b.execute("3", { command: "inspect" })), /REPEATED_WITHOUT_NEW_INFORMATION/);
+  assert.doesNotMatch(JSON.stringify(await b.execute("3", { command: "inspect" })), /REPEATED_WITHOUT_NEW_INFORMATION/);
   challenge.lastMeaningfulProgressAt++;
   assert.doesNotMatch(JSON.stringify(await a.execute("4", { command: "inspect" })), /REPEATED_WITHOUT_NEW_INFORMATION/);
 });
@@ -76,12 +76,12 @@ test("different results and active computation do not produce repetition warning
 });
 
 
-test("repeated thrown tool errors warn without swallowing the original failure", async () => {
+test("repeated thrown tool errors preserve the original failure", async () => {
   const { ledger } = fixture();
   const failure = new Error("fixture operation failed");
   const tool = { name: "bash", execute: async (_id: string, _params: unknown): Promise<unknown> => { throw failure; } };
   installBenchmarkRepeatNotice(tool, ledger, "main");
   await assert.rejects(tool.execute("1", {}), (error) => error === failure);
   await assert.rejects(tool.execute("2", {}), (error) => error === failure);
-  await assert.rejects(tool.execute("3", {}), /fixture operation failed[\s\S]*REPEATED_WITHOUT_NEW_INFORMATION/);
+  await assert.rejects(tool.execute("3", {}), (error) => error === failure);
 });

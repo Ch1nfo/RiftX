@@ -70,7 +70,7 @@ import { createAssignBenchmarkChallengeTool } from "@/server/benchmark/tools/ass
 import { buildBenchmarkContinuity } from "@/server/benchmark/continuity";
 import { buildBenchmarkCompactionFallback } from "@/server/benchmark/compaction-fallback";
 import { blockBenchmarkSampling, clearBenchmarkCompactionFailure } from "./compaction-budget";
-import { installPasswordEnumerationBudget, installBenchmarkRepeatNotice } from "@/server/benchmark/effort";
+import { installBenchmarkRepeatNotice } from "@/server/benchmark/effort";
 import { checkBenchmarkToolExecutionGuard, installBenchmarkTimeboxGate } from "@/server/benchmark/timebox";
 import { abortBenchmarkAttempt, startBenchmarkAttemptWatchdog } from "@/server/benchmark/attempt-watchdog";
 import { benchmarkWorkspaceRoot, BenchmarkWorkspace, createWorkspaceLocalTools, benchmarkMutationLock, challengeDirectory } from "@/server/benchmark/workspace";
@@ -703,7 +703,6 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
       // release while an exclusive waiter (write) is stuck in pre-processing.
       // The execute wrapper acquires and releases around the real execute.
       const fileLock = () => benchmarkLedger && workspace ? benchmarkMutationLock(benchmarkLedger, workspace.cwd) : mutationLock;
-      if (benchmarkLedger) installPasswordEnumerationBudget(tool, benchmarkLedger, benchmarkOwner);
       if (tool.name === "bash" && typeof tool.execute === "function") {
         const original = tool.execute.bind(tool);
         tool.execute = async (toolCallId: string, params: unknown, signal?: AbortSignal, ...rest: unknown[]) => {
