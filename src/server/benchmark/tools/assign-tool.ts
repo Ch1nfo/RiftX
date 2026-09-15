@@ -137,6 +137,7 @@ function buildBrief(challenge: ChallengeState, containerAddrs: string[], phase: 
     ...(sharedIntel.length ? [``, `## Relevant shared intelligence`, ...sharedIntel.map((item) => `- ${item}`)] : []),
     ``, `## Standing orders`,
     `- Work only on this challenge. Cheap probes first, then systematic depth.`,
+    `- Your working directory is a per-challenge local workspace that persists across attempts; keep replayable scripts (e.g. stage-01-*.sh) and artifacts there so a later attempt can resume from them instead of re-deriving everything.`,
     `- Submit every observed flag immediately through benchmark_control; continue until all flags are submitted or the attempt ends.`,
     `- Keep the blackboard useful with concise observed facts, evidence, tested approaches, supported exclusions and unresolved questions. Do not prescribe the current route or next steps to your successor.`,
     `- Only report flags observed verbatim in tool output.`,

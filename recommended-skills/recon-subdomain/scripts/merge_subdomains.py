@@ -42,13 +42,13 @@ def read_subdomains(file_path: str) -> Set[str]:
 
 def is_wildcard(subdomain: str, wildcard_subs: Set[str]) -> bool:
     """Check if subdomain matches a wildcard pattern."""
-        # Extract root domain
-        parts = subdomain.split('.')
-        if len(parts) >= 2:
-            root = '.'.join(parts[-2:])
-            # Check if wildcard exists for root
-            wildcard_patterns = {f'*.{root}', f'*.{root}.*'}
-            return bool(wildcard_subs & wildcard_patterns)
+    # Extract root domain
+    parts = subdomain.split('.')
+    if len(parts) >= 2:
+        root = '.'.join(parts[-2:])
+        # Check if wildcard exists for root
+        wildcard_patterns = {f'*.{root}', f'*.{root}.*'}
+        return bool(wildcard_subs & wildcard_patterns)
     return False
 
 
@@ -56,7 +56,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Merge and deduplicate subdomain lists"
     )
-    parser.add_argument("files", nargs='+", help="Subdomain list files to merge")
+    parser.add_argument("files", nargs="+", help="Subdomain list files to merge")
     parser.add_argument("-o", "--output", required=True, help="Output file")
     parser.add_argument("--sort", action="store_true", help="Sort output alphabetically")
     parser.add_argument("--filter-wildcards", action="store_true",

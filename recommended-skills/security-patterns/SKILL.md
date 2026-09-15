@@ -1,6 +1,6 @@
 ---
 name: security-patterns
-description: "Security pattern matching for code audit and content inspection: grep strings for source auditing, malicious-string signatures, PHP magic hashes, error-message patterns. Use for repository scanning, source-code auditing, and detecting dangerous functions or malicious content in files."
+description: "Security pattern matching for code audit and content inspection: grep strings for source auditing, malicious-string signatures, PHP magic hashes, error-message patterns. Use for repository scanning, source-code auditing, and detecting dangerous functions or malicious content in files. Use this skill when you need audit regex patterns (代码审计) for source-code auditing or dangerous-function detection."
 ---
 
 # SecLists Pattern-Matching

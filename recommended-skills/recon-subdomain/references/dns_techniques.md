@@ -4,31 +4,24 @@ Advanced methods for comprehensive DNS reconnaissance.
 
 ## Certificate Transparency Log Search
 
-### crt.sh API
+证书透明(CT)日志与第三方在线证书搜索服务均需公网访问,离线环境跳过。离线等价方案是 DNS 字典爆破:
+
+### DNS 字典爆破(离线等价)
 
 ```bash
-# Basic search
-curl -s "https://crt.sh/?q=%.example.com&output=json" | \
-  jq -r '.[].name_value' | sort -u
+# 查看镜像内可用 DNS 词表
+ls /opt/wordlists/DNS/ 2>/dev/null
 
-# With subdomain expansion
-curl -s "https://crt.sh/?q=example.com&output=json" | \
-  jq -r '.[].name_value' | sed 's/\*\.//g' | sort -u
-```
+# 词表 + dig 解析循环
+WORDLIST=/opt/wordlists/DNS/dns.txt
+while read -r sub; do
+  [ -z "$sub" ] && continue
+  ans=$(dig +short "${sub}.example.com" A 2>/dev/null)
+  [ -n "$ans" ] && echo "${sub}.example.com -> $ans"
+done < "$WORDLIST" | tee resolved_subs.txt
 
-### Google CT Logs
-
-```bash
-# Using subfinder with CT sources
-subfinder -d example.com -sources crtsh -o ct_subs.txt
-```
-
-### Censys Certificate Search
-
-```bash
-# Censys API for certificate search
-curl -s "https://search.censys.io/api/v2/certificates/search?q=names: example.com&per_page=100" \
-  -H "Authorization: YOUR_API_KEY"
+# vhost 方式确认(对 Web 服务):ffuf 用 Host 头爆破
+ffuf -u http://TARGET_IP/ -H "Host: FUZZ.example.com" -w "$WORDLIST" -fs SIZE_OF_DEFAULT
 ```
 
 ---
@@ -45,7 +38,7 @@ dig axfr @ns1.example.com example.com
 host -t axfr example.com ns1.example.com
 
 # Multiple nameservers
-for ns in $(host -t ns example.com | cut -d" " -f4); do
+for ns in $(dig +short NS example.com); do
   echo "Trying $ns..."
   dig axfr @$ns example.com
 done
@@ -126,10 +119,7 @@ dig rrsig example.com +short
 
 ```bash
 # Test random subdomain
-nslookup randomtest12345.example.com
-
-# Using dig
-dig randomtest12345.example.com
+dig +short randomtest12345.example.com
 ```
 
 ### Automated Wildcard Detection
@@ -138,48 +128,36 @@ dig randomtest12345.example.com
 # Generate random subdomains
 for i in {1..10}; do
   sub="test$i$(openssl rand -hex 4).example.com"
-  if host "$sub" >/dev/null 2>&1; then
+  if [ -n "$(dig +short "$sub" 2>/dev/null)" ]; then
     echo "Wildcard detected: $sub"
   fi
 done
-```
-
-### Using dnsx
-
-```bash
-# Test for wildcard
-echo "test$(date +%s).example.com" | dnsx -silent
 ```
 
 ---
 
 ## Subdomain Permutations
 
-### Altdns
-
-Generate permutations from discovered subdomains:
-
-```bash
-# Using altdns
-altdns -i subs.txt -o output.txt -w words.txt
-
-# Resolve permutations
-cat output.txt | dnsx -silent -o resolved.txt
-```
-
 ### Custom Permutations
 
 ```bash
-# Common patterns
+# Common patterns: generate + resolve in one dig loop
 for sub in $(cat subs.txt); do
   # Add dev/stage/prod
-  echo "${sub}-dev"
-  echo "${sub}-staging"
-  echo "${sub}-prod"
-  echo "dev-${sub}"
-  echo "stage-${sub}"
-  echo "prod-${sub}"
-done | dnsx -silent
+  for cand in "${sub}-dev" "${sub}-staging" "${sub}-prod" "dev-${sub}" "stage-${sub}" "prod-${sub}"; do
+    ans=$(dig +short "$cand.example.com" 2>/dev/null)
+    [ -n "$ans" ] && echo "$cand.example.com -> $ans"
+  done
+done
+
+# 词表拼接变体(dev/www/api/mail + 已知子域前缀)同理循环 dig
+while read -r prefix; do
+  while read -r sub; do
+    cand="${prefix}.${sub}.example.com"
+    ans=$(dig +short "$cand" 2>/dev/null)
+    [ -n "$ans" ] && echo "$cand -> $ans"
+  done < subs.txt
+done < /opt/wordlists/DNS/dns.txt 2>/dev/null
 ```
 
 ---
@@ -203,17 +181,11 @@ dig _25._tcp.mail.example.com TLSA +short
 ### From IP Range
 
 ```bash
-# Reverse lookup IP range
+# Reverse lookup IP range with dig
 for ip in $(seq 1 254); do
-  host 192.168.1.$ip | grep -v "not found"
+  out=$(dig +short -x 192.168.1.$ip 2>/dev/null)
+  [ -n "$out" ] && echo "192.168.1.$ip -> $out"
 done
-```
-
-### Using dnsrecon
-
-```bash
-# Reverse lookup of IP range
-dnsrecon -r 192.168.1.0/24 -n example.com
 ```
 
 ---
@@ -223,9 +195,6 @@ dnsrecon -r 192.168.1.0/24 -n example.com
 ```bash
 # Check if nameserver has cached record
 dig @ns1.example.com sub.example.com A +norecurse
-
-# With dnsrecon
-dnsrecon -n example.com -c cache_snoop
 ```
 
 ---
@@ -235,11 +204,12 @@ dnsrecon -n example.com -c cache_snoop
 ### Slow Query Rate
 
 ```bash
-# With delay
-while read sub; do
-  echo "$sub"
+# With delay(逐个 dig 解析,间隔 1s)
+while read -r sub; do
+  ans=$(dig +short "$sub" 2>/dev/null)
+  [ -n "$ans" ] && echo "$sub -> $ans"
   sleep 1
-done < subs.txt | dnsx -silent
+done < subs.txt
 ```
 
 ### Using Different Resolvers
@@ -274,10 +244,10 @@ done
 
 | Technique | Tools | Detects |
 |-----------|-------|---------|
-| Certificate Search | crt.sh, subfinder | Historical SSL certificates |
-| Zone Transfer | dig, host | Complete zone (if allowed) |
+| CT 日志查询 | 需公网,离线跳过(改用字典爆破) | Historical SSL certificates |
+| Zone Transfer | dig | Complete zone (if allowed) |
 | SRV Discovery | dig | Service-specific records |
 | DNSSEC | dig | DNSSEC configuration |
-| Reverse DNS | dnsrecon, host | Domains from IP ranges |
-| Permutations | altdns | Dev/prod variants |
-| Wildcards | dnsx, custom | Wildcard patterns |
+| Reverse DNS | dig -x | Domains from IP ranges |
+| Permutations | bash + dig 循环 | Dev/prod variants |
+| Wildcards | dig + 随机子域 | Wildcard patterns |

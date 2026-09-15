@@ -139,7 +139,7 @@ export function createCrawlTool(browser: BrowserManager, outputStore?: ToolOutpu
     name: "crawl",
     label: "Crawl attack surface",
     description:
-      "Breadth-first crawl of an in-scope web application through the scoped browser: collects every link, form (including hidden fields), API routes extracted from loaded JS bundles, and auth boundaries into one structured inventory. Use it right after the first navigate to map the attack surface before hypothesizing vulnerabilities, and feed the discovered endpoints into the matching exploit skills. Only same-host links are followed (cross-host links are recorded as leads); every hop is scope-checked. Verbose inventories return a bounded preview plus a local full-output path — record actual exposures with record_finding.",
+      "Breadth-first crawl of an in-scope web application through the scoped browser: collects every link, form (including hidden fields), API routes extracted from loaded JS bundles, and auth boundaries into one structured inventory. Use it right after the first navigate to map the attack surface before hypothesizing vulnerabilities, and feed the discovered endpoints into the matching exploit skills. Only same-host links are followed (cross-host links are recorded as leads); every hop is scope-checked. Verbose inventories return a bounded preview plus a local full-output path — record actual exposures with benchmark_control(action=\"checkpoint\").",
     promptSnippet: "crawl(entry, maxPages?, maxDepth?)",
     executionMode: "parallel",
     parameters: Type.Object({

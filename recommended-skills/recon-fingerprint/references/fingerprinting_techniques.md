@@ -137,15 +137,19 @@ openssl s_client -connect target.com:443 -servername target.com
 # Certificate details
 curl -vI https://target.com 2>&1 | grep -i ssl
 
-# Using testssl.sh
-testssl.sh --quiet target.com:443
+# TLS 版本/密码套件逐项探测
+for tls in tls1 tls1_1 tls1_2 tls1_3; do
+  echo "== $tls =="
+  echo | openssl s_client -connect target.com:443 -servername target.com -$tls 2>&1 | grep -E "Protocol|Cipher|Verify"
+done
 ```
 
 ## JARM Fingerprinting
 
 ```bash
-# Get JARM hash
-curl -s https://api.ssllabs.com/api/v3/info -d '{"host":"target.com"}'
+# JARM/SSL Labs 在线 API 需公网,离线跳过;本地用 openssl 指纹替代:
+echo | openssl s_client -connect target.com:443 -servername target.com 2>/dev/null |
+  openssl x509 -noout -fingerprint -sha256 -subject -issuer -dates
 ```
 
 ## Technology Stack Detection Workflow
@@ -179,20 +183,21 @@ curl -I https://target.com/favicon.ico
 curl -I https://target.com/apple-touch-icon.png
 ```
 
-### 3. Automated Detection
+### 3. Automated Detection(本地等价)
+
+自动指纹扫描器不在镜像内,用 curl + nmap 等价:
 
 ```bash
-# WhatWeb
-whatweb -a 3 https://target.com
+# 响应头指纹(Server/X-Powered-By/CDN 头)
+curl -sI https://target.com
 
-# Nuclei
-nuclei -u https://target.com -tags tech
+# nmap 服务与脚本探测(版本 + 默认页面指纹)
+nmap -sV -sC -p 80,443 target.com
 
-# HTTPx
-httpx -u https://target.com -tech-detect -server -cdn
-
-# WAFW00F
-wafw00f https://target.com
+# WAF 检测:对比恶意载荷前后的响应差异
+curl -s -o /dev/null -w "%{http_code} %{size_download}\n" "https://target.com/?q=normal"
+curl -s -o /dev/null -w "%{http_code} %{size_download}\n" "https://target.com/?q=<script>alert(1)</script>"
+# 拦截页/403/连接重置 => 前置 WAF;再手工对比响应头与拦截页特征
 ```
 
 ## Bypass Techniques

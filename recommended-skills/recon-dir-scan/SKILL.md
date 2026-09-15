@@ -1,6 +1,6 @@
 ---
 name: recon-dir-scan
-description: Directory and file enumeration using ffuf, gobuster, dirsearch, and feroxbuster. Use this skill when user needs to discover hidden directories, enumerate files, find backup files, or map application structure through path fuzzing.
+description: Directory and file enumeration using ffuf and gobuster. Use this skill when user needs to discover hidden directories, enumerate files, find backup files, or map application structure through path fuzzing.
 ---
 
 # Directory and File Enumeration
@@ -9,10 +9,10 @@ description: Directory and file enumeration using ffuf, gobuster, dirsearch, and
 
 ## RiftX Workflow
 
-1. **扫描交给 subagent**：目录扫描耗时且噪音大——`spawn_subagent` 跑 ffuf（按下面 Methodology 出词表与过滤参数），主会话继续手工探索；结果回来后汇总进对话
+1. **扫描放 bash 后台**：目录扫描耗时且噪音大——`nohup ffuf ... -o work/dir-scan.json > work/dir-scan.log 2>&1 &` 后台跑（按下面 Methodology 出词表与过滤参数），主会话继续手工探索；结果落盘 work/（跨 attempt 持久），回头读日志汇总进对话。单次 attempt 限时 30 分钟——长扫描务必落盘，下个 attempt 接着用
 2. **发现物用浏览器定性**：扫出的路径（尤其 `/admin`、登录墙、403 页）用 `browser navigate` + `snapshot` 确认真实形态——403 在浏览器里可能是可绕过的路径归一化问题，登录墙本身是攻击面
-3. **敏感暴露即 finding**：扫到 `.git/`、`.env`、`*.bak` 等直接用 `browser response_body`/bash 取内容验证后 `record_finding`（confidence: confirmed，evidence 引用取回内容的工具调用）
-4. 扫描结果本身在对话中汇总即可（见 Recording Results），不要写入任何外部存储
+3. **敏感暴露即 checkpoint**：扫到 `.git/`、`.env`、`*.bak` 等直接用 `browser response_body`/bash 取内容验证后 `benchmark_control` checkpoint（signalKind: new_surface；evidenceRef 指向取回内容落盘的 work/ 产物）
+4. 扫描结果落盘 work/ 并在对话中汇总要点（见 Recording Results），不要写入 skill 目录等任何外部存储
 
 ---
 
@@ -53,8 +53,10 @@ ffuf -w common.txt -u https://target.com/FUZZ -H "Cookie: session=<token>"
 |------|------|------|
 | SecLists `common.txt` | ~4,600 | 默认起点，快 |
 | SecLists `raft-medium-directories` | ~30,000 | 第二轮 |
-| DirBuster `directory-list-2.3-medium` | ~220,000 | 全面评估（subagent 跑） |
+| DirBuster `directory-list-2.3-medium` | ~220,000 | 全面评估（bash 后台跑） |
 | 本 skill `assets/` | — | `common-dirs.txt`、`common-files.txt`、`hidden-files.txt`、`api-endpoints.txt` |
+
+镜像离线：内置词表在 `/opt/wordlists/Web-Content/`（`common.txt`、`raft-*`），优先用这些路径。
 
 选型与自建词表：`references/wordlist_guide.md`；ffuf/gobuster 完整用法：`references/ffuf_guide.md`、`references/gobuster_guide.md`。
 
@@ -72,7 +74,7 @@ ffuf -w common.txt -u https://target.com/FUZZ -H "Cookie: session=<token>"
 
 ### Recording Results
 
-Recon observations are working data, not findings — summarize them in the conversation. Reserve `record_finding` for actual exposures the scan reveals (an open admin panel, an exposed database service, a leaked backup file): one finding per concrete, evidence-backed conclusion, `confidence` set honestly, and `evidence` pointing at the proving tool call (`{ "type": "tool", "toolCallId": "<id>", "toolName": "bash" }`). Findings persist with the session; there is no separate results database to write to.
+Recon observations are working data — persist scan output to work/ files (cwd is the challenge's work/, kept across attempts) and summarize the highlights in the conversation. Reserve `benchmark_control` checkpoint (signalKind=new_surface or note) for actual exposures the scan reveals (an open admin panel, an exposed database service, a leaked backup file): one checkpoint per concrete, evidence-backed conclusion, signal kept within 2000 chars stating fact + evidence + remaining uncertainty, and evidenceRef pointing at the proving artifact saved under work/. The blackboard persists across attempts and workers; large outputs stay on disk and only their path goes into the checkpoint. A confirmed flag is submitted immediately via benchmark_control submit (uniqueCode + flag only) — no evidence prerequisite.
 
 ---
 

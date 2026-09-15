@@ -22,7 +22,7 @@ Subdomain takeover occurs when:
 ### 2.1 CNAME Enumeration
 
 ```
-1. Collect subdomains (amass, subfinder, assetfinder, crt.sh, SecurityTrails)
+1. Collect subdomains(离线:/opt/wordlists/DNS 词表 + dig 解析循环;CT/第三方源需公网,离线跳过)
 2. Resolve DNS for each:
    dig CNAME sub.target.com +short
 3. For each CNAME → check if the CNAME target returns NXDOMAIN or a provider error
@@ -39,15 +39,25 @@ Subdomain takeover occurs when:
 | NXDOMAIN on the CNAME target domain itself | Target domain expired or never existed |
 | CNAME → provider but HTTP 200 with default parking page | May or may not be claimable — verify |
 
-### 2.3 Automated Tools
+### 2.3 Offline Detection Loop(本机工具)
 
-| Tool | Purpose |
+自动扫描器不在镜像内,用 dig + curl 循环按指纹表逐项核对:
+
+```bash
+# 对每个子域取 CNAME,再抓 HTTP 指纹
+while read -r sub; do
+  cn=$(dig +short CNAME "$sub" | head -1)
+  [ -z "$cn" ] && continue
+  code_body=$(curl -s -m 5 -o /tmp/tk_body -w "%{http_code}" "http://$sub/")
+  echo "$sub -> $cn [$code_body] $(head -c 120 /tmp/tk_body | tr '\n' ' ')"
+done < resolved_subs.txt
+# 再对照 Section 3 指纹表判断是否可接管
+```
+
+| Method | Purpose |
 |---|---|
-| `subjack` | Automated CNAME takeover checking |
-| `nuclei -t takeovers/` | Nuclei takeover detection templates |
-| `can-i-take-over-xyz` (GitHub) | Reference for which services are vulnerable |
-| `dnsreaper` | Multi-provider takeover scanner |
-| `subzy` | Fast subdomain takeover verification |
+| `dig +short CNAME` + `curl -s` 指纹比对 | Automated CNAME takeover checking(本地等价) |
+| `can-i-take-over-xyz` (GitHub) | Reference for which services are vulnerable(需公网,离线跳过) |
 
 ---
 

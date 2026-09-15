@@ -84,7 +84,7 @@ export function createBenchmarkControlTool(
     name: "benchmark_control",
     label: "Benchmark control",
     description: "Interface to the TSec benchmark platform and challenge blackboard. Coverage is low-score-first; every attempt is capped at 30 minutes (one notice at 25, checkpoint and submit stay available at the stop, then the environment is released and the challenge requeues at the tail). A revisit can earn one 10-minute extension only for verified progress in its final five minutes (a newly accepted flag or a stage_transition checkpoint with previously unseen evidence). Unfinished challenges must remain eligible for continued solving until the platform ends the run or the operator stops it; permanent abandonment is not supported. Actions: sync, status, read_memory, acquire, checkpoint, submit, hint (attempt 2+), defer (requeues the challenge and preserves available environments in the final-three revisit stage), reset_environment (requires reason and evidenceRef; closes and releases the target for a fresh acquire/assignment), publish_intel.",
-    promptSnippet: "benchmark_control(action, uniqueCode?, flag?, signal?, signalKind?, evidenceRef?, triedFamilies?, ruledOutFamilies?, reason?)",
+    promptSnippet: "benchmark_control(action, uniqueCode?, flag?, signal?, signalKind?, evidenceRef?, triedFamilies?, ruledOutFamilies?, currentApproach?, nextProbe?, reason?)",
     parameters: Type.Object({
       action: Type.Union([
         Type.Literal("sync"), Type.Literal("status"), Type.Literal("read_memory"), Type.Literal("acquire"),

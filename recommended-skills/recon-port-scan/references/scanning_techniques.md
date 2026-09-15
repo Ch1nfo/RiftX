@@ -62,9 +62,9 @@ sudo nmap --source-port 80 target.com
 sudo nmap --source-port 20 target.com
 ```
 
-**Masscan:**
+**Nmap 高速全端口(替代专用高速扫描器):**
 ```bash
-sudo masscan target.com -p80 --source-port 53 --rate 1000
+sudo nmap -T5 --min-rate=2000 --source-port 53 -p- target.com
 ```
 
 ### 4. MAC Address Spoofing

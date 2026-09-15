@@ -13,11 +13,11 @@ crawl 走真实浏览器访问目标，必须遵守浏览器 scope 与速率约�
 2. **参数选择**：默认 `maxPages=15, maxDepth=2`；小型站点可 `maxPages=30`；只要单页深度信息时 `maxDepth=0`（只提取入口页自身的链接/表单/JS 路由）
 3. **读清单的顺序**：
    - **JS-discovered routes**——SPA 的 API 地图，模型最容易漏的就是这里的非标准端点；逐个对照后续 exploit skill 的注入面清单
-   - **Forms（含 hidden 字段）**——隐藏域是 mass assignment 与越权测试的入口（`exploit-authz`）
+   - **Forms（含 hidden 字段）**——隐藏域是 mass assignment 与越权测试的入口（`exploit-authz`，read ~/.riftx/skills/exploit-authz/SKILL.md）
    - **AUTH 标记的页面**——login-walled 端点用 `use_identity` + `cookies_import` 带认证会话再测；匿名可达面优先测未授权访问
    - **Cross-host leads**——crawl 不跟随跨主机链接，但记下了 host 清单：核对后可扩大 scope 或交给 `recon-subdomain`/`recon-dir-scan`
-4. **分流**：爬完把端点清单交给对应的 exploit skill（/api/* → `api-testing`；表单反射 → `exploit-xss`；下载/文件参数 → `exploit-file-download`）；大站可 `spawn_subagent` 并行处理不同端点组
-5. **记录**：爬到的**暴露面**（无需认证的管理端点、泄露的调试接口）验证后 `record_finding`；普通端点清单留在对话里即可，不要把每个 URL 都记成 finding
+4. **分流**：爬完把端点清单交给对应的 exploit skill（/api/* → `api-testing`；表单反射 → `exploit-xss`；下载/文件参数 → `exploit-file-download`）；大站可用 bash 后台（`nohup ... > work/crawl-fuzz.log 2>&1 &`）并行处理不同端点组——这是本题内的并行方式，跨题并行只有主 Agent 能用 `assign_benchmark_challenge`（派的是另一道题）
+5. **记录**：爬到的**暴露面**（无需认证的管理端点、泄露的调试接口）验证后 `benchmark_control` checkpoint（signalKind: new_surface 或 note；evidenceRef 指向 work/ 落盘产物）；普通端点清单落盘到 work/ 并在对话里汇总即可，不要把每个 URL 都写成 checkpoint
 
 ---
 
@@ -47,20 +47,20 @@ crawl 走真实浏览器访问目标，必须遵守浏览器 scope 与速率约�
 - [ ] Forms 的 hidden 字段单独过一遍（tamper/mass assignment）
 - [ ] AUTH 页面带认证身份复测
 - [ ] cross-host leads 核对后决定是否扩大 scope
-- [ ] 大站按端点组分派 subagent 并行
-- [ ] 暴露面验证后 record_finding
+- [ ] 大站按端点组用 bash 后台（nohup）并行
+- [ ] 暴露面验证后 benchmark_control checkpoint
 
 ---
 
 ### Recording Results
 
-Recon observations are working data, not findings — summarize them in the conversation. Reserve `record_finding` for actual exposures the crawl reveals (an unauthenticated admin endpoint, a leaked debug interface, a sensitive file in a linked path): one finding per concrete, evidence-backed conclusion, `confidence` set honestly, and `evidence` pointing at the proving tool call (`{ "type": "tool", "toolCallId": "<id>", "toolName": "crawl" }`). Findings persist with the session; there is no separate results database to write to.
+Recon observations are working data — persist the endpoint inventory to work/ files (cwd is the challenge's work/, kept across attempts) and summarize the highlights in the conversation. Reserve `benchmark_control` checkpoint (signalKind=new_surface or note) for actual exposures the crawl reveals (an unauthenticated admin endpoint, a leaked debug interface, a sensitive file in a linked path): one checkpoint per concrete, evidence-backed conclusion, signal kept within 2000 chars stating fact + evidence + remaining uncertainty, and evidenceRef pointing at the proving artifact saved under work/. The blackboard persists across attempts and workers; large outputs stay on disk and only their path goes into the checkpoint. A confirmed flag is submitted immediately via benchmark_control submit (uniqueCode + flag only) — no evidence prerequisite.
 
 ---
 
 ## 相关 Skills
 
-`api-testing`（API 面深入）、`exploit-authz`（越权/隐藏域）、`recon-dir-scan`（目录爆破互补）、`recon-fingerprint`（技术栈）、`results-storage`（findings 机制）
+`api-testing`（API 面深入）、`exploit-authz`（越权/隐藏域）、`recon-dir-scan`（目录爆破互补）、`recon-fingerprint`（技术栈）、`results-storage`（checkpoint 与 work/ 持久化机制）
 
 ## 深度参考
 

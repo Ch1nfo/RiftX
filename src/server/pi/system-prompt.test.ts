@@ -4,9 +4,24 @@ import { buildChildPentestSystemPrompt, buildPentestSystemPrompt } from "./syste
 
 test("main and child benchmark prompts allow relevant skills", () => {
   for (const prompt of [buildPentestSystemPrompt("default"), buildChildPentestSystemPrompt()]) {
-    assert.match(prompt, /Use relevant available Agent Skills/);
-    assert.match(prompt, /if none clearly fits, proceed without loading one/);
-    assert.doesNotMatch(prompt, /Do not load skills|do not load Agent Skills/);
+    // Skills are plain files read on demand — there is no injection path or
+    // catalog tool on this branch, so the prompt must teach the directory.
+    assert.match(prompt, /~\/\.riftx\/skills\/<name>\/SKILL\.md/);
+    assert.match(prompt, /if none\s+clearly fits,\s+proceed without/);
+    assert.doesNotMatch(prompt, /Do not load skills|do not load Agent Skills|skill catalog/);
+  }
+});
+
+test("playbooks only name tools that exist on the shipped image", () => {
+  // The image toolchain is fixed at build time (docker/build-tool-catalog.py);
+  // naming absent tools teaches the agent to call missing binaries.
+  for (const prompt of [buildPentestSystemPrompt("default"), buildChildPentestSystemPrompt()]) {
+    for (const absent of ["feroxbuster", "radare2", "RsaCtfTool", "sage,", "angr", "volatility", "stegsolve", "sonic-visualizer", "rockyou if", "rockyou needed", "factordb"]) {
+      assert.doesNotMatch(prompt, new RegExp(absent));
+    }
+    assert.match(prompt, /ffuf\/gobuster with the bundled \/opt\/wordlists/);
+    assert.match(prompt, /ghidra\/riftx-decompile\/objdump/);
+    assert.match(prompt, /python \(sympy\/gmpy2\/z3\), openssl/);
   }
 });
 
@@ -87,8 +102,9 @@ test("child prompt carries the commander return format, playbook, and tool restr
   assert.match(prompt, /Do NOT use sync\/status\/acquire\/\n  hint/);
   assert.match(prompt, /Do NOT use assign_benchmark_challenge \(commander-only\)/);
   assert.match(prompt, /# PLAYBOOK BY CATEGORY/);
-  assert.match(prompt, /steghide \(bruteforce passphrase with rockyou/);
+  assert.match(prompt, /steghide \(bruteforce passphrase with the bundled/);
   assert.match(prompt, /- tool_inventory: check command, Python module and wordlist availability/);
+  assert.match(prompt, /- skills: local skill documents live at ~\/\.riftx\/skills\//);
   assert.match(prompt, /Credential testing is evidence-gated/);
   assert.match(prompt, /if the blackboard shows it was already spent, do not restart it/);
   assert.match(prompt, /Benchmark Scope and Approval Boundary/);

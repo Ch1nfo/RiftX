@@ -390,25 +390,36 @@ curl -X POST "https://target.com/graphql" \
 
 ## 十、工具推荐
 
-### graphw00f（指纹识别）
+### 引擎指纹识别(手工等价)
 
 ```bash
-# 识别 GraphQL 引擎类型
-pip3 install graphw00f
-graphw00f -t https://target.com/graphql
+# 识别 GraphQL 引擎类型(指纹工具不在镜像,手工等价):
+# 1) 探 /graphiql、/playground、/voyager 等端点看默认 UI 特征
+curl -s -o /dev/null -w "%{http_code}\n" https://target.com/graphiql
+# 2) 发错误查询看报错格式(Apollo/GraphQL Yoga/Hasura 各有特征)
+curl -s -X POST https://target.com/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query":"query { __typename @invalid }"}'
 ```
 
-### InQL（Burp 插件）
+### python3 Introspection 脚本
 
-```
-功能:
-- 自动 Introspection
-- 生成查询模板
-- 批量测试
-- 可视化 Schema
+```python
+# introspect_gql.py — 自动 Introspection + 生成查询模板
+import requests, json
 
-安装: Burp → Extender → BApp Store → InQL Scanner
+URL = "https://target.com/graphql"
+q = {"query": """query IntrospectionQuery { __schema {
+  types { name kind fields { name type { name kind } } } } }"""}
+r = requests.post(URL, json=q, timeout=10)
+schema = r.json()
+for t in schema["data"]["__schema"]["types"]:
+    if t["kind"] in ("OBJECT",) and not t["name"].startswith("__"):
+        fields = [f["name"] for f in (t["fields"] or [])]
+        print(t["name"], "->", ", ".join(fields))
 ```
+
+功能等价: 自动 Introspection / 生成查询模板 / 批量测试(requests 循环)
 
 ### graphql-voyager（Schema 可视化）
 
