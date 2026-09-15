@@ -21,12 +21,18 @@ export const ATTEMPT_LIMIT_MS = 30 * 60 * 1000;
 export const FIRST_ATTEMPT_WARNING_MS = ATTEMPT_WARNING_MS;
 export const FIRST_ATTEMPT_LIMIT_MS = ATTEMPT_LIMIT_MS;
 export const ATTEMPT_EXTENSION_MS = 10 * 60 * 1000;
+/** Verified progress counts for the extension from here to the original
+ * deadline — the "final ten minutes". Replay of inherited work eats real
+ * attempt time (fresh container), so the window is wider than the warning. */
+export const ATTEMPT_EXTENSION_ELIGIBLE_AFTER_MS = 20 * 60 * 1000;
 
 export type ChallengeStatus = "pending" | "reserved" | "running" | "closing" | "deferred" | "solved" | "orphaned";
 /** Coverage is not a tactical round: it only prevents revisiting a challenge
  * until every challenge has received one real attempt. */
 export type BenchmarkPhase = "coverage" | "revisit" | "completed";
 export type ChallengeOwner = "main" | `subagent:${string}` | null;
+/** Where the attempt was ended, separate from the human-readable reason. */
+export type AttemptTerminationSource = "platform" | "restart" | "solver" | "handoff" | "timebox" | "subagent" | "cleanup";
 export type ProgressSignalKind = "foothold" | "credential" | "privilege_change" | "exploit_primitive" | "stage_transition" | "decisive_rule_out" | "new_surface" | "note";
 
 export type AttemptSummary = {
@@ -41,6 +47,7 @@ export type AttemptSummary = {
   triedFamilies: string[];
   ruledOutFamilies: string[];
   stopReason: string;
+  terminationSource?: AttemptTerminationSource;
   nextDistinctApproach: string;
   newEvidenceCount?: number;
   newCredentialCount?: number;
@@ -235,7 +242,7 @@ function progressKey(kind: ProgressSignalKind, evidenceRef: string): string {
   return `${kind}\u0000${cleanText(evidenceRef, 500).toLowerCase()}`;
 }
 
-function finishAttempt(challenge: ChallengeState, now: number, stopReason: string): void {
+function finishAttempt(challenge: ChallengeState, now: number, stopReason: string, terminationSource: AttemptTerminationSource = "solver"): void {
   if (challenge.currentAttemptStartedAt === null || !challenge.currentAttemptWorker || !challenge.currentAttemptPhase) return;
   const startedAt = challenge.currentAttemptStartedAt;
   const delta = challenge.blackboard.filter((entry) => entry.at >= startedAt && entry.evidenceRef);
@@ -251,6 +258,7 @@ function finishAttempt(challenge: ChallengeState, now: number, stopReason: strin
     triedFamilies: challenge.triedFamilies.slice(-20),
     ruledOutFamilies: challenge.ruledOutFamilies.slice(-20),
     stopReason: cleanText(stopReason, 1_000),
+    terminationSource,
     nextDistinctApproach: challenge.nextProbe,
     newEvidenceCount: new Set(delta.map((entry) => entry.evidenceRef)).size,
     newCredentialCount: delta.filter((entry) => entry.kind === "credential").length,
@@ -273,7 +281,7 @@ function extendAttempt(challenge: ChallengeState, now: number): boolean {
   const startedAt = challenge.currentAttemptStartedAt;
   if (challenge.status !== "running" || startedAt === null || challenge.attemptCount <= 1
     || challenge.attemptExtensionGrantedAt !== null
-    || now < startedAt + FIRST_ATTEMPT_WARNING_MS || now >= startedAt + FIRST_ATTEMPT_LIMIT_MS) return false;
+    || now < startedAt + ATTEMPT_EXTENSION_ELIGIBLE_AFTER_MS || now >= startedAt + FIRST_ATTEMPT_LIMIT_MS) return false;
   challenge.attemptExtensionGrantedAt = now;
   challenge.hardDeadlineAt = startedAt + FIRST_ATTEMPT_LIMIT_MS + ATTEMPT_EXTENSION_MS;
   return true;
@@ -583,7 +591,7 @@ export class BenchmarkLedger {
       challenge.attemptExtensionGrantedAt = nullableFiniteNumber(challenge.attemptExtensionGrantedAt);
       const startedAt = challenge.currentAttemptStartedAt;
       if (startedAt === null || challenge.attemptCount <= 1 || challenge.attemptExtensionGrantedAt === null
-        || challenge.attemptExtensionGrantedAt < startedAt + FIRST_ATTEMPT_WARNING_MS
+        || challenge.attemptExtensionGrantedAt < startedAt + ATTEMPT_EXTENSION_ELIGIBLE_AFTER_MS
         || challenge.attemptExtensionGrantedAt >= startedAt + FIRST_ATTEMPT_LIMIT_MS) {
         challenge.attemptExtensionGrantedAt = null;
       }
@@ -862,7 +870,7 @@ export class BenchmarkLedger {
             existing.containerStatus = platform.container_status;
             existing.containerAddrs = platform.container_status === "available" ? platform.container_addr : [];
           }
-          if (existing.currentAttemptStartedAt) finishAttempt(existing, this.now(), "platform sync confirmed solved");
+          if (existing.currentAttemptStartedAt) finishAttempt(existing, this.now(), "platform sync confirmed solved", "platform");
           const needsClose = platformContainerIsCurrent ? platform.container_status !== "stopped" : hasActiveContainer(existing);
           existing.status = needsClose ? "closing" : "solved";
           existing.pendingStatus = needsClose ? "solved" : undefined;
@@ -976,7 +984,7 @@ export class BenchmarkLedger {
         // resumes it above). Starting fresh must still record what the
         // interrupted attempt did, or the recovery brief loses that route.
         if (challenge.currentAttemptStartedAt !== null) {
-          finishAttempt(challenge, now, "attempt interrupted by restart before a fresh attempt");
+          finishAttempt(challenge, now, "attempt interrupted by restart before a fresh attempt", "restart");
         }
         // The attempt clock starts only after the platform start succeeds.
         // Slow or unstable control-plane calls must not steal solving time.
@@ -1282,7 +1290,7 @@ export class BenchmarkLedger {
       if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
       requireOwner(challenge, expectedOwner, allowUnowned);
       const now = this.now();
-      finishAttempt(challenge, now, "solved");
+      finishAttempt(challenge, now, "solved", "solver");
       const needsClose = hasActiveContainer(challenge);
       challenge.status = needsClose ? "closing" : "solved";
       challenge.pendingStatus = needsClose ? "solved" : undefined;
@@ -1342,7 +1350,7 @@ export class BenchmarkLedger {
         ruledOutFamilies: challenge.ruledOutFamilies.slice(-10),
         nextProbe: challenge.nextProbe
       });
-      finishAttempt(challenge, now, challenge.deferredReason || "deferred");
+      finishAttempt(challenge, now, challenge.deferredReason || "deferred", "handoff");
       enqueueForRevisit(this.state, challenge, now);
       const metric = this.metrics.challenges[uniqueCode];
       if (metric) metric.deferredCount += 1;
@@ -1376,7 +1384,7 @@ export class BenchmarkLedger {
         ruledOutFamilies: challenge.ruledOutFamilies.slice(-10),
         nextProbe: challenge.nextProbe
       });
-      finishAttempt(challenge, now, challenge.deferredReason);
+      finishAttempt(challenge, now, challenge.deferredReason, "timebox");
       enqueueForRevisit(this.state, challenge, now);
       const metric = this.metrics.challenges[uniqueCode];
       if (metric) metric.deferredCount += 1;
@@ -1482,7 +1490,7 @@ export class BenchmarkLedger {
         ruledOutFamilies: challenge.ruledOutFamilies.slice(-10),
         nextProbe: challenge.nextProbe
       });
-      finishAttempt(challenge, now, reason);
+      finishAttempt(challenge, now, reason, "subagent");
       challenge.status = preserve ? "orphaned" : "closing";
       challenge.owner = null;
       challenge.deferredReason = cleanText(reason, 1_000);
@@ -1502,7 +1510,7 @@ export class BenchmarkLedger {
       if (!challenge) throw new Error(`Challenge ${uniqueCode} not found`);
       const now = this.now();
       const cleanupWorker = challenge.currentAttemptWorker ?? challenge.owner ?? "main";
-      if (challenge.currentAttemptStartedAt !== null) finishAttempt(challenge, now, reason);
+      if (challenge.currentAttemptStartedAt !== null) finishAttempt(challenge, now, reason, "cleanup");
       challenge.owner = null;
       challenge.reservationPreviousStatus = undefined;
       challenge.reservationStartedNewAttempt = false;

@@ -63,9 +63,9 @@ test("first attempts cannot extend from a flag or an evidenced stage", async () 
   assert.equal(ledger.isBudgetExhausted("budget-fixture"), true);
 });
 
-test("only a new stage reference in the last five minutes grants one ten-minute extension", async () => {
+test("only a new stage reference in the final ten minutes grants one ten-minute extension", async () => {
   const { ledger, at, startedAt } = await setup({ revisit: true });
-  at(24);
+  at(19);
   assert.equal((await stage(ledger, "fixture:early")).extended, false);
   at(25);
   assert.equal((await stage(ledger, "fixture:early", "Paraphrased synthetic stage")).extended, false);
@@ -89,7 +89,7 @@ test("only a new stage reference in the last five minutes grants one ten-minute 
 test("only a new accepted flag in the extension window can extend", async () => {
   for (const mode of ["submission", "sync"] as const) {
     const { ledger, at, startedAt } = await setup({ revisit: true });
-    at(24);
+    at(19);
     await ledger.recordSubmission("budget-fixture", "synthetic-first", true, 25, 1, 0, "main");
     at(25);
     await ledger.recordSubmission("budget-fixture", "synthetic-first", true, 25, 1, 0, "main");

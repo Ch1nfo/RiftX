@@ -425,6 +425,10 @@ test("child session with assignedChallenge: only allowed actions, locked uniqueC
   assert.match((sync.content[0] as { text: string }).text, /not available to SubAgents/);
   const acquire = await tool.execute("c2", { action: "acquire", uniqueCode: "ch-1" }, undefined, undefined, ctx);
   assert.match((acquire.content[0] as { text: string }).text, /not available to SubAgents/);
+  // Hint passes the SubAgent gate (it is attempt-gated instead) so children can
+  // buy hints on revisits.
+  const hint = await tool.execute("c2b", { action: "hint" }, undefined, undefined, ctx);
+  assert.match((hint.content[0] as { text: string }).text, /Hints are unavailable on the first attempt/);
   const other = await tool.execute("c3", { action: "checkpoint", uniqueCode: "ch-2", signal: "x" }, undefined, undefined, ctx);
   assert.match((other.content[0] as { text: string }).text, /assigned to ch-1/);
   const own = await tool.execute("c4", { action: "checkpoint", signal: "found something", signalKind: "foothold", evidenceRef: "artifact:scan-1" }, undefined, undefined, ctx);

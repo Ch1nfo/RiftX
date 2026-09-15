@@ -60,6 +60,7 @@ export function handoffAttempt(attempt: AttemptSummary, supportedRuleOuts: reado
     startedAt: attempt.startedAt, endedAt: attempt.endedAt,
     flagsBefore: attempt.flagsBefore, flagsAfter: attempt.flagsAfter,
     flagsDelta: attempt.flagsAfter - attempt.flagsBefore,
+    terminationSource: attempt.terminationSource ?? "solver",
     newEvidenceCount: attempt.newEvidenceCount ?? 0,
     newCredentialCount: attempt.newCredentialCount ?? 0,
     newFootholdCount: attempt.newFootholdCount ?? 0,
@@ -72,8 +73,19 @@ export function handoffAttempt(attempt: AttemptSummary, supportedRuleOuts: reado
   };
 }
 
+/** Revalidation semantics: a fresh container keeps the knowledge but not the
+ * runtime state, so past-tense achievements must read as "re-derive", never
+ * "already have". */
+const REVALIDATION_HINTS: Partial<Record<BlackboardEntry["kind"], string>> = {
+  foothold: "achieved earlier — re-establish on the fresh target",
+  credential: "static auth material — retry it; no live session is inherited",
+  stage_transition: "reached earlier — replay scripts to re-establish"
+};
+
 export function blackboardLabel(entry: BlackboardEntry): string {
-  return entry.kind === "handoff" ? `child report from ${entry.worker}; not independently verified` : entry.kind;
+  if (entry.kind === "handoff") return `child report from ${entry.worker}; not independently verified`;
+  const hint = REVALIDATION_HINTS[entry.kind];
+  return hint ? `${entry.kind} (${hint})` : entry.kind;
 }
 
 /** Parse the existing return format without generating or inheriting a plan. */

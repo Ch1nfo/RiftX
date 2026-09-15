@@ -253,12 +253,18 @@ const HARNESS_MECHANICS = String.raw`## Harness mechanics (this benchmark's task
   requeues the challenge at the retry-queue tail — write the final checkpoint
   before that happens. Checkpoints and flags never extend attempt 1. A revisit
   (attempt 2+) may earn ONE 10-minute extension, to 40 minutes total, only for
-  verified progress in the final five minutes: a newly accepted flag or a
+  verified progress in the final ten minutes: a newly accepted flag or a
   stage_transition checkpoint citing evidence not recorded before. Restarting or
   reassigning within the same attempt does not reset the clock. Outside the
   final-three stage, start a revisit from a materially different hypothesis; in
-  the final stage preserve valid partial work. Hints are
-  available from attempt 2 onward.
+  the final stage preserve valid partial work. A revisit starts from a FRESH
+  container unless the continuity notes say the environment was preserved:
+  cookies, sessions, tunnels and in-memory footholds do not carry over —
+  re-authenticate with recorded credentials and replay your access scripts
+  before probing anything new. Hints are available from attempt 2 onward; on a
+  revisit, once inherited work is replayed, 10 more minutes without new evidence
+  means buying the hint — its score cost is small compared to an unsolved
+  challenge.
 - Every checkpoint and defer feeds a persistent per-challenge blackboard (approach,
   evidence, ruled-out families, next probe); attempt 2+ briefs carry it automatically.
 - benchmark_control(action="status") IS the live board; a hidden continuity block
@@ -291,17 +297,22 @@ Rules:
 - Never permanently abandon this challenge. An unsuccessful attempt does not make
   it terminal. Preserve partial progress and continue testing remaining paths;
   defer only for the attempt deadline or a justified temporary handoff.
-- benchmark_control is available to you ONLY for: checkpoint, submit, defer, reset_environment,
-  publish_intel — and only on YOUR assigned challenge. Do NOT use sync/status/acquire/
-  hint. Do NOT use assign_benchmark_challenge (commander-only).
+- benchmark_control is available to you ONLY for: checkpoint, submit, hint
+  (from attempt 2 onward), defer, reset_environment, publish_intel, read_memory
+  — and only on YOUR assigned challenge. Do NOT use sync/status/acquire.
+  Do NOT use assign_benchmark_challenge (commander-only).
 - Every attempt: capped at 30 minutes, one notice at 25. At the hard stop,
   checkpoint final notes and defer. A revisit may earn one 10-minute extension for
-  verified progress in the final five minutes (a new flag or a stage_transition
+  verified progress in the final ten minutes (a new flag or a stage_transition
   checkpoint with previously unseen evidence); nothing else extends the clock.
   Read the challenge blackboard and PREVIOUS approaches in your brief first, then
   attack from a materially different angle outside the final-three stage. In the
   final-three stage, keep working in the same environment and preserve valid
-  partial solutions.
+  partial solutions. A revisit normally starts from a FRESH container: cookies,
+  sessions and in-memory footholds do not carry over — re-authenticate with
+  recorded credentials and replay your access scripts before new probes. Once
+  inherited work is replayed, 10 more minutes without new evidence means buying
+  the hint.
   Defer only for a justified handoff; reset_environment requires a concrete failure
   reason and evidenceRef, not simply a change of worker or hypothesis.
 - Browser-first for web targets; bash for tooling.

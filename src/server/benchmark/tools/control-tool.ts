@@ -42,6 +42,9 @@ function recoveryText(challenge: ChallengeState, endgame: boolean): string {
   const attempts = challenge.approachHistory.slice(-4);
   const lines = [
     JSON.stringify(benchmarkMemoryLocator(challenge.uniqueCode)),
+    challenge.attemptCount > 1
+      ? "Work scripts are inherited files only: assume unverified until replayed successfully against this fresh container; record a successful replay as evidence before relying on it."
+      : "",
     previousCandidate ? JSON.stringify({ previousCandidate }) : "",
     challenge.lastMeaningfulSignalContent
       ? `Previous meaningful signal: ${challenge.lastMeaningfulSignalContent}`
@@ -52,7 +55,7 @@ function recoveryText(challenge: ChallengeState, endgame: boolean): string {
     attempts.length ? JSON.stringify({ pastAttempts: attempts.map((attempt) => handoffAttempt(attempt, supportedRuleOuts)) }) : "",
     supportedRuleOuts.length ? `Recorded exclusions (check their evidence): ${supportedRuleOuts.join(", ")}` : "",
     challenge.blackboard.length ? `Blackboard: ${selectBlackboard(challenge, 8).map((entry) => `[${blackboardLabel(entry)}] ${entry.summary}${entry.evidenceRef ? ` [${entry.evidenceRef}]` : ""}`).join(" | ")}` : "",
-    challenge.attemptCount > 1 ? `This revisit runs under the same 30-minute deadline (one extension possible only for verified progress in its final five minutes). ${endgame ? BENCHMARK_ENDGAME_GUIDANCE : BENCHMARK_HANDOFF_GUIDANCE}` : ""
+    challenge.attemptCount > 1 ? `This revisit runs under the same 30-minute deadline (one extension possible only for verified progress in its final ten minutes). ${endgame ? BENCHMARK_ENDGAME_GUIDANCE : BENCHMARK_HANDOFF_GUIDANCE}` : ""
   ].filter(Boolean);
   return lines.length ? `\nRecovery notes (do not repeat these attempts):\n${lines.join("\n")}` : "";
 }
@@ -83,7 +86,7 @@ export function createBenchmarkControlTool(
   const tool: ToolDefinition = {
     name: "benchmark_control",
     label: "Benchmark control",
-    description: "Interface to the TSec benchmark platform and challenge blackboard. Coverage is low-score-first; every attempt is capped at 30 minutes (one notice at 25, checkpoint and submit stay available at the stop, then the environment is released and the challenge requeues at the tail). A revisit can earn one 10-minute extension only for verified progress in its final five minutes (a newly accepted flag or a stage_transition checkpoint with previously unseen evidence). Unfinished challenges must remain eligible for continued solving until the platform ends the run or the operator stops it; permanent abandonment is not supported. Actions: sync, status, read_memory, acquire, checkpoint, submit, hint (attempt 2+), defer (requeues the challenge and preserves available environments in the final-three revisit stage), reset_environment (requires reason and evidenceRef; closes and releases the target for a fresh acquire/assignment), publish_intel.",
+    description: "Interface to the TSec benchmark platform and challenge blackboard. Coverage is low-score-first; every attempt is capped at 30 minutes (one notice at 25, checkpoint and submit stay available at the stop, then the environment is released and the challenge requeues at the tail). A revisit can earn one 10-minute extension only for verified progress in its final ten minutes (a newly accepted flag or a stage_transition checkpoint with previously unseen evidence). Unfinished challenges must remain eligible for continued solving until the platform ends the run or the operator stops it; permanent abandonment is not supported. Actions: sync, status, read_memory, acquire, checkpoint, submit, hint (attempt 2+), defer (requeues the challenge and preserves available environments in the final-three revisit stage), reset_environment (requires reason and evidenceRef; closes and releases the target for a fresh acquire/assignment), publish_intel.",
     promptSnippet: "benchmark_control(action, uniqueCode?, flag?, signal?, signalKind?, evidenceRef?, triedFamilies?, ruledOutFamilies?, currentApproach?, nextProbe?, reason?)",
     parameters: Type.Object({
       action: Type.Union([
@@ -123,10 +126,10 @@ export function createBenchmarkControlTool(
       const signal = params.signal;
       const cursor = params.cursor;
       const owner = getOwner();
-      // Child sessions: only checkpoint/submit/defer/reset/publish are allowed, and
+      // Child sessions: only challenge-scoped actions are allowed, and
       // uniqueCode is locked to the assigned challenge (no cross-challenge access).
       if (assignedChallenge) {
-        const allowed = new Set(["checkpoint", "submit", "defer", "reset_environment", "publish_intel", "read_memory"]);
+        const allowed = new Set(["checkpoint", "submit", "hint", "defer", "reset_environment", "publish_intel", "read_memory"]);
         if (!allowed.has(action)) {
           return { content: [{ type: "text" as const, text: `benchmark_control(action="${action}") is not available to SubAgents. Allowed: ${[...allowed].join(", ")}.` }], details: { restricted: true } };
         }
@@ -244,7 +247,7 @@ export function createBenchmarkControlTool(
               browser.grantScope(normalized, true);
             }
             return {
-              content: [{ type: "text" as const, text: `Acquired ${challenge.uniqueCode} (${challenge.difficulty}, ${challenge.totalScore}pts, ${challenge.flagCount} flags; attempt ${challenge.attemptCount}).\nContainer: ${startResult.container_addr.join(", ")}${reuseLiveContainer ? " (reused existing environment)" : ""}\nDescription: ${challenge.description}${recoveryText(challenge, ledger.isEndgame())}\n${challenge.attemptCount === 1 ? "This first-attempt clock is silent: one warning at 25 minutes, hard stop at 30 minutes." : ledger.isEndgame() ? BENCHMARK_ENDGAME_GUIDANCE : "This revisit runs under the same 30-minute deadline (one extension possible only for verified progress in its final five minutes). If truly exhausted, checkpoint and defer it for the end."}` }],
+              content: [{ type: "text" as const, text: `Acquired ${challenge.uniqueCode} (${challenge.difficulty}, ${challenge.totalScore}pts, ${challenge.flagCount} flags; attempt ${challenge.attemptCount}).\nContainer: ${startResult.container_addr.join(", ")}${reuseLiveContainer ? " (reused existing environment)" : ""}${challenge.attemptCount > 1 && !reuseLiveContainer ? " (fresh instance: cookies, sessions, tunnels and in-memory footholds from previous attempts do not exist; blackboard knowledge, static credentials, artifacts and scripts in work/ remain valid)" : ""}\nDescription: ${challenge.description}${recoveryText(challenge, ledger.isEndgame())}\n${challenge.attemptCount === 1 ? "This first-attempt clock is silent: one warning at 25 minutes, hard stop at 30 minutes." : ledger.isEndgame() ? BENCHMARK_ENDGAME_GUIDANCE : "This revisit runs under the same 30-minute deadline (one extension possible only for verified progress in its final ten minutes). Replay your recorded access recipe before probing anything new; if truly exhausted, checkpoint and defer it for the end."}` }],
               details: { uniqueCode: challenge.uniqueCode, containerAddrs: startResult.container_addr, schedule: scheduleSnapshot(ledger, challenge) }
             };
           }

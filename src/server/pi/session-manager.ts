@@ -936,7 +936,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
         const deadline = benchmarkLedger.budgetFor(challenge.uniqueCode)?.deadlineAt;
         await result.session.sendCustomMessage({
           customType: "riftx_benchmark_attempt_warning",
-          content: `Attempt ${challenge.attemptCount} for ${challenge.uniqueCode} has reached 25 minutes. Save a checkpoint now with confirmed progress, durable evidence references, tried approaches, evidence-backed exclusions, and a different candidate nextProbe requiring revalidation. The framework will stop this attempt at ${deadline ? new Date(deadline).toISOString() : "its deadline"} and release its environment.`,
+          content: `Attempt ${challenge.attemptCount} for ${challenge.uniqueCode} has reached 25 minutes. Save a checkpoint now with confirmed progress, durable evidence references, tried approaches, evidence-backed exclusions, and a different candidate nextProbe requiring revalidation. Checkpoint un-recorded credentials and write the access recipe (exact re-auth steps) to work/; if auth is stateless-signed, also cookies_export to work/ for the next attempt. The framework will stop this attempt at ${deadline ? new Date(deadline).toISOString() : "its deadline"} and release its environment.`,
           display: false
         }, { deliverAs: "steer", triggerTurn: false });
       },

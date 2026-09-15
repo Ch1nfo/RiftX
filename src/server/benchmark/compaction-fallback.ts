@@ -113,6 +113,7 @@ export function buildBenchmarkCompactionFallback(source: BenchmarkFallbackSource
     attemptNumber: attempt.attemptNumber, phase: attempt.phase, worker: clean(attempt.worker),
     startedAt: attempt.startedAt, endedAt: attempt.endedAt,
     flagsBefore: attempt.flagsBefore, flagsAfter: attempt.flagsAfter, flagsDelta: attempt.flagsAfter - attempt.flagsBefore,
+    terminationSource: attempt.terminationSource ?? "solver",
     tried: attempt.triedFamilies.slice(-6).map((value) => clip(value, 100)),
     ruledOut: attempt.ruledOutFamilies.filter((value) => supportedRuleOuts.includes(value)).slice(-6).map((value) => clip(value, 100)),
     stopReason: clip(attempt.stopReason, 500)

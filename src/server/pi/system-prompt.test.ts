@@ -97,9 +97,10 @@ test("child prompt carries the commander return format, playbook, and tool restr
   assert.match(prompt, /RULED_OUT: approaches tried and why they failed/);
   assert.match(prompt, /UNCERTAINTIES: unresolved questions and limits of the evidence; no proposed next steps/);
   assert.match(prompt, /benchmark_control\(action="submit",\n  flag="\.\.\."\) — that is the submission method/);
-  assert.match(prompt, /ONLY for: checkpoint, submit, defer, reset_environment,\n  publish_intel/);
+  // Matches the control tool's SubAgent allowlist exactly (hint and read_memory included).
+  assert.match(prompt, /ONLY for: checkpoint, submit, hint\n  \(from attempt 2 onward\), defer, reset_environment, publish_intel, read_memory/);
   assert.match(prompt, /Never permanently abandon this challenge/);
-  assert.match(prompt, /Do NOT use sync\/status\/acquire\/\n  hint/);
+  assert.match(prompt, /Do NOT use sync\/status\/acquire\./);
   assert.match(prompt, /Do NOT use assign_benchmark_challenge \(commander-only\)/);
   assert.match(prompt, /# PLAYBOOK BY CATEGORY/);
   assert.match(prompt, /steghide \(bruteforce passphrase with the bundled/);

@@ -81,6 +81,7 @@ test("handoff separates supported exclusions, attempt results and unverified can
   assert.deepEqual(result.triedFamilies, ["tried_fixture"]);
   assert.deepEqual(result.ruledOutFamilies, ["supported_fixture"]);
   assert.equal(result.stopReason, "fixture_no_further_progress");
+  assert.equal(result.terminationSource, "solver");
   assert.equal(result.previousCandidate?.requiresRevalidation, true);
   assert.equal(result.previousCandidate?.nextProbe, "fixture_different_hypothesis");
 });
