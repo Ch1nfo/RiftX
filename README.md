@@ -33,7 +33,7 @@ Web security validation is often split across terminals, browsers, proxies, note
 - **Parallel multi-agent work** - Delegate independent tasks to background subagents and consolidate the result after all required work completes.
 - **Browser-native validation** - Operate a real page and inspect DOM snapshots, network traffic, console output, cookies, storage, and screenshots.
 - **Evidence-backed findings** - Link findings to tool calls, browser requests, quotes, and screenshots with impact, confidence, and reproduction notes.
-- **Long-run continuity** - Reconcile missed streamed messages, compact context during active work, and rebuild a bounded investigation capsule from persisted findings, subagents, and artifacts.
+- **Long-run continuity** - Reconcile missed streamed messages, compact context during active work with a bounded recent-history budget, and rebuild a calibrated investigation capsule from persisted findings, subagents, and artifacts.
 - **Local first** - No database or RiftX cloud account. Configuration, sessions, Skills, evidence, and generated artifacts stay in the current user's home directory.
 - **Flexible model access** - Connect OpenAI, Anthropic, Google, and compatible endpoints, with per-session model switching.
 
@@ -47,21 +47,29 @@ Web security validation is often split across terminals, browsers, proxies, note
 
 ## Benchmark Performance
 
+### Tsecbench v1
+
+RiftX scored **93.47/100**, ranking **5th** on the Tsecbench v1 leaderboard. The run used the `deepseek-flash` model profile.
+
+![RiftX Tsecbench v1 result](docs/images/riftx-tsecbench-v1.png)
+
+> Leaderboard result: `93.47` composite score, rank `5`.
+
 ### CyBench
 
 RiftX completed the CyBench test set with a perfect completion rate across all 40 validation tasks.
 
 ![RiftX CyBench result](docs/images/riftx-cybench.jpg)
 
-> Example run: `20800` total points, `100` composite score, `100%` completion rate, and `40/40` completed items.
+> `20800` total points, `100` composite score, `100%` completion rate, and `40/40` completed items.
 
 ### XBOW Validation Benchmarks
 
-The current RiftX version was rerun on TSECBENCH's XBOW Validation Benchmarks. The screenshot below shows the Agent's updated overall performance on the security validation tasks.
+RiftX was also evaluated on TSECBENCH's XBOW Validation Benchmarks.
 
 ![RiftX TSECBENCH benchmark result](docs/images/riftx-benchmark.jpg)
 
-> Current-version run: `27440` total points, `96.96` composite score, `97.1%` completion rate, and `101/104` completed items.
+>  `27440` total points, `96.96` composite score, `97.1%` completion rate, and `101/104` completed items.
 
 ## Features
 
@@ -70,7 +78,7 @@ The current RiftX version was rerun on TSECBENCH's XBOW Validation Benchmarks. T
 - **Streaming sessions** - Render text, thinking, tool calls, errors, and task state as they happen. Terminal events reconcile against the persisted transcript so replies missed during an SSE gap appear without switching sessions.
 - **Continuous guidance** - Send follow-up instructions while the Agent is running. The conversation follows new output while still allowing manual history review.
 - **Session management** - Scope sessions to a working directory, keep unsent drafts isolated per session, show live running indicators, and promote the most recently active running session to the top. Sessions also support AI-generated titles, switching, archiving, restoring archived sessions, and permanent deletion.
-- **Context management** - Show input, output, cache, and remaining tokens. Near the limit, RiftX can compact between tool turns without abandoning the active run, then rebuild a hidden, bounded investigation capsule from persisted findings, SubAgent state, and local output artifacts.
+- **Context management** - Show input, output, cache, and remaining tokens. Near the limit, RiftX compacts between tool turns without abandoning the active run, persists the compaction budget for restart-safe estimates, backs off after failed compaction requests, and rebuilds a hidden, bounded investigation capsule from persisted findings, SubAgent state, and local output artifacts.
 - **Images and attachments** - Attach up to four images (8 MB each) and five supported text/code files (2 MB each, 4 MB total), paste screenshots directly with `Ctrl/Cmd + V`, preview or remove pending items, and keep them isolated per session. Unsupported image models fail explicitly, failed sends restore their attachments for retry, and message snapshots use hash-referenced local image URLs instead of retransmitting base64 data.
 - **Result-first completion** - The Agent presents the result when work ends and offers report generation as an optional next step instead of spending time and tokens on a report for every task.
 - **Model switching** - Change the selected session's model from the composer without affecting other foreground or background sessions.

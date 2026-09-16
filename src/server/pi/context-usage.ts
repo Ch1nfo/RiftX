@@ -18,15 +18,20 @@ export function estimateMessagesContextUsage(messages: readonly unknown[], conte
 }
 
 export function estimateCompactedUsage(session: AgentSession, contextWindow: number): ContextUsage {
-  const raw = estimateMessagesContextUsage(session.messages, contextWindow).tokens + estimateStaticContextTokens(session);
+  const messageTokens = estimateMessagesContextUsage(session.messages, contextWindow).tokens;
+  const staticTokens = estimateStaticContextTokens(session);
   const ratio = contextTokenRatio(session);
   const saved = savedContextBudget(session);
+  // Persisted fixedTokens represents the static prompt/tool baseline used by
+  // file based snapshots. Prefer the larger of the live estimate and persisted
+  // value to avoid double counting static context after compaction.
+  const fixedTokens = Math.max(staticTokens * ratio, Number.isFinite(saved?.fixedTokens) ? Math.max(0, saved!.fixedTokens!) : 0);
   const currentContinuity = estimateMessagesContextUsage(session.messages.filter(isContinuityMessage), 0).tokens * ratio;
   // compaction_end fires before the async continuity restore. Include its
   // already-budgeted packet during that gap instead of displaying a low value.
   const pendingContinuity = saved?.modelKey === contextModelKey(session) && Number.isFinite(saved.continuityTokens)
     ? Math.max(0, saved.continuityTokens! - currentContinuity) : 0;
-  return usageEstimate(Math.ceil(raw * ratio + pendingContinuity), contextWindow);
+  return usageEstimate(Math.ceil(messageTokens * ratio + fixedTokens + pendingContinuity), contextWindow);
 }
 
 function estimateMessageTokens(message: unknown) {
@@ -97,7 +102,7 @@ function savedContextBudget(session: AgentSession) {
   const entries = session.sessionManager?.getBranch?.() ?? [];
   const entry = [...entries].reverse().find((entry) => entry.type === "compaction");
   const details = (entry?.type === "compaction" ? entry.details : undefined) as {
-    riftx?: { budget?: { modelKey?: string; tokenRatio?: number; continuityTokens?: number } }
+    riftx?: { budget?: { modelKey?: string; tokenRatio?: number; fixedTokens?: number; continuityTokens?: number } }
   } | undefined;
   return details?.riftx?.budget;
 }

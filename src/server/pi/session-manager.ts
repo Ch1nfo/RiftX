@@ -145,11 +145,20 @@ async function createRuntimeSession(options: CreateRuntimeSessionOptions) {
 
 async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config: AppConfig, mcpEntries: McpServerEntry[]) {
   const { profile, cwd, gate, child = false, sessionManagerOverride, mutationLock = new MutationLock(), bashConcurrencyOverride, runtimeDeps, findingSource = { source: "main" } } = options;
-  const paths = getAppPaths();
-  await mkdir(paths.agent, { recursive: true, mode: 0o700 });
-  const authStorage = AuthStorage.create(join(paths.agent, "auth.json"));
-  const modelRegistry = ModelRegistry.create(authStorage, join(paths.agent, "models.json"));
+  // Track allocations so construction failures can unwind partially-created
+  // runtime resources before rethrowing the original error.
+  let browser!: BrowserManager;
+  let subagents: SubagentManager | undefined;
+  let createdSession: AgentSession | undefined;
+  let runtimeUnsubscribe: (() => void) | undefined;
+  let authStorage!: AuthStorage;
+  let modelRegistry!: ModelRegistry;
   const providerRegistrations: ProviderRegistrations = new Map();
+  const paths = getAppPaths();
+  try {
+  await mkdir(paths.agent, { recursive: true, mode: 0o700 });
+  authStorage = AuthStorage.create(join(paths.agent, "auth.json"));
+  modelRegistry = ModelRegistry.create(authStorage, join(paths.agent, "models.json"));
   const model = registerTrackedProfile(providerRegistrations, authStorage, modelRegistry, profile, true);
 
   const bashConcurrency = bashConcurrencyOverride ?? new BashConcurrency(config.maxConcurrentSubagents + 1);
@@ -195,7 +204,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   const evidenceSessionId = runtimeDeps?.evidenceSessionId ?? sessionManager.getSessionId();
   const outputStore = createToolOutputStore(paths.artifacts, evidenceSessionId, child ? findingSource.subagentId : undefined);
   const mcpTools = mcpEntries.flatMap((entry) => buildMcpTools(entry, { audience: child ? "child" : "main", outputStore }));
-  const browser = new BrowserManager({ evidenceRoot: paths.evidence, evidenceSessionId, scope: { rules: config.browserScope }, ignoreTlsErrors: config.browserIgnoreTlsErrors });
+  browser = new BrowserManager({ evidenceRoot: paths.evidence, evidenceSessionId, scope: { rules: config.browserScope }, ignoreTlsErrors: config.browserIgnoreTlsErrors });
   const permission = createPermissionExtension(
     gate,
     (event) => emitRuntimeEvent(event as RiftxEvent),
@@ -218,7 +227,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     });
     return generateSessionTitle(titleModelRegistry, titleModel, task, "empty");
   } : undefined;
-  const subagents = !child ? new SubagentManager(sessionManager.getSessionId(), paths.subagents, (event) => emitter.emit("event", event), config.maxConcurrentSubagents, config.approvalMode, subagentNameGenerator) : undefined;
+  subagents = !child ? new SubagentManager(sessionManager.getSessionId(), paths.subagents, (event) => emitter.emit("event", event), config.maxConcurrentSubagents, config.approvalMode, subagentNameGenerator) : undefined;
   const getChildProfile = () => config.childInherit ? (record?.profile ?? profile) : childProfile;
   // Same forward-closure pattern as `record`: the finding tool reads this
   // lazily, after the session below has been created.
@@ -275,6 +284,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     sessionManager,
     settingsManager
   });
+  createdSession = result.session;
   evidenceSession = result.session;
   const skills = resourceLoader.getSkills().skills as SkillDescriptor[];
   const getContinuityContext = async (): Promise<ContinuityContext> => {
@@ -440,6 +450,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     if (usage) emitter.emit("event", { type: "usage", usage: normalizeContextUsage(usage, record.profile.contextWindow) });
   });
   record.unsubscribe = unsubscribe;
+  runtimeUnsubscribe = unsubscribe;
   if (subagents) {
     subagents.setCompletionHandler((task, childResult) => {
       void deliverSubagentCompletion(record, task, childResult.summary)
@@ -470,6 +481,31 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     console.warn("RiftX could not restore continuity context:", error);
   });
   return record;
+  } catch (error) {
+    // Cleanup is best-effort and must never hide the original construction
+    // failure. This covers failures during SDK creation, extension setup,
+    // subagent initialization, or continuity restoration.
+    try { runtimeUnsubscribe?.(); } catch { /* ignore cleanup failure */ }
+    try { gate.rejectAll(); } catch { /* ignore cleanup failure */ }
+    try { createdSession?.abortBash(); } catch { /* ignore cleanup failure */ }
+    try { createdSession?.abortCompaction(); } catch { /* ignore cleanup failure */ }
+    try { await createdSession?.abort(); } catch { /* ignore cleanup failure */ }
+    try { await subagents?.abortAll(); } catch { /* ignore cleanup failure */ }
+    try { await browser?.shutdown(); } catch { /* ignore cleanup failure */ }
+    try { createdSession?.dispose(); } catch { /* ignore cleanup failure */ }
+    try {
+      // Include the profile provider even when registration threw before the
+      // tracking map was updated (registerProfileModel mutates the registry
+      // before returning its model).
+      const providers = [...new Set([...providerRegistrations.keys(), profile.provider])];
+      providerRegistrations.clear();
+      for (const provider of providers) {
+        try { authStorage.removeRuntimeApiKey(provider); } catch { /* ignore cleanup failure */ }
+        try { modelRegistry.unregisterProvider(provider); } catch { /* ignore cleanup failure */ }
+      }
+    } catch { /* ignore cleanup failure */ }
+    throw error;
+  }
 }
 
 async function runChildSession(profile: ModelProfile, cwd: string, mutationLock: MutationLock, bashConcurrency: BashConcurrency, context: SubagentRunnerContext, runtimeDeps: RuntimeDeps) {
@@ -480,23 +516,29 @@ async function runChildSession(profile: ModelProfile, cwd: string, mutationLock:
   const child = await createRuntimeSession({ profile, cwd, gate: context.gate, child: true, sessionManagerOverride: childSessionManager, mutationLock, bashConcurrencyOverride: bashConcurrency, runtimeDeps, findingSource: { source: "subagent", subagentId: context.task.id } });
   context.task.model = `${profile.provider}/${profile.model}`;
   context.updateTaskMeta({ model: context.task.model, threadId: child.id });
+  let childAbortIssued = false;
   const abortChild = () => {
+    if (childAbortIssued) return;
+    childAbortIssued = true;
     child.gate.rejectAll();
     child.session.abortBash();
     void child.browser?.shutdown();
     void child.session.abort().catch(() => undefined);
   };
-  if (context.signal.aborted) {
-    abortChild();
-    throw new Error("Subagent task was cancelled before the child session started.");
-  }
-  else context.signal.addEventListener("abort", abortChild, { once: true });
   const unsubscribe = (() => {
     const listener = (event: RiftxEvent) => context.emit(event);
     child.emitter.on("event", listener);
     return () => child.emitter.off("event", listener);
   })();
   try {
+    // Install the cancellation listener before checking the signal and keep
+    // the check inside the guarded try/finally. A cancellation racing child
+    // creation must still run shutdownSessionRecord below.
+    context.signal.addEventListener("abort", abortChild, { once: true });
+    if (context.signal.aborted) {
+      abortChild();
+      throw new Error("Subagent task was cancelled before the child session started.");
+    }
     // Match and inline the relevant skill for the delegated task, mirroring the
     // main session's prompt preparation, so children inherit domain guidance.
     const prepared = await prepareSkillPrompt(context.task.task, child.skills, child.loadedSkills);
@@ -540,7 +582,8 @@ async function runChildSession(profile: ModelProfile, cwd: string, mutationLock:
   } finally {
     unsubscribe();
     context.signal.removeEventListener("abort", abortChild);
-    if (context.signal.aborted) await child.session.abort().catch(() => undefined);
+    // shutdownSessionRecord performs the final abort/close sequence. Avoid a
+    // second direct abort here when the cancellation listener already fired.
     await shutdownSessionRecord(child);
   }
 }

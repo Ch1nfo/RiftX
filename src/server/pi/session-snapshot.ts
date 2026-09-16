@@ -69,7 +69,7 @@ export async function sessionSnapshotFromFile(path: string, profiles: ModelProfi
     let usage: ContextUsage | undefined;
     const entries: SessionEntry[] = [];
     let compacted = false;
-    let budget: { fixedTokens?: number; tokenRatio?: number } | undefined;
+    let budget: { modelKey?: string; fixedTokens?: number; tokenRatio?: number } | undefined;
     let hasPostCompactionUsage = false;
     for (const line of lines) {
       let entry: Record<string, unknown>;
@@ -109,8 +109,10 @@ export async function sessionSnapshotFromFile(path: string, profiles: ModelProfi
       // Reconstruct the kept prefix as well as messages after the compaction
       // entry. Counting only the new summary loses the entire retained tail.
       const messages = buildSessionContext(entries).messages.filter((message) => !budget || !isContinuityMessage(message));
-      const ratio = Number.isFinite(budget?.tokenRatio) ? Math.max(1, budget!.tokenRatio!) : 1;
-      const fixed = Number.isFinite(budget?.fixedTokens) ? Math.max(0, budget!.fixedTokens!) : 0;
+      const budgetModelKey = matchedProfile ? `${matchedProfile.provider}/${matchedProfile.model}/${matchedProfile.contextWindow}` : "";
+      const applicableBudget = budget?.modelKey && budget.modelKey !== budgetModelKey ? undefined : budget;
+      const ratio = Number.isFinite(applicableBudget?.tokenRatio) ? Math.max(1, applicableBudget!.tokenRatio!) : 1;
+      const fixed = Number.isFinite(applicableBudget?.fixedTokens) ? Math.max(0, applicableBudget!.fixedTokens!) : 0;
       usage = usageEstimate(Math.ceil(estimateMessagesContextUsage(messages, 0).tokens * ratio + fixed), contextWindow);
     }
     const snapshot = {

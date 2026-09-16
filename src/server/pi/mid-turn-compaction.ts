@@ -9,6 +9,29 @@ export { COMPACTION_KEEP_RECENT_RATIO, keepRecentTokensForContext } from "./comp
 
 const budgetInstalled = new WeakSet<object>();
 
+// Prevent a failed compaction provider from being retried on every sampling
+// turn. Failures back off exponentially and reset after a successful compaction.
+type CompactionFailureState = { failures: number; blockedUntil: number };
+const compactionFailures = new WeakMap<object, CompactionFailureState>();
+const COMPACTION_BACKOFF_BASE_MS = 30_000;
+const COMPACTION_BACKOFF_MAX_MS = 5 * 60_000;
+
+function compactionBlocked(session: AgentSession) {
+  const state = compactionFailures.get(session);
+  return Boolean(state && state.blockedUntil > Date.now());
+}
+
+function recordCompactionFailure(session: AgentSession) {
+  const state = compactionFailures.get(session) ?? { failures: 0, blockedUntil: 0 };
+  state.failures += 1;
+  state.blockedUntil = Date.now() + Math.min(COMPACTION_BACKOFF_MAX_MS, COMPACTION_BACKOFF_BASE_MS * 2 ** Math.min(6, state.failures - 1));
+  compactionFailures.set(session, state);
+}
+
+function recordCompactionSuccess(session: AgentSession) {
+  compactionFailures.delete(session);
+}
+
 /** Pi computes its cut point from SettingsManager, so apply the 10% ceiling at that source. */
 function installCompactionBudget(session: AgentSession) {
   const manager = session.settingsManager;
@@ -69,7 +92,7 @@ export function installMidTurnCompaction(session: AgentSession, getContinuityCon
 
   agent.transformContext = async (messages, signal) => {
     const transformed = originalTransform ? await originalTransform(messages, signal) : messages;
-    if (compacting || signal?.aborted) return transformed;
+    if (compacting || signal?.aborted || compactionBlocked(session)) return transformed;
 
     const settings = session.settingsManager.getCompactionSettings();
     const contextWindow = session.model?.contextWindow ?? 0;
@@ -88,8 +111,20 @@ export function installMidTurnCompaction(session: AgentSession, getContinuityCon
 
     compacting = true;
     try {
-      const compacted = await runMidTurnCompaction(session, signal);
-      if (compacted) {
+      let compacted = false;
+      try {
+        compacted = await runMidTurnCompaction(session, signal);
+      } catch (error) {
+        if (!signal?.aborted) {
+          recordCompactionFailure(session);
+          console.warn("RiftX mid-turn compaction failed; backing off retries:", error);
+        }
+        throw error;
+      }
+      if (!compacted) {
+        recordCompactionFailure(session);
+      } else {
+        recordCompactionSuccess(session);
         replaceAgentMessages(session, messages, session.agent.state.messages);
         if (getContinuityContext) {
           try {
