@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { AgentSession, SessionManager, type CompactionResult, type ExtensionAPI, type ModelRegistry, type SessionBeforeCompactEvent } from "@mariozechner/pi-coding-agent";
+import { AgentSession, SessionManager, type AgentSessionEvent, type CompactionResult, type ExtensionAPI, type ModelRegistry, type SessionBeforeCompactEvent } from "@mariozechner/pi-coding-agent";
 import { createAssistantMessageEventStream, registerApiProvider, unregisterApiProviders, type Context, type Model, type SimpleStreamOptions } from "@mariozechner/pi-ai";
 import { createPentestCompactionExtension } from "./pentest-compaction";
 import { PENTEST_COMPACTION_SYSTEM_PROMPT, REQUIRED_SECTIONS } from "./compaction-prompt";
@@ -12,6 +12,8 @@ test("real SDK persists valid checkpoints and cancels failed summaries without g
   const model: Model<typeof api> = { id: "fixture", name: "fixture", api, provider: "fixture", baseUrl: "http://unused", input: ["text"], reasoning: true, contextWindow: 128_000, maxTokens: 16_384, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
   let mode: "valid" | "invalid" | "error" | "throw" = "valid";
   const warnings: string[] = [];
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
   t.mock.method(console, "warn", (message: string) => { warnings.push(message); });
   const requests: Array<{ custom: boolean; reasoning?: string }> = [];
   const fact = "request:r-start ruled out anonymous access; compare role B next.";
@@ -36,8 +38,10 @@ test("real SDK persists valid checkpoints and cancels failed summaries without g
     let handler!: (event: SessionBeforeCompactEvent) => Promise<{ compaction?: CompactionResult; cancel?: boolean } | undefined>;
     let preparedCut: string | undefined;
     const events: Array<{ type: string; result?: CompactionResult; aborted?: boolean }> = [];
+    const listeners = new Set<(event: AgentSessionEvent) => void>();
     const session = {
       model, thinkingLevel: "high", sessionManager: manager, _modelRegistry: modelRegistry,
+      get messages() { return state.messages; },
       agent: { state, hasQueuedMessages: () => false },
       settingsManager: { getCompactionSettings: () => ({ enabled: true, reserveTokens: 16_384, keepRecentTokens: 20_000 }) },
       _extensionRunner: {
@@ -51,7 +55,8 @@ test("real SDK persists valid checkpoints and cancels failed summaries without g
           return result;
         }
       },
-      _emit: (event: typeof events[number]) => { events.push(event); },
+      subscribe: (listener: (event: AgentSessionEvent) => void) => { listeners.add(listener); return () => listeners.delete(listener); },
+      _emit: (event: AgentSessionEvent) => { events.push(event); for (const listener of listeners) listener(event); },
       _runAutoCompaction: (AgentSession.prototype as unknown as { _runAutoCompaction: (reason: string, willRetry: boolean) => Promise<void> })._runAutoCompaction
     } as unknown as AgentSession;
     installMidTurnCompaction(session);
@@ -89,6 +94,12 @@ test("real SDK persists valid checkpoints and cancels failed summaries without g
       assert.equal(requests.length, callsBefore + 1, "failure must not trigger repair or generic summary requests");
       assert.deepEqual(requests.at(-1), { custom: true, reasoning: "high" });
       assert.match(warnings.at(-1)!, /compaction.*failed.*keeping the original history/);
+      const eventsBefore = events.length;
+      await runAutoCompaction(session);
+      await (session as unknown as { _runAutoCompaction: (reason: string, retry: boolean) => Promise<void> })._runAutoCompaction("overflow", true);
+      assert.equal(requests.length, callsBefore + 1, "preflight and overflow must share failure backoff");
+      assert.equal(events.length, eventsBefore, "backoff must not flash compaction start/end");
+      now += 300_001;
     }
     assert.equal(warnings.length, 3);
   } finally { unregisterApiProviders(api); }

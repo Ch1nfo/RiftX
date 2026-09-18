@@ -51,3 +51,12 @@ test("done performs a final reconciliation when the turn message was also missed
   applyRiftxEvent({ type: "done" }, ctx);
   assert.deepEqual(calls, ["flush", "reconcile"]);
 });
+
+test("compaction failure diagnostics do not mark a still-running agent as stopped", () => {
+  const { calls, ctx } = context();
+  ctx.setError = (message) => calls.push(`error:${message}`);
+  ctx.setMainAgentRunning = (running) => calls.push(`running:${running}`);
+  ctx.setContextCompacting = (compacting) => calls.push(`compacting:${compacting}`);
+  applyRiftxEvent({ type: "session_state", state: "running", reason: "threshold", error: "Checkpoint validation failed" }, ctx);
+  assert.deepEqual(calls, ["flush", "running:true", "compacting:false", "error:Checkpoint validation failed"]);
+});

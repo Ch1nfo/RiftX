@@ -53,6 +53,7 @@ import { buildTaskContract, userRequestsFromBranch } from "./task-contract";
 import { buildProgressCheckpointContext, progressCheckpointFromBranch, type ProgressCheckpoint } from "./progress-checkpoint";
 import { createProgressCheckpointTool } from "./tools/checkpoint-tool";
 import { createPentestCompactionExtension } from "./pentest-compaction";
+import { compactionEndError } from "./compaction-retry";
 import { archivedRestoreError, classifyArchivedRestore, restoredArchiveState } from "./session-archive";
 import { sessions, sessionCreation, RUNTIME_VERSION, type RuntimeDeps, type SessionRecord } from "./session-registry";
 import { createFindingTool, type FindingSourceInfo } from "./tools/finding-tool";
@@ -246,7 +247,8 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   const compactionExtension = createPentestCompactionExtension({
     getSession: () => evidenceSession,
     modelRegistry,
-    getActiveSkills: () => [...activeSkillNames]
+    getActiveSkills: () => [...activeSkillNames],
+    getContinuityContext: () => getContinuityContext()
   });
   const resourceLoader = new DefaultResourceLoader({
     cwd,
@@ -407,7 +409,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
       // also refreshes its detached sampling array inside the transform hook.
       // Serialized on the prompt chain so the continuity splice can never
       // interleave with a running SDK turn.
-      void enqueueSessionAction(record, refreshContinuity).catch((error) => {
+      if (event.result) void enqueueSessionAction(record, refreshContinuity).catch((error) => {
         console.warn("RiftX could not refresh continuity context after compaction:", error);
       });
     }
@@ -440,7 +442,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     const payload = event.type === "agent_end" && subagents?.hasActiveTasks() && !record.subagentDeliveryInProgress
       ? { type: "session_state", state: "waiting_for_subagents" }
       : event.type === "compaction_end"
-        ? { type: "session_state", state: result.session.isStreaming ? "running" : "idle", reason: event.reason }
+        ? { type: "session_state", state: result.session.isStreaming || event.willRetry ? "running" : "idle", reason: event.reason, error: compactionEndError(result.session, event) }
       : eventPayload(event);
     trackToolStatus(payload as RiftxEvent);
     emitter.emit("event", payload);

@@ -149,6 +149,7 @@ export function applyRiftxEvent(payload: RiftxEvent, ctx: SessionEventContext) {
     ctx.setMainAgentRunning(running);
     ctx.setSessionRunning(ctx.activeId, running);
     ctx.setContextCompacting(payload.state === "compacting");
+    if (typeof payload.error === "string") ctx.setError(payload.error);
     return;
   }
   if (payload.type === "done") {

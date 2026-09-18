@@ -66,6 +66,22 @@ test("a compaction without a result keeps the active run alive", async () => {
   assert.equal(activeMessages[0]?.content, "current");
 });
 
+test("failed compaction preserves the output of an existing context transform", async () => {
+  const listeners = new Set<(event: { type: string; reason?: string }) => void>();
+  const original = [{ role: "user", content: "unfiltered", timestamp: 1 }];
+  const filtered = [{ role: "user", content: "filtered", timestamp: 1 }];
+  const session = {
+    agent: { state: { messages: original }, transformContext: async () => filtered },
+    model: { contextWindow: 1000 },
+    settingsManager: { getCompactionSettings: () => ({ enabled: true, reserveTokens: 100 }) },
+    getContextUsage: () => ({ tokens: 901, percent: 90 }),
+    subscribe: (listener: (event: { type: string; reason?: string }) => void) => { listeners.add(listener); return () => listeners.delete(listener); },
+    _runAutoCompaction: async () => { for (const listener of listeners) listener({ type: "compaction_end", reason: "threshold" }); }
+  } as unknown as AgentSession;
+  installMidTurnCompaction(session);
+  assert.equal(await session.agent.transformContext!(original as never), filtered);
+});
+
 test("does not wait for the event queue below the compaction threshold", async () => {
   let continuityRefreshes = 0;
   let resolveQueue!: () => void;
