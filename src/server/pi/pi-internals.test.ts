@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { copyFile, mkdtemp, rm } from "node:fs/promises";
+import { copyFile, mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -37,6 +37,7 @@ test("a missing private SDK module warns once while every attempt still rejects"
   t.mock.method(console, "warn", (...args: unknown[]) => { warnings.push(args); });
   try {
     await copyFile(new URL("./pi-internals.ts", import.meta.url), copiedModule);
+    await symlink(new URL("./compaction-retry.ts", import.meta.url), join(directory, "compaction-retry.ts"));
     process.chdir(directory);
     const isolatedCwd = process.cwd();
     const isolated = await import(pathToFileURL(copiedModule).href) as typeof import("./pi-internals");

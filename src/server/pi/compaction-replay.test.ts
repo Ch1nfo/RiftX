@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { AgentSession, SessionManager, type CompactionResult, type ExtensionAPI, type ModelRegistry, type SessionBeforeCompactEvent } from "@mariozechner/pi-coding-agent";
+import { AgentSession, SessionManager, type AgentSessionEvent, type CompactionResult, type ExtensionAPI, type ModelRegistry, type SessionBeforeCompactEvent } from "@mariozechner/pi-coding-agent";
 import { createAssistantMessageEventStream, registerApiProvider, unregisterApiProviders, type Context, type Model, type SimpleStreamOptions } from "@mariozechner/pi-ai";
 import { createPentestCompactionExtension } from "./pentest-compaction";
 import { PENTEST_COMPACTION_SYSTEM_PROMPT } from "./compaction-prompt";
@@ -10,7 +10,9 @@ import { runAutoCompaction } from "./pi-internals";
 test("real SDK persists valid checkpoints and cancels failed summaries without generic fallback", async (t) => {
   const api = "riftx-compaction-replay";
   const model: Model<typeof api> = { id: "fixture", name: "fixture", api, provider: "fixture", baseUrl: "http://unused", input: ["text"], reasoning: true, contextWindow: 128_000, maxTokens: 16_384, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
-  let mode: "valid" | "invalid" | "error" | "throw" = "valid";
+  let mode: "valid" | "invalid" | "error" | "throw" | "length" = "valid";
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
   const warnings: string[] = [];
   t.mock.method(console, "warn", (message: string) => { warnings.push(message); });
   const requests: Array<{ custom: boolean; reasoning?: string }> = [];
@@ -23,7 +25,7 @@ test("real SDK persists valid checkpoints and cancels failed summaries without g
     const summary = [...PENTEST_COMPACTION_SYSTEM_PROMPT.matchAll(/^## .+$/gm)].map(([heading]) => `${heading}\n${fact}`).join("\n");
     const output = createAssistantMessageEventStream();
     output.end({ role: "assistant", api, provider: "fixture", model: "fixture", content: [{ type: "text", text: mode === "invalid" ? "Incomplete checkpoint" : summary }], timestamp: requests.length,
-      stopReason: failed ? "error" : "stop", errorMessage: failed ? "Synthetic provider failure" : undefined,
+      stopReason: failed ? "error" : mode === "length" ? "length" : "stop", errorMessage: failed ? "Synthetic provider failure" : undefined,
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } });
     return output;
   };
@@ -36,6 +38,7 @@ test("real SDK persists valid checkpoints and cancels failed summaries without g
     let handler!: (event: SessionBeforeCompactEvent) => Promise<{ compaction?: CompactionResult; cancel?: boolean } | undefined>;
     let preparedCut: string | undefined;
     const events: Array<{ type: string; result?: CompactionResult; aborted?: boolean }> = [];
+    const listeners = new Set<(event: AgentSessionEvent) => void>();
     const session = {
       model, thinkingLevel: "high", sessionManager: manager, _modelRegistry: modelRegistry,
       agent: { state, hasQueuedMessages: () => false },
@@ -51,7 +54,8 @@ test("real SDK persists valid checkpoints and cancels failed summaries without g
           return result;
         }
       },
-      _emit: (event: typeof events[number]) => { events.push(event); },
+      subscribe: (listener: (event: AgentSessionEvent) => void) => { listeners.add(listener); return () => listeners.delete(listener); },
+      _emit: (event: AgentSessionEvent) => { events.push(event); for (const listener of listeners) listener(event); },
       _runAutoCompaction: (AgentSession.prototype as unknown as { _runAutoCompaction: (reason: string, willRetry: boolean) => Promise<void> })._runAutoCompaction
     } as unknown as AgentSession;
     installMidTurnCompaction(session);
@@ -78,7 +82,8 @@ test("real SDK persists valid checkpoints and cancels failed summaries without g
     state.messages = manager.buildSessionContext().messages;
     const before = structuredClone(state.messages);
     const branchBefore = manager.getBranch();
-    for (const failure of ["invalid", "error", "throw"] as const) {
+    for (const failure of ["invalid", "error", "throw", "length"] as const) {
+      now += 300_000;
       mode = failure;
       const callsBefore = requests.length;
       await runAutoCompaction(session);
@@ -89,7 +94,11 @@ test("real SDK persists valid checkpoints and cancels failed summaries without g
       assert.equal(requests.length, callsBefore + 1, "failure must not trigger repair or generic summary requests");
       assert.deepEqual(requests.at(-1), { custom: true, reasoning: "high" });
       assert.match(warnings.at(-1)!, /compaction.*failed.*keeping the original history/);
+      await runAutoCompaction(session);
+      await (session as unknown as { _runAutoCompaction(reason: string, retry: boolean): Promise<void> })._runAutoCompaction("overflow", true);
+      assert.equal(requests.length, callsBefore + 1, "neither threshold nor overflow immediately retries a failed summary");
     }
-    assert.equal(warnings.length, 3);
+    assert.equal(warnings.length, 4);
+    assert.equal(listeners.size, 0);
   } finally { unregisterApiProviders(api); }
 });

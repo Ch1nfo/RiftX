@@ -1,7 +1,7 @@
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
 export { estimateCompactedUsage, estimateMessagesContextUsage } from "./context-usage";
 
-import { replaceAgentMessages, runAutoCompaction, waitForAgentEvents } from "./pi-internals";
+import { installAutoCompactionRetryPolicy, replaceAgentMessages, runAutoCompaction, waitForAgentEvents } from "./pi-internals";
 import { refreshContinuityContext, upsertContinuityContext, type ContinuityContext } from "./continuity-context";
 import { assertBenchmarkSamplingAllowed, benchmarkInputLimit, benchmarkReserveTokens, BenchmarkContextBudgetError, estimateBenchmarkInputTokens, keepRecentTokensForContext } from "./compaction-budget";
 
@@ -47,8 +47,8 @@ async function runMidTurnCompaction(session: AgentSession, signal?: AbortSignal)
     signal.addEventListener("abort", abortCompaction, { once: true });
   }
   try {
-  const started = await runAutoCompaction(session);
-  if (!started) return false;
+    const started = await runAutoCompaction(session);
+    if (!started) return false;
   } finally {
     unsubscribe();
     signal?.removeEventListener("abort", abortCompaction);
@@ -72,6 +72,7 @@ async function runMidTurnCompaction(session: AgentSession, signal?: AbortSignal)
 export function installMidTurnCompaction(session: AgentSession, getContinuityContext?: () => Promise<ContinuityContext>, options?: { samplingRefresh?: boolean }) {
   const benchmark = Boolean(options?.samplingRefresh);
   installCompactionBudget(session, benchmark);
+  installAutoCompactionRetryPolicy(session);
   const agent = session.agent;
   const originalTransform = agent.transformContext;
   let compacting = false;

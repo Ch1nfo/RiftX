@@ -70,6 +70,7 @@ import { createAssignBenchmarkChallengeTool } from "@/server/benchmark/tools/ass
 import { buildBenchmarkContinuity } from "@/server/benchmark/continuity";
 import { buildBenchmarkCompactionFallback } from "@/server/benchmark/compaction-fallback";
 import { blockBenchmarkSampling, clearBenchmarkCompactionFailure } from "./compaction-budget";
+import { clearCompactionRetry } from "./compaction-retry";
 import { installBenchmarkRepeatNotice } from "@/server/benchmark/effort";
 import { checkBenchmarkToolExecutionGuard, installBenchmarkTimeboxGate } from "@/server/benchmark/timebox";
 import { abortBenchmarkAttempt, startBenchmarkAttemptWatchdog } from "@/server/benchmark/attempt-watchdog";
@@ -1592,6 +1593,7 @@ export async function setActiveProfile(profile: ModelProfile, sessionId?: string
     // A corrected key, endpoint, or output limit may keep the same model ID.
     // Let the next request validate its budget and attempt compaction again.
     clearBenchmarkCompactionFailure(record.session);
+    clearCompactionRetry(record.session);
   }
   return switched;
 }
