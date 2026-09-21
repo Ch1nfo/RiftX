@@ -30,11 +30,11 @@ Web security validation is often split across terminals, browsers, proxies, note
 **RiftX** brings Agent conversations, controlled local tools, a Playwright browser, multi-agent collaboration, and evidence capture into one local workbench. It is designed for explicitly authorized Web testing, with an emphasis on operator control, visible execution, and reviewable conclusions. It does not replace dedicated scanners or decide the limits of an assessment for you.
 
 - **One workbench** - Follow streaming responses, reasoning, tool calls, approvals, context usage, subagents, and evidence in one interface.
-- **Parallel multi-agent work** - Delegate independent tasks to background subagents and consolidate the result after all required work completes.
+- **Shared multi-agent work** - New sessions use a persistent SQLite task board. The main Agent coordinates work while child Agents claim approved tasks, publish findings, and return results for review.
 - **Browser-native validation** - Operate a real page and inspect DOM snapshots, network traffic, console output, cookies, storage, and screenshots.
 - **Evidence-backed findings** - Link findings to tool calls, browser requests, quotes, and screenshots with impact, confidence, and reproduction notes.
 - **Long-run continuity** - Reconcile missed streamed messages, compact context during active work with a bounded recent-history budget, and rebuild a calibrated investigation capsule from persisted findings, subagents, and artifacts.
-- **Local first** - No database or RiftX cloud account. Configuration, sessions, Skills, evidence, and generated artifacts stay in the current user's home directory.
+- **Local first** - No external database or RiftX cloud account is required. Configuration, sessions, the embedded collaboration board, evidence, and generated artifacts stay in the current user's home directory.
 - **Flexible model access** - Connect OpenAI, Anthropic, Google, and compatible endpoints, with per-session model switching.
 
 ## Interface Preview
@@ -86,14 +86,25 @@ RiftX was also evaluated on TSECBENCH's XBOW Validation Benchmarks.
 
 ### Multi-Agent Orchestration
 
-- The main Agent can delegate independent investigation tasks to background subagents while continuing the primary line of work.
-- Each subagent has an independent thread, approval gate, and BrowserContext while sharing the parent working directory.
-- Subagents inherit the main Agent model by default or can use a separate model profile.
-- Concurrency is configurable from `1-8`; excess tasks wait in the parent-session queue.
-- Low, default, and high scheduling modes balance parallelism against token usage.
-- Incremental logs, cancellation, and retry are available; reconnecting restores task snapshots and unresolved approvals.
-- Tasks expose distinct `queued`, `running`, `completed`, `empty`, `failed`, `cancelled`, and `interrupted` states. Only a valid final summary is delivered as normal evidence to the parent Agent.
-- Subagents cannot recursively create more subagents. The runtime waits for every required child task before requesting the final answer.
+- New sessions use the shared collaboration workflow by default; existing sessions retain the legacy subagent workflow for compatibility.
+- The main Agent is the coordinator. It proposes or accepts work, manages dependencies, reviews child results, and finishes the collaboration round. It does not need to claim every task itself.
+- Child Agents keep stable identities and sessions. They claim approved work from the board, run one work item at a time, publish evidence-backed updates, and can be reused for later work.
+- Main-to-child messaging is supported. Sibling Agents share board facts, findings, artifacts, and dependency changes instead of opening direct sibling chats.
+- Tasks move through proposed, ready, running, awaiting review, and done states, with blocked, failed, cancelled, and rejected states for exceptional paths.
+- The board persists leases, attempts, execution generations, messages, notes, and ordered events in an embedded SQLite database. Commands are idempotent and stale executions cannot overwrite newer attempts.
+- The collaboration panel exposes the task board, Agent states, messages, budgets, tool activity, pause/resume, cancellation, retry, and result references.
+- Idle child resources can be released and recreated from the same transcript. Pausing, restarting, archiving, and context compaction preserve board state and pending messages; uncertain executions require explicit recovery before reuse.
+- The default limits are 32 admitted work items, 60 autonomous wakes, 256 Agent messages, and two extra retries per work item. These are collaboration-operation budgets, not token limits.
+
+### Shared Collaboration Board
+
+The collaboration panel has three views:
+
+- **Task board** shows status, owner, priority, dependencies, blocking reason, acceptance criteria, result summaries, and evidence references.
+- **Agents** shows stable main/child identities, current work, activity or sleep state, pending approvals, and per-Agent tool activity.
+- **Messages** shows directed main/child messages, delivery state, replies, and related work items.
+
+The main Agent remains the coordinator, so a task owned by `Agent 1` does not mean the main Agent is missing. A child claims the task and submits it for main-Agent review; the task is not complete until it is accepted. The old standalone subagent card is shown only for legacy sessions; shared sessions use these three board views as the single source of truth.
 
 ### Tool Concurrency and Timeouts
 
@@ -203,7 +214,7 @@ The `SKILL.md` frontmatter must contain a lowercase `name` matching its director
 |                     RiftX Server Runtime                     |
 | Session Manager - Approval Gate - Context + Capsule          |
 |        |                 |                  |                |
-|        +-- Main Agent    +-- Local Tools    +-- JSONL Store  |
+|        +-- Main Agent    +-- Local Tools    +-- JSONL + SQLite Board |
 |        +-- Subagents     +-- Browser Scope  +-- Evidence     |
 |        +-- Skills        +-- MCP Call Guard +-- Artifacts    |
 +-----------------------------+--------------------------------+
@@ -214,7 +225,7 @@ The `SKILL.md` frontmatter must contain a lowercase `name` matching its director
 +--------------------------------------------------------------+
 ```
 
-RiftX is a local, single-process Web application. The React workbench uses Next.js Route Handlers to call the Agent runtime, SSE continuously delivers session events to the UI, and runtime state is stored under `~/.riftx/` without a database or remote control plane.
+RiftX is a local, single-process Web application. The React workbench uses Next.js Route Handlers to call the Agent runtime, SSE continuously delivers session and collaboration events to the UI, and runtime state is stored under `~/.riftx/`. Collaboration sessions use an embedded SQLite database; no external database or remote control plane is required.
 
 ## Technology Stack
 
@@ -227,19 +238,18 @@ RiftX is a local, single-process Web application. The React workbench uses Next.
 | UI foundation | Radix Select, Phosphor Icons | Accessible controls and icons |
 | Content | react-markdown, remark-gfm | Agent Markdown output |
 | Validation | TypeBox, Zod | Tool and runtime schema validation |
-| Persistence | Node.js filesystem, JSON/JSONL | Local configuration, sessions, tasks, and evidence |
+| Persistence | Node.js filesystem, JSON/JSONL, SQLite | Local configuration, sessions, collaboration state, tasks, and evidence |
 | Tests | Node.js Test Runner, tsx | TypeScript unit and regression tests |
 
 ## Requirements
 
-- Node.js `20.18.1` or newer; Node.js 22 LTS is recommended.
-- Node.js 24.19+ is currently unsupported because of an upstream native-addon cleanup regression; use Node.js 22 LTS, Node.js 20.18.1+, or Node.js 24.18.1.
+- Node.js `20.18.1` or newer; Node.js 22 LTS is recommended. Node.js 24.19+ is currently unsupported because of an upstream native-addon cleanup regression; Node.js 24.18.1 and earlier are supported.
 - npm 10 or the npm version bundled with the chosen Node.js release.
 - Git 2.x or newer, required for GitHub installation.
 - A model API endpoint and API key.
 - Playwright Chromium, downloaded automatically during installation.
 
-RiftX does not require Conda, Python, a database, or a remote RiftX account. On Linux, Playwright system packages may need to be installed once if Chromium reports missing libraries.
+RiftX does not require Conda, Python, an external database, or a remote RiftX account. On Linux, Playwright system packages may need to be installed once if Chromium reports missing libraries.
 
 ## Installation and Launch
 
@@ -253,6 +263,8 @@ npm_config_prefix="$HOME/.local" npm link --ignore-scripts
 export PATH="$HOME/.local/bin:$PATH"
 rx webui
 ```
+
+`npm install` runs the repository's build and Playwright installation hooks. The `npm link` step only installs the `rx` command; it does not run package scripts a second time.
 
 ### Windows PowerShell
 
@@ -298,7 +310,8 @@ All RiftX runtime data is stored under `~/.riftx/` by default:
 | `~/.riftx/config.json` | Model profiles, approval mode, browser scope, and Agent settings |
 | `~/.riftx/sessions/` | Agent session history in JSONL format |
 | `~/.riftx/agent/` | RiftX-isolated model and authentication metadata |
-| `~/.riftx/subagents/<session-id>/` | Subagent state, logs, summaries, and thread metadata |
+| `~/.riftx/subagents/<session-id>/` | Subagent transcripts, state, logs, summaries, and thread metadata |
+| `~/.riftx/collaboration/<session-id>/` | Embedded SQLite task board and WAL files for shared sessions |
 | `~/.riftx/evidence/<session-id>/` | Findings and retained screenshots |
 | `~/.riftx/artifacts/<session-id>/` | Full text captured from long tool outputs |
 | `~/.riftx/skills/` | User-installed Agent Skills |
@@ -359,6 +372,13 @@ RiftX/
 | `GET` | `/api/sessions/:id/subagents` | Read subagent state |
 | `POST` | `/api/sessions/:id/subagents/:taskId/cancel` | Cancel a subagent |
 | `POST` | `/api/sessions/:id/subagents/:taskId/retry` | Retry a subagent |
+| `GET` | `/api/sessions/:id/collaboration` | Read the shared board snapshot and ordered events |
+| `POST` | `/api/sessions/:id/collaboration/messages` | Send a user message to the main or selected child Agent |
+| `POST` | `/api/sessions/:id/collaboration/control` | Pause, resume, or adjust collaboration budgets |
+| `POST` | `/api/sessions/:id/collaboration/tasks/:taskId/actions` | Pause, resume, cancel, or retry one work item |
+| `POST` | `/api/sessions/:id/collaboration/agents/:agentId/actions` | Pause or resume one child Agent |
+| `GET` | `/api/sessions/:id/collaboration/agents/:agentId/activity` | Read bounded tool activity for one Agent |
+| `GET` | `/api/sessions/:id/collaboration/artifact` | Read a referenced long-output artifact |
 | `PUT` | `/api/settings/approval-mode` | Update the approval mode |
 | `GET/PUT` | `/api/settings/model-profiles` | Read or save model profiles |
 | `POST` | `/api/workspace` | Change the working directory |

@@ -30,11 +30,11 @@ Web 安全验证通常散落在终端、浏览器、代理工具、笔记和多�
 **RiftX** 将 Agent 对话、受控本机工具、Playwright 浏览器、多 Agent 协作和证据记录放进一个本机工作台。它面向已经获得明确授权的 Web 测试场景，强调人工可控、过程可见和结论可复核，而不是替代专业扫描器或自动决定测试边界。
 
 - **统一工作台** — 在同一界面查看流式回复、思考过程、工具调用、审批、上下文用量、子 Agent 和证据。
-- **多 Agent 并行协作** — 主 Agent 可把独立任务交给后台子 Agent，并在全部必要任务结束后统一收敛结论。
+- **共享多 Agent 协作** — 新会话默认使用持久化 SQLite 任务板。主 Agent 负责协调，子 Agent 领取已批准任务、发布发现，并把结果交回主 Agent 验收。
 - **浏览器原生验证** — 通过 Playwright 操作真实页面，读取 DOM 快照、网络请求、控制台、Cookie、Storage 和截图。
 - **证据驱动输出** — 发现可关联工具调用、浏览器请求、摘录和截图，并记录影响、置信度与复现步骤。
 - **长任务连续性** — 对账流式传输中遗漏的消息，在任务运行期间按有界的近期历史预算压缩上下文，并从持久化发现、子 Agent 与 Artifact 重建经过校准的调查胶囊。
-- **本机优先** — 无需数据库和 RiftX 云账户；配置、会话、Skill、证据和生成的 Artifact 都保存在当前用户目录。
+- **本机优先** — 无需外部数据库或 RiftX 云账户；配置、会话、嵌入式协作任务板、证据和生成的 Artifact 都保存在当前用户目录。
 - **开放模型接入** — 支持 OpenAI、Anthropic、Google 及兼容端点，可按会话切换模型配置。
 
 ## 界面预览
@@ -86,14 +86,25 @@ RiftX 也参与了 TSECBENCH 的 XBOW Validation Benchmarks。
 
 ### 多 Agent 编排
 
-- 主 Agent 可将相互独立的调查任务委派给后台子 Agent，自己继续处理主线任务。
-- 每个子 Agent 拥有独立线程、审批门和 BrowserContext，并共享父会话的工作目录。
-- 子 Agent 默认继承主 Agent 模型，也可以使用单独的模型配置档案。
-- 最大并发数可配置为 `1–8`；超过上限的任务自动排队。
-- 调度积极性提供低、默认、高三档，用于平衡并行度与 Token 消耗。
-- 支持查看增量日志、取消与重试；重连后恢复任务快照和未处理审批。
-- 任务会明确区分 `queued`（排队）、`running`（运行中）、`completed`（完成）、`empty`（无最终结果）、`failed`（失败）、`cancelled`（取消）和 `interrupted`（中断）。只有真正有效的最终摘要才会作为正常结果交付给父 Agent。
-- 子 Agent 不能继续创建子 Agent；运行时会在最终回答前等待全部必需子任务结束。
+- 新会话默认使用共享协作流程；已有会话继续使用旧版子 Agent 流程以保持兼容。
+- 主 Agent 是协调者，负责提出或接纳任务、管理依赖、验收子 Agent 结果并结束协作轮次，不需要领取每个具体任务。
+- 子 Agent 保留稳定身份和会话，从任务板领取已批准工作，一次执行一个工作项，发布带证据的更新，并可继续领取后续工作。
+- 支持主 Agent 与子 Agent 定向通信；兄弟 Agent 通过任务板事实、Finding、Artifact 和依赖变化共享信息，不开放兄弟直接聊天。
+- 任务状态包括“待批准、可领取、运行中、待验收、已完成”，以及“已阻塞、失败、取消、拒绝”等异常状态。
+- 任务板在嵌入式 SQLite 中保存租约、执行批次、执行代次、消息、便笺和有序事件；命令具备幂等性，旧执行不能覆盖新批次。
+- 协作面板提供任务板、Agent 状态、消息、预算、工具记录、暂停/恢复、取消、重试和结果引用。
+- 空闲子 Agent 的临时资源可以释放，并从同一 Transcript 恢复；暂停、重启、归档和上下文压缩会保留任务板与待投递消息，执行状态不确定时必须明确恢复。
+- 默认限制为每轮接纳 32 个工作项、60 次自主唤醒、256 条 Agent 消息，每个工作项额外重试 2 次。这些是协作操作预算，不是 Token 上限。
+
+### 共享协作任务板
+
+协作面板包含三个视图：
+
+- **任务板**：显示状态、执行者、优先级、依赖、阻塞原因、验收条件、结果摘要和证据引用。
+- **Agent**：显示主/子 Agent 的稳定身份、当前工作、活动或休眠状态、待审批数量和工具记录。
+- **通信记录**：显示主子定向消息、投递状态、回复关系和关联工作项。
+
+主 Agent 始终是协调者，因此任务显示由 `Agent 1` 执行并不表示主 Agent 丢失。子 Agent 领取任务并提交结果，主 Agent 验收后任务才算完成。旧版独立子 Agent 卡片只在旧会话中显示；共享会话以这三个任务板视图作为唯一状态来源。
 
 ### 工具并发与超时
 
@@ -203,7 +214,7 @@ RiftX 从以下目录加载本机 Skill：
 │                     RiftX Server Runtime                     │
 │  Session Manager ─ Approval Gate ─ Context + Capsule         │
 │         │                │                  │                 │
-│         ├── Main Agent   ├── Local Tools    ├── JSONL Store  │
+│         ├── Main Agent   ├── Local Tools    ├── JSONL + SQLite Board │
 │         ├── Subagents    └── Browser Scope  └── Evidence     │
 │         ├── Skills       ├── MCP Call Guard └── Artifacts    │
 └─────────────────────────────┬────────────────────────────────┘
@@ -214,7 +225,7 @@ RiftX 从以下目录加载本机 Skill：
 └──────────────────────────────────────────────────────────────┘
 ```
 
-RiftX 采用本机单进程 Web 应用结构：React 工作台通过 Next.js Route Handler 调用 Agent 运行时，SSE 将会话事件持续推送到界面；运行状态落盘到 `~/.riftx/`，无需数据库或远程控制面。
+RiftX 采用本机单进程 Web 应用结构：React 工作台通过 Next.js Route Handler 调用 Agent 运行时，SSE 将会话和协作事件持续推送到界面；运行状态落盘到 `~/.riftx/`。共享协作会话使用嵌入式 SQLite，无需外部数据库或远程控制面。
 
 ## 技术栈
 
@@ -227,19 +238,18 @@ RiftX 采用本机单进程 Web 应用结构：React 工作台通过 Next.js Rou
 | UI 基础 | Radix Select、Phosphor Icons | 可访问控件与图标 |
 | 内容渲染 | react-markdown、remark-gfm | Agent Markdown 输出 |
 | 数据校验 | TypeBox、Zod | 工具与运行时结构校验 |
-| 持久化 | Node.js 文件系统、JSON/JSONL | 本机配置、会话、任务与证据 |
+| 持久化 | Node.js 文件系统、JSON/JSONL、SQLite | 本机配置、会话、协作状态、任务与证据 |
 | 测试 | Node.js Test Runner、tsx | TypeScript 单元与回归测试 |
 
 ## 环境要求
 
-- Node.js `20.18.1` 或更高版本，推荐 Node.js 22 LTS。
-- Node.js 24.19 及更高版本暂不支持，这是上游原生扩展清理回归导致的；请使用 Node.js 22 LTS、Node.js 20.18.1+ 或 Node.js 24.18.1。
+- Node.js `20.18.1` 或更高版本，推荐 Node.js 22 LTS。Node.js 24.19 及更高版本暂不支持，这是上游原生扩展清理回归导致的；Node.js 24.18.1 及更早版本仍受支持。
 - npm 10 或与所用 Node.js 版本配套的 npm。
 - Git 2.x 或更高版本，用于从 GitHub 安装或 clone 源码。
 - 一个可用的模型 API 端点与 API Key。
 - Playwright Chromium；安装时会自动下载。
 
-RiftX 不依赖 Conda、Python、数据库或远程 RiftX 账户。Linux 如果缺少 Chromium 系统库，需要额外安装一次 Playwright 系统依赖。
+RiftX 不依赖 Conda、Python、外部数据库或远程 RiftX 账户。Linux 如果缺少 Chromium 系统库，需要额外安装一次 Playwright 系统依赖。
 
 ## 安装与启动
 
@@ -253,6 +263,8 @@ npm_config_prefix="$HOME/.local" npm link --ignore-scripts
 export PATH="$HOME/.local/bin:$PATH"
 rx webui
 ```
+
+`npm install` 会执行仓库配置的构建和 Playwright 安装脚本。`npm link` 只负责安装 `rx` 命令，不会再次执行包脚本。
 
 ### Windows PowerShell
 
@@ -298,7 +310,8 @@ npm start
 | `~/.riftx/config.json` | 模型配置、审批模式、浏览器范围与 Agent 设置 |
 | `~/.riftx/sessions/` | Agent 会话 JSONL 历史 |
 | `~/.riftx/agent/` | RiftX 隔离的模型与认证元数据 |
-| `~/.riftx/subagents/<session-id>/` | 子 Agent 状态、日志、摘要与线程信息 |
+| `~/.riftx/subagents/<session-id>/` | 子 Agent Transcript、状态、日志、摘要与线程信息 |
+| `~/.riftx/collaboration/<session-id>/` | 共享会话的 SQLite 任务板和 WAL 文件 |
 | `~/.riftx/evidence/<session-id>/` | 发现记录与保留截图 |
 | `~/.riftx/artifacts/<session-id>/` | 长工具输出保存的完整文本 |
 | `~/.riftx/skills/` | 用户安装的 Agent Skills |
@@ -358,6 +371,13 @@ RiftX/
 | `GET` | `/api/sessions/:id/subagents` | 读取子 Agent 状态 |
 | `POST` | `/api/sessions/:id/subagents/:taskId/cancel` | 取消子 Agent |
 | `POST` | `/api/sessions/:id/subagents/:taskId/retry` | 重试子 Agent |
+| `GET` | `/api/sessions/:id/collaboration` | 读取共享任务板快照和有序事件 |
+| `POST` | `/api/sessions/:id/collaboration/messages` | 向主 Agent 或指定子 Agent 发消息 |
+| `POST` | `/api/sessions/:id/collaboration/control` | 暂停、恢复或调整协作预算 |
+| `POST` | `/api/sessions/:id/collaboration/tasks/:taskId/actions` | 暂停、恢复、取消或重试工作项 |
+| `POST` | `/api/sessions/:id/collaboration/agents/:agentId/actions` | 暂停或恢复指定子 Agent |
+| `GET` | `/api/sessions/:id/collaboration/agents/:agentId/activity` | 读取指定 Agent 的有界工具记录 |
+| `GET` | `/api/sessions/:id/collaboration/artifact` | 读取任务板引用的长输出 Artifact |
 | `PUT` | `/api/settings/approval-mode` | 更新审批模式 |
 | `GET/PUT` | `/api/settings/model-profiles` | 读取或保存模型配置 |
 | `POST` | `/api/workspace` | 切换工作目录 |
