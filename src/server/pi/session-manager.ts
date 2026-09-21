@@ -279,7 +279,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
         : skill),
       diagnostics
     }),
-    systemPrompt: child ? buildChildPentestSystemPrompt() : buildPentestSystemPrompt(config.subagentAggressiveness, config.systemPromptEnabled ? config.systemPrompt : undefined)
+    systemPrompt: child ? buildChildPentestSystemPrompt(shared) : buildPentestSystemPrompt(config.subagentAggressiveness, config.systemPromptEnabled ? config.systemPrompt : undefined, shared)
   });
   // The SDK only reloads a resource loader it creates internally. RiftX supplies
   // its own loader, so load the custom system prompt and inline extensions before

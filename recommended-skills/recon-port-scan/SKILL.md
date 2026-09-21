@@ -7,7 +7,7 @@ description: Port scanning and service identification using nmap, masscan, and r
 
 ## RiftX Workflow
 
-1. **扫描全部交给 subagent**：全端口扫描动辄数分钟——`spawn_subagent` 按下述顺序跑，主机多时按 /24 分块并行派发；主会话继续 Web 侧侦察，结果回来汇总进对话
+1. **扫描全部交给 subagent**：全端口扫描动辄数分钟——`spawn_subagent` 按下述顺序跑，主机多时按 /24 分块并行派发；主会话继续 Web 侧侦察，结果回传后（共享任务板会话需先审阅）再汇总进结论
 2. **发现的 Web 服务立刻接浏览器**：扫出的 80/443/8080/8443 端口用 `browser navigate` 打开确认形态（管理后台、API 文档、默认页）；非 Web 服务（数据库、Redis、SMB）转 bash 深入
 3. **危险暴露即 finding**：未授权的数据库/Redis/管理端口（3306/5432/6379/3389 对外、Redis 无认证等）验证后 `record_finding`，evidence 引用扫描与验证的工具调用
 4. 输出用 `-oX`（XML）+ `scripts/parse_nmap_xml.py` 转结构化结果，便于 subagent 结果汇总

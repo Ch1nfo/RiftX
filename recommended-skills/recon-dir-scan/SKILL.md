@@ -9,7 +9,7 @@ description: Directory and file enumeration using ffuf, gobuster, dirsearch, and
 
 ## RiftX Workflow
 
-1. **扫描交给 subagent**：目录扫描耗时且噪音大——`spawn_subagent` 跑 ffuf（按下面 Methodology 出词表与过滤参数），主会话继续手工探索；结果回来后汇总进对话
+1. **扫描交给 subagent**：目录扫描耗时且噪音大——`spawn_subagent` 跑 ffuf（按下面 Methodology 出词表与过滤参数），主会话继续手工探索；结果回传后（共享任务板会话需先审阅）再汇总进结论
 2. **发现物用浏览器定性**：扫出的路径（尤其 `/admin`、登录墙、403 页）用 `browser navigate` + `snapshot` 确认真实形态——403 在浏览器里可能是可绕过的路径归一化问题，登录墙本身是攻击面
 3. **敏感暴露即 finding**：扫到 `.git/`、`.env`、`*.bak` 等直接用 `browser response_body`/bash 取内容验证后 `record_finding`（confidence: confirmed，evidence 引用取回内容的工具调用）
 4. 扫描结果本身在对话中汇总即可（见 Recording Results），不要写入任何外部存储

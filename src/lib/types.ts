@@ -277,7 +277,7 @@ export const DEFAULT_PROFILE: ModelProfile = {
   id: "default",
   name: "Default model",
   provider: "openai",
-  model: "gpt-4o-mini",
+  model: "gpt-6-astra",
   baseUrl: "https://api.openai.com/v1",
   api: "openai-completions",
   transport: "auto",

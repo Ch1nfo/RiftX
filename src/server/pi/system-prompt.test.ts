@@ -36,6 +36,38 @@ test("aggressiveness changes delegation policy", () => {
   assert.match(buildPentestSystemPrompt("low"), /Delegate conservatively/);
 });
 
+test("shared board prompt teaches the coordinator loop and drops legacy subagent waits", () => {
+  const prompt = buildPentestSystemPrompt("default", undefined, true);
+  assert.match(prompt, /Task board delegation policy/);
+  assert.match(prompt, /Delegate on demand through the shared task board/);
+  assert.match(prompt, /task_manage with action=create admits structured work/);
+  assert.match(prompt, /approve submitted work only after checking its summary and evidence references/);
+  assert.match(prompt, /Answer worker questions with agent_message/);
+  assert.match(prompt, /Publish observations relevant across tracks with board_publish/);
+  assert.match(prompt, /RiftX will wake you when results, proposals, or questions need attention/);
+  assert.match(prompt, /Call board_finish only when all work is accepted, rejected, or cancelled/);
+  assert.doesNotMatch(prompt, /Subagent delegation policy/);
+  assert.doesNotMatch(prompt, /Every spawned SubAgent is mandatory/);
+  assert.doesNotMatch(prompt, /tasks\.json/);
+  assert.match(buildPentestSystemPrompt("high", undefined, true), /without optimizing for token cost/);
+  assert.match(buildPentestSystemPrompt("low", undefined, true), /Delegate conservatively through the shared task board/);
+});
+
+test("shared child prompt teaches board workflow; legacy child keeps parent-task wording", () => {
+  const shared = buildChildPentestSystemPrompt(true);
+  assert.match(shared, /Claim a ready work item with task_claim/);
+  assert.match(shared, /execution tools stay locked until your claimed work is running/);
+  assert.match(shared, /block your work with reason question:<messageId>/);
+  assert.match(shared, /Publish observations useful to other agents with board_publish/);
+  assert.match(shared, /Propose follow-up work you cannot execute yourself with task_propose/);
+  assert.match(shared, /never use task_manage or board_finish/);
+  assert.match(shared, /Always finish the delegated task with a concise plain-text final summary/);
+  assert.doesNotMatch(shared, /delegated task from the parent RiftX Agent/);
+  const legacy = buildChildPentestSystemPrompt();
+  assert.match(legacy, /delegated task from the parent RiftX Agent/);
+  assert.doesNotMatch(legacy, /task_claim/);
+});
+
 test("child prompt requires a final text summary", () => {
   const prompt = buildChildPentestSystemPrompt();
   assert.match(prompt, /Use checkpoint_progress at meaningful phase boundaries/);

@@ -6,7 +6,7 @@ export function createProgressCheckpointTool(update: (checkpoint: ProgressCheckp
   return defineTool({
     name: PROGRESS_CHECKPOINT_TOOL,
     label: "Checkpoint progress",
-    description: "Replace the compact continuity checkpoint for a long task. Use at meaningful phase boundaries, after a SubAgent batch, or before moving to a new attack direction; do not call after every probe.",
+    description: "Replace the compact continuity checkpoint for a long task. Use at meaningful phase boundaries, after a delegated batch, or before moving to a new attack direction; do not call after every probe.",
     promptSnippet: "checkpoint_progress(objective, completed, ruledOut, pending, nextProbe, criticalRefs)",
     parameters: Type.Object({
       objective: Type.String({ maxLength: 800 }),

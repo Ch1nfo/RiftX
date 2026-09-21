@@ -24,8 +24,8 @@ Choose tools actively based on the attack surface. Do not wait for the user to s
 - web_fetch: fetch research URLs (advisories, exploit write-ups, product docs) as clean text. Use it for out-of-target research pages; keep every interaction with the target itself in the browser tool.
 - crawl: as soon as a live target entry point is known, crawl it once to map the attack surface (links, forms with hidden fields, JS-bundle API routes, auth boundaries), then route the discovered endpoints into the matching specialized testing.
 - record_finding: the moment a conclusion has concrete, reviewable evidence, record it. Do not stockpile findings until the end of the session.
-- checkpoint_progress: replace the compact execution checkpoint at meaningful phase boundaries, after incorporating a SubAgent batch, or before changing attack direction. Record completed work, ruled-out paths, pending hypotheses, the exact next probe, and critical evidence references. Do not call it after every probe.
-- spawn_subagent: delegate independent reconnaissance, code-analysis, or validation tracks in parallel, following the session's subagent delegation policy.
+- checkpoint_progress: replace the compact execution checkpoint at meaningful phase boundaries, after incorporating a delegated batch, or before changing attack direction. Record completed work, ruled-out paths, pending hypotheses, the exact next probe, and critical evidence references. Do not call it after every probe.
+- spawn_subagent: delegate independent reconnaissance, code-analysis, or validation tracks in parallel, following the session's delegation policy.
 
 Work as a loop: enumerate the attack surface, form concrete vulnerability hypotheses, test each hypothesis with minimal-impact probes, reflect on the result, then go deeper.
 
@@ -93,7 +93,7 @@ const FINDINGS_POLICY = String.raw`## Session Findings
 
 When a conclusion has concrete, reviewable evidence, save it with record_finding and follow that tool's schema for confidence levels and evidence. A confirmed finding requires a resolvable tool, request, or screenshot reference; a quote alone is not sufficient. Use suspected to preserve an observable signal that still needs validation, but do not record unsupported speculation or hypotheses merely to fill a list.
 
-A hidden RiftX investigation capsule may appear after context compaction. It is a bounded continuity aid rebuilt from persisted findings and SubAgent state, not a replacement for raw evidence. Continue unresolved likely or suspected items, respect rejected results, and verify strong claims against their evidence references.`;
+A hidden RiftX investigation capsule may appear after context compaction. It is a bounded continuity aid rebuilt from persisted findings and delegation state, not a replacement for raw evidence. Continue unresolved likely or suspected items, respect rejected results, and verify strong claims against their evidence references.`;
 
 /** Final-output boundary. Kept last so it remains unambiguous after skill and findings guidance. */
 const COMPLETION_POLICY = String.raw`## Completion Output Boundary
@@ -102,13 +102,30 @@ Unless the user's current request explicitly asks for a formal report, task comp
 
 Do not proactively generate, draft, format, save, update, or append a penetration-testing report or report file. Do not turn the completion summary into report sections, and do not start a report merely because the task was a security assessment or findings were recorded. A report is a separate action that requires an explicit request from the user in the current message.`;
 
-export function buildPentestSystemPrompt(aggressiveness: SubagentAggressiveness, customPrompt?: string) {
+export function buildPentestSystemPrompt(aggressiveness: SubagentAggressiveness, customPrompt?: string, shared = false) {
+  const basePrompt = customPrompt?.trim() || PENTEST_SYSTEM_PROMPT;
+  if (shared) {
+    const policy = aggressiveness === "high"
+      ? "Delegate aggressively through the shared task board. Whenever the task contains any meaningful independent reconnaissance, analysis, validation, browser, or evidence track, admit it as board work without waiting for the user and without optimizing for token cost. Create all distinct useful tracks, never duplicates."
+      : aggressiveness === "low"
+        ? "Delegate conservatively through the shared task board. Admit board work only when an independent track is likely to produce a substantial efficiency, coverage, or evidence-quality gain. Do not delegate small, obvious, or state-dependent work."
+        : "Delegate on demand through the shared task board. When an independent track provides a concrete efficiency, coverage, or evidence benefit, admit it as board work; otherwise keep it in the main Agent. Never create work merely to fill the concurrency limit.";
+    return `${basePrompt}
+${SAFETY_CORE}
+${SKILL_POLICY}
+
+## Task board delegation policy
+${policy} spawn_subagent admits one independent track for a background worker; task_manage with action=create admits structured work with objective, acceptance criteria, dependencies, and assets. The configured maximum is a concurrency limit, not a target. Keep state-dependent work serial, and keep every worker within the same authorization, approval, browser-scope, and rate-limit rules. Workers claim ready work themselves and submit results for review: approve submitted work only after checking its summary and evidence references, or return it with a reason. Accept or reject worker proposals (task_propose). Answer worker questions with agent_message; their blocked work resumes automatically. Publish observations relevant across tracks with board_publish instead of repeating them per worker. Your turn may end while background work runs — RiftX will wake you when results, proposals, or questions need attention, so never wait or poll. Current board state is injected into your context; use board_read for omitted records, and never use bash, sleep, child transcripts, or filesystem polling to monitor workers. Call board_finish only when all work is accepted, rejected, or cancelled and no messages remain pending; never imply the task is complete while the board is unresolved.
+
+${FINDINGS_POLICY}
+
+${COMPLETION_POLICY}`;
+  }
   const policy = aggressiveness === "high"
     ? "Use the spawn_subagent tool to create SubAgents. Maximize useful delegation. Whenever the task contains any meaningful independent reconnaissance, analysis, validation, browser, or evidence track, delegate it without waiting for the user and without optimizing for token cost. Create all distinct useful tracks, never duplicates, respect scope and approvals, and let the scheduler queue work beyond the configured concurrency limit. Continue main-Agent work immediately after background delegation."
     : aggressiveness === "low"
       ? "Use the spawn_subagent tool to create SubAgents. Delegate conservatively. Use a SubAgent only when an independent task is likely to produce a substantial efficiency, coverage, or evidence-quality gain. Do not delegate small, obvious, or state-dependent work."
       : "Use the spawn_subagent tool to create SubAgents. Delegate on demand. When an independent SubAgent task provides a concrete efficiency, coverage, or evidence benefit, create it; otherwise keep the work in the main Agent. Never create tasks merely to fill the concurrency limit.";
-  const basePrompt = customPrompt?.trim() || PENTEST_SYSTEM_PROMPT;
   return `${basePrompt}
 ${SAFETY_CORE}
 ${SKILL_POLICY}
@@ -121,10 +138,11 @@ ${FINDINGS_POLICY}
 ${COMPLETION_POLICY}`;
 }
 
-export function buildChildPentestSystemPrompt() {
+export function buildChildPentestSystemPrompt(shared = false) {
+  const boardIntro = shared ? String.raw`Your work arrives from the shared task board, not from a parent message. Claim a ready work item with task_claim before other tools — execution tools stay locked until your claimed work is running. Keep task_update progress current, submit finished work with a summary and evidence references for coordinator review, and block with a clear reason when you cannot proceed. To ask the coordinator a question, send agent_message to main, then block your work with reason question:<messageId>; it resumes automatically once answered. Publish observations useful to other agents with board_publish and source references. Propose follow-up work you cannot execute yourself with task_propose; never use task_manage or board_finish — coordination belongs to the main Agent. Messages and wakes draw from a shared budget: do not send empty, duplicate, or speculative messages.` : String.raw`Complete only the delegated task from the parent RiftX Agent. Do not try to create SubAgents or request spawn_subagent. If parallel work would help, note that limitation in your result and continue locally.`;
   const basePrompt = String.raw`You are a child Web penetration testing and vulnerability validation agent operating only on explicitly authorized targets.
 
-Complete only the delegated task from the parent RiftX Agent. Do not try to create SubAgents or request spawn_subagent. If parallel work would help, note that limitation in your result and continue locally.
+${boardIntro}
 
 Keep the same authorization, approval, browser-scope, and rate-limit rules as the parent.
 
