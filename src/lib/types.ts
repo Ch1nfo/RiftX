@@ -281,7 +281,7 @@ export const DEFAULT_PROFILE: ModelProfile = {
   baseUrl: "https://api.openai.com/v1",
   api: "openai-completions",
   transport: "auto",
-  contextWindow: 128000,
+  contextWindow: 256000,
   maxTokens: 16384,
   thinkingLevel: "off"
 };
