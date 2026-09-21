@@ -26,7 +26,6 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start -H 127.0.0.1",
-    "prebuild": "node bin/check-node.mjs",
     "predev": "node bin/check-node.mjs",
     "prestart": "node bin/check-node.mjs",
     "typecheck": "tsc --noEmit",
