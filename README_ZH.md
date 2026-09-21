@@ -233,6 +233,7 @@ RiftX 采用本机单进程 Web 应用结构：React 工作台通过 Next.js Rou
 ## 环境要求
 
 - Node.js `20.18.1` 或更高版本，推荐 Node.js 22 LTS。
+- Node.js 24.19 及更高版本暂不支持，这是上游原生扩展清理回归导致的；请使用 Node.js 22 LTS、Node.js 20.18.1+ 或 Node.js 24.18.1。
 - npm 10 或与所用 Node.js 版本配套的 npm。
 - Git 2.x 或更高版本，用于从 GitHub 安装或 clone 源码。
 - 一个可用的模型 API 端点与 API Key。

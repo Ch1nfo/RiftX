@@ -4,8 +4,10 @@ import { spawn } from "node:child_process";
 import { access, readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { reportUnsupportedNode } from "./node-runtime.mjs";
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+if (reportUnsupportedNode()) process.exit(1);
 const { version: appVersion } = JSON.parse(await readFile(join(appRoot, "package.json"), "utf8"));
 const [command, ...args] = process.argv.slice(2);
 

@@ -233,6 +233,7 @@ RiftX is a local, single-process Web application. The React workbench uses Next.
 ## Requirements
 
 - Node.js `20.18.1` or newer; Node.js 22 LTS is recommended.
+- Node.js 24.19+ is currently unsupported because of an upstream native-addon cleanup regression; use Node.js 22 LTS, Node.js 20.18.1+, or Node.js 24.18.1.
 - npm 10 or the npm version bundled with the chosen Node.js release.
 - Git 2.x or newer, required for GitHub installation.
 - A model API endpoint and API key.
