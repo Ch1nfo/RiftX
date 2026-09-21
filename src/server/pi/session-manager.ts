@@ -1,6 +1,13 @@
+import { projectSubagents } from "@/server/collaboration/projection";
+import { randomUUID } from "node:crypto";
+import { BoardError, BoardStore } from "@/server/collaboration/store";
+import { collaborationContext } from "@/server/collaboration/runtime";
+import { boardPath, createSessionBoard, installBoardContext } from "@/server/collaboration/integration";
+import { sessionProtocol } from "@/server/collaboration/protocol";
+import { BOARD_TOOL_NAMES, createBoardTools, createBoardSpawnTool } from "@/server/collaboration/tools";
 import { EventEmitter } from "node:events";
 import { mkdir, stat, unlink, rm } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   AuthStorage,
   DefaultResourceLoader,
@@ -31,7 +38,7 @@ import { getEvidenceStore, removeEvidence } from "./evidence-store";
 import { installContextUsageTracking } from "./context-usage";
 import { estimateCompactedUsage, installMidTurnCompaction } from "./mid-turn-compaction";
 import { waitForSubagentsBeforeConclusion } from "./session-join";
-import { setAgentTransport } from "./pi-internals";
+import { setAgentTransport, waitForAgentEvents } from "./pi-internals";
 import { activeSkillNamesFromBranch, loadSkillContext, prepareSkillPrompt, type SkillDescriptor } from "./skill-router";
 import { installReportSkillContextScope, PENTEST_REPORT_SKILL_NAME } from "./report-skill";
 import { createTimedBashTool } from "./bash-timeout";
@@ -152,6 +159,9 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   let subagents: SubagentManager | undefined;
   let createdSession: AgentSession | undefined;
   let runtimeUnsubscribe: (() => void) | undefined;
+  let boardStore: BoardStore | undefined;
+  let collaboration = runtimeDeps?.collaboration;
+  const collaborationActor = runtimeDeps?.collaborationActor ?? "main";
   let authStorage!: AuthStorage;
   let modelRegistry!: ModelRegistry;
   const providerRegistrations: ProviderRegistrations = new Map();
@@ -186,7 +196,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     trackToolStatus(event);
     emitter.emit("event", event);
   };
-  if (!child) {
+  if (!child || runtimeDeps?.collaboration) {
     gate.onDecision((request, approved) => emitter.emit("event", { type: "approval_decided", approvalId: request.id, approval: request, approved }));
   }
   // Deliberately let + separate assignment: closures below forward-reference
@@ -199,6 +209,10 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   const settingsManager = SettingsManager.create(cwd, paths.agent);
   settingsManager.setTransport(profile.transport);
   const sessionManager = sessionManagerOverride ?? AgentSessionManager.create(cwd, child ? join(paths.subagents, "runtime") : paths.sessions);
+  const shared = child ? Boolean(collaboration) : await sessionProtocol(paths.root, sessionManager, !sessionManagerOverride);
+  if (shared && !child) boardStore = new BoardStore(boardPath(paths.root, sessionManager.getSessionId()), sessionManager.getSessionId(),
+    { create: !sessionManagerOverride, recover: Boolean(sessionManagerOverride), maxConcurrent: config.maxConcurrentSubagents });
+  const getBoard = () => { if (!collaboration) throw new BoardError("BOARD_UNAVAILABLE", "Collaboration runtime is not ready", 503); return collaboration; };
   const initialBranch = sessionManager.getBranch();
   const activeSkillNames = new Set(activeSkillNamesFromBranch(initialBranch));
   let progressCheckpoint: ProgressCheckpoint | undefined = progressCheckpointFromBranch(initialBranch);
@@ -228,7 +242,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     });
     return generateSessionTitle(titleModelRegistry, titleModel, task, "empty");
   } : undefined;
-  subagents = !child ? new SubagentManager(sessionManager.getSessionId(), paths.subagents, (event) => emitter.emit("event", event), config.maxConcurrentSubagents, config.approvalMode, subagentNameGenerator) : undefined;
+  subagents = !child && !shared ? new SubagentManager(sessionManager.getSessionId(), paths.subagents, (event) => emitter.emit("event", event), config.maxConcurrentSubagents, config.approvalMode, subagentNameGenerator) : undefined;
   const getChildProfile = () => config.childInherit ? (record?.profile ?? profile) : childProfile;
   // Same forward-closure pattern as `record`: the finding tool reads this
   // lazily, after the session below has been created.
@@ -242,7 +256,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
         // sessions on their next search, with no re-open needed.
         getTavilyApiKey: async () => (await readConfig()).webSearch?.tavilyApiKey,
         outputStore
-      }), ...(subagents ? [createSubagentTool(subagents, getChildProfile, cwd, mutationLock, bashConcurrency, { evidenceStore, evidenceSessionId }, runChildSession)] : []), ...mcpTools];
+      }), ...(subagents ? [createSubagentTool(subagents, getChildProfile, cwd, mutationLock, bashConcurrency, { evidenceStore, evidenceSessionId }, runChildSession)] : []), ...(shared ? [...createBoardTools(getBoard, collaborationActor), ...(!child ? [createBoardSpawnTool(getBoard)] : [])] : []), ...mcpTools];
   const browserExtension = createBrowserExtension({ evidenceRoot: paths.evidence, evidenceSessionId }, browser);
   const compactionExtension = createPentestCompactionExtension({
     getSession: () => evidenceSession,
@@ -280,7 +294,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     thinkingLevel: sdkThinkingLevel(profile.thinkingLevel),
     // Hard whitelist (see src/server/session-tools.ts): the SDK silently
     // drops any tool — built-in or custom — whose name is absent here.
-    tools: [...sessionToolNames(Boolean(subagents)), ...mcpTools.map((tool) => tool.name)],
+    tools: [...sessionToolNames(Boolean(subagents) || (shared && !child)), ...(shared ? BOARD_TOOL_NAMES.filter((name) => !child || !["task_manage", "board_finish"].includes(name)) : []), ...mcpTools.map((tool) => tool.name)],
     customTools,
     resourceLoader,
     sessionManager,
@@ -291,7 +305,11 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
   const skills = resourceLoader.getSkills().skills as SkillDescriptor[];
   const getContinuityContext = async (): Promise<ContinuityContext> => {
     const findings = await evidenceStore.list();
-    const relevantFindings = child
+    if (collaboration) for (const finding of findings) {
+      const state = collaboration.store.read();
+      if (state.findingVersions[finding.id] !== finding.updatedAt) collaboration.store.apply("system", `finding:${finding.id}:${finding.updatedAt}`, "finding", { id: finding.id, title: finding.title.slice(0, 2000), updatedAt: finding.updatedAt, assets: [finding.asset] });
+    }
+    const relevantFindings = child && !shared
       ? findings.filter((finding) => finding.source === "main" || finding.subagentId === findingSource.subagentId)
       : findings;
     const artifacts = await listToolArtifacts(paths.artifacts, evidenceSessionId);
@@ -304,7 +322,8 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
       taskContract: buildTaskContract(userRequestsFromBranch(sessionManager.getBranch()), { cwd, browserScope: config.browserScope }),
       skillContext: skillParts.filter(Boolean).join("\n\n"),
       investigationCapsule: buildInvestigationCapsule(relevantFindings, subagents?.list() ?? [], artifacts, browser.continuitySnapshot()),
-      progressCheckpoint: buildProgressCheckpointContext(progressCheckpoint)
+      progressCheckpoint: buildProgressCheckpointContext(progressCheckpoint),
+      collaboration: collaboration ? collaborationContext(collaboration.store.read(), collaborationActor).content : undefined
     };
   };
   const refreshContinuity = async (includeTaskContract = true) => {
@@ -331,6 +350,16 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     runtimeAgent.toolExecution = "parallel";
     for (const tool of runtimeAgent.state?.tools ?? []) {
       tool.executionMode = "parallel";
+      if (shared && typeof tool.execute === "function") {
+        const original = tool.execute.bind(tool);
+        tool.execute = async (callId: string, params: unknown, signal?: AbortSignal, ...rest: unknown[]) => {
+          const runtime = getBoard(); const state = runtime.store.read();
+          runtime.store.assertFence(state, collaborationActor, runtime.fence(collaborationActor));
+          const work = state.tasks.find((t) => t.id === state.agents.find((a) => a.id === collaborationActor)?.taskId);
+          if (child && !BOARD_TOOL_NAMES.includes(tool.name) && (!work || work.status !== "running")) throw new BoardError("STATE_NOT_ALLOWED", "Claim active work before using execution tools");
+          return original(callId, params, signal, ...rest);
+        };
+      }
       // Locks are acquired at EXECUTION time (not beforeToolCall) to avoid
       // the SDK parallel-executor deadlock: beforeToolCall handlers all run
       // before any execution starts, so a shared holder (bash) would never
@@ -385,6 +414,8 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     mutationLock,
     bashConcurrency,
     subagents,
+    collaboration,
+    collaborationActor: shared ? collaborationActor : undefined,
     mcpEntries,
     evidenceStore,
     runtimeVersion: RUNTIME_VERSION,
@@ -401,6 +432,31 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     loadedSkills: new Set([...activeSkillNames].filter((name) => name !== PENTEST_REPORT_SKILL_NAME)),
     unsubscribe: () => undefined
   };
+  if (boardStore) {
+    collaboration = createSessionBoard(record, boardStore, async (agent) => {
+      const threadDir = join(paths.subagents, record.id, agent.id);
+      await mkdir(threadDir, { recursive: true, mode: 0o700 });
+      if (agent.transcript && !resolve(agent.transcript).startsWith(resolve(threadDir) + sep)) throw new BoardError("OUT_OF_SCOPE", "Child transcript is outside this session", 403);
+      if (agent.transcript && !(await stat(agent.transcript).catch(() => null))?.isFile()) throw new BoardError("AGENT_TRANSCRIPT_MISSING", "The saved child transcript is missing; recovery requires user attention", 503);
+      const manager = agent.transcript ? AgentSessionManager.open(agent.transcript, threadDir, cwd) : AgentSessionManager.create(cwd, threadDir);
+      return createRuntimeSession({ profile: getChildProfile(), cwd, gate: new ApprovalGate(), child: true,
+        sessionManagerOverride: manager, mutationLock, bashConcurrencyOverride: bashConcurrency,
+        runtimeDeps: { evidenceStore, evidenceSessionId, collaboration: getBoard(), collaborationActor: agent.id },
+        findingSource: { source: "subagent", subagentId: agent.id } });
+    });
+    record.collaboration = collaboration;
+    const reconcileFinding = (event: RiftxEvent) => {
+      if (event.type !== "finding" && event.type !== "findingPatch") return;
+      void evidenceStore.list().then((findings) => {
+        for (const finding of findings) if (getBoard().store.read().findingVersions[finding.id] !== finding.updatedAt) {
+          getBoard().store.apply("system", `finding:${finding.id}:${finding.updatedAt}`, "finding", { id: finding.id, title: finding.title.slice(0, 2000), updatedAt: finding.updatedAt, assets: [finding.asset] });
+        }
+      }).catch(() => console.warn("RiftX collaboration finding reconciliation deferred", { sessionId: record.id }));
+    };
+    emitter.on("event", reconcileFinding);
+    record.collaborationUnsubscribe = () => emitter.off("event", reconcileFinding);
+  }
+  if (collaboration) installBoardContext(record, collaboration, collaborationActor);
   const unsubscribe = result.session.subscribe((event) => {
     if (event.type === "compaction_start") record.compacting = true;
     else if (event.type === "compaction_end") {
@@ -492,6 +548,7 @@ async function buildRuntimeSession(options: CreateRuntimeSessionOptions, config:
     try { createdSession?.abortBash(); } catch { /* ignore cleanup failure */ }
     try { createdSession?.abortCompaction(); } catch { /* ignore cleanup failure */ }
     try { await createdSession?.abort(); } catch { /* ignore cleanup failure */ }
+    try { if (boardStore) { if (collaboration) await collaboration.close(); else boardStore.close(); } } catch { /* preserve original error */ }
     try { await subagents?.abortAll(); } catch { /* ignore cleanup failure */ }
     try { await browser?.shutdown(); } catch { /* ignore cleanup failure */ }
     try { createdSession?.dispose(); } catch { /* ignore cleanup failure */ }
@@ -690,7 +747,7 @@ async function promptSession(id: string, text: string, mode: "prompt" | "steer" 
     () => prepareSkillPrompt(text, record.skills, record.loadedSkills),
     () => ({ prompt: text, skillContext: "", loaded: [] as string[], matched: [] as string[] })
   );
-  const resolvedMode = dispatch.mode;
+  const resolvedMode = record.collaboration?.store.read().status === "completed" ? "prompt" : dispatch.mode;
   const ready = dispatch.prepared;
   // Skill delivery is mode-split so the skill body is read exactly once:
   // - prompt/followUp: the hidden custom message carries ready.skillContext
@@ -705,6 +762,7 @@ async function promptSession(id: string, text: string, mode: "prompt" | "steer" 
   const promptAbortEpoch = record.abortEpoch ?? 0;
   const knownTaskIds = new Set(record.subagents?.list().map((task) => task.id) ?? []);
   const activeBefore = new Set(record.subagents?.list().filter((task) => task.status === "queued" || task.status === "running").map((task) => task.id) ?? []);
+  let boardExecution: string | undefined;
   let skillInjected = false;
   let dispatchAccepted = false;
   const acceptDispatch = () => {
@@ -740,13 +798,15 @@ async function promptSession(id: string, text: string, mode: "prompt" | "steer" 
         acceptDispatch();
       }
       else {
+        boardExecution = await record.collaboration?.beginUserTurn();
         record.gate.beginTask();
         if (ready.skillContext) {
           await record.session.sendCustomMessage({ customType: "riftx_skill_context", content: ready.skillContext, display: false });
           skillInjected = true;
         }
         let preflightReported = false;
-        await record.session.prompt(finalText, {
+        let userTurnError = false;
+        try { await record.session.prompt(finalText, {
           images,
           // Pi reports this only after model/auth/compaction/extensions pass,
           // immediately before the agent run starts. This is the acceptance
@@ -755,13 +815,16 @@ async function promptSession(id: string, text: string, mode: "prompt" | "steer" 
             preflightReported = true;
             if (success) acceptDispatch();
           }
-        });
+        }); }
+        catch (error) { userTurnError = true; throw error; }
+        finally { record.collaboration?.userTurnEnded({ summary: extractLastAssistantResult(record.sessionManager.getBranch()).summary, error: userTurnError }, boardExecution); }
         // Defensive compatibility with a future SDK that omits the internal
         // hook after resolving successfully.
         if (!preflightReported) acceptDispatch();
       }
     });
   } catch (error) {
+    if (boardExecution) record.collaboration?.userTurnEnded({ error: true }, boardExecution);
     settlePromptRequest(record, extras.requestId, "failed", error instanceof Error ? error.message : String(error));
     if (!dispatchAccepted) hooks?.onFailed?.(error);
     if (!skillInjected) ready.loaded.forEach((name) => record.loadedSkills.delete(name));
@@ -812,6 +875,7 @@ export async function summarizeSessionTitle(id: string, task: string) {
 
 export async function startPromptSession(id: string, text: string, mode: "prompt" | "steer" | "followUp" = "prompt", extras: PromptExtras = {}) {
   const record = await getOrCreateSession(id);
+  if (record.collaboration?.store.read().status === "paused") throw new BoardError("SESSION_PAUSED", "请先恢复共享任务板 / Resume collaboration before sending a new task");
   // Reject images on the synchronous path so the route answers 400 instead of
   // letting the provider layer silently degrade them to placeholders — the
   // user believes the model saw the image.
@@ -864,6 +928,11 @@ export async function decideApproval(id: string, approvalId: string, approved: b
   const request = record.gate.pendingRequests().find((item) => item.id === approvalId);
   if (approved && scope === "task" && request) record.gate.allowForTask(request);
   if (request) return record.gate.decide(approvalId, approved, scope === "task");
+  for (const child of record.collaborationChildren?.values() ?? []) {
+    if (child === record) continue;
+    const pending = child.gate.pendingRequests().find((item) => item.id === approvalId);
+    if (pending) { if (approved && scope === "task") child.gate.allowForTask(pending); return child.gate.decide(approvalId, approved, scope === "task"); }
+  }
   return record.subagents?.decideApproval(approvalId, approved, scope) ?? false;
 }
 
@@ -872,6 +941,7 @@ export async function setApprovalMode(mode: ApprovalMode) {
   for (const session of sessions.values()) {
     session.gate.setMode(mode);
     session.subagents?.setApprovalMode(mode);
+    for (const child of session.collaborationChildren?.values() ?? []) child.gate.setMode(mode);
   }
   return config;
 }
@@ -880,12 +950,14 @@ export async function setMaxConcurrentSubagents(value: number) {
   const maxConcurrentSubagents = clampConcurrency(Number(value) || 3);
   for (const session of sessions.values()) {
     session.subagents?.setMaxConcurrent(maxConcurrentSubagents);
+    session.collaboration?.store.apply("system", randomUUID(), "agent_meta", { agentId: "main", maxConcurrent: maxConcurrentSubagents });
+    session.collaboration?.kick();
     session.bashConcurrency.setLimit(maxConcurrentSubagents + 1);
   }
   return maxConcurrentSubagents;
 }
 
-export async function subscribeSession(id: string, listener: (event: RiftxEvent) => void) {
+export async function subscribeSession(id: string, listener: (event: RiftxEvent) => void, afterCollaborationEvent = 0) {
   const record = await getOrCreateSession(id);
   const onEvent = (event: RiftxEvent) => listener({ ...event, sessionId: record.id });
   record.emitter.on("event", onEvent);
@@ -900,9 +972,12 @@ export async function subscribeSession(id: string, listener: (event: RiftxEvent)
     else if (record.session.isStreaming) onEvent({ type: "session_state", state: "running" });
     else onEvent({ type: "session_state", state: "idle" });
     onEvent({ type: "usage", usage: usageFromRecord(record) });
-    for (const task of record.subagents?.list() ?? []) onEvent({ type: "subagent_snapshot", task });
+    const boardSnapshot = record.collaboration?.store.snapshot(afterCollaborationEvent, 500);
+    if (boardSnapshot?.mode === "shared") for (const event of boardSnapshot.events) onEvent({ type: "collaboration", collaboration: event });
+    for (const task of record.collaboration ? projectSubagents(record.collaboration.store.read()) : record.subagents?.list() ?? []) onEvent({ type: "subagent_snapshot", task });
     for (const finding of await record.evidenceStore.list()) onEvent({ type: "finding", finding });
     for (const request of record.gate.pendingRequests()) onEvent({ type: "approval_required", approval: request });
+    for (const child of record.collaborationChildren?.values() ?? []) if (child !== record) for (const request of child.gate.pendingRequests()) onEvent({ type: "approval_required", approval: { ...request, subagentId: child.collaborationActor, threadId: child.id } });
     for (const request of record.subagents?.pendingApprovals() ?? []) onEvent({ type: "approval_required", approval: request });
   } catch (error) {
     record.emitter.off("event", onEvent);
@@ -943,6 +1018,7 @@ export async function assertSessionInCurrentWorkspace(id: string) {
 
 export async function listSubagents(id: string) {
   const record = await getOrCreateSession(id);
+  if (record.collaboration) { const state = record.collaboration.store.read(); return { tasks: projectSubagents(state), running: state.agents.filter((a) => a.role === "child" && a.status === "running").length, maxConcurrent: state.maxConcurrent }; }
   return { tasks: record.subagents?.list() ?? [], running: record.subagents?.runningCount ?? 0, maxConcurrent: record.subagents?.maxConcurrentSubagents ?? 0 };
 }
 
@@ -1029,6 +1105,7 @@ export async function deleteArchivedSession(id: string) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
   }
+  await rm(join(boardPath(getAppPaths().root, id), ".."), { recursive: true, force: true });
   await removeEvidence(id, getAppPaths().evidence);
   const artifactPath = resolve(toolArtifactDir(getAppPaths().artifacts, id));
   const artifactRoot = resolve(getAppPaths().artifacts);
@@ -1074,6 +1151,10 @@ export async function setActiveProfile(profile: ModelProfile, sessionId?: string
   // The whole switch — capture, staging, commit, or rollback — runs inside a
   // per-session mutex: a second concurrent switch is rejected instead of
   // racing the first one's rollback against its commit.
+  if (record.collaboration) {
+    await record.collaboration.pause();
+    await record.collaboration.releaseIdleChildren();
+  }
   const switched = await withProfileSwitchLock(record, () => switchSessionProfile(record, profile, {
     prepareModel: (target, next) => {
       const sessionRecord = target as SessionRecord;
@@ -1105,4 +1186,39 @@ export async function setActiveProfile(profile: ModelProfile, sessionId?: string
   // Only a successful switch becomes the provider's tracked registration.
   if (switched) record.providerRegistrations.set(profile.provider, profile);
   return switched;
+}
+
+/** Workspace-checked facade shared by all collaboration HTTP routes. */
+export async function getCollaboration(id: string) {
+  const record = await getOrCreateSession(id);
+  return record.collaboration;
+}
+
+/** Read bounded child telemetry from its canonical transcript, never tasks.json. */
+export async function getCollaborationActivity(id: string, agentId: string) {
+  const record = await getOrCreateSession(id);
+  const runtime = record.collaboration;
+  const actor = runtime?.store.read().agents.find((a) => a.id === agentId);
+  if (!actor) throw new BoardError("OUT_OF_SCOPE", "Unknown agent", 404);
+  const live = record.collaborationChildren?.get(agentId);
+  if (live) await waitForAgentEvents(live.session);
+  let manager = live?.sessionManager;
+  if (!manager && actor.transcript) {
+    const root = resolve(getAppPaths().subagents, id, agentId);
+    if (!resolve(actor.transcript).startsWith(root + sep)) throw new BoardError("OUT_OF_SCOPE", "Invalid transcript scope", 403);
+    manager = AgentSessionManager.open(actor.transcript, root, record.cwd);
+  }
+  const logs: import("@/lib/types").SubagentLogEntry[] = [];
+  for (const entry of manager?.getBranch() ?? []) {
+    if (entry.type !== "message") continue;
+    const message = entry.message;
+    if (message.role === "toolResult") {
+      logs.push({ id: message.toolCallId, type: "tool", toolName: message.toolName, status: message.isError ? "error" : "done",
+        content: message.content.filter((c) => c.type === "text").map((c) => c.text).join("\n").slice(0, 12000), createdAt: entry.timestamp });
+    } else if (message.role === "assistant") {
+      const content = message.content.filter((c) => c.type === "text").map((c) => c.text).join("\n");
+      if (content) logs.push({ id: entry.id, type: "text", content: content.slice(0, 12000), createdAt: entry.timestamp });
+    }
+  }
+  return { logs: logs.slice(-80) };
 }

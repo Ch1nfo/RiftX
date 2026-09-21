@@ -6,6 +6,7 @@ import { Archive, ArrowDown, ArrowUp, Brain, Command, FolderOpen, Gear, List, Pa
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ApprovalModeMenu, ContextRing, ErrorNotice, LanguageToggle, ModelMenu, RiftxLogo, ThemeToggle } from "./ui";
+import { CollaborationPanel } from "./collaboration-panel";
 import { SubagentPanel } from "./subagent-panel";
 import { FindingsPanel } from "./findings-panel";
 import { parseRiftxEvent, type ApprovalMode, type ApprovalRequest, type ContextUsage, type Finding, type FindingPatch, type ModelProfile, type RiftxEvent, type SessionSummary, type SubagentTask, type SubagentTaskPatch } from "@/lib/types";
@@ -387,6 +388,8 @@ export function Workbench() {
   };
   const [bootstrapping, setBootstrapping] = useState(true);
   const [approvalQueue, setApprovalQueue] = useState<ApprovalRequest[]>([]);
+  const [sharedCollaboration, setSharedCollaboration] = useState(false);
+  const [collaborationRunning, setCollaborationRunning] = useState(false);
   const [subagents, setSubagents] = useState<SubagentTask[]>([]);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [maxConcurrentSubagents, setMaxConcurrentSubagents] = useState(3);
@@ -642,7 +645,8 @@ export function Workbench() {
       } catch {
         return;
       }
-      if (payload) applyRiftxEvent(payload, { ...eventContext, reconcileMessages: refetchMessages });
+      if (payload && ["collaboration", "collaboration_activity", "connected"].includes(payload.type)) window.dispatchEvent(new CustomEvent("riftx:collaboration", { detail: payload }));
+      if (payload && !["collaboration", "collaboration_activity"].includes(payload.type)) applyRiftxEvent(payload, { ...eventContext, reconcileMessages: refetchMessages });
     };
     source.onerror = () => {
       if (disposed || activeIdRef.current !== activeId) return;
@@ -688,7 +692,7 @@ export function Workbench() {
   const displayedMessages = useMemo(() => visibleMessages.slice(-visibleMessageCount), [visibleMessages, visibleMessageCount]);
   const hasEarlierMessages = displayedMessages.length < visibleMessages.length;
   const messageLabels = useMemo<MessageLabels>(() => ({ you: t("you"), thinking: t("thinking"), thinkingNow: t("thinkingNow"), thinkingDone: t("thinkingDone"), queued: t("queued"), running: t("running"), failed: t("failed"), stopped: t("stopped"), complete: t("complete") }), [t]);
-  const running = mainAgentRunning || subagentRunning > 0 || approvalQueue.length > 0;
+  const running = collaborationRunning || mainAgentRunning || subagentRunning > 0 || approvalQueue.length > 0;
   const composerBusy = mainAgentRunning || approvalQueue.some((item) => !item.subagentId);
 
   const queueSessionTitle = (text: string) => {
@@ -889,6 +893,7 @@ export function Workbench() {
   };
 
   const scrollToTool = (toolCallId: string, toolName?: string, subagentId?: string) => {
+    if (sharedCollaboration && subagentId) { scrollToSubagentLog(subagentId, toolCallId); return; }
     if (revealToolCard(toolCallId)) return;
     const hiddenIndex = visibleMessages.findIndex((message) => message.toolCallId === toolCallId);
     if (hiddenIndex >= 0) {
@@ -1056,7 +1061,18 @@ export function Workbench() {
       </footer>
     </main>
     <aside className="right-rail" aria-label={t("subagents")}>
-      <SubagentPanel tasks={subagents} running={subagentRunning} maxConcurrent={maxConcurrentSubagents} onCancel={(taskId) => void cancelSubagent(taskId)} onRetry={(taskId) => void retrySubagent(taskId)} focus={subagentFocus} />
+      <CollaborationPanel onModeChange={setSharedCollaboration} onRunningChange={setCollaborationRunning} key={activeId} sessionId={activeId} focus={subagentFocus} onReference={(type, id, agent) => {
+        if (type === "tool") scrollToTool(id, "tool", agent === "main" ? undefined : agent);
+        else if (type === "finding") document.getElementById(`finding-${id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+        else if (type === "artifact") window.open(`/api/sessions/${activeId}/collaboration/artifact?path=${encodeURIComponent(id)}`, "_blank", "noopener,noreferrer");
+        else if (type === "request") {
+          const finding = findings.find((f) => f.evidence.some((e) => e.type === "request" && e.requestRef === id));
+          if (finding) scrollToRequest(id, finding);
+          else if (agent && agent !== "main") setSubagentFocus({ taskId: agent });
+          else setError(t("evidenceTargetUnavailable"));
+        }
+        else if (type === "screenshot") openLightbox(`/api/sessions/${activeId}/findings/screenshot/${encodeURIComponent(id)}`, id);
+      }} legacy={<SubagentPanel tasks={subagents} running={subagentRunning} maxConcurrent={maxConcurrentSubagents} onCancel={(taskId) => void cancelSubagent(taskId)} onRetry={(taskId) => void retrySubagent(taskId)} focus={subagentFocus} />} />
       <FindingsPanel sessionId={activeId || undefined} findings={findings} onPatch={(id, patch) => void patchFindingInSession(id, patch)} onToolClick={scrollToTool} onRequestClick={scrollToRequest} />
     </aside>
     {error ? <div className="toast-wrap"><ErrorNotice message={error} onDismiss={() => setError("")} /></div> : null}

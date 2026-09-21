@@ -4,11 +4,15 @@ import { errorMessage, errorResponse } from "@/server/errors";
 export const runtime = "nodejs";
 
 function encode(data: unknown) {
-  return `data: ${JSON.stringify(data)}\n\n`;
+  const event = data as { type?: string; collaboration?: { seq: number } };
+  const cursor = event.type === "collaboration" && event.collaboration ? `id: board:${event.collaboration.seq}\n` : "";
+  return `${cursor}data: ${JSON.stringify(data)}\n\n`;
 }
 
-export async function GET(_request: Request, context: { params: Promise<{ id: string }> }) {
+export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
   const { id } = await context.params;
+  const rawCursor = request.headers.get("Last-Event-ID")?.replace(/^board:/, "") ?? new URL(request.url).searchParams.get("after") ?? "0";
+  const after = /^\d+$/.test(rawCursor) && Number.isSafeInteger(Number(rawCursor)) ? Number(rawCursor) : 0;
   try {
     await assertSessionRunnable(id);
   } catch (error) {
@@ -37,7 +41,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
           } catch {
             cleanup();
           }
-        });
+        }, after);
         // The client may have disconnected WHILE subscribeSession was
         // connecting: immediately detach the listener and skip the heartbeat
         // instead of leaking both until the next event fires.

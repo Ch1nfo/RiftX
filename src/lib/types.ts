@@ -132,7 +132,7 @@ export type SessionSummary = {
 export type ArchivedSession = Omit<SessionSummary, "archived" | "restoreBlock">;
 
 const RIFTX_EVENT_TYPES = [
-  "connected", "finding", "findingPatch", "usage", "session_state", "subagent_snapshot",
+  "collaboration", "collaboration_activity", "connected", "finding", "findingPatch", "usage", "session_state", "subagent_snapshot",
   "subagent_queued", "subagent_start", "subagent_done", "subagent_empty", "subagent_failed", "subagent_cancelled",
   "subagent_interrupted", "subagent_update", "approval_required", "approval_evaluated",
   "approval_evaluation_error", "approval_decided", "text_delta", "thinking_delta", "message",
@@ -142,6 +142,9 @@ const RIFTX_EVENT_TYPES = [
 type RiftxEventType = (typeof RIFTX_EVENT_TYPES)[number];
 type RiftxEventFields = {
   sessionId?: string;
+  collaboration?: import("./collaboration").BoardEvent;
+  agentId?: string;
+  activity?: unknown;
   /** Client-generated correlation id: echoed on error events tied to one prompt. */
   requestId?: string;
   delta?: unknown;
@@ -180,6 +183,7 @@ export function parseRiftxEvent(value: unknown): RiftxEvent | null {
   if (!isRecord(value) || typeof value.type !== "string" || !RIFTX_EVENT_TYPES.includes(value.type as RiftxEventType)) return null;
   if (value.sessionId !== undefined && typeof value.sessionId !== "string") return null;
   if (value.turnEnd !== undefined && typeof value.turnEnd !== "boolean") return null;
+  if (value.type === "collaboration" && (!isRecord(value.collaboration) || !Number.isSafeInteger(value.collaboration.seq))) return null;
   if (value.type === "connected" && typeof value.sessionId !== "string") return null;
   if (value.type === "usage" && !isRecord(value.usage)) return null;
   if (value.type === "finding" && !isRecord(value.finding)) return null;

@@ -1,3 +1,4 @@
+import { BOARD_CONTEXT_TYPE, BOARD_MESSAGE_TYPE } from "@/lib/collaboration";
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
 import { INVESTIGATION_CAPSULE_TYPE } from "./investigation-capsule";
 import { PROGRESS_CHECKPOINT_TYPE } from "./progress-checkpoint";
@@ -10,9 +11,10 @@ export type ContinuityContext = {
   skillContext?: string;
   investigationCapsule?: string;
   progressCheckpoint?: string;
+  collaboration?: string;
 };
 
-const TYPES = new Set([TASK_CONTRACT_TYPE, SKILL_CONTEXT_TYPE, INVESTIGATION_CAPSULE_TYPE, PROGRESS_CHECKPOINT_TYPE]);
+const TYPES = new Set([BOARD_CONTEXT_TYPE, BOARD_MESSAGE_TYPE, TASK_CONTRACT_TYPE, SKILL_CONTEXT_TYPE, INVESTIGATION_CAPSULE_TYPE, PROGRESS_CHECKPOINT_TYPE]);
 
 export function isContinuityMessage(message: unknown) {
   if (!message || typeof message !== "object") return false;
@@ -28,7 +30,8 @@ export function upsertContinuityContext(messages: unknown[], context: Continuity
     [TASK_CONTRACT_TYPE, context.taskContract],
     [SKILL_CONTEXT_TYPE, context.skillContext],
     [INVESTIGATION_CAPSULE_TYPE, context.investigationCapsule],
-    [PROGRESS_CHECKPOINT_TYPE, context.progressCheckpoint]
+    [PROGRESS_CHECKPOINT_TYPE, context.progressCheckpoint],
+    [BOARD_CONTEXT_TYPE, context.collaboration]
   ] as const;
   const continuityMessages = blocks.flatMap(([customType, content], index) => content?.trim()
     ? [{ role: "custom" as const, customType, content, display: false, timestamp: timestamp + index }]

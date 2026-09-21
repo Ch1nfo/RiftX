@@ -62,6 +62,11 @@ export type SessionRecord = {
   waitingForSubagents?: boolean;
   compacting?: boolean;
   promptChain?: Promise<void>;
+  pendingActions?: number;
+  collaboration?: import("@/server/collaboration/runtime").BoardRuntime;
+  collaborationActor?: string;
+  collaborationUnsubscribe?: () => void;
+  collaborationChildren?: Map<string, SessionRecord>;
   subagentDeliveryInProgress?: boolean;
   deliveredSubagentResults: Set<string>;
   deliveringSubagentResults: Set<string>;
@@ -78,10 +83,12 @@ export type SessionRecord = {
 export type RuntimeDeps = {
   evidenceStore: EvidenceStore;
   evidenceSessionId: string;
+  collaboration?: import("@/server/collaboration/runtime").BoardRuntime;
+  collaborationActor?: string;
 };
 
 /** Bump to force process-global session objects to rebuild from disk. */
-export const RUNTIME_VERSION = 38;
+export const RUNTIME_VERSION = 39;
 
 declare global {
   var __riftxSessions: Map<string, SessionRecord> | undefined;
@@ -92,7 +99,8 @@ export const sessions = globalThis.__riftxSessions ?? (globalThis.__riftxSession
 export const sessionCreation = globalThis.__riftxSessionCreation ?? (globalThis.__riftxSessionCreation = new Map<string, Promise<SessionRecord>>());
 
 export function isSessionRecordRunning(record: SessionRecord) {
-  return record.session.isStreaming
+  return (record.collaboration?.runningCount ?? 0) > 0
+    || record.session.isStreaming
     || Boolean(record.compacting)
     || Boolean(record.waitingForSubagents)
     || record.gate.pendingRequests().length > 0

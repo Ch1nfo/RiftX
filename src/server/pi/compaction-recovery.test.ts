@@ -8,8 +8,18 @@ import { createPentestCompactionExtension } from "./pentest-compaction";
 import { PENTEST_COMPACTION_SYSTEM_PROMPT, REQUIRED_SECTIONS } from "./compaction-prompt";
 import { installMidTurnCompaction } from "./mid-turn-compaction";
 import { estimateMessagesContextUsage } from "./context-usage";
+import { compactionBlocked } from "./compaction-retry";
 
-for (const phase of ["overflow", "mid-turn"] as const) test(`long split turn: ${phase} compaction resumes tools, completes and accepts another message`, { timeout: 5000 }, async () => {
+for (const scenario of [
+  { phase: "overflow", fail: false }, { phase: "mid-turn", fail: false },
+  { phase: "overflow", fail: true }, { phase: "mid-turn", fail: true }
+] as const) test(`long split turn: ${scenario.phase} with ${scenario.fail ? "failed" : "successful"} summary`, { timeout: 5000 }, async (t) => {
+  const { phase } = scenario;
+  let failSummary: boolean = scenario.fail;
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  const warnings: string[] = [];
+  t.mock.method(console, "warn", (message: string) => { warnings.push(message); });
   const api = "riftx-compaction-recovery";
   const model: Model<typeof api> = { id: "test", name: "test", api, provider: "test", baseUrl: "http://unused", reasoning: false, input: ["text"], contextWindow: 128_000, maxTokens: 16_384, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
   const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
@@ -20,8 +30,12 @@ for (const phase of ["overflow", "mid-turn"] as const) test(`long split turn: ${
   const stream = (_model: Model<typeof api>, context: { systemPrompt?: string; messages: unknown[] }, options?: SimpleStreamOptions) => {
     if (context.systemPrompt !== PENTEST_COMPACTION_SYSTEM_PROMPT) {
       workerCalls += 1;
-      assert.match(JSON.stringify(context.messages), /Preserved evidence/);
-      assert.doesNotMatch(JSON.stringify(context.messages), /Evidence 0:/);
+      if (failSummary) {
+        assert.match(JSON.stringify(context.messages), /Evidence 0:/, "failed summary leaves old evidence in the actual worker request");
+      } else {
+        assert.match(JSON.stringify(context.messages), /Preserved evidence/);
+        assert.doesNotMatch(JSON.stringify(context.messages), /Evidence 0:/);
+      }
       const output = createAssistantMessageEventStream();
       output.end({ role: "assistant", api, provider: "test", model: "test", content: workerCalls === 1
         ? [{ type: "toolCall", id: "after-compaction", name: "probe", arguments: {} }]
@@ -33,7 +47,7 @@ for (const phase of ["overflow", "mid-turn"] as const) test(`long split turn: ${
     requests.push(cap);
     const output = createAssistantMessageEventStream();
     // Unlike the old fixture, honor the requested output limit.
-    output.end({ role: "assistant", api, provider: "test", model: "test", content: [{ type: "text", text: summary.slice(0, cap * 4) }], stopReason: cap * 4 < summary.length ? "length" : "stop", usage, timestamp: Date.now() });
+    output.end({ role: "assistant", api, provider: "test", model: "test", content: [{ type: "text", text: summary.slice(0, cap * 4) }], stopReason: failSummary ? "error" : cap * 4 < summary.length ? "length" : "stop", errorMessage: failSummary ? "Synthetic upstream request failure" : undefined, usage, timestamp: Date.now() });
     return output;
   };
   registerApiProvider({ api, stream, streamSimple: stream }, api);
@@ -81,12 +95,43 @@ for (const phase of ["overflow", "mid-turn"] as const) test(`long split turn: ${
     await createPentestCompactionExtension({ getSession: () => session, modelRegistry, getActiveSkills: () => [] })({ on: (_name: string, callback: typeof handler) => { handler = callback; } } as unknown as ExtensionAPI);
     if (phase === "overflow") {
       await (session as unknown as { _runAutoCompaction: (reason: string, retry: boolean) => Promise<void> })._runAutoCompaction("overflow", true);
-      await continued;
-      await agent.waitForIdle();
+      if (!failSummary) {
+        await continued;
+        await agent.waitForIdle();
+      }
     } else {
       await agent.continue();
     }
     const end = events.at(-1);
+    if (failSummary) {
+      assert.ok(end?.type === "compaction_end");
+      assert.equal(end.result, undefined);
+      assert.equal(end.aborted, true);
+      assert.equal(end.willRetry, false, "SDK does not schedule overflow continuation when the summary failed");
+      assert.equal(manager.getBranch().filter((entry) => entry.type === "compaction").length, 0);
+      assert.match(JSON.stringify(state.messages), /Evidence 0:/);
+      assert.deepEqual(warnings, ["RiftX penetration compaction failed: summary model request failed; keeping the original history."]);
+      assert.equal(compactionBlocked(session), true);
+      if (phase === "overflow") {
+        assert.equal(workerCalls, 0);
+        assert.equal(toolCalls, 0);
+        return;
+      }
+      assert.equal(workerCalls, 2, "mid-turn failure still permits the actual worker loop to finish");
+      assert.equal(toolCalls, 1);
+      await agent.prompt("Another message during compaction cooldown");
+      assert.equal(workerCalls, 3);
+      assert.equal(requests.length, 1, "cooldown skips repeated summaries while ordinary work continues");
+      failSummary = false;
+      now += 30_001;
+      await agent.prompt("Continue after the summary provider recovers");
+      assert.equal(requests.length, 2);
+      assert.equal(workerCalls, 4);
+      assert.equal(manager.getBranch().filter((entry) => entry.type === "compaction").length, 1);
+      assert.equal(compactionBlocked(session), false);
+      assert.equal(warnings.length, 1, "later successful compaction does not erase the earlier terminal warning");
+      return;
+    }
     assert.ok(end?.type === "compaction_end" && end.result, "long split turn must produce a valid checkpoint");
     assert.ok(requests[0] >= 1024, `summary budget was ${requests[0]}`);
     assert.ok(state.messages.length < 30, "old tool results were actually replaced");

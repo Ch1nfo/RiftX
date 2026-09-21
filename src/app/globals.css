@@ -598,3 +598,28 @@ a { color: inherit; text-decoration: none; }
 .composer-attachment-remove { border: 0; border-radius: 50%; background: var(--panel-3); color: var(--muted); width: 16px; height: 16px; display: inline-grid; place-items: center; cursor: pointer; padding: 0; }
 .composer-attachment-remove:hover { color: var(--danger); }
 .composer-attachment-hint { font-size: 11px; color: var(--muted-2); }
+
+/* Shared collaboration state uses the same compact rail as findings. */
+.right-rail > .collaboration-panel { width: var(--right-rail-width); flex: 0 0 auto; pointer-events: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+.collaboration-panel { padding: 14px; min-width: 0; font-size: 12px; border-bottom: 1px solid var(--line); }
+.collaboration-panel header { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px; }
+.collaboration-panel p { margin: 7px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.collaboration-panel nav, .collaboration-controls { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.collaboration-panel button { padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; font: inherit; cursor: pointer; background: var(--panel); color: inherit; }
+.collaboration-panel button:disabled { opacity: .5; cursor: wait; }
+.collaboration-panel nav button[aria-pressed="true"] { font-weight: 700; background: var(--panel-2); }
+.collaboration-panel input, .collaboration-panel select, .collaboration-panel textarea { display: block; width: 100%; min-width: 0; padding: 7px; margin: 5px 0 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: inherit; font: inherit; }
+.collaboration-panel textarea { min-height: 80px; resize: vertical; }
+.collaboration-list { max-height: 65vh; overflow: auto; }
+.collaboration-list article { padding: 10px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.collaboration-list strong { display: block; margin-bottom: 4px; }
+.collaboration-status, .collaboration-budget, .collaboration-legacy { color: var(--muted); font-size: 11px; }
+.collaboration-legacy { padding: 6px 14px; }
+.collaboration-error { color: #be453b; overflow-wrap: anywhere; padding: 8px 0; }
+.collaboration-panel details { margin: 6px 0; }
+.collaboration-panel summary { cursor: pointer; }
+.collaboration-panel pre { max-height: 260px; overflow: auto; white-space: pre-wrap; font-size: 11px; }
+.collaboration-panel .collaboration-reference { display: block; width: 100%; text-align: left; overflow-wrap: anywhere; margin-top: 4px; }
+.collaboration-limits { padding: 8px 0; }
+
+@media (max-width: 760px) { .right-rail > .collaboration-panel { width: 100%; } }

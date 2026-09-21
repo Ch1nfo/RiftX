@@ -28,6 +28,9 @@ export type ShutdownTarget = {
     abort(): Promise<unknown>;
     dispose(): void;
   };
+  collaborationActor?: string;
+  collaborationUnsubscribe?: () => void;
+  collaboration?: { pause(): Promise<void>; close(): Promise<void> };
   subagents?: { abortAll(): Promise<unknown> };
   /** close cancels in-flight Playwright work but keeps the manager reopenable; shutdown is permanent. */
   browser?: { close(): Promise<unknown>; shutdown(): Promise<unknown> };
@@ -51,6 +54,7 @@ export async function shutdownSessionRecord(record: ShutdownTarget) {
         console.error(`RiftX session ${record.id} shutdown step ${step} failed:`, error);
       }
     };
+    if (record.collaboration && record.collaborationActor === "main") await safe("closeCollaboration", () => record.collaboration!.close());
     const gate = record.gate;
     const session = record.session;
     await safe("rejectApprovals", () => gate.rejectAll());
@@ -67,6 +71,7 @@ export async function shutdownSessionRecord(record: ShutdownTarget) {
       const { releaseMcpServers } = await import("../mcp/manager");
       await releaseMcpServers(record.mcpEntries!);
     });
+    await safe("unsubscribeCollaboration", () => record.collaborationUnsubscribe?.());
     await safe("unsubscribe", () => record.unsubscribe());
     await safe("dispose", () => session.dispose());
   })().finally(() => {
@@ -90,6 +95,7 @@ export async function abortSessionRecord(record: ShutdownTarget, emit: (event: {
   record.aborting = true;
   record.abortPromise = (async () => {
     record.abortEpoch = (record.abortEpoch ?? 0) + 1;
+    if (record.collaboration && record.collaborationActor === "main") await record.collaboration.pause();
     record.waitingForSubagents = false;
     record.compacting = false;
     record.gate.rejectAll();

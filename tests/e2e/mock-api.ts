@@ -59,6 +59,10 @@ export class MockApi {
     this.phaseCRelease.resolve();
   }
 
+  collaborationEvent(event: unknown) {
+    this.secondStream?.write(`data: ${JSON.stringify({ type: "collaboration", collaboration: event, sessionId: SECOND_SESSION_ID })}\n\n`);
+  }
+
   finishSecondSession() {
     this.secondSessionRunning = false;
   }
@@ -139,6 +143,7 @@ export class MockApi {
         response.end(png);
         return;
       }
+      else if (url.includes("/collaboration")) json({ mode: "legacy" });
       else if (url === `/api/sessions/${SESSION_ID}/subagents` || url === `/api/sessions/${SECOND_SESSION_ID}/subagents`) json({ tasks: [], running: 0, maxConcurrent: 3 });
       else if (url === `/api/sessions/${SESSION_ID}/findings` || url === `/api/sessions/${SECOND_SESSION_ID}/findings`) json({ findings: [] });
       else json({});

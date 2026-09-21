@@ -17,6 +17,7 @@ type SubagentJoinRecord = {
   deliveredSubagentResults: Set<string>;
   deliveringSubagentResults?: Set<string>;
   promptChain?: Promise<void>;
+  pendingActions?: number;
   subagentDeliveryInProgress?: boolean;
   gate: { beginTask(): void };
   session: {
@@ -27,10 +28,11 @@ type SubagentJoinRecord = {
 };
 
 /** Serialize SDK prompt-like calls; AgentSession rejects overlapping runs. */
-export function enqueueSessionAction(record: Pick<SubagentJoinRecord, "promptChain">, action: () => Promise<void>) {
+export function enqueueSessionAction<T>(record: Pick<SubagentJoinRecord, "promptChain" | "pendingActions">, action: () => Promise<T>): Promise<T> {
   const previous = record.promptChain ?? Promise.resolve();
-  const next = previous.catch(() => undefined).then(action);
-  record.promptChain = next.catch(() => undefined);
+  record.pendingActions = (record.pendingActions ?? 0) + 1;
+  const next = previous.catch(() => undefined).then(action).finally(() => { record.pendingActions = Math.max(0, (record.pendingActions ?? 1) - 1); });
+  record.promptChain = next.then(() => undefined, () => undefined);
   return next;
 }
 

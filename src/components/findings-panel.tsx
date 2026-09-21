@@ -34,7 +34,7 @@ export function FindingsPanel({ sessionId, findings, onPatch, onToolClick, onReq
       <button className="findings-filter" onClick={() => setShowDismissed((value) => !value)}>{showDismissed ? <EyeSlash size={13} /> : <Eye size={13} />}{showDismissed ? t("hideDismissed") : t("showDismissed")}</button>
       {visible.length ? visible.map((finding) => {
         const isExpanded = Boolean(expanded[finding.id]);
-        return <article className={`finding-item ${finding.status}`} key={finding.id}>
+        return <article className={`finding-item ${finding.status}`} key={finding.id} id={`finding-${finding.id}`}>
           <button className="finding-head" onClick={() => setExpanded((current) => ({ ...current, [finding.id]: !isExpanded }))}>
             <span className={`finding-confidence-dot ${finding.confidence}`} />
             <span className="finding-title">{finding.title}</span>
